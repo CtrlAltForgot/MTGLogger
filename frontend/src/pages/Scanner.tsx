@@ -10,6 +10,12 @@ import { defaultTuning, useAutoScanner, type ScannerTuning } from '../scanner/us
 import type { Candidate, Deck, Defaults, Inventory, ScanResult } from '../types'
 
 const initial:Defaults={condition:'near_mint',foil:false,language:'en',storage_location:'Unsorted',collection_name:'Main',status:'owned',box_set_code:null,auto_add:true,deck_id:null}
+const languages=[
+  ['en','English'],['es','Spanish'],['fr','French'],['de','German'],['it','Italian'],
+  ['pt','Portuguese'],['ja','Japanese'],['ko','Korean'],['ru','Russian'],
+  ['zhs','Chinese (Simplified)'],['zht','Chinese (Traditional)'],['he','Hebrew'],
+  ['la','Latin'],['grc','Ancient Greek'],['ar','Arabic'],['sa','Sanskrit'],['phy','Phyrexian'],
+]
 type ReferenceStatus={state:string;set_code:string|null;completed:number;total:number;indexed_cards:number;error:string|null}
 type SessionStats={scans:number;added:number;review:number;totalMs:number;lastMs:number;serverMs:number;paceIntervals:number;paceMs:number;lastAddedAt:number|null}
 
@@ -126,6 +132,9 @@ export default function Scanner(){
         <Select value={defaults.condition} onChange={event=>setDefaults({...defaults,condition:event.target.value})}>
           {[['near_mint','Near Mint'],['lightly_played','Lightly Played'],['moderately_played','Moderately Played'],['heavily_played','Heavily Played'],['damaged','Damaged']].map(([value,label])=><MenuItem value={value} key={value}>{label}</MenuItem>)}
         </Select>
+        <TextField select label="Language" value={defaults.language} onChange={event=>setDefaults({...defaults,language:event.target.value})}>
+          {languages.map(([value,label])=><MenuItem value={value} key={value}>{label}</MenuItem>)}
+        </TextField>
         <Select displayEmpty value={defaults.deck_id||''} onChange={event=>setDefaults({...defaults,deck_id:event.target.value||null})}><MenuItem value="">Deck · None</MenuItem>{decks.map(deck=><MenuItem value={deck.id} key={deck.id}>Deck · {deck.name}</MenuItem>)}</Select>
         <TextField label="Storage location" placeholder="e.g. Box 4 / Row B" value={defaults.storage_location} onChange={event=>setDefaults({...defaults,storage_location:event.target.value||'Unsorted'})}/>
         <TextField label="Box Mode set code" placeholder="e.g. FDN" value={defaults.box_set_code||''} onChange={event=>setDefaults({...defaults,box_set_code:event.target.value.trim()||null})}/>
