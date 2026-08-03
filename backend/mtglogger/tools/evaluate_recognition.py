@@ -57,6 +57,10 @@ async def evaluate(limit: int | None, manifest: Path | None = None) -> dict:
             ignored_example_review_ids={review.id},
         )
         ids = [candidate.scryfall_id for candidate in result.candidates]
+        names = [candidate.name.casefold() for candidate in result.candidates]
+        expected_name = (
+            getattr(expected, "card_name", None) or getattr(expected, "name")
+        )
         top_id = ids[0] if ids else None
         auto_add = result.confidence >= 98.5
         results.append(
@@ -80,6 +84,8 @@ async def evaluate(limit: int | None, manifest: Path | None = None) -> dict:
                     else None
                 ),
                 "confidence": result.confidence,
+                "card_top1_correct": bool(names and names[0] == expected_name.casefold()),
+                "card_top5_correct": expected_name.casefold() in names,
                 "top1_correct": top_id == expected.scryfall_id,
                 "top5_correct": expected.scryfall_id in ids,
                 "auto_add": auto_add,
@@ -99,6 +105,12 @@ async def evaluate(limit: int | None, manifest: Path | None = None) -> dict:
         ),
         "exact_printing_top5_accuracy": (
             sum(item["top5_correct"] for item in results) / total if total else None
+        ),
+        "exact_card_top1_accuracy": (
+            sum(item["card_top1_correct"] for item in results) / total if total else None
+        ),
+        "exact_card_top5_accuracy": (
+            sum(item["card_top5_correct"] for item in results) / total if total else None
         ),
         "auto_add_rate": sum(item["auto_add"] for item in results) / total if total else None,
         "false_auto_add_rate": (
