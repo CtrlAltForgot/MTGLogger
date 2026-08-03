@@ -80,7 +80,39 @@ The bind-mounted database, review images, and OCR cache survive image replacemen
 
 ## Backup and recovery
 
-Back up `/mnt/user/appdata/mtglogger` with the normal Unraid appdata backup process. For a transaction-consistent PostgreSQL backup, run `pg_dump` into a protected backup directory before an update. Review images live under `data/scans`; learned artwork hashes and all inventory metadata live in PostgreSQL.
+Back up `/mnt/user/appdata/mtglogger` with the normal Unraid appdata backup process. Create a transaction-consistent PostgreSQL dump before an update:
+
+```bash
+cd /mnt/user/appdata/mtglogger-src
+mkdir -p /mnt/user/appdata/mtglogger/backups
+chmod 700 /mnt/user/appdata/mtglogger/backups
+backup_file="/mnt/user/appdata/mtglogger/backups/mtglogger-$(date -u +%Y%m%dT%H%M%SZ).dump"
+umask 077
+docker compose -f docker-compose.yml -f docker-compose.unraid.yml exec -T db \
+  sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --format=custom' > "$backup_file"
+test -s "$backup_file"
+docker compose -f docker-compose.yml -f docker-compose.unraid.yml exec -T db \
+  sh -c 'pg_restore --list' < "$backup_file" | head
+echo "$backup_file"
+```
+
+The custom-format dump contains inventory, sealed products, decks and allocations, Review metadata, and learned artwork hashes. Pending Review JPEGs live under `/mnt/user/appdata/mtglogger/data/scans`; include the `data` directory in the matching Unraid appdata snapshot. The Paddle model cache can be backed up for faster recovery but is safe to recreate.
+
+To restore a database dump, first make a second backup of the current state. Then stop application traffic, restore, and wait for health checks:
+
+```bash
+cd /mnt/user/appdata/mtglogger-src
+restore_file="/mnt/user/appdata/mtglogger/backups/mtglogger-YYYYMMDDTHHMMSSZ.dump"
+test -s "$restore_file"
+docker compose -f docker-compose.yml -f docker-compose.unraid.yml stop web api
+docker compose -f docker-compose.yml -f docker-compose.unraid.yml exec -T db \
+  sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists --no-owner --exit-on-error' \
+  < "$restore_file"
+docker compose -f docker-compose.yml -f docker-compose.unraid.yml up -d api web
+docker compose -f docker-compose.yml -f docker-compose.unraid.yml ps
+```
+
+Restore the matching `data` snapshot as well when the dump contains pending Review records. A dump restored without those JPEGs keeps collection data but cannot display the affected Review captures.
 
 Never delete the `postgres`, `data`, or `paddlex` directories during an update. Before restoring a raw appdata snapshot, stop the stack cleanly. A database dump is preferred when moving between PostgreSQL versions.
 

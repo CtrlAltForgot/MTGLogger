@@ -42,7 +42,7 @@ Run `docker compose ps` to check readiness: `db`, `api`, and `web` should all re
 
 Browsers only permit webcam access in a secure context. `http://localhost:5173` works on the machine hosting the browser; access from another device using an Unraid IP or hostname must be placed behind a trusted HTTPS reverse proxy (for example, an Unraid-managed proxy with a valid local or public certificate). MTGLogger reports this requirement directly instead of failing with an unavailable-camera error.
 
-See [the Unraid deployment guide](docs/UNRAID.md) for persistent appdata bind mounts, private API binding, HTTPS choices, updates, backups, and latency measurement.
+See [the Unraid deployment guide](docs/UNRAID.md) for persistent appdata bind mounts, private API binding, HTTPS choices, updates, verified PostgreSQL backup/restore commands, and latency measurement.
 
 ## Local development
 
