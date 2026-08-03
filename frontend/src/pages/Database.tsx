@@ -9,13 +9,15 @@ import { request } from '../api'
 import { CardName } from '../components/CardDetails'
 import type { ReferenceStatus } from '../types'
 
-type IndexedSet={set_code:string;set_name:string;indexed_printings:number;ready_printings:number;updated_at:string|null}
+type IndexedSet={set_code:string;set_name:string;indexed_printings:number;ready_printings:number;released_at:string|null;updated_at:string|null}
 type IndexedCard={scryfall_id:string;name:string;set_code:string;set_name:string;collector_number:string;image_url:string;language:string;layout:string;updated_at:string}
 type CardPage={items:IndexedCard[];total:number;page:number;page_size:number}
 
 const duration=(seconds:number)=>{const hours=Math.floor(seconds/3600),minutes=Math.max(1,Math.round(seconds%3600/60));return hours?`${hours}h ${minutes}m`:`${minutes}m`}
 const setSymbol=(setCode:string)=>`https://svgs.scryfall.io/sets/${encodeURIComponent(setCode.toLowerCase())}.svg`
-const SetSymbol=({code,size=20}:{code:string;size?:number})=><Box component="img" src={setSymbol(code)} alt={`${code.toUpperCase()} set symbol`} loading="lazy" sx={{width:size,height:size,objectFit:'contain',flex:'0 0 auto',filter:'invert(1)',opacity:.86}}/>
+const symbolAliases:Record<string,string>={ '4bb':'4ed' }
+const symbolFallbacks=new Set(['plst'])
+const SetSymbol=({code,size=20}:{code:string;size?:number})=>{const normalized=code.toLowerCase(),symbolCode=symbolAliases[normalized]||normalized;const [failed,setFailed]=useState(symbolFallbacks.has(normalized));return failed?<Box sx={{width:Math.max(size,30),height:size,display:'grid',placeItems:'center',flex:'0 0 auto',border:'1px solid',borderColor:'divider',borderRadius:1,fontSize:9,fontWeight:900,color:'text.secondary'}}>{code.toUpperCase()}</Box>:<Box component="img" src={setSymbol(symbolCode)} alt="" loading="lazy" onError={()=>setFailed(true)} sx={{width:size,height:size,objectFit:'contain',flex:'0 0 auto',filter:'invert(1)',opacity:.86}}/>}
 
 export default function Database(){
   const [status,setStatus]=useState<ReferenceStatus>()

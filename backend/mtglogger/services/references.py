@@ -2,7 +2,7 @@ import asyncio
 import math
 import time
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from threading import Lock
 
@@ -264,6 +264,7 @@ async def _index_card(db, provider: ScryfallProvider, card: dict) -> bool:
         existing.set_code = card["set"]
         existing.set_name = card["set_name"]
         existing.collector_number = card["collector_number"]
+        existing.released_at = _released_at(card)
         existing.image_url = image_url
         existing.market_price = provider.market_price(card)
         db.commit()
@@ -279,6 +280,7 @@ async def _index_card(db, provider: ScryfallProvider, card: dict) -> bool:
             set_code=card["set"],
             set_name=card["set_name"],
             collector_number=card["collector_number"],
+            released_at=_released_at(card),
             image_url=image_url,
             art_hash=artwork_hash(image),
             market_price=provider.market_price(card),
@@ -297,6 +299,14 @@ async def _index_card(db, provider: ScryfallProvider, card: dict) -> bool:
     )
     db.commit()
     return True
+
+
+def _released_at(card: dict) -> date | None:
+    value = card.get("released_at")
+    try:
+        return date.fromisoformat(value) if value else None
+    except ValueError:
+        return None
 
 
 def _cache_image(scryfall_id: str, raw: bytes) -> Path | None:

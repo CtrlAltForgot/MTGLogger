@@ -1,9 +1,19 @@
 import enum
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Index, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Date,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Index,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -147,6 +157,7 @@ class CardReference(Base):
     set_code: Mapped[str] = mapped_column(String(16))
     set_name: Mapped[str] = mapped_column(String(255))
     collector_number: Mapped[str] = mapped_column(String(32))
+    released_at: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
     image_url: Mapped[str] = mapped_column(Text)
     art_hash: Mapped[str] = mapped_column(String(16), index=True)
     market_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)

@@ -415,6 +415,31 @@ def test_rectify_joins_disconnected_off_center_sleeved_card_edges():
     assert CardRecognizer.has_card_structure(corrected)
 
 
+def test_rectify_prefers_full_card_over_large_internal_mana_panel():
+    import cv2
+    import numpy as np
+
+    from mtglogger.services.recognition import CardRecognizer
+
+    frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+    for start, end in (
+        ((60, 45), (760, 45)),
+        ((60, 675), (760, 675)),
+        ((60, 45), (60, 675)),
+        ((760, 45), (760, 675)),
+    ):
+        cv2.line(frame, start, end, (245, 245, 245), 8)
+    frame[70:190, 90:730] = (220, 60, 30)
+    cv2.rectangle(frame, (125, 285), (695, 650), (220, 220, 220), 8)
+    for y in (350, 470, 610):
+        cv2.line(frame, (150, y), (670, y), (180, 180, 180), 5)
+
+    corrected = CardRecognizer.rectify(frame)
+
+    # The blue title/art band exists only outside the tempting inner panel.
+    assert corrected[:300, :, 0].mean() > corrected[:300, :, 1].mean() * 1.5
+
+
 def test_card_structure_rejects_empty_table_but_accepts_card_frame():
     import cv2
     import numpy as np

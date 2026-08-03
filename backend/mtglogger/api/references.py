@@ -29,6 +29,7 @@ def indexed_sets(db: Session = Depends(get_db)):
             CardReference.set_name,
             func.count(CardReference.scryfall_id),
             func.count(CardVisualFingerprint.scryfall_id),
+            func.max(CardReference.released_at),
             func.max(CardVisualFingerprint.updated_at),
         )
         .outerjoin(
@@ -36,7 +37,7 @@ def indexed_sets(db: Session = Depends(get_db)):
             CardVisualFingerprint.scryfall_id == CardReference.scryfall_id,
         )
         .group_by(CardReference.set_code, CardReference.set_name)
-        .order_by(CardReference.set_name)
+        .order_by(func.max(CardReference.released_at).desc().nullslast(), CardReference.set_name)
     )
     return [
         {
@@ -44,9 +45,10 @@ def indexed_sets(db: Session = Depends(get_db)):
             "set_name": name,
             "indexed_printings": indexed,
             "ready_printings": ready,
+            "released_at": released_at,
             "updated_at": updated_at,
         }
-        for code, name, indexed, ready, updated_at in rows
+        for code, name, indexed, ready, released_at, updated_at in rows
     ]
 
 

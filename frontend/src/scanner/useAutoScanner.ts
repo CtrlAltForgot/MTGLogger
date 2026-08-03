@@ -33,12 +33,12 @@ export function useAutoScanner(
   maxInFlight=2,
 ){
   const video=useRef<HTMLVideoElement>(null),canvas=useRef<HTMLCanvasElement>(null)
-  const previous=useRef<Uint8ClampedArray|undefined>(undefined),baseline=useRef<Uint8ClampedArray|undefined>(undefined),calibrationCount=useRef(0),noiseMotion=useRef(0),stable=useRef(0),removalGate=useRef<RemovalGate>({latched:false,emptyFrames:0}),capturing=useRef(false),inFlight=useRef(0),sessionGeneration=useRef(0)
+  const previous=useRef<Uint8ClampedArray|undefined>(undefined),baseline=useRef<Uint8ClampedArray|undefined>(undefined),capturedFrame=useRef<Uint8ClampedArray|undefined>(undefined),calibrationCount=useRef(0),noiseMotion=useRef(0),stable=useRef(0),removalGate=useRef<RemovalGate>({latched:false,emptyFrames:0,replacementFrames:0}),capturing=useRef(false),inFlight=useRef(0),sessionGeneration=useRef(0)
   const [state,setState]=useState<State>('idle'),[error,setError]=useState<string>(),[metrics,setMetrics]=useState<ScannerMetrics>({brightness:0,contrast:0,motion:0,sceneDifference:0})
   const [pendingCaptures,setPendingCaptures]=useState(0)
   const [cameras,setCameras]=useState<MediaDeviceInfo[]>([]),[selectedCamera,setSelectedCamera]=useState('')
 
-  const calibrate=useCallback(()=>{baseline.current=undefined;previous.current=undefined;calibrationCount.current=0;noiseMotion.current=0;stable.current=0;removalGate.current={latched:false,emptyFrames:0};setState('calibrating')},[])
+  const calibrate=useCallback(()=>{baseline.current=undefined;previous.current=undefined;capturedFrame.current=undefined;calibrationCount.current=0;noiseMotion.current=0;stable.current=0;removalGate.current={latched:false,emptyFrames:0,replacementFrames:0};setState('calibrating')},[])
   const start=useCallback(async(deviceId?:string)=>{try{
     if(!window.isSecureContext||!navigator.mediaDevices?.getUserMedia)throw new Error('Camera access requires HTTPS or localhost. Use an HTTPS reverse proxy when opening MTGLogger from another computer.')
     setError(undefined)
@@ -69,7 +69,12 @@ export function useAutoScanner(
       const next=analyze(pixels,previous.current,baseline.current);previous.current=new Uint8ClampedArray(pixels);setMetrics(next)
       const cardPresent=next.sceneDifference>=tuning.entryDifference
       if(removalGate.current.latched){
-        const update=advanceRemovalGate(removalGate.current,cardPresent)
+        const replacementDifference=capturedFrame.current?analyze(pixels,undefined,capturedFrame.current).sceneDifference:0
+        // A direct swap produces consecutive frames that differ substantially
+        // from the captured card (usually a hand, then the replacement). Minor
+        // exposure drift or an unmoved card remains latched.
+        const substantiallyChanged=replacementDifference>=Math.max(24,tuning.entryDifference*1.75)
+        const update=advanceRemovalGate(removalGate.current,cardPresent,substantiallyChanged)
         removalGate.current=update.gate
         if(update.rearmed){stable.current=0;setState('waiting')}
         return
@@ -84,13 +89,14 @@ export function useAutoScanner(
       if(next.motion<stableLimit)stable.current++;else stable.current=0
       if(stable.current<tuning.stableFrames)return
       capturing.current=true;setState('capturing')
+      capturedFrame.current=new Uint8ClampedArray(pixels)
       const full=document.createElement('canvas');full.width=element.videoWidth;full.height=element.videoHeight;full.getContext('2d')!.drawImage(element,0,0)
       full.toBlob(blob=>{
         capturing.current=false;stable.current=0
         if(!blob){calibrate();return}
         // Latch before network work begins. The video loop can observe removal
         // and prepare another physical card while this request is identifying.
-        removalGate.current={latched:true,emptyFrames:0};setState('remove')
+        removalGate.current={latched:true,emptyFrames:0,replacementFrames:0};setState('remove')
         const generation=sessionGeneration.current
         inFlight.current++;setPendingCaptures(inFlight.current)
         void onCapture(blob).then(cardCaptured=>{

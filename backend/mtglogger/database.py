@@ -28,7 +28,23 @@ def get_db() -> Generator[Session, None, None]:
 def migrate_schema() -> None:
     """Apply small additive migrations for installations predating Alembic."""
     inspector = inspect(engine)
-    if "card_visual_fingerprints" not in inspector.get_table_names():
+    tables = inspector.get_table_names()
+    if "card_references" in tables:
+        reference_columns = {
+            column["name"] for column in inspector.get_columns("card_references")
+        }
+        if "released_at" not in reference_columns:
+            with engine.begin() as connection:
+                connection.execute(
+                    text("ALTER TABLE card_references ADD COLUMN released_at DATE")
+                )
+                connection.execute(
+                    text(
+                        "CREATE INDEX ix_card_references_released_at "
+                        "ON card_references (released_at)"
+                    )
+                )
+    if "card_visual_fingerprints" not in tables:
         return
     columns = {column["name"] for column in inspector.get_columns("card_visual_fingerprints")}
     if "symbol_hash" not in columns:

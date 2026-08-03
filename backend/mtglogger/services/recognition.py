@@ -98,6 +98,7 @@ class CardRecognizer:
         contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
         minimum_area = image.shape[0] * image.shape[1] * 0.06
         inspected = sorted(contours, key=cv2.contourArea, reverse=True)[:20]
+        candidates: list[tuple[float, np.ndarray]] = []
         for contour in inspected:
             perimeter = cv2.arcLength(contour, True)
             polygon = cv2.approxPolyDP(contour, 0.02 * perimeter, True)
@@ -105,8 +106,8 @@ class CardRecognizer:
                 continue
             points = polygon.reshape(4, 2).astype("float32")
             warped = CardRecognizer.warp_card(image, points)
-            if warped is not None:
-                return warped
+            if warped is not None and CardRecognizer.has_card_structure(warped):
+                candidates.append((cv2.contourArea(polygon), warped))
         # Sleeves, worn borders, and virtual-camera sharpening often leave four
         # strong card edges as separate contours. Join nearby edge fragments and
         # retry the outer silhouette before falling back to a centered crop. The
@@ -131,7 +132,7 @@ class CardRecognizer:
                 continue
             warped = CardRecognizer.warp_card(image, cv2.boxPoints(rectangle))
             if warped is not None and CardRecognizer.has_card_structure(warped):
-                return warped
+                candidates.append((width * height, warped))
         # Glare, sleeves, and worn borders can break one card edge into several
         # contours. A rotated bounding rectangle still localizes an off-center
         # card while its aspect-ratio check rejects ordinary widescreen regions.
@@ -144,8 +145,13 @@ class CardRecognizer:
             if not 0.48 <= ratio <= 0.9:
                 continue
             warped = CardRecognizer.warp_card(image, cv2.boxPoints(rectangle))
-            if warped is not None:
-                return warped
+            if warped is not None and CardRecognizer.has_card_structure(warped):
+                candidates.append((width * height, warped))
+        if candidates:
+            # Rules boxes and basic-land mana panels can look card-shaped. The
+            # physical card/sleeve encloses them and is the largest structured
+            # silhouette, so never accept the first internal rectangle found.
+            return max(candidates, key=lambda item: item[0])[1]
         # If no plausible card boundary exists, retain the old centered fallback
         # for very low-contrast sleeves.
         height, width = image.shape[:2]

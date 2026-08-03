@@ -11,6 +11,31 @@ _client: httpx.AsyncClient | None = None
 _card_names: list[str] | None = None
 _card_names_loaded_at = 0.0
 _card_names_lock = asyncio.Lock()
+_api_request_lock = asyncio.Lock()
+_api_last_request_at = 0.0
+
+
+async def scryfall_api_get(url: str, **kwargs) -> httpx.Response:
+    """Pace and retry API traffic so background indexing cannot starve scans."""
+    global _api_last_request_at
+    async with _api_request_lock:
+        delay = 0.1 - (time.monotonic() - _api_last_request_at)
+        if delay > 0:
+            await asyncio.sleep(delay)
+        for attempt in range(6):
+            try:
+                response = await scryfall_client().get(url, **kwargs)
+                _api_last_request_at = time.monotonic()
+                if response.status_code != 429:
+                    return response
+                retry_after = float(response.headers.get("Retry-After", attempt + 1))
+                await asyncio.sleep(min(30, max(0.1, retry_after)))
+            except (httpx.TimeoutException, httpx.TransportError):
+                _api_last_request_at = time.monotonic()
+                if attempt == 5:
+                    raise
+                await asyncio.sleep(min(10, 1.5**attempt))
+        raise RuntimeError("Scryfall API remained rate limited after retries")
 
 
 def scryfall_client() -> httpx.AsyncClient:
@@ -49,7 +74,7 @@ class ScryfallProvider:
             query = f"{query} set:{set_code}"
         if language:
             query = f"{query} lang:{language}"
-        response = await scryfall_client().get(
+        response = await scryfall_api_get(
             f"{self.base_url}/cards/search", params={"q": query, "unique": "prints"}
         )
         if response.status_code == 404:
@@ -58,13 +83,13 @@ class ScryfallProvider:
         return response.json().get("data", [])[:12]
 
     async def get_card(self, scryfall_id: str) -> dict:
-        response = await scryfall_client().get(f"{self.base_url}/cards/{scryfall_id}")
+        response = await scryfall_api_get(f"{self.base_url}/cards/{scryfall_id}")
         response.raise_for_status()
         return response.json()
 
     async def fuzzy_name(self, name: str) -> str | None:
         """Resolve a slightly damaged OCR title without choosing its printing."""
-        response = await scryfall_client().get(
+        response = await scryfall_api_get(
             f"{self.base_url}/cards/named", params={"fuzzy": name}
         )
         if response.status_code == 404:
@@ -77,7 +102,7 @@ class ScryfallProvider:
         if not terms:
             return []
         query = " ".join(f'o:"{term}"' for term in terms) + " game:paper"
-        response = await scryfall_client().get(
+        response = await scryfall_api_get(
             f"{self.base_url}/cards/search",
             params={"q": query, "unique": "cards", "order": "name"},
         )
@@ -94,7 +119,7 @@ class ScryfallProvider:
         async with _card_names_lock:
             if _card_names is not None and time.monotonic() - _card_names_loaded_at < 86_400:
                 return _card_names
-            response = await scryfall_client().get(f"{self.base_url}/catalog/card-names")
+            response = await scryfall_api_get(f"{self.base_url}/catalog/card-names")
             response.raise_for_status()
             _card_names = response.json().get("data", [])
             _card_names_loaded_at = time.monotonic()
@@ -104,9 +129,8 @@ class ScryfallProvider:
         cards: list[dict] = []
         url = f"{self.base_url}/cards/search"
         params = {"q": f"set:{set_code}", "unique": "prints", "order": "set"}
-        client = scryfall_client()
         while url:
-            response = await client.get(url, params=params if not cards else None)
+            response = await scryfall_api_get(url, params=params if not cards else None)
             if response.status_code == 404:
                 return []
             response.raise_for_status()
@@ -119,24 +143,9 @@ class ScryfallProvider:
         """Stream every paper printing without holding the catalog in memory."""
         url = f"{self.base_url}/cards/search"
         params = {"q": "game:paper", "unique": "prints", "order": "set"}
-        client = scryfall_client()
         while url:
-            response = None
-            for attempt in range(6):
-                try:
-                    response = await client.get(url, params=params)
-                    if response.status_code == 429:
-                        delay = float(response.headers.get("Retry-After", attempt + 1))
-                        await asyncio.sleep(min(30, delay))
-                        continue
-                    response.raise_for_status()
-                    break
-                except (httpx.TimeoutException, httpx.TransportError):
-                    if attempt == 5:
-                        raise
-                    await asyncio.sleep(min(10, 1.5**attempt))
-            if response is None:
-                raise RuntimeError("Scryfall catalog page did not return a response")
+            response = await scryfall_api_get(url, params=params)
+            response.raise_for_status()
             page = response.json()
             yield page.get("data", [])
             url = page.get("next_page") if page.get("has_more") else None
@@ -144,7 +153,7 @@ class ScryfallProvider:
 
     async def paper_printing_count(self) -> int:
         """Return Scryfall's current number of distinct paper printings."""
-        response = await scryfall_client().get(
+        response = await scryfall_api_get(
             f"{self.base_url}/cards/search",
             params={"q": "game:paper", "unique": "prints", "page": 1},
         )

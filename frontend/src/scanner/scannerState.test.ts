@@ -6,7 +6,7 @@ import {
 
 describe('physical-card removal gate',()=>{
   it('never rearms while the same card remains visible',()=>{
-    let gate={latched:true,emptyFrames:0}
+    let gate={latched:true,emptyFrames:0,replacementFrames:0}
     for(let frame=0;frame<100;frame++){
       const update=advanceRemovalGate(gate,true)
       gate=update.gate
@@ -16,7 +16,7 @@ describe('physical-card removal gate',()=>{
   })
 
   it('requires three consecutive empty frames before another capture',()=>{
-    let gate={latched:true,emptyFrames:0}
+    let gate={latched:true,emptyFrames:0,replacementFrames:0}
     let update=advanceRemovalGate(gate,false);gate=update.gate
     expect(update.rearmed).toBe(false)
     update=advanceRemovalGate(gate,false);gate=update.gate
@@ -27,7 +27,23 @@ describe('physical-card removal gate',()=>{
     expect(update.rearmed).toBe(false)
     update=advanceRemovalGate(gate,false)
     expect(update.rearmed).toBe(true)
-    expect(update.gate).toEqual({latched:false,emptyFrames:0})
+    expect(update.gate).toEqual({latched:false,emptyFrames:0,replacementFrames:0})
+  })
+
+  it('rearms after a direct physical swap without requiring an empty table',()=>{
+    let gate={latched:true,emptyFrames:0,replacementFrames:0}
+    let update=advanceRemovalGate(gate,true,true);gate=update.gate
+    expect(update.rearmed).toBe(false)
+    update=advanceRemovalGate(gate,true,true)
+    expect(update.rearmed).toBe(true)
+  })
+
+  it('ignores a one-frame visual disturbance around an unchanged card',()=>{
+    let gate={latched:true,emptyFrames:0,replacementFrames:0}
+    gate=advanceRemovalGate(gate,true,true).gate
+    const update=advanceRemovalGate(gate,true,false)
+    expect(update.rearmed).toBe(false)
+    expect(update.gate.replacementFrames).toBe(0)
   })
 })
 
