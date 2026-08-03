@@ -715,46 +715,7 @@ class CardRecognizer:
                 *([ignored_visual_hashes] if ignored_visual_hashes is not None else []),
             )
             cards = await lookup_task
-            identity_names = {
-                card["name"] for card in cards
-            } or ({title} if title else set())
-            descriptor_matches = await asyncio.to_thread(
-                self._descriptor_matches,
-                corrected,
-                identity_names,
-                # A tiny footer can turn M15 into MIS. Never let uncertain OCR
-                # remove the correct artwork candidate; only explicit Box Mode
-                # is authoritative enough to constrain descriptor retrieval.
-                box_set_code,
-            )
-            known_card_ids = {card["id"] for card in cards}
-            for reference, _score in descriptor_matches:
-                if reference.scryfall_id in known_card_ids:
-                    continue
-                cards.append(
-                    {
-                        "id": reference.scryfall_id,
-                        "name": reference.name,
-                        "set": reference.set_code,
-                        "set_name": reference.set_name,
-                        "collector_number": reference.collector_number,
-                        "released_at": (
-                            reference.released_at.isoformat()
-                            if reference.released_at
-                            else "0000"
-                        ),
-                        "image_uris": {"normal": reference.image_url},
-                        "prices": {
-                            "usd": (
-                                str(reference.market_price)
-                                if reference.market_price is not None
-                                else None
-                            )
-                        },
-                        "lang": language,
-                    }
-                )
-                known_card_ids.add(reference.scryfall_id)
+            descriptor_image = corrected
             if not self.has_strong_lookup_evidence(
                 title, number, printed_set_code, copyright_year, cards
             ):
@@ -795,6 +756,46 @@ class CardRecognizer:
                 # Keep visual candidates from the best localized crop. Visual
                 # evidence is capped below auto-add, so it can rescue a damaged
                 # OCR title without silently accepting a bad contour.
+            identity_names = {
+                card["name"] for card in cards
+            } or ({title} if title else set())
+            descriptor_matches = await asyncio.to_thread(
+                self._descriptor_matches,
+                descriptor_image,
+                identity_names,
+                # A tiny footer can turn M15 into MIS. Never let uncertain OCR
+                # remove the correct artwork candidate; only explicit Box Mode
+                # is authoritative enough to constrain descriptor retrieval.
+                box_set_code,
+            )
+            known_card_ids = {card["id"] for card in cards}
+            for reference, _score in descriptor_matches:
+                if reference.scryfall_id in known_card_ids:
+                    continue
+                cards.append(
+                    {
+                        "id": reference.scryfall_id,
+                        "name": reference.name,
+                        "set": reference.set_code,
+                        "set_name": reference.set_name,
+                        "collector_number": reference.collector_number,
+                        "released_at": (
+                            reference.released_at.isoformat()
+                            if reference.released_at
+                            else "0000"
+                        ),
+                        "image_uris": {"normal": reference.image_url},
+                        "prices": {
+                            "usd": (
+                                str(reference.market_price)
+                                if reference.market_price is not None
+                                else None
+                            )
+                        },
+                        "lang": language,
+                    }
+                )
+                known_card_ids.add(reference.scryfall_id)
             matching_complete = time.perf_counter()
         visual_scores = {reference.scryfall_id: score for reference, score in visual_matches}
         for reference, score in descriptor_matches:
