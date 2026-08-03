@@ -18,7 +18,7 @@ After every capture the camera stays latched in **Remove card** state. It must o
 
 Enter a Scryfall set code in the scanner (for example `FDN`) and choose **Index set artwork**. MTGLogger downloads that set's card images as a throttled background job, stores compact perceptual hashes rather than duplicate image files, and reports progress in the scanner. Scanning remains available while indexing runs. Once cached, artwork matching works without a Scryfall request and Box Mode strongly limits the visual search space.
 
-The production API image includes CPU PaddleOCR 3. Paddle's inference model is initialized when the API starts and cached in the persistent `ocr_models` volume. Check `GET /api/scanner/capabilities` and `GET /api/references/status` when diagnosing recognition.
+The production API image includes CPU PaddleOCR 3 with the PP-OCRv4 mobile detection and recognition models. The mobile models keep CPU scans responsive while the ranking stage combines the printed name, collector number, set code, copyright year, Box Mode, and cached artwork similarity. Paddle's inference model is initialized when the API starts and cached in the persistent `ocr_models` volume. Check `GET /api/scanner/capabilities` and `GET /api/references/status` when diagnosing recognition; per-stage recognition timings are also written to the API log.
 
 Market prices are refreshed from Scryfall in a background task every 24 hours and never block scanning. A refresh can also be started with `POST /api/prices/refresh`; progress is available from `GET /api/prices/status`.
 

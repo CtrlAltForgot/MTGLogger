@@ -1,5 +1,6 @@
 import logging
 import re
+import time
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -14,7 +15,7 @@ from ..providers import ScryfallProvider
 from ..schemas import Candidate
 from .references import artwork_hash, hash_distance
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("uvicorn.error")
 
 
 @dataclass
@@ -41,6 +42,13 @@ class CardRecognizer:
                 # Paddle 3.3's oneDNN runner cannot execute the OCRv6 model's
                 # ArrayAttribute on common slim Linux images.
                 enable_mkldnn=False,
+                text_detection_model_name="PP-OCRv4_mobile_det",
+                text_recognition_model_name="PP-OCRv4_mobile_rec",
+                # The default detector enlarges the shortest side to 736px.
+                # Cards are already normalized to 600x840, so cap the longest
+                # side instead of paying to upscale every scan.
+                text_det_limit_side_len=840,
+                text_det_limit_type="max",
             )
         except (ImportError, RuntimeError):
             pass
@@ -111,8 +119,10 @@ class CardRecognizer:
             return ""
 
     @staticmethod
-    def hints(text: str) -> tuple[str | None, str | None, str | None]:
+    def hints(text: str) -> tuple[str | None, str | None, str | None, int | None]:
         lines = [line.strip() for line in text.splitlines() if len(line.strip()) > 1]
+        year_match = re.search(r"(?<!\d)((?:19|20)\d{2})(?!\d)", text)
+        copyright_year = int(year_match.group(1)) if year_match else None
         set_code = None
         languages = "EN|ES|FR|DE|IT|PT|JA|KO|RU|ZHS|ZHT|HE|LA|GRC|AR|SA|PHY"
         for line in reversed(lines):
@@ -162,9 +172,16 @@ class CardRecognizer:
             if number:
                 break
         title = next(
-            (line for line in lines[:5] if not re.search(r"\d{3,}", line) and len(line) <= 60), None
+            (
+                line
+                for line in lines[:5]
+                if not re.search(r"\d{3,}", line)
+                and len(line) <= 60
+                and sum(character.isalpha() for character in line) >= 3
+            ),
+            None,
         )
-        return title, number, set_code
+        return title, number, set_code, copyright_year
 
     @staticmethod
     def collector_score(ocr_number: str | None, printed_number: str) -> float:
@@ -184,9 +201,12 @@ class CardRecognizer:
         return min(0.85, max(direct, inferred))
 
     async def recognize(self, raw: bytes, box_set_code: str | None = None) -> Recognition:
+        started = time.perf_counter()
         corrected = self.rectify(self.decode(raw))
+        prepared = time.perf_counter()
         text = self.extract_text(corrected)
-        title, number, printed_set_code = self.hints(text)
+        ocr_complete = time.perf_counter()
+        title, number, printed_set_code, copyright_year = self.hints(text)
         cards: list[dict] = []
         if title or number:
             title_query = f'!"{title}"' if title else ""
@@ -199,9 +219,11 @@ class CardRecognizer:
             # useful candidates from the confirmation list.
             if not cards and printed_set_code:
                 cards = await self.provider.search(query, box_set_code)
+        lookup_complete = time.perf_counter()
 
         scan_hash = artwork_hash(corrected)
         visual_matches = self._visual_matches(scan_hash, printed_set_code or box_set_code)
+        visual_complete = time.perf_counter()
         visual_scores = {reference.scryfall_id: score for reference, score in visual_matches}
         ranked: dict[str, Candidate] = {}
         for card in cards:
@@ -218,6 +240,10 @@ class CardRecognizer:
             )
             if printed_set_code:
                 ocr_score = (title_score * 0.5 + number_score * 0.3 + set_score * 0.2) * 100
+            elif copyright_year:
+                released_year = int(card.get("released_at", "0000")[:4])
+                year_score = 1.0 if released_year == copyright_year else 0.0
+                ocr_score = (title_score * 0.58 + number_score * 0.27 + year_score * 0.15) * 100
             else:
                 ocr_score = (title_score * 0.66 + number_score * 0.34) * 100
             visual_score = visual_scores.get(card["id"])
@@ -262,6 +288,16 @@ class CardRecognizer:
                 confidence=round(score, 1),
             )
         candidates = sorted(ranked.values(), key=lambda item: item.confidence, reverse=True)
+        finished = time.perf_counter()
+        logger.info(
+            "Recognition timings prep=%dms ocr=%dms lookup=%dms visual=%dms rank=%dms total=%dms",
+            (prepared - started) * 1000,
+            (ocr_complete - prepared) * 1000,
+            (lookup_complete - ocr_complete) * 1000,
+            (visual_complete - lookup_complete) * 1000,
+            (finished - visual_complete) * 1000,
+            (finished - started) * 1000,
+        )
         return Recognition(
             candidates[0].confidence if candidates else 0, text, candidates[:5], corrected
         )

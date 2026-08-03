@@ -120,34 +120,50 @@ def test_artwork_hash_is_stable_under_small_brightness_change():
 def test_ocr_hints_normalize_printed_collector_number():
     from mtglogger.services.recognition import CardRecognizer
 
-    title, number, set_code = CardRecognizer.hints(
+    title, number, set_code, year = CardRecognizer.hints(
         "Abrade\nInstant\nU 0188\nT™ & © 2024 Wizards of the Coast\nFDN · EN"
     )
     assert title == "Abrade"
     assert number == "0188"
     assert set_code == "fdn"
+    assert year == 2024
 
 
 def test_ocr_hints_read_set_code_without_spaces():
     from mtglogger.services.recognition import CardRecognizer
 
-    title, number, set_code = CardRecognizer.hints(
+    title, number, set_code, year = CardRecognizer.hints(
         "Shadows of the Past\nEnchantment\n& 2015 Wizands of the Const\n118/272\nORI·EN RYANYEE"
     )
     assert title == "Shadows of the Past"
     assert number == "118"
     assert set_code == "ori"
+    assert year == 2015
+
+
+def test_ocr_hints_skip_mana_cost_noise_above_title():
+    from mtglogger.services.recognition import CardRecognizer
+
+    title, number, set_code, year = CardRecognizer.hints(
+        "2@\nConsecrated by Blood\nEnchantment\n087/272U\n"
+        "M&2015WizardsoftheCoast\nORI·EN IOHNSTANKO"
+    )
+    assert title == "Consecrated by Blood"
+    assert number == "087"
+    assert set_code == "ori"
+    assert year == 2015
 
 
 def test_ocr_hints_recover_legacy_collector_pair_from_copyright_line():
     from mtglogger.services.recognition import CardRecognizer
 
-    title, number, set_code = CardRecognizer.hints(
+    title, number, set_code, year = CardRecognizer.hints(
         "Death's Approach\nEnchantment-Aura\nTerese Nielsen\n& 2013 Wizards of the Coast 02 249"
     )
     assert title == "Death's Approach"
     assert number == "02"
     assert set_code is None
+    assert year == 2013
     assert CardRecognizer.collector_score(number, "62") > CardRecognizer.collector_score(
         number, "222"
     )
