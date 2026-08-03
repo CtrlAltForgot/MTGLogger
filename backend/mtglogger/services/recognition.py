@@ -898,7 +898,7 @@ class CardRecognizer:
             if (
                 card["id"] == descriptor_top_id
                 and title_score >= 0.93
-                and descriptor_score >= 82
+                and descriptor_score >= 75
                 and descriptor_margin >= 10
             ):
                 # Unique exact-art evidence is strong enough to put the right
