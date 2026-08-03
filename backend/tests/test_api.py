@@ -173,6 +173,15 @@ def test_artwork_hash_is_stable_under_small_brightness_change():
     assert hash_distance(artwork_hash(image), artwork_hash(brighter)) <= 2
 
 
+def test_artwork_alone_cannot_auto_add_a_reused_printing():
+    from mtglogger.services.recognition import CardRecognizer
+
+    # Identical artwork can legitimately belong to multiple exact printings.
+    # It should rank Review candidates, but must stay below the 98.5% auto-add gate.
+    assert CardRecognizer.visual_only_score(99.5) == 94.0
+    assert CardRecognizer.visual_only_score(87.0) == 87.0
+
+
 def test_ocr_hints_normalize_printed_collector_number():
     from mtglogger.services.recognition import CardRecognizer
 

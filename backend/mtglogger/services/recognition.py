@@ -203,6 +203,14 @@ class CardRecognizer:
         )
         return min(0.85, max(direct, inferred))
 
+    @staticmethod
+    def visual_only_score(score: float) -> float:
+        # Artwork is intentionally supporting evidence, never proof of an exact
+        # printing. Wizards frequently reuses identical art across sets, promos,
+        # collector numbers, and finishes. Keep visual-only candidates useful at
+        # the top of Review without allowing them to cross the 98.5% auto-add gate.
+        return min(94.0, score)
+
     async def recognize(self, raw: bytes, box_set_code: str | None = None) -> Recognition:
         async with self._recognition_lock:
             started = time.perf_counter()
@@ -293,7 +301,7 @@ class CardRecognizer:
                 collector_number=reference.collector_number,
                 image_url=reference.image_url,
                 market_price=reference.market_price,
-                confidence=round(score, 1),
+                confidence=round(self.visual_only_score(score), 1),
             )
         candidates = sorted(ranked.values(), key=lambda item: item.confidence, reverse=True)
         finished = time.perf_counter()
