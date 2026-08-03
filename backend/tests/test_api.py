@@ -321,6 +321,30 @@ def test_card_name_catalog_recovers_joined_and_misspelled_titles():
     )
 
 
+def test_oracle_terms_recover_distinctive_rules_text_despite_ocr_damage():
+    from mtglogger.services.recognition import CardRecognizer
+
+    shadows = "Each opponent gains 2life. Activate only if there are four or more cards in graveyad"
+    touch = "Target creature gainsdeathtouch until end of turn. dealt damage target creature"
+    blood = "Enchant creature has lying and Sacrifce two other creatures: Regenerate this creature"
+
+    assert CardRecognizer.oracle_terms(shadows) == [
+        "gain 2 life",
+        "four or more",
+        "graveyard",
+    ]
+    assert CardRecognizer.oracle_terms(touch) == [
+        "deathtouch",
+        "target creature",
+        "damage",
+    ]
+    assert CardRecognizer.oracle_terms(blood) == [
+        "regenerate",
+        "sacrifice",
+        "flying",
+    ]
+
+
 def test_structured_printing_evidence_promotes_safe_auto_adds_only():
     from mtglogger.services.recognition import CardRecognizer
 

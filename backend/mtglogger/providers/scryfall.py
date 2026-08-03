@@ -71,6 +71,20 @@ class ScryfallProvider:
         response.raise_for_status()
         return response.json().get("name")
 
+    async def oracle_search(self, terms: list[str]) -> list[dict]:
+        """Find paper cards containing several rules-text terms."""
+        if not terms:
+            return []
+        query = " ".join(f'o:"{term}"' for term in terms) + " game:paper"
+        response = await scryfall_client().get(
+            f"{self.base_url}/cards/search",
+            params={"q": query, "unique": "cards", "order": "name"},
+        )
+        if response.status_code == 404:
+            return []
+        response.raise_for_status()
+        return response.json().get("data", [])[:175]
+
     async def card_names(self) -> list[str]:
         """Return Scryfall's small canonical-name catalog, cached for one day."""
         global _card_names, _card_names_loaded_at

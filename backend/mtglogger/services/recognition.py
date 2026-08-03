@@ -304,6 +304,78 @@ class CardRecognizer:
         return "".join(character for character in value.casefold() if character.isalnum())
 
     @classmethod
+    def fuzzy_contains(cls, text: str, phrase: str, threshold: float = 0.78) -> bool:
+        source, target = cls.normalized_name(text), cls.normalized_name(phrase)
+        if target in source:
+            return True
+        if len(target) < 5 or len(source) < len(target) - 2:
+            return False
+        for size in range(max(3, len(target) - 2), len(target) + 3):
+            for start in range(0, len(source) - size + 1):
+                if SequenceMatcher(None, source[start : start + size], target).ratio() >= threshold:
+                    return True
+        return False
+
+    @classmethod
+    def oracle_terms(cls, text: str) -> list[str]:
+        # Ordered from distinctive phrases to broad vocabulary. Three agreeing
+        # terms keep Scryfall results small enough for local OCR similarity ranking.
+        vocabulary = [
+            ("gain 2 life", 0.82),
+            ("loses 2 life", 0.82),
+            ("four or more", 0.82),
+            ("deathtouch", 0.78),
+            ("regenerate", 0.78),
+            ("sacrifice", 0.78),
+            ("graveyard", 0.78),
+            ("flying", 0.7),
+            ("enchant creature", 0.78),
+            ("target creature", 0.78),
+            ("damage", 0.78),
+        ]
+        return [
+            phrase
+            for phrase, threshold in vocabulary
+            if cls.fuzzy_contains(text, phrase, threshold)
+        ][:3]
+
+    @classmethod
+    def oracle_similarity(cls, ocr_text: str, oracle_text: str) -> float:
+        left, right = cls.normalized_name(ocr_text), cls.normalized_name(oracle_text)
+        if not left or not right:
+            return 0
+        left_grams = {left[index : index + 3] for index in range(max(1, len(left) - 2))}
+        right_grams = {right[index : index + 3] for index in range(max(1, len(right) - 2))}
+        containment = len(left_grams & right_grams) / max(1, min(len(left_grams), len(right_grams)))
+        return max(SequenceMatcher(None, left, right).ratio(), containment)
+
+    async def _oracle_recovery(self, text: str, language: str) -> tuple[str | None, list[dict]]:
+        if language != "en" or not hasattr(self.provider, "oracle_search"):
+            return None, []
+        terms = self.oracle_terms(text)
+        if len(terms) < 2:
+            return None, []
+        try:
+            async with asyncio.timeout(2.5):
+                matches = await self.provider.oracle_search(terms)
+        except (TimeoutError, httpx.HTTPError, ValueError):
+            return None, []
+        ranked = sorted(
+            (
+                (card, self.oracle_similarity(text, card.get("oracle_text", "")))
+                for card in matches
+            ),
+            key=lambda item: item[1],
+            reverse=True,
+        )
+        if not ranked or ranked[0][1] < 0.48:
+            return None, []
+        if len(ranked) > 1 and ranked[0][1] - ranked[1][1] < 0.08:
+            return None, []
+        name = ranked[0][0]["name"]
+        return name, await self._lookup_cards(name, None, None, None, language)
+
+    @classmethod
     def promo_type_hint(cls, text: str) -> str | None:
         normalized = cls.normalized_name(text)
         # OCR commonly renders the tiny "Intro Pack" footer as InroOPack.
@@ -505,6 +577,7 @@ class CardRecognizer:
         async with self._recognition_lock:
             started = time.perf_counter()
             recovery_used = False
+            oracle_recovery = False
             decoded = self.decode(raw)
             corrected = await asyncio.to_thread(lambda: self.rectify(decoded))
             prepared = time.perf_counter()
@@ -547,6 +620,16 @@ class CardRecognizer:
                     cards = recovery_cards
                 elif recovery_text.strip():
                     text = recovery_text
+                if recovery_text.strip() and not self.has_strong_lookup_evidence(
+                    title, number, printed_set_code, copyright_year, cards
+                ):
+                    recovered_name, oracle_cards = await self._oracle_recovery(
+                        recovery_text, language
+                    )
+                    if oracle_cards:
+                        oracle_recovery = True
+                        title = recovered_name
+                        cards = oracle_cards
                 # If this still needs Review, preserve what the camera saw rather
                 # than a misleading enlarged internal rectangle.
                 corrected = decoded
@@ -607,6 +690,10 @@ class CardRecognizer:
             if title_score >= 0.93 and (only_printing or unique_release_year):
                 confidence = max(confidence, 98.5)
             confidence = min(99.5, confidence)
+            if oracle_recovery:
+                # Rules text can identify a card, but it cannot prove which set,
+                # collector number, or finish is physically present.
+                confidence = min(89.0, confidence)
             ranked[card["id"]] = Candidate(
                 scryfall_id=card["id"],
                 name=card["name"],
