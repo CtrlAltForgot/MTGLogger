@@ -43,7 +43,7 @@ def summary(db: Session = Depends(get_db)):
             select(InventoryItem)
             .where(InventoryItem.market_price.is_not(None))
             .order_by(InventoryItem.market_price.desc())
-            .limit(8)
+            .limit(20)
         )
     )
     newest = list(

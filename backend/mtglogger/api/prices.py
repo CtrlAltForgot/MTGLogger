@@ -1,5 +1,5 @@
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
@@ -12,13 +12,26 @@ from ..services.prices import refresh_prices, refresh_status
 router = APIRouter(prefix="/prices", tags=["prices"])
 
 
+WINDOWS = {
+    "1d": timedelta(days=1),
+    "1w": timedelta(weeks=1),
+    "1m": timedelta(days=30),
+    "6m": timedelta(days=183),
+    "1y": timedelta(days=365),
+}
+
+
 @router.get("/history")
-def history(days: int = Query(365, ge=1, le=3650), db: Session = Depends(get_db)):
+def history(
+    window: str = Query("1d", alias="range", pattern="^(1d|1w|1m|6m|1y)$"),
+    db: Session = Depends(get_db),
+):
+    cutoff = datetime.now(UTC) - WINDOWS[window]
     snapshots = list(
         db.scalars(
             select(CollectionValueSnapshot)
-            .order_by(CollectionValueSnapshot.recorded_at.desc())
-            .limit(days * 4)
+            .where(CollectionValueSnapshot.recorded_at >= cutoff)
+            .order_by(CollectionValueSnapshot.recorded_at)
         )
     )
     current = db.scalar(
@@ -26,7 +39,7 @@ def history(days: int = Query(365, ge=1, le=3650), db: Session = Depends(get_db)
     ) or 0
     points = [
         {"recorded_at": item.recorded_at, "total_value": item.total_value}
-        for item in reversed(snapshots)
+        for item in snapshots
     ]
     if not points:
         baseline = CollectionValueSnapshot(total_value=current)
@@ -39,10 +52,13 @@ def history(days: int = Query(365, ge=1, le=3650), db: Session = Depends(get_db)
     # and headline always describe the same collection state.
     latest = points[-1]["total_value"] if points else None
     if latest != current:
-        previous = latest
         points.append({"recorded_at": datetime.now(UTC), "total_value": current})
-    else:
-        previous = points[-2]["total_value"] if len(points) > 1 else None
+    # Keep long ranges responsive while retaining the real first/last points.
+    if len(points) > 500:
+        step = (len(points) - 1) / 499
+        indexes = sorted({round(index * step) for index in range(500)})
+        points = [points[index] for index in indexes]
+    previous = points[0]["total_value"] if len(points) > 1 else None
     change = current - previous if previous is not None else None
     percentage = (
         change / previous * 100 if change is not None and previous not in (None, 0) else None
@@ -52,6 +68,7 @@ def history(days: int = Query(365, ge=1, le=3650), db: Session = Depends(get_db)
         "previous_value": previous,
         "change": change,
         "change_percentage": percentage,
+        "range": window,
         "history": points,
     }
 

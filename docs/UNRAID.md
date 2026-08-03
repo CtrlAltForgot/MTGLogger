@@ -34,7 +34,7 @@ API_BIND=127.0.0.1
 API_PORT=8000
 WEB_BIND=0.0.0.0
 WEB_PORT=5173
-PRICE_REFRESH_HOURS=12
+PRICE_REFRESH_HOURS=1
 ```
 
 `POSTGRES_PASSWORD` and the password embedded in `DATABASE_URL` must match. Set `SCRYFALL_USER_AGENT` to identify your installation with a contact address.

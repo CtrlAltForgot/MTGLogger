@@ -20,7 +20,7 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://mtglogger:change-me@db:5432/mtglogger}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
       SCRYFALL_USER_AGENT: ${SCRYFALL_USER_AGENT:-MTGLogger/0.1}
-      PRICE_REFRESH_HOURS: ${PRICE_REFRESH_HOURS:-12}
+      PRICE_REFRESH_HOURS: ${PRICE_REFRESH_HOURS:-1}
     volumes:
       - card_images:/app/data
       - ocr_models:/root/.paddlex
