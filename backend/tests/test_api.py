@@ -394,6 +394,27 @@ def test_rectify_finds_a_small_card_away_from_frame_center():
     assert corrected.mean() > 70
 
 
+def test_rectify_joins_disconnected_off_center_sleeved_card_edges():
+    import cv2
+    import numpy as np
+
+    from mtglogger.services.recognition import CardRecognizer
+
+    frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+    # Four disconnected border segments mimic glare/wear breaking a sleeve edge.
+    cv2.line(frame, (60, 45), (760, 45), (245, 245, 245), 8)
+    cv2.line(frame, (60, 675), (760, 675), (245, 245, 245), 8)
+    cv2.line(frame, (60, 45), (60, 675), (245, 245, 245), 8)
+    cv2.line(frame, (760, 45), (760, 675), (245, 245, 245), 8)
+    for y in (120, 390, 500, 630):
+        cv2.line(frame, (110, y), (710, y), (180, 180, 180), 5)
+
+    corrected = CardRecognizer.rectify(frame)
+
+    assert corrected.shape == (840, 600, 3)
+    assert CardRecognizer.has_card_structure(corrected)
+
+
 def test_card_structure_rejects_empty_table_but_accepts_card_frame():
     import cv2
     import numpy as np
@@ -476,14 +497,15 @@ def test_focused_ocr_reads_only_enlarged_title_and_footer_when_title_is_usable()
 
     def extract(image):
         calls.append(image.shape)
-        return "Gurmag Swiftwing" if len(calls) == 1 else "074/269U\nKTK+ENJEFFSIMPSON"
+        return "Gurmag Swiftwing\n074/269U\nKTK+ENJEFFSIMPSON"
 
     recognizer.extract_text = extract
     text = recognizer.extract_identification_text(np.zeros((840, 600, 3), dtype=np.uint8))
 
     assert "Gurmag Swiftwing" in text
     assert "074/269U" in text
-    assert calls == [(420, 600, 3), (600, 600, 3)]
+    assert len(calls) == 1
+    assert calls[0][1] == 840
 
 
 def test_catalog_fallback_recovers_canonical_name_with_exact_printing():

@@ -107,6 +107,31 @@ class CardRecognizer:
             warped = CardRecognizer.warp_card(image, points)
             if warped is not None:
                 return warped
+        # Sleeves, worn borders, and virtual-camera sharpening often leave four
+        # strong card edges as separate contours. Join nearby edge fragments and
+        # retry the outer silhouette before falling back to a centered crop. The
+        # slightly wider ratio allowance is intentional: OBS/virtual webcams can
+        # stretch one axis, and the perspective warp restores the MTG card ratio.
+        kernel_size = max(9, int(round(min(image.shape[:2]) * 0.03)))
+        connected = cv2.morphologyEx(
+            edges,
+            cv2.MORPH_CLOSE,
+            cv2.getStructuringElement(cv2.MORPH_RECT, (kernel_size, kernel_size)),
+        )
+        connected_contours, _ = cv2.findContours(
+            connected, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+        for contour in sorted(connected_contours, key=cv2.contourArea, reverse=True)[:12]:
+            rectangle = cv2.minAreaRect(contour)
+            width, height = rectangle[1]
+            if width * height < minimum_area or min(width, height) <= 0:
+                continue
+            ratio = min(width, height) / max(width, height)
+            if not 0.42 <= ratio <= 1.0:
+                continue
+            warped = CardRecognizer.warp_card(image, cv2.boxPoints(rectangle))
+            if warped is not None and CardRecognizer.has_card_structure(warped):
+                return warped
         # Glare, sleeves, and worn borders can break one card edge into several
         # contours. A rotated bounding rectangle still localizes an off-center
         # card while its aspect-ratio check rejects ordinary widescreen regions.
@@ -142,7 +167,7 @@ class CardRecognizer:
             np.linalg.norm(points[3] - points[0]),
         ]
         ratio = min(max(widths), max(heights)) / max(max(widths), max(heights))
-        if not 0.48 <= ratio <= 0.9:
+        if not 0.42 <= ratio <= 1.0:
             return None
         sums, diffs = points.sum(axis=1), np.diff(points, axis=1).ravel()
         ordered = np.array(
@@ -181,19 +206,23 @@ class CardRecognizer:
     def extract_identification_text(self, image: np.ndarray) -> str:
         """Read the large title and enlarged printing footer, skipping rules text."""
         height, width = image.shape[:2]
-        title = image[int(height * 0.075) : int(height * 0.245)]
-        footer = image[int(height * 0.77) : int(height * 0.995)]
-        title = cv2.resize(title, (width, int(height * 0.5)), interpolation=cv2.INTER_CUBIC)
-        footer = cv2.resize(footer, (width, int(height * 0.715)), interpolation=cv2.INTER_CUBIC)
-        title_text = self.extract_text(title)
-        footer_text = self.extract_text(footer)
-        focused = "\n".join(part for part in (title_text, footer_text) if part.strip())
+        title = image[int(height * 0.045) : int(height * 0.22)]
+        footer = image[int(height * 0.80) : int(height * 0.995)]
+        # Printing identifiers live in the left portion of modern MTG footers.
+        # Upscale that crop uniformly instead of stretching only its height; the
+        # old distortion made collector digits no wider and harder to detect.
+        footer_left = footer[:, : int(width * 0.72)]
+        title = self.scale_to_width(title, 840)
+        footer_left = self.scale_to_width(footer_left, 840)
+        separator = np.zeros((18, 840, 3), dtype=np.uint8)
+        focused_image = np.vstack((title, separator, footer_left))
+        focused = self.extract_text(focused_image)
         focused_title, number, set_code, _ = self.hints(focused)
         if focused_title and (not number or not set_code):
             # Tiny foil/set/collector text benefits from local contrast and
             # sharpening. Run this extra OCR pass only when the normal footer
             # did not already provide complete printing evidence.
-            enhanced_footer = self.enhance_footer(footer)
+            enhanced_footer = self.enhance_footer(footer_left)
             enhanced_text = self.extract_text(enhanced_footer)
             if enhanced_text.strip():
                 focused = "\n".join((focused, enhanced_text))
@@ -203,6 +232,13 @@ class CardRecognizer:
         # the normal band. Preserve reliability with a full-card fallback only
         # when the fast title pass produced no usable text.
         return self.extract_text(image)
+
+    @staticmethod
+    def scale_to_width(image: np.ndarray, target_width: int) -> np.ndarray:
+        scale = target_width / max(1, image.shape[1])
+        target_height = max(1, round(image.shape[0] * scale))
+        interpolation = cv2.INTER_CUBIC if scale > 1 else cv2.INTER_AREA
+        return cv2.resize(image, (target_width, target_height), interpolation=interpolation)
 
     @staticmethod
     def enhance_footer(footer: np.ndarray) -> np.ndarray:
