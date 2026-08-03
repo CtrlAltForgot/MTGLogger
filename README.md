@@ -8,7 +8,7 @@ MTGLogger is a speed-first Magic: The Gathering collection catalog. Its scanner 
 2. Run `docker compose up --build`.
 3. Open <http://localhost:5173>. API documentation is at <http://localhost:8000/docs>.
 
-The browser owns webcam access and sends stable captures to the API. This works in Docker and avoids passing a host camera device into a container. On startup, keep the card guide empty briefly while the scanner learns the background and camera noise. Recognition uses OCR, Scryfall exact metadata lookup, and perceptual artwork matching.
+The browser owns webcam access and sends stable captures to the API. This works in Docker and avoids passing a host camera device into a container. After camera permission is granted, a selector appears when multiple webcams are connected. On startup—or after changing cameras—keep the card guide empty briefly while the scanner learns the background and camera noise. Recognition uses OCR, Scryfall exact metadata lookup, and perceptual artwork matching.
 
 By default, matches at 98.5% confidence or higher are added automatically. That score requires near-exact OCR agreement; on modern frames the printed name, collector number, and set code all contribute independent evidence. A brief card-image receipt confirms the exact printing, price, and quantity without pausing capture. Uncertain scans are saved with their camera image to Review, show a brief warning receipt, and never interrupt the batch. Turn off **Auto-add near-certain matches** when you explicitly want the keyboard-first candidate dialog (arrow/number keys, **Enter** to accept, **Backspace** to decline).
 
@@ -29,6 +29,8 @@ Decks allocate physical copy quantities from inventory. The Deck Builder lists o
 ## Unraid and LAN deployment
 
 The Docker web container proxies `/api` internally to FastAPI, so the default Compose deployment works from other computers on the LAN without pointing their browsers at their own `localhost`. Leave `VITE_API_URL` blank (the recommended default), run `docker compose up -d --build`, and open `http://UNRAID-IP:5173`. Set strong PostgreSQL credentials in `.env` before a permanent deployment. Named volumes preserve PostgreSQL data, review images, and OCR models across container replacement.
+
+Browsers only permit webcam access in a secure context. `http://localhost:5173` works on the machine hosting the browser; access from another device using an Unraid IP or hostname must be placed behind a trusted HTTPS reverse proxy (for example, an Unraid-managed proxy with a valid local or public certificate). MTGLogger reports this requirement directly instead of failing with an unavailable-camera error.
 
 ## Local development
 

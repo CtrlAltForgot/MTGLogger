@@ -24,10 +24,17 @@ export function useAutoScanner(onCapture:(blob:Blob)=>Promise<void>,tuning:Scann
   const video=useRef<HTMLVideoElement>(null),canvas=useRef<HTMLCanvasElement>(null)
   const previous=useRef<Uint8ClampedArray|undefined>(undefined),baseline=useRef<Uint8ClampedArray|undefined>(undefined),calibrationCount=useRef(0),noiseMotion=useRef(0),stable=useRef(0),latched=useRef(false),busy=useRef(false)
   const [state,setState]=useState<State>('idle'),[error,setError]=useState<string>(),[metrics,setMetrics]=useState<ScannerMetrics>({brightness:0,contrast:0,motion:0,sceneDifference:0})
+  const [cameras,setCameras]=useState<MediaDeviceInfo[]>([]),[selectedCamera,setSelectedCamera]=useState('')
 
   const calibrate=useCallback(()=>{baseline.current=undefined;previous.current=undefined;calibrationCount.current=0;noiseMotion.current=0;stable.current=0;latched.current=false;setState('calibrating')},[])
-  const start=useCallback(async()=>{try{const stream=await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280},height:{ideal:720},facingMode:'environment'},audio:false});if(video.current){video.current.srcObject=stream;await video.current.play();calibrate()}}catch(e){setError(e instanceof Error?e.message:'Camera unavailable')}},[calibrate])
+  const start=useCallback(async(deviceId?:string)=>{try{
+    if(!window.isSecureContext||!navigator.mediaDevices?.getUserMedia)throw new Error('Camera access requires HTTPS or localhost. Use an HTTPS reverse proxy when opening MTGLogger from another computer.')
+    setError(undefined)
+    const stream=await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280},height:{ideal:720},...(deviceId?{deviceId:{exact:deviceId}}:{facingMode:'environment'})},audio:false})
+    if(video.current){video.current.srcObject=stream;await video.current.play();const active=stream.getVideoTracks()[0]?.getSettings().deviceId||deviceId||'';setSelectedCamera(active);setCameras((await navigator.mediaDevices.enumerateDevices()).filter(device=>device.kind==='videoinput'));calibrate()}
+  }catch(e){setError(e instanceof Error?e.message:'Camera unavailable')}},[calibrate])
   const stop=useCallback(()=>{(video.current?.srcObject as MediaStream|null)?.getTracks().forEach(track=>track.stop());baseline.current=undefined;previous.current=undefined;setState('idle')},[])
+  const switchCamera=useCallback(async(deviceId:string)=>{stop();setSelectedCamera(deviceId);await start(deviceId)},[start,stop])
 
   useEffect(()=>{
     if(state==='idle'||error)return
@@ -66,5 +73,5 @@ export function useAutoScanner(onCapture:(blob:Blob)=>Promise<void>,tuning:Scann
     return()=>clearInterval(timer)
   },[state,error,onCapture,tuning])
   useEffect(()=>stop,[stop])
-  return {video,canvas,state,error,metrics,start,stop,calibrate,setError}
+  return {video,canvas,state,error,metrics,cameras,selectedCamera,start,stop,switchCamera,calibrate,setError}
 }
