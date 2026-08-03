@@ -10,7 +10,14 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..models import CardReference, Deck, ReviewItem, ReviewStatus
 from ..providers import ScryfallProvider
-from ..schemas import Candidate, InventoryCreate, InventoryRead, ReviewRead, ReviewResolve
+from ..schemas import (
+    Candidate,
+    InventoryCreate,
+    InventoryRead,
+    ReviewRead,
+    ReviewResolve,
+    ScanDefaults,
+)
 from ..services.decks import assign_to_deck
 from ..services.inventory import upsert_inventory
 from ..services.references import artwork_hash
@@ -20,12 +27,18 @@ provider = ScryfallProvider()
 
 
 def serialize(item: ReviewItem) -> ReviewRead:
+    stored = json.loads(item.candidates_json)
+    candidates = stored if isinstance(stored, list) else stored.get("candidates", [])
+    defaults = ScanDefaults.model_validate(
+        stored.get("defaults", {}) if isinstance(stored, dict) else {}
+    )
     return ReviewRead(
         **{
             key: getattr(item, key)
             for key in ("id", "image_path", "confidence", "ocr_text", "status", "created_at")
         },
-        candidates=json.loads(item.candidates_json),
+        candidates=candidates,
+        defaults=defaults,
     )
 
 
@@ -78,9 +91,13 @@ def resolve_review(review_id: str, payload: ReviewResolve, db: Session = Depends
     if not review:
         raise HTTPException(404, "Review item not found")
     card = payload.candidate
-    defaults = payload.defaults
+    stored = serialize(review)
+    defaults = payload.defaults or stored.defaults
     if defaults.deck_id and not db.get(Deck, defaults.deck_id):
-        raise HTTPException(422, "Selected deck no longer exists")
+        if payload.defaults is None:
+            defaults = defaults.model_copy(update={"deck_id": None})
+        else:
+            raise HTTPException(422, "Selected deck no longer exists")
     item = upsert_inventory(
         db,
         InventoryCreate(

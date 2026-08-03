@@ -184,6 +184,48 @@ def test_scans_auto_add_only_near_certain_matches_by_default():
     assert ScanDefaults(auto_add=False).auto_add is False
 
 
+def test_review_serialization_preserves_scan_defaults():
+    from datetime import datetime
+
+    from mtglogger.api.reviews import serialize
+    from mtglogger.models import ReviewItem, ReviewStatus
+
+    review = ReviewItem(
+        image_path="scan.jpg",
+        id="review-1",
+        confidence=42,
+        status=ReviewStatus.pending,
+        created_at=datetime.now(),
+        candidates_json='{"candidates": [], "defaults": {"foil": true, '
+        '"condition": "lightly_played", "storage_location": "Box 7", '
+        '"deck_id": "deck-1"}}',
+    )
+    serialized = serialize(review)
+    assert serialized.defaults.foil is True
+    assert serialized.defaults.condition == "lightly_played"
+    assert serialized.defaults.storage_location == "Box 7"
+    assert serialized.defaults.deck_id == "deck-1"
+
+
+def test_review_serialization_supports_legacy_candidate_lists():
+    from datetime import datetime
+
+    from mtglogger.api.reviews import serialize
+    from mtglogger.models import ReviewItem, ReviewStatus
+
+    review = ReviewItem(
+        id="review-2",
+        image_path="scan.jpg",
+        candidates_json="[]",
+        confidence=0,
+        status=ReviewStatus.pending,
+        created_at=datetime.now(),
+    )
+    serialized = serialize(review)
+    assert serialized.candidates == []
+    assert serialized.defaults.storage_location == "Unsorted"
+
+
 def test_inventory_updates_allow_physical_card_attributes():
     from mtglogger.schemas import InventoryUpdate
 

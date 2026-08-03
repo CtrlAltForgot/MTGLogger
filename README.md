@@ -22,7 +22,7 @@ The production API image includes CPU PaddleOCR 3 with the PP-OCRv4 mobile detec
 
 Market prices are refreshed from Scryfall in a background task every 24 hours and never block scanning. A refresh can also be started with `POST /api/prices/refresh`; progress is available from `GET /api/prices/status`.
 
-Collection entries can be searched, sorted by newest/name/value, edited, or deleted. Review supports the captured camera image, automatic candidates, manual Scryfall printing search, ignore, and delete. The dashboard includes set/color/rarity/type breakdowns, valuable/newest cards, and duplicate printings. Sealed products are stored separately from singles.
+Collection entries can be searched, sorted by newest/name/value, edited, or deleted. Review preserves the captured camera image and the scan-time condition, foil, storage, and deck defaults, then supports automatic candidates, manual Scryfall printing search, ignore, and delete. Resolving an item applies those original defaults, so cards do not need to be physically resorted after a batch. The dashboard includes set/color/rarity/type breakdowns, valuable/newest cards, and duplicate printings. Sealed products are stored separately from singles.
 
 Decks allocate physical copy quantities from inventory. The Deck Builder lists only copies that remain unassigned across all decks, supports search and filtered select-all, and returns copies to availability when an entry or deck is removed. A scan session can target `Deck · None` or an existing deck, causing each accepted copy to be assigned immediately. Storage Location remains free text for physical labels such as boxes and rows; user-facing collection-name and inventory-status controls are intentionally omitted.
 

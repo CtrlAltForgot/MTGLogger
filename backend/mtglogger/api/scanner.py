@@ -85,7 +85,12 @@ async def recognize_card(
         confidence=result.confidence,
         ocr_text=result.ocr_text,
         candidates_json=json.dumps(
-            [candidate.model_dump(mode="json") for candidate in result.candidates]
+            {
+                "candidates": [
+                    candidate.model_dump(mode="json") for candidate in result.candidates
+                ],
+                "defaults": defaults.model_dump(mode="json"),
+            }
         ),
     )
     db.add(review)

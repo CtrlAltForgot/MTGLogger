@@ -108,11 +108,12 @@ class ReviewRead(BaseModel):
     status: ReviewStatus
     created_at: datetime
     candidates: list[Candidate] = []
+    defaults: ScanDefaults = Field(default_factory=ScanDefaults)
 
 
 class ReviewResolve(BaseModel):
     candidate: Candidate
-    defaults: ScanDefaults = ScanDefaults()
+    defaults: ScanDefaults | None = None
 
 
 class SealedCreate(BaseModel):
