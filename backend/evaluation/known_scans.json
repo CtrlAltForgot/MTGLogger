@@ -1,0 +1,38 @@
+[
+  {
+    "review_id": "b0ac83c5-453a-4cd8-b6c0-ac1ad4f94094",
+    "name": "Swamp",
+    "set_code": "m15",
+    "collector_number": "259"
+  },
+  {
+    "review_id": "fea9e9ac-6480-46f9-9131-134b1b9d28e0",
+    "name": "Abattoir Ghoul",
+    "set_code": "isd",
+    "collector_number": "85"
+  },
+  {
+    "review_id": "09aff49d-d53d-4c5d-9e39-0807dcc1db01",
+    "name": "Shadows of the Past",
+    "set_code": "ori",
+    "collector_number": "118"
+  },
+  {
+    "review_id": "24f9346a-6e20-4177-9d6a-372f405c948c",
+    "name": "Rite of the Serpent",
+    "set_code": "ktk",
+    "collector_number": "86"
+  },
+  {
+    "review_id": "2e33d113-024d-4259-93bb-5e2bb37e7930",
+    "name": "Death's Approach",
+    "set_code": "gtc",
+    "collector_number": "62"
+  },
+  {
+    "review_id": "7a455a34-b687-4462-b51c-50eec40ebf13",
+    "name": "Sign in Blood",
+    "set_code": "m15",
+    "collector_number": "114"
+  }
+]

@@ -9,22 +9,37 @@ from pathlib import Path
 from sqlalchemy import select
 
 from ..database import SessionLocal
-from ..models import InventoryItem, ReviewItem, ReviewStatus
+from ..models import CardReference, InventoryItem, ReviewItem, ReviewStatus
 from ..services.recognition import CardRecognizer
 from ..services.references import artwork_hash
 
 
-async def evaluate(limit: int | None) -> dict:
+async def evaluate(limit: int | None, manifest: Path | None = None) -> dict:
     with SessionLocal() as db:
-        statement = (
-            select(ReviewItem, InventoryItem)
-            .join(InventoryItem, ReviewItem.resolved_inventory_id == InventoryItem.id)
-            .where(ReviewItem.status == ReviewStatus.resolved)
-            .order_by(ReviewItem.created_at.desc())
-        )
-        if limit:
-            statement = statement.limit(limit)
-        labeled = list(db.execute(statement))
+        if manifest:
+            labels = json.loads(manifest.read_text())
+            labeled = []
+            for label in labels:
+                review = db.get(ReviewItem, label["review_id"])
+                expected = db.scalar(
+                    select(CardReference).where(
+                        CardReference.name == label["name"],
+                        CardReference.set_code == label["set_code"],
+                        CardReference.collector_number == label["collector_number"],
+                    )
+                )
+                if review and expected:
+                    labeled.append((review, expected))
+        else:
+            statement = (
+                select(ReviewItem, InventoryItem)
+                .join(InventoryItem, ReviewItem.resolved_inventory_id == InventoryItem.id)
+                .where(ReviewItem.status == ReviewStatus.resolved)
+                .order_by(ReviewItem.created_at.desc())
+            )
+            if limit:
+                statement = statement.limit(limit)
+            labeled = list(db.execute(statement))
 
     recognizer = CardRecognizer()
     results = []
@@ -37,7 +52,7 @@ async def evaluate(limit: int | None) -> dict:
         held_out_hash = artwork_hash(CardRecognizer.rectify(decoded))
         result = await recognizer.recognize(
             raw,
-            language=expected.language,
+            language=getattr(expected, "language", "en"),
             ignored_visual_hashes={held_out_hash},
         )
         ids = [candidate.scryfall_id for candidate in result.candidates]
@@ -47,7 +62,8 @@ async def evaluate(limit: int | None) -> dict:
             {
                 "review_id": review.id,
                 "expected": {
-                    "name": expected.card_name,
+                    "name": getattr(expected, "card_name", None)
+                    or getattr(expected, "name"),
                     "set_code": expected.set_code,
                     "collector_number": expected.collector_number,
                     "scryfall_id": expected.scryfall_id,
@@ -102,9 +118,15 @@ async def evaluate(limit: int | None) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--limit", type=int)
+    parser.add_argument("--manifest", type=Path)
     parser.add_argument("--pretty", action="store_true")
     args = parser.parse_args()
-    result = asyncio.run(evaluate(args.limit if not args.limit or args.limit > 0 else None))
+    result = asyncio.run(
+        evaluate(
+            args.limit if not args.limit or args.limit > 0 else None,
+            args.manifest,
+        )
+    )
     print(json.dumps(result, indent=2 if args.pretty else None))
 
 
