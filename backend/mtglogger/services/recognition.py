@@ -137,6 +137,24 @@ class CardRecognizer:
             logger.exception("PaddleOCR inference failed")
             return ""
 
+    def extract_identification_text(self, image: np.ndarray) -> str:
+        """Read the large title and enlarged printing footer, skipping rules text."""
+        height, width = image.shape[:2]
+        title = image[int(height * 0.075) : int(height * 0.245)]
+        footer = image[int(height * 0.77) : int(height * 0.995)]
+        title = cv2.resize(title, (width, int(height * 0.5)), interpolation=cv2.INTER_CUBIC)
+        footer = cv2.resize(footer, (width, int(height * 0.715)), interpolation=cv2.INTER_CUBIC)
+        title_text = self.extract_text(title)
+        footer_text = self.extract_text(footer)
+        focused = "\n".join(part for part in (title_text, footer_text) if part.strip())
+        focused_title, _, _, _ = self.hints(focused)
+        if focused_title:
+            return focused
+        # Showcase frames and older layouts occasionally place the title outside
+        # the normal band. Preserve reliability with a full-card fallback only
+        # when the fast title pass produced no usable text.
+        return self.extract_text(image)
+
     @staticmethod
     def has_card_structure(image: np.ndarray) -> bool:
         """Detect long horizontal frame/text-box edges absent from an empty table."""
@@ -170,9 +188,8 @@ class CardRecognizer:
         languages = "EN|ES|FR|DE|IT|PT|JA|KO|RU|ZHS|ZHT|HE|LA|GRC|AR|SA|PHY"
         for line in reversed(lines):
             match = re.match(
-                rf"^\s*([A-Z][A-Z0-9]{{1,5}})\s*[·•.\-:]\s*(?:{languages})(?=\s|$|[A-Z])",
+                rf"^\s*([A-Z][A-Z0-9]{{1,5}}?)[\s·•.+\-:]*(?:{languages})(?=\s|$|[A-Z])",
                 line,
-                re.I,
             )
             if match:
                 set_code = match.group(1).lower()
@@ -284,7 +301,7 @@ class CardRecognizer:
         set_score: float,
         year_score: float,
     ) -> float:
-        if title_score >= 0.86 and number_score == 1.0 and set_score == 1.0:
+        if title_score >= 0.72 and number_score == 1.0 and set_score == 1.0:
             return max(confidence, 99.5)
         if (
             title_score >= 0.9
@@ -345,6 +362,13 @@ class CardRecognizer:
             # through local artwork matching and into Review if Scryfall is down.
             async with asyncio.timeout(3.5):
                 cards = await search_variants(title) if title else []
+                # Set code + collector number directly identifies a printing and
+                # is more reliable than forcing a misspelled OCR title into the
+                # initial query.
+                if not cards and number and printed_set_code:
+                    cards = await self.provider.search(
+                        f"cn:{number}", printed_set_code, language
+                    )
                 # Localized title text is not consistently searchable through
                 # Scryfall's canonical-name field. Set + collector number + chosen
                 # language identifies the printing without guessing an English ID.
@@ -352,6 +376,10 @@ class CardRecognizer:
                     cards = await self.provider.search(
                         f"cn:{number}", preferred_set, language
                     )
+                if not cards and title and hasattr(self.provider, "fuzzy_name"):
+                    canonical_name = await self.provider.fuzzy_name(title)
+                    if canonical_name:
+                        cards = await search_variants(canonical_name, relaxed=True)
                 if not cards and title and hasattr(self.provider, "card_names"):
                     catalog = await self.provider.card_names()
                     closest = await asyncio.to_thread(
@@ -376,7 +404,7 @@ class CardRecognizer:
             corrected = await asyncio.to_thread(lambda: self.rectify(self.decode(raw)))
             prepared = time.perf_counter()
             card_structure = await asyncio.to_thread(self.has_card_structure, corrected)
-            text = await asyncio.to_thread(self.extract_text, corrected)
+            text = await asyncio.to_thread(self.extract_identification_text, corrected)
             ocr_complete = time.perf_counter()
             title, number, printed_set_code, copyright_year = self.hints(text)
             lookup_task = asyncio.create_task(

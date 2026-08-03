@@ -61,6 +61,16 @@ class ScryfallProvider:
         response.raise_for_status()
         return response.json()
 
+    async def fuzzy_name(self, name: str) -> str | None:
+        """Resolve a slightly damaged OCR title without choosing its printing."""
+        response = await scryfall_client().get(
+            f"{self.base_url}/cards/named", params={"fuzzy": name}
+        )
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        return response.json().get("name")
+
     async def card_names(self) -> list[str]:
         """Return Scryfall's small canonical-name catalog, cached for one day."""
         global _card_names, _card_names_loaded_at

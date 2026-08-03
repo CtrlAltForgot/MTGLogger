@@ -280,9 +280,30 @@ def test_structured_printing_evidence_promotes_safe_auto_adds_only():
     from mtglogger.services.recognition import CardRecognizer
 
     assert CardRecognizer.structured_confidence(91, 0.94, 1, 1, 0) == 99.5
+    assert CardRecognizer.structured_confidence(88, 0.82, 1, 1, 0) == 99.5
     assert CardRecognizer.structured_confidence(90, 1, 0.8, 0.8, 1) == 98.5
     assert CardRecognizer.structured_confidence(94, 1, 0.45, 0.45, 0) == 94
     assert CardRecognizer.structured_confidence(94, 0.7, 1, 1, 1) == 94
+
+
+def test_focused_ocr_reads_only_enlarged_title_and_footer_when_title_is_usable():
+    import numpy as np
+
+    from mtglogger.services.recognition import CardRecognizer
+
+    recognizer = CardRecognizer.__new__(CardRecognizer)
+    calls = []
+
+    def extract(image):
+        calls.append(image.shape)
+        return "Gurmag Swiftwing" if len(calls) == 1 else "074/269U\nKTK+ENJEFFSIMPSON"
+
+    recognizer.extract_text = extract
+    text = recognizer.extract_identification_text(np.zeros((840, 600, 3), dtype=np.uint8))
+
+    assert "Gurmag Swiftwing" in text
+    assert "074/269U" in text
+    assert calls == [(420, 600, 3), (600, 600, 3)]
 
 
 def test_catalog_fallback_recovers_canonical_name_with_exact_printing():
@@ -431,6 +452,20 @@ def test_ocr_hints_read_set_code_when_language_and_artist_are_joined():
     assert number == "123"
     assert set_code == "ori"
     assert year == 2015
+
+
+def test_ocr_hints_accept_plus_or_missing_set_language_separator():
+    from mtglogger.services.recognition import CardRecognizer
+
+    assert CardRecognizer.hints(
+        "Gurmag Swiftwing\n074/269U\nKTK+ENJEFFSIMPSON"
+    )[2] == "ktk"
+    title, number, set_code, _ = CardRecognizer.hints(
+        "Korhophed,Soul Hoarder\n104/272RintroPack\nORIENTIANHUAX"
+    )
+    assert title == "Korhophed,Soul Hoarder"
+    assert number == "104"
+    assert set_code == "ori"
 
 
 def test_exact_joined_footer_reaches_near_certain_auto_add_confidence():
