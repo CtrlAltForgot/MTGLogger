@@ -46,7 +46,6 @@ export default function Scanner(){
     if(next.disposition!=='added'&&defaults.auto_add&&!resolveImmediately)setReviewNotice(next)
     if(
       next.disposition!=='added'
-      && next.candidates.length
       && (resolveImmediately||!defaults.auto_add)
     ){
       await new Promise<void>(resolve=>{decisionComplete.current=resolve})
@@ -74,16 +73,16 @@ export default function Scanner(){
       finishDecision()
     }catch(error){setDecisionBusy(false);scan.setError(error instanceof Error?error.message:'Could not accept card')}
   },[defaults,result,scan])
-  const decline=useCallback(async()=>{
+  const skip=useCallback(async()=>{
     if(!result?.review_id)return
     setDecisionBusy(true)
-    try{await request(`/reviews/${result.review_id}`,{method:'DELETE'});setResult(null);finishDecision()}
-    catch(error){setDecisionBusy(false);scan.setError(error instanceof Error?error.message:'Could not decline card')}
+    try{await request(`/reviews/${result.review_id}/ignore`,{method:'POST'});setResult(null);finishDecision()}
+    catch(error){setDecisionBusy(false);scan.setError(error instanceof Error?error.message:'Could not skip card')}
   },[result,scan])
 
   const indexSet=async()=>{if(defaults.box_set_code){await request(`/references/sync/${defaults.box_set_code}`,{method:'POST'});refresh()}}
   const uncertain=result&&result.disposition!=='added'&&result.disposition!=='empty'
-  const candidate:Candidate|undefined=uncertain&&result.candidates.length&&(resolveImmediately||!defaults.auto_add)?result.candidates[0]:undefined
+  const immediateDecision=!!(uncertain&&result.review_id&&(resolveImmediately||!defaults.auto_add))
   const tone=result?.disposition==='added'?'success':result?.disposition==='suggestions'||result?.disposition==='confirmation'?'warning':'error'
   const stateLabel=scan.state==='remove'?'Remove card':scan.state==='processing'?'Identifying…':scan.state==='stabilizing'?'Hold still…':scan.state==='calibrating'?'Keep guide empty…':scan.state==='waiting'?'Ready for card':'Camera stopped'
   const sessionCardsPerMinute=cardsPerMinute(stats)
@@ -118,7 +117,7 @@ export default function Scanner(){
         {stats.scans>0&&<><Chip size="small" label={`Last ${(stats.lastMs/1000).toFixed(1)}s`}/><Chip size="small" label={`Recognition ${(stats.serverMs/1000).toFixed(1)}s`}/><Chip size="small" label={`Average ${(stats.totalMs/stats.scans/1000).toFixed(1)}s`}/></>}
       </Stack>
       {scan.error&&<Alert severity="error" sx={{mt:2}} onClose={()=>scan.setError(undefined)}>{scan.error}</Alert>}
-      {result&&!candidate&&<Alert severity={tone} variant="filled" sx={{mt:2,fontSize:'1.05rem'}}>
+      {result&&!immediateDecision&&<Alert severity={tone} variant="filled" sx={{mt:2,fontSize:'1.05rem'}}>
         <strong>{result.message}</strong> · {result.confidence.toFixed(1)}%
         {result.inventory&&<> · {result.inventory.set_name} #{result.inventory.collector_number} · ${Number(result.inventory.market_price||0).toFixed(2)} · Quantity {result.inventory.quantity}</>}
       </Alert>}
@@ -154,7 +153,7 @@ export default function Scanner(){
         <Slider min={3} max={12} value={tuning.stableFrames} onChange={(_,value)=>setTuning({...tuning,stableFrames:value as number})}/>
       </CardContent></Card>
     </Grid>
-    {candidate&&<ScanConfirmation candidates={result!.candidates} confidence={result!.confidence} foil={defaults.foil} onAccept={accept} onDecline={decline} busy={decisionBusy}/>}
+    {immediateDecision&&<ScanConfirmation reviewId={result!.review_id!} candidates={result!.candidates} confidence={result!.confidence} foil={defaults.foil} language={defaults.language} onAccept={accept} onSkip={skip} busy={decisionBusy}/>}
     <Snackbar key={success?`${success.id}-${success.quantity}`:'empty'} open={!!success} autoHideDuration={1800} onClose={()=>setSuccess(null)} anchorOrigin={{vertical:'bottom',horizontal:'center'}}>
       <Card elevation={12} sx={{display:'flex',alignItems:'center',minWidth:{xs:320,sm:460},border:'2px solid',borderColor:'success.main',overflow:'hidden'}}>
         {success?.image_url&&<FoilArtwork src={success.image_url} alt={success.card_name} foil={success.foil} sx={{width:82,height:114}} imageSx={{objectFit:'cover',objectPosition:'top'}}/>}
