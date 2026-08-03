@@ -77,6 +77,7 @@ done <<'EOF'
 dashboard|Collection overview
 scanner|Batch defaults
 collection|Collection
+value|Collection value
 decks|Decks
 review|Review queue
 sealed|Sealed inventory
