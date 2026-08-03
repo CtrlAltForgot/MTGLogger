@@ -1,6 +1,8 @@
 import asyncio
+import math
+import time
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Lock
 
@@ -29,6 +31,9 @@ class SyncState:
 
 _state = SyncState()
 _state_lock = Lock()
+_rate_last_count: int | None = None
+_rate_last_at: float | None = None
+_rate_ema: float | None = None
 
 
 def artwork_hash(image) -> str:
@@ -69,6 +74,7 @@ def hash_distance(left: str, right: str) -> int:
 
 
 def sync_status() -> dict:
+    global _rate_last_at, _rate_last_count, _rate_ema
     with _state_lock:
         result = asdict(_state)
     with SessionLocal() as db:
@@ -91,6 +97,31 @@ def sync_status() -> dict:
     result["coverage_percent"] = (
         min(100.0, round(result["fingerprinted_cards"] / total * 100, 2)) if total else None
     )
+    now = time.monotonic()
+    with _state_lock:
+        if _rate_last_count is not None and _rate_last_at is not None:
+            elapsed = now - _rate_last_at
+            added = result["fingerprinted_cards"] - _rate_last_count
+            if elapsed >= 1 and added > 0:
+                observed = added / elapsed
+                _rate_ema = observed if _rate_ema is None else _rate_ema * 0.7 + observed * 0.3
+        if _rate_last_at is None or now - _rate_last_at >= 1:
+            _rate_last_count = result["fingerprinted_cards"]
+            _rate_last_at = now
+        # Four canonical images per second is a deliberately conservative
+        # bootstrap until this process observes enough real download progress.
+        rate = _rate_ema or 4.0
+    remaining = max(0, total - result["fingerprinted_cards"])
+    if result["state"] == "running" and total and remaining:
+        seconds = math.ceil(remaining / max(0.01, rate))
+        result["indexing_rate_per_second"] = round(rate, 2)
+        result["estimated_seconds_remaining"] = seconds
+        completion = datetime.now(UTC) + timedelta(seconds=seconds)
+        result["estimated_completion_at"] = completion.isoformat()
+    else:
+        result["indexing_rate_per_second"] = None
+        result["estimated_seconds_remaining"] = None
+        result["estimated_completion_at"] = None
     return result
 
 
@@ -135,6 +166,7 @@ async def sync_set(set_code: str) -> None:
 
 async def sync_all() -> None:
     """Resumably fingerprint every Scryfall paper printing."""
+    global _rate_last_at, _rate_last_count, _rate_ema
     provider = ScryfallProvider()
     with _state_lock:
         if _state.state == "running":
@@ -143,6 +175,7 @@ async def sync_all() -> None:
         _state.set_code = "all-paper"
         _state.completed = _state.total = _state.errors = 0
         _state.error = None
+        _rate_last_count = _rate_last_at = _rate_ema = None
     try:
         catalog_total = await provider.paper_printing_count()
         with _state_lock:

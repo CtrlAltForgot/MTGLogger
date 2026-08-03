@@ -241,6 +241,10 @@ def test_recognition_reference_status(client):
     assert status["cached_images"] == 0
     assert status["catalog_total"] is None
     assert status["coverage_percent"] is None
+    assert status["estimated_seconds_remaining"] is None
+    assert client.get("/api/references/sets").json() == []
+    cards = client.get("/api/references/cards", params={"set_code": "ori"}).json()
+    assert cards == {"items": [], "total": 0, "page": 1, "page_size": 40}
 
 
 def test_reference_priority_sets_are_normalized(monkeypatch):
