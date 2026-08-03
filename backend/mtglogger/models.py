@@ -156,6 +156,30 @@ class CardReference(Base):
     visual_examples: Mapped[list["CardVisualExample"]] = relationship(
         back_populates="reference", cascade="all, delete-orphan"
     )
+    fingerprint: Mapped["CardVisualFingerprint | None"] = relationship(
+        back_populates="reference", cascade="all, delete-orphan", uselist=False
+    )
+
+
+class CardVisualFingerprint(Base):
+    """Compact visual catalog entry derived from a canonical card image."""
+
+    __tablename__ = "card_visual_fingerprints"
+    scryfall_id: Mapped[str] = mapped_column(
+        ForeignKey("card_references.scryfall_id", ondelete="CASCADE"), primary_key=True
+    )
+    full_hash: Mapped[str] = mapped_column(String(16), index=True)
+    art_hash: Mapped[str] = mapped_column(String(16), index=True)
+    title_hash: Mapped[str] = mapped_column(String(16), index=True)
+    footer_hash: Mapped[str] = mapped_column(String(16), index=True)
+    frame_hash: Mapped[str] = mapped_column(String(16), index=True)
+    language: Mapped[str] = mapped_column(String(16), default="en", index=True)
+    layout: Mapped[str] = mapped_column(String(32), default="normal")
+    cached_image_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+    reference: Mapped[CardReference] = relationship(back_populates="fingerprint")
 
 
 class CardVisualExample(Base):

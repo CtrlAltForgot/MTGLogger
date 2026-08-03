@@ -9,6 +9,10 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:5173"
     scryfall_user_agent: str = "MTGLogger/0.1"
     image_dir: Path = Path("data/scans")
+    reference_image_dir: Path = Path("data/references")
+    reference_image_cache: str = "compact"
+    reference_refresh_hours: int = 24
+    reference_auto_sync: bool = True
     request_timeout: float = 8.0
     price_refresh_hours: int = 12
 
@@ -17,6 +21,10 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [value.strip() for value in self.cors_origins.split(",") if value.strip()]
+
+    @property
+    def cache_reference_images(self) -> bool:
+        return self.reference_image_cache.casefold() == "full"
 
 
 @lru_cache

@@ -597,7 +597,11 @@ class CardRecognizer:
             return []
 
     async def recognize(
-        self, raw: bytes, box_set_code: str | None = None, language: str = "en"
+        self,
+        raw: bytes,
+        box_set_code: str | None = None,
+        language: str = "en",
+        ignored_visual_hashes: set[str] | None = None,
     ) -> Recognition:
         async with self._recognition_lock:
             started = time.perf_counter()
@@ -623,7 +627,10 @@ class CardRecognizer:
             )
             scan_hash = await asyncio.to_thread(artwork_hash, corrected)
             visual_matches = await asyncio.to_thread(
-                self._visual_matches, scan_hash, printed_set_code or box_set_code
+                self._visual_matches,
+                scan_hash,
+                printed_set_code or box_set_code,
+                *([ignored_visual_hashes] if ignored_visual_hashes is not None else []),
             )
             cards = await lookup_task
             if not self.has_strong_lookup_evidence(
@@ -812,8 +819,11 @@ class CardRecognizer:
 
     @staticmethod
     def _visual_matches(
-        scan_hash: str, box_set_code: str | None
+        scan_hash: str,
+        box_set_code: str | None,
+        ignored_example_hashes: set[str] | None = None,
     ) -> list[tuple[CardReference, float]]:
+        ignored_example_hashes = ignored_example_hashes or set()
         with SessionLocal() as db:
             statement = select(CardReference)
             if box_set_code:
@@ -828,7 +838,8 @@ class CardRecognizer:
                         )
                     )
                 ):
-                    examples.setdefault(scryfall_id, []).append(example_hash)
+                    if example_hash not in ignored_example_hashes:
+                        examples.setdefault(scryfall_id, []).append(example_hash)
             matches = []
             for reference in references:
                 distance = min(

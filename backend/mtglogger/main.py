@@ -11,19 +11,31 @@ from .config import get_settings
 from .database import Base, SessionLocal, engine
 from .providers import close_scryfall_client
 from .services.prices import price_refresh_loop
+from .services.references import reference_refresh_loop
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     Base.metadata.create_all(bind=engine)
     get_settings().image_dir.mkdir(parents=True, exist_ok=True)
+    get_settings().reference_image_dir.mkdir(parents=True, exist_ok=True)
     price_task = asyncio.create_task(price_refresh_loop(get_settings().price_refresh_hours))
+    reference_task = (
+        asyncio.create_task(reference_refresh_loop(get_settings().reference_refresh_hours))
+        if get_settings().reference_auto_sync
+        else None
+    )
     try:
         yield
     finally:
         price_task.cancel()
+        if reference_task:
+            reference_task.cancel()
         with suppress(asyncio.CancelledError):
             await price_task
+        if reference_task:
+            with suppress(asyncio.CancelledError):
+                await reference_task
         await close_scryfall_client()
 
 

@@ -1,5 +1,6 @@
 import asyncio
 import time
+from collections.abc import AsyncIterator
 from decimal import Decimal, InvalidOperation
 
 import httpx
@@ -113,6 +114,19 @@ class ScryfallProvider:
             cards.extend(page.get("data", []))
             url = page.get("next_page") if page.get("has_more") else None
         return cards
+
+    async def paper_printing_pages(self) -> AsyncIterator[list[dict]]:
+        """Stream every paper printing without holding the catalog in memory."""
+        url = f"{self.base_url}/cards/search"
+        params = {"q": "game:paper", "unique": "prints", "order": "set"}
+        client = scryfall_client()
+        while url:
+            response = await client.get(url, params=params)
+            response.raise_for_status()
+            page = response.json()
+            yield page.get("data", [])
+            url = page.get("next_page") if page.get("has_more") else None
+            params = None
 
     async def download_image(self, url: str) -> bytes:
         response = await scryfall_client().get(url)

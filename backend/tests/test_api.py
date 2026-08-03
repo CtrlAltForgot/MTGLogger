@@ -251,6 +251,33 @@ def test_artwork_hash_is_stable_under_small_brightness_change():
     assert hash_distance(artwork_hash(image), artwork_hash(brighter)) <= 2
 
 
+def test_multi_region_visual_fingerprints_are_stable_and_distinct():
+    import cv2
+    import numpy as np
+
+    from mtglogger.services.references import hash_distance, visual_fingerprints
+
+    image = np.zeros((1040, 745, 3), dtype=np.uint8)
+    cv2.rectangle(image, (30, 45), (715, 150), (210, 210, 210), -1)
+    cv2.rectangle(image, (45, 160), (700, 600), (30, 170, 220), -1)
+    cv2.circle(image, (360, 380), 120, (230, 40, 80), -1)
+    cv2.putText(image, "123/272 ORI EN", (55, 1010), 1, 2, (255, 255, 255), 2)
+    brighter = cv2.convertScaleAbs(image, alpha=1.02, beta=3)
+
+    original = visual_fingerprints(image)
+    adjusted = visual_fingerprints(brighter)
+
+    assert set(original) == {
+        "full_hash",
+        "art_hash",
+        "title_hash",
+        "footer_hash",
+        "frame_hash",
+    }
+    assert all(len(value) == 16 for value in original.values())
+    assert all(hash_distance(original[key], adjusted[key]) <= 4 for key in original)
+
+
 def test_perspective_quad_expands_to_preserve_printed_footer():
     import numpy as np
 

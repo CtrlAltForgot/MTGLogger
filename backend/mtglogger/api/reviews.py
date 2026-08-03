@@ -170,7 +170,9 @@ def resolve_review(review_id: str, payload: ReviewResolve, db: Session = Depends
             db.flush()
             db.add(CardVisualExample(scryfall_id=card.scryfall_id, art_hash=learned_hash))
     db.commit()
-    Path(review.image_path).unlink(missing_ok=True)
+    # Keep the confirmed camera frame as labeled ground truth. These examples
+    # are what let us benchmark recognition and improve it from real hardware
+    # instead of tuning confidence against synthetic fixtures.
     return InventoryRead.model_validate(item)
 
 

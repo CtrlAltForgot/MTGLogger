@@ -3,7 +3,7 @@ import re
 
 from fastapi import APIRouter, HTTPException
 
-from ..services.references import sync_set, sync_status
+from ..services.references import sync_all, sync_set, sync_status
 
 router = APIRouter(prefix="/references", tags=["recognition references"])
 
@@ -22,3 +22,12 @@ async def start_sync(set_code: str):
         raise HTTPException(409, f"Already indexing {current['set_code']}")
     asyncio.create_task(sync_set(set_code))
     return {"message": f"Indexing {set_code.upper()} in the background"}
+
+
+@router.post("/sync-all", status_code=202)
+async def start_full_sync():
+    current = sync_status()
+    if current["state"] == "running":
+        raise HTTPException(409, f"Already indexing {current['set_code']}")
+    asyncio.create_task(sync_all())
+    return {"message": "Indexing every Scryfall paper printing in the background"}
