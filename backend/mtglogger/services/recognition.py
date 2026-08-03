@@ -125,7 +125,32 @@ class CardRecognizer:
                 set_code = match.group(1).lower()
                 break
         number = None
+        # Collector numbers often share the copyright line. Prefer an explicit
+        # numerator/denominator pair before filtering copyright years.
         for line in reversed(lines):
+            match = re.search(r"(?<!\d)(\d{1,4}[a-z]?)\s*[/|\\]\s*\d{1,4}(?!\d)", line, re.I)
+            if match:
+                number = match.group(1)
+                break
+        # Low-resolution OCR commonly drops the slash ("062/249" -> "02 249").
+        # On a copyright line, the last two non-year numbers are still a strong
+        # collector/total pair; retain the leading zero as useful OCR evidence.
+        if not number:
+            for line in reversed(lines[-5:]):
+                if "©" not in line and "Wizards" not in line:
+                    continue
+                values = re.findall(r"(?<!\d)(\d{1,4}[a-z]?)(?!\d)", line, re.I)
+                values = [
+                    value
+                    for value in values
+                    if not 1900 <= int(re.match(r"\d+", value).group()) <= 2100
+                ]
+                if len(values) >= 2:
+                    number = values[-2]
+                    break
+        for line in reversed(lines):
+            if number:
+                break
             matches = re.findall(r"(?:^|\s)(\d{1,4}[a-z]?)(?:/\d{1,4})?(?=\s|$)", line, re.I)
             for value in matches:
                 numeric = int(re.match(r"\d+", value).group())
@@ -136,12 +161,27 @@ class CardRecognizer:
                 break
             if number:
                 break
-        if number:
-            number = number.lstrip("0") or "0"
         title = next(
             (line for line in lines[:5] if not re.search(r"\d{3,}", line) and len(line) <= 60), None
         )
         return title, number, set_code
+
+    @staticmethod
+    def collector_score(ocr_number: str | None, printed_number: str) -> float:
+        if not ocr_number:
+            return 0.45
+        left = ocr_number.lower().lstrip("0") or "0"
+        right = printed_number.lower().lstrip("0") or "0"
+        if left == right:
+            return 1.0
+        direct = SequenceMatcher(None, left, right).ratio()
+        # Common tiny-footer confusions. This only affects ranking; an inferred
+        # number is deliberately capped below exact-match confidence.
+        variants = {ocr_number.lower(), ocr_number.lower().translate(str.maketrans("08", "68"))}
+        inferred = max(
+            SequenceMatcher(None, value.lstrip("0") or "0", right).ratio() for value in variants
+        )
+        return min(0.85, max(direct, inferred))
 
     async def recognize(self, raw: bytes, box_set_code: str | None = None) -> Recognition:
         corrected = self.rectify(self.decode(raw))
@@ -149,11 +189,12 @@ class CardRecognizer:
         title, number, printed_set_code = self.hints(text)
         cards: list[dict] = []
         if title or number:
-            query = f'!"{title}"' if title else f"cn:{number}"
-            if number:
-                query += f" cn:{number}"
+            title_query = f'!"{title}"' if title else ""
+            query = f"{title_query} cn:{number}".strip() if number else title_query
             preferred_set = printed_set_code or box_set_code
             cards = await self.provider.search(query, preferred_set)
+            if not cards and title and number:
+                cards = await self.provider.search(title_query, preferred_set)
             # An imperfect set-code OCR should lower confidence, not erase otherwise
             # useful candidates from the confirmation list.
             if not cards and printed_set_code:
@@ -169,11 +210,7 @@ class CardRecognizer:
                 if title
                 else 0.55
             )
-            number_score = (
-                1.0
-                if number and number.lower() == card["collector_number"].lower()
-                else (0.45 if not number else 0)
-            )
+            number_score = self.collector_score(number, card["collector_number"])
             set_score = (
                 1.0
                 if printed_set_code and card["set"].lower() == printed_set_code

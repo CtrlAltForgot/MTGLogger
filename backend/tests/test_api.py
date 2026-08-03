@@ -70,7 +70,7 @@ def test_ocr_hints_normalize_printed_collector_number():
         "Abrade\nInstant\nU 0188\nT™ & © 2024 Wizards of the Coast\nFDN · EN"
     )
     assert title == "Abrade"
-    assert number == "188"
+    assert number == "0188"
     assert set_code == "fdn"
 
 
@@ -83,6 +83,20 @@ def test_ocr_hints_read_set_code_without_spaces():
     assert title == "Shadows of the Past"
     assert number == "118"
     assert set_code == "ori"
+
+
+def test_ocr_hints_recover_legacy_collector_pair_from_copyright_line():
+    from mtglogger.services.recognition import CardRecognizer
+
+    title, number, set_code = CardRecognizer.hints(
+        "Death's Approach\nEnchantment-Aura\nTerese Nielsen\n& 2013 Wizards of the Coast 02 249"
+    )
+    assert title == "Death's Approach"
+    assert number == "02"
+    assert set_code is None
+    assert CardRecognizer.collector_score(number, "62") > CardRecognizer.collector_score(
+        number, "222"
+    )
 
 
 def test_scans_auto_add_only_near_certain_matches_by_default():
