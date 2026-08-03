@@ -29,6 +29,8 @@ def list_inventory(
     q: str | None = None,
     set_code: str | None = None,
     status: str | None = None,
+    collection_name: str | None = None,
+    storage_location: str | None = None,
     sort: str = "date_added",
     descending: bool = True,
     page: int = Query(1, ge=1),
@@ -47,12 +49,36 @@ def list_inventory(
         filters.append(InventoryItem.set_code == set_code.lower())
     if status:
         filters.append(InventoryItem.status == status)
+    if collection_name:
+        filters.append(InventoryItem.collection_name == collection_name)
+    if storage_location:
+        filters.append(InventoryItem.storage_location == storage_location)
     statement = select(InventoryItem).where(*filters)
     column = getattr(InventoryItem, sort, InventoryItem.date_added)
     statement = statement.order_by(column.desc() if descending else column.asc())
     total = db.scalar(select(func.count()).select_from(InventoryItem).where(*filters)) or 0
     items = list(db.scalars(statement.offset((page - 1) * page_size).limit(page_size)))
     return Page(items=items, total=total, page=page, page_size=page_size)
+
+
+@router.get("/facets")
+def inventory_facets(db: Session = Depends(get_db)):
+    return {
+        "collections": list(
+            db.scalars(
+                select(InventoryItem.collection_name)
+                .distinct()
+                .order_by(InventoryItem.collection_name.asc())
+            )
+        ),
+        "storage_locations": list(
+            db.scalars(
+                select(InventoryItem.storage_location)
+                .distinct()
+                .order_by(InventoryItem.storage_location.asc())
+            )
+        ),
+    }
 
 
 @router.post("", response_model=InventoryRead, status_code=201)

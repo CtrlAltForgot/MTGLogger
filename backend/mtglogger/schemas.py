@@ -65,6 +65,7 @@ class ScanDefaults(BaseModel):
     status: InventoryStatus = InventoryStatus.owned
     box_set_code: str | None = None
     auto_add: bool = True
+    deck_id: str | None = None
 
 
 class Candidate(BaseModel):
@@ -136,3 +137,46 @@ class DashboardSummary(BaseModel):
     most_valuable: list[InventoryRead]
     newest: list[InventoryRead]
     duplicate_cards: list[InventoryRead]
+
+
+class DeckCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    format: str | None = Field(None, max_length=64)
+    description: str | None = None
+
+
+class DeckUpdate(BaseModel):
+    name: str | None = Field(None, min_length=1, max_length=255)
+    format: str | None = Field(None, max_length=64)
+    description: str | None = None
+
+
+class DeckAllocation(BaseModel):
+    inventory_id: str
+    quantity: int = Field(1, ge=1)
+
+
+class DeckAllocations(BaseModel):
+    entries: list[DeckAllocation] = Field(min_length=1, max_length=250)
+
+
+class DeckEntryRead(BaseModel):
+    id: str
+    quantity: int
+    inventory: InventoryRead
+
+
+class DeckRead(DeckCreate):
+    id: str
+    created_at: datetime
+    updated_at: datetime
+    total_cards: int
+    unique_cards: int
+    total_value: Decimal
+    entries: list[DeckEntryRead]
+
+
+class AvailableCard(BaseModel):
+    inventory: InventoryRead
+    assigned_quantity: int
+    available_quantity: int

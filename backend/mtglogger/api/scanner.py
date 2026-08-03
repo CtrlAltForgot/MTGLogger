@@ -6,8 +6,9 @@ from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..database import get_db
-from ..models import ReviewItem
+from ..models import Deck, ReviewItem
 from ..schemas import InventoryCreate, InventoryRead, ScanDefaults, ScanResult
+from ..services.decks import assign_to_deck
 from ..services.inventory import upsert_inventory
 from ..services.recognition import CardRecognizer, save_scan
 
@@ -30,6 +31,8 @@ async def recognize_card(
         defaults = ScanDefaults.model_validate_json(defaults_json)
     except ValueError as exc:
         raise HTTPException(422, f"Invalid scan defaults: {exc}") from exc
+    if defaults.deck_id and not db.get(Deck, defaults.deck_id):
+        raise HTTPException(422, "Selected deck no longer exists")
     raw = await image.read()
     if len(raw) > 15_000_000:
         raise HTTPException(413, "Image is larger than 15 MB")
@@ -64,6 +67,8 @@ async def recognize_card(
                 status=defaults.status,
             ),
         )
+        if defaults.deck_id:
+            assign_to_deck(db, defaults.deck_id, item)
         return ScanResult(
             disposition="added",
             confidence=result.confidence,

@@ -7,9 +7,9 @@ import {
 import { request, submitScan } from '../api'
 import ScanConfirmation from '../components/ScanConfirmation'
 import { defaultTuning, useAutoScanner, type ScannerTuning } from '../scanner/useAutoScanner'
-import type { Candidate, Defaults, Inventory, ScanResult } from '../types'
+import type { Candidate, Deck, Defaults, Inventory, ScanResult } from '../types'
 
-const initial:Defaults={condition:'near_mint',foil:false,language:'en',storage_location:'Unsorted',collection_name:'Main',status:'owned',box_set_code:null,auto_add:true}
+const initial:Defaults={condition:'near_mint',foil:false,language:'en',storage_location:'Unsorted',collection_name:'Main',status:'owned',box_set_code:null,auto_add:true,deck_id:null}
 type ReferenceStatus={state:string;set_code:string|null;completed:number;total:number;indexed_cards:number;error:string|null}
 
 export default function Scanner(){
@@ -17,6 +17,7 @@ export default function Scanner(){
   const [result,setResult]=useState<ScanResult|null>(null)
   const [tuning,setTuning]=useState<ScannerTuning>(defaultTuning)
   const [references,setReferences]=useState<ReferenceStatus>()
+  const [decks,setDecks]=useState<Deck[]>([])
   const [decisionBusy,setDecisionBusy]=useState(false)
   const [success,setSuccess]=useState<Inventory|null>(null)
   const [reviewNotice,setReviewNotice]=useState<ScanResult|null>(null)
@@ -35,6 +36,7 @@ export default function Scanner(){
 
   const refresh=useCallback(()=>request<ReferenceStatus>('/references/status').then(setReferences),[])
   useEffect(()=>{void refresh();const timer=setInterval(refresh,2500);return()=>clearInterval(timer)},[refresh])
+  useEffect(()=>{void request<Deck[]>('/decks').then(setDecks)},[])
 
   const finishDecision=()=>{decisionComplete.current?.();decisionComplete.current=null;setDecisionBusy(false)}
   const accept=useCallback(async(candidate:Candidate)=>{
@@ -93,16 +95,13 @@ export default function Scanner(){
         <Select value={defaults.condition} onChange={event=>setDefaults({...defaults,condition:event.target.value})}>
           {[['near_mint','Near Mint'],['lightly_played','Lightly Played'],['moderately_played','Moderately Played'],['heavily_played','Heavily Played'],['damaged','Damaged']].map(([value,label])=><MenuItem value={value} key={value}>{label}</MenuItem>)}
         </Select>
-        <TextField label="Collection" value={defaults.collection_name} onChange={event=>setDefaults({...defaults,collection_name:event.target.value})}/>
-        <TextField label="Storage location" value={defaults.storage_location} onChange={event=>setDefaults({...defaults,storage_location:event.target.value})}/>
+        <Select displayEmpty value={defaults.deck_id||''} onChange={event=>setDefaults({...defaults,deck_id:event.target.value||null})}><MenuItem value="">Deck · None</MenuItem>{decks.map(deck=><MenuItem value={deck.id} key={deck.id}>Deck · {deck.name}</MenuItem>)}</Select>
+        <TextField label="Storage location" placeholder="e.g. Box 4 / Row B" value={defaults.storage_location} onChange={event=>setDefaults({...defaults,storage_location:event.target.value||'Unsorted'})}/>
         <TextField label="Box Mode set code" placeholder="e.g. FDN" value={defaults.box_set_code||''} onChange={event=>setDefaults({...defaults,box_set_code:event.target.value.trim()||null})}/>
         <Button startIcon={<CloudDownload/>} disabled={!defaults.box_set_code||references?.state==='running'} onClick={indexSet}>
           {references?.state==='running'?`Indexing ${references.completed}/${references.total}`:`Index set artwork (${references?.indexed_cards||0} cached)`}
         </Button>
         {references?.error&&<Alert severity="error">{references.error}</Alert>}
-        <Select value={defaults.status} onChange={event=>setDefaults({...defaults,status:event.target.value})}>
-          {['owned','wishlist','for_trade','for_sale','loaned'].map(value=><MenuItem value={value} key={value}>{value.replace('_',' ')}</MenuItem>)}
-        </Select>
         <FormControlLabel control={<Switch checked={defaults.foil} onChange={event=>setDefaults({...defaults,foil:event.target.checked})}/>} label="Foil"/>
         <FormControlLabel control={<Switch checked={defaults.auto_add} onChange={event=>setDefaults({...defaults,auto_add:event.target.checked})}/>} label="Auto-add near-certain matches (98.5%+)"/>
       </Stack></CardContent></Card>

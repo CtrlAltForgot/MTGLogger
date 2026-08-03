@@ -8,9 +8,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..models import CardReference, ReviewItem, ReviewStatus
+from ..models import CardReference, Deck, ReviewItem, ReviewStatus
 from ..providers import ScryfallProvider
 from ..schemas import Candidate, InventoryCreate, InventoryRead, ReviewRead, ReviewResolve
+from ..services.decks import assign_to_deck
 from ..services.inventory import upsert_inventory
 from ..services.references import artwork_hash
 
@@ -78,6 +79,8 @@ def resolve_review(review_id: str, payload: ReviewResolve, db: Session = Depends
         raise HTTPException(404, "Review item not found")
     card = payload.candidate
     defaults = payload.defaults
+    if defaults.deck_id and not db.get(Deck, defaults.deck_id):
+        raise HTTPException(422, "Selected deck no longer exists")
     item = upsert_inventory(
         db,
         InventoryCreate(
@@ -100,6 +103,8 @@ def resolve_review(review_id: str, payload: ReviewResolve, db: Session = Depends
             status=defaults.status,
         ),
     )
+    if defaults.deck_id:
+        assign_to_deck(db, defaults.deck_id, item)
     review.status = ReviewStatus.resolved
     review.resolved_inventory_id = item.id
     # A user-confirmed correction becomes a local visual example. This makes

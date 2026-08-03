@@ -24,6 +24,8 @@ Market prices are refreshed from Scryfall in a background task every 24 hours an
 
 Collection entries can be searched, sorted by newest/name/value, edited, or deleted. Review supports the captured camera image, automatic candidates, manual Scryfall printing search, ignore, and delete. The dashboard includes set/color/rarity/type breakdowns, valuable/newest cards, and duplicate printings. Sealed products are stored separately from singles.
 
+Decks allocate physical copy quantities from inventory. The Deck Builder lists only copies that remain unassigned across all decks, supports search and filtered select-all, and returns copies to availability when an entry or deck is removed. A scan session can target `Deck · None` or an existing deck, causing each accepted copy to be assigned immediately. Storage Location remains free text for physical labels such as boxes and rows; user-facing collection-name and inventory-status controls are intentionally omitted.
+
 ## Unraid and LAN deployment
 
 The Docker web container proxies `/api` internally to FastAPI, so the default Compose deployment works from other computers on the LAN without pointing their browsers at their own `localhost`. Leave `VITE_API_URL` blank (the recommended default), run `docker compose up -d --build`, and open `http://UNRAID-IP:5173`. Set strong PostgreSQL credentials in `.env` before a permanent deployment. Named volumes preserve PostgreSQL data, review images, and OCR models across container replacement.

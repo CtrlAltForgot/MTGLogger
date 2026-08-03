@@ -69,6 +69,9 @@ class InventoryItem(Base):
     status: Mapped[InventoryStatus] = mapped_column(
         Enum(InventoryStatus), default=InventoryStatus.owned
     )
+    deck_entries: Mapped[list["DeckEntry"]] = relationship(
+        back_populates="inventory", cascade="all, delete-orphan"
+    )
 
 
 class ReviewItem(Base):
@@ -114,3 +117,31 @@ class CardReference(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow
     )
+
+
+class Deck(Base):
+    __tablename__ = "decks"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    name: Mapped[str] = mapped_column(String(255), index=True)
+    format: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+    entries: Mapped[list["DeckEntry"]] = relationship(
+        back_populates="deck", cascade="all, delete-orphan", order_by="DeckEntry.id"
+    )
+
+
+class DeckEntry(Base):
+    __tablename__ = "deck_entries"
+    __table_args__ = (UniqueConstraint("deck_id", "inventory_id", name="uq_deck_inventory"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    deck_id: Mapped[str] = mapped_column(ForeignKey("decks.id", ondelete="CASCADE"), index=True)
+    inventory_id: Mapped[str] = mapped_column(
+        ForeignKey("inventory_items.id", ondelete="CASCADE"), index=True
+    )
+    quantity: Mapped[int] = mapped_column(default=1)
+    deck: Mapped[Deck] = relationship(back_populates="entries")
+    inventory: Mapped[InventoryItem] = relationship(back_populates="deck_entries")

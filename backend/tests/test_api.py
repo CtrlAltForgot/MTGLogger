@@ -35,6 +35,29 @@ def test_dashboard_and_exports(client):
     assert client.get("/api/inventory/export/json").json()[0]["set_code"] == "fdn"
 
 
+def test_inventory_organization_facets_and_filters(client):
+    client.post(
+        "/api/inventory",
+        json={**CARD, "collection_name": "Trade Binder", "storage_location": "Shelf A"},
+    )
+    client.post(
+        "/api/inventory",
+        json={
+            **CARD,
+            "scryfall_id": "00000000-0000-0000-0000-000000000003",
+            "collection_name": "Main",
+            "storage_location": "Box 2",
+        },
+    )
+    facets = client.get("/api/inventory/facets").json()
+    assert facets["collections"] == ["Main", "Trade Binder"]
+    assert facets["storage_locations"] == ["Box 2", "Shelf A"]
+    filtered = client.get(
+        "/api/inventory", params={"collection_name": "Trade Binder", "storage_location": "Shelf A"}
+    ).json()
+    assert filtered["total"] == 1
+
+
 def test_sealed_inventory(client):
     response = client.post(
         "/api/sealed",
@@ -42,6 +65,37 @@ def test_sealed_inventory(client):
     )
     assert response.status_code == 201
     assert client.get("/api/sealed").json()[0]["quantity"] == 2
+
+
+def test_decks_allocate_only_unassigned_physical_copies(client):
+    card = {**CARD, "quantity": 3}
+    inventory = client.post("/api/inventory", json=card).json()
+    first = client.post("/api/decks", json={"name": "First Deck", "format": "Commander"})
+    second = client.post("/api/decks", json={"name": "Second Deck"})
+    assert first.status_code == 201
+    first_id, second_id = first.json()["id"], second.json()["id"]
+    allocation = {"entries": [{"inventory_id": inventory["id"], "quantity": 2}]}
+    deck = client.post(f"/api/decks/{first_id}/entries", json=allocation)
+    assert deck.status_code == 200
+    assert deck.json()["total_cards"] == 2
+    available = client.get(f"/api/decks/{first_id}/available").json()
+    assert available[0]["available_quantity"] == 1
+    too_many = client.post(
+        f"/api/decks/{second_id}/entries",
+        json={"entries": [{"inventory_id": inventory["id"], "quantity": 2}]},
+    )
+    assert too_many.status_code == 409
+    assert (
+        client.post(
+            f"/api/decks/{second_id}/entries",
+            json={"entries": [{"inventory_id": inventory["id"], "quantity": 1}]},
+        ).status_code
+        == 200
+    )
+    assert client.get(f"/api/decks/{second_id}/available").json() == []
+    assert client.delete(f"/api/decks/{first_id}").status_code == 204
+    available = client.get(f"/api/decks/{second_id}/available").json()
+    assert available[0]["available_quantity"] == 2
 
 
 def test_recognition_reference_status(client):
