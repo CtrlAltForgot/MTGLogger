@@ -22,6 +22,7 @@ services:
       SCRYFALL_USER_AGENT: ${SCRYFALL_USER_AGENT:-MTGLogger/0.1}
     volumes:
       - card_images:/app/data
+      - ocr_models:/root/.paddlex
     ports: ["8000:8000"]
     depends_on:
       db:
@@ -38,3 +39,4 @@ services:
 volumes:
   postgres_data:
   card_images:
+  ocr_models:

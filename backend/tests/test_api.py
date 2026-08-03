@@ -42,3 +42,22 @@ def test_sealed_inventory(client):
     )
     assert response.status_code == 201
     assert client.get("/api/sealed").json()[0]["quantity"] == 2
+
+
+def test_recognition_reference_status(client):
+    response = client.get("/api/references/status")
+    assert response.status_code == 200
+    assert response.json()["indexed_cards"] == 0
+
+
+def test_artwork_hash_is_stable_under_small_brightness_change():
+    import cv2
+    import numpy as np
+
+    from mtglogger.services.references import artwork_hash, hash_distance
+
+    image = np.zeros((1040, 745, 3), dtype=np.uint8)
+    cv2.rectangle(image, (50, 130), (690, 590), (30, 170, 220), -1)
+    cv2.circle(image, (360, 350), 120, (230, 40, 80), -1)
+    brighter = cv2.convertScaleAbs(image, alpha=1.02, beta=3)
+    assert hash_distance(artwork_hash(image), artwork_hash(brighter)) <= 2

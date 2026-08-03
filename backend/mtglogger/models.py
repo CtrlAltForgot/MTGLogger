@@ -98,3 +98,19 @@ class SealedProduct(Base):
     storage_location: Mapped[str] = mapped_column(String(255), default="Unsorted")
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     date_added: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class CardReference(Base):
+    __tablename__ = "card_references"
+    __table_args__ = (Index("ix_reference_set", "set_code"),)
+    scryfall_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), index=True)
+    set_code: Mapped[str] = mapped_column(String(16))
+    set_name: Mapped[str] = mapped_column(String(255))
+    collector_number: Mapped[str] = mapped_column(String(32))
+    image_url: Mapped[str] = mapped_column(Text)
+    art_hash: Mapped[str] = mapped_column(String(16), index=True)
+    market_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow
+    )

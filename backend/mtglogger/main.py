@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import __version__
-from .api import dashboard, inventory, reviews, scanner, sealed
+from .api import dashboard, inventory, references, reviews, scanner, sealed
 from .config import get_settings
 from .database import Base, engine
 
@@ -29,6 +29,7 @@ app.include_router(scanner.router, prefix="/api")
 app.include_router(reviews.router, prefix="/api")
 app.include_router(sealed.router, prefix="/api")
 app.include_router(dashboard.router, prefix="/api")
+app.include_router(references.router, prefix="/api")
 
 
 @app.get("/api/health")

@@ -23,7 +23,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-ocr = ["paddleocr>=2.9,<4"]
+ocr = ["paddleocr>=3,<4", "paddlepaddle>=3,<4"]
 dev = ["pytest>=8,<9", "pytest-asyncio>=0.25,<1", "ruff>=0.9,<1"]
 
 [tool.pytest.ini_options]

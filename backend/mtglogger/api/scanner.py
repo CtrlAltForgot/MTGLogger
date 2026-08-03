@@ -15,6 +15,11 @@ router = APIRouter(prefix="/scanner", tags=["scanner"])
 recognizer = CardRecognizer()
 
 
+@router.get("/capabilities")
+def capabilities():
+    return {"ocr": recognizer.ocr_available, "artwork_matching": True}
+
+
 @router.post("/recognize", response_model=ScanResult)
 async def recognize_card(
     image: UploadFile = File(...), defaults_json: str = Form("{}"), db: Session = Depends(get_db)

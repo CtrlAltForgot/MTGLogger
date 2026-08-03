@@ -10,6 +10,12 @@ MTGLogger is a speed-first Magic: The Gathering collection catalog. Its scanner 
 
 The browser owns webcam access and sends stable captures to the API. This works in Docker and avoids passing a host camera device into a container. Recognition uses OCR when installed, Scryfall exact metadata lookup, and perceptual artwork matching. Uncertain scans are retained in the review queue without stopping the scan loop.
 
+## Preparing Box Mode
+
+Enter a Scryfall set code in the scanner (for example `FDN`) and choose **Index set artwork**. MTGLogger downloads that set's card images as a throttled background job, stores compact perceptual hashes rather than duplicate image files, and reports progress in the scanner. Scanning remains available while indexing runs. Once cached, artwork matching works without a Scryfall request and Box Mode strongly limits the visual search space.
+
+The production API image includes CPU PaddleOCR 3. Paddle's inference model is initialized when the API starts and cached in the persistent `ocr_models` volume. Check `GET /api/scanner/capabilities` and `GET /api/references/status` when diagnosing recognition.
+
 ## Local development
 
 Backend:
@@ -31,4 +37,4 @@ npm install
 npm run dev
 ```
 
-Without `DATABASE_URL`, the backend uses `backend/mtglogger.db`. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the recognition flow and extension points.
+Without `DATABASE_URL`, the backend uses `backend/mtglogger.db`. Install `.[ocr]` instead of `.` to enable PaddleOCR during local development. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the recognition flow and extension points.

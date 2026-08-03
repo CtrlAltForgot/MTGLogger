@@ -1,6 +1,8 @@
 import os
 import tempfile
 
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
 database_file = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
 database_file.close()
 os.environ["DATABASE_URL"] = f"sqlite:///{database_file.name}"
