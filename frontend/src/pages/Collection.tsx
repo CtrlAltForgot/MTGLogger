@@ -6,6 +6,7 @@ import {
   TablePagination, TextField, Tooltip, Typography,
 } from '@mui/material'
 import { API, request } from '../api'
+import FoilArtwork from '../components/FoilArtwork'
 import type { Inventory } from '../types'
 
 const conditions=[['near_mint','Near Mint'],['lightly_played','Lightly Played'],['moderately_played','Moderately Played'],['heavily_played','Heavily Played'],['damaged','Damaged']]
@@ -38,7 +39,7 @@ export default function Collection(){
     </Stack>
     {facets.storage_locations.length>1&&<Stack direction="row" spacing={1} mt={1.5}><Select size="small" displayEmpty value={location} onChange={e=>setLocation(e.target.value)} sx={{minWidth:190}}><MenuItem value="">All storage locations</MenuItem>{facets.storage_locations.map(value=><MenuItem key={value} value={value}>{value}</MenuItem>)}</Select></Stack>}
     <Box className="collection-grid" mt={3}>{items.map(item=><Card key={item.id} sx={{display:'flex',overflow:'hidden',position:'relative'}}>
-      {item.image_url?<Box component="img" src={item.image_url} loading="lazy" sx={{width:105,objectFit:'cover',objectPosition:'top'}}/>:<Box sx={{width:105,bgcolor:'action.hover'}}/>}
+      {item.image_url?<FoilArtwork src={item.image_url} alt={item.card_name} foil={item.foil} sx={{width:105}} imageSx={{objectFit:'cover',objectPosition:'top'}}/>:<Box sx={{width:105,bgcolor:'action.hover'}}/>}
       <Box p={2} pr={7} minWidth={0}><Typography fontWeight={800} noWrap>{item.card_name}</Typography><Typography color="text.secondary" variant="body2">{item.set_name} #{item.collector_number}</Typography><Typography variant="h6" color="primary.main" mt={1}>${Number(item.market_price||0).toFixed(2)}</Typography><Stack direction="row" spacing={.5} mt={1} flexWrap="wrap"><Chip size="small" label={`×${item.quantity}`}/><Chip size="small" variant="outlined" label={item.condition.replaceAll('_',' ')}/>{item.foil&&<Chip size="small" color="warning" label="Foil"/>}</Stack><Typography display="block" variant="caption" color="text.secondary">Deck · {item.deck_assignments.length?item.deck_assignments.map(deck=>`${deck.deck_name} ×${deck.quantity}`).join(', '):'None'}</Typography><Typography variant="caption" color="text.secondary">Storage · {item.storage_location}</Typography></Box>
       <Stack sx={{position:'absolute',right:4,top:4}}><Tooltip title="Edit entry"><IconButton aria-label={`Edit ${item.card_name}`} onClick={()=>setEditing({...item})}><Edit/></IconButton></Tooltip><Tooltip title="Delete entry"><IconButton color="error" aria-label={`Delete ${item.card_name}`} onClick={()=>setDeleting(item)}><Delete/></IconButton></Tooltip></Stack>
     </Card>)}</Box>
@@ -56,6 +57,7 @@ export default function Collection(){
     />}
 
     <Dialog open={!!editing} onClose={()=>!busy&&setEditing(null)} fullWidth maxWidth="sm"><DialogTitle>Edit collection entry</DialogTitle>{editing&&<DialogContent><Stack spacing={2} mt={1}>
+      {editing.image_url&&<FoilArtwork src={editing.image_url} alt={editing.card_name} foil={editing.foil} sx={{width:150,alignSelf:'center',borderRadius:2}}/>}
       <Typography variant="h6">{editing.card_name} · {editing.set_code.toUpperCase()} #{editing.collector_number}</Typography>
       <TextField label="Quantity" type="number" value={editing.quantity} onChange={e=>setEditing({...editing,quantity:Math.max(1,Number(e.target.value))})}/>
       <Select value={editing.condition} onChange={e=>setEditing({...editing,condition:e.target.value})}>{conditions.map(([value,label])=><MenuItem key={value} value={value}>{label}</MenuItem>)}</Select>

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Backspace, KeyboardArrowLeft, KeyboardArrowRight, KeyboardReturn } from '@mui/icons-material'
 import { Box, Button, Chip, Dialog, DialogActions, DialogContent, IconButton, Stack, Typography } from '@mui/material'
 import type { Candidate } from '../types'
+import FoilArtwork from './FoilArtwork'
 
 type Props={candidates:Candidate[];confidence:number;foil:boolean;onAccept:(candidate:Candidate)=>void;onDecline:()=>void;busy:boolean}
 
@@ -24,7 +25,7 @@ export default function ScanConfirmation({candidates,confidence,foil,onAccept,on
   return <Dialog open fullWidth maxWidth="md" disableEscapeKeyDown>
     <DialogContent>
       <Stack direction={{xs:'column',sm:'row'}} spacing={3} alignItems="center">
-        <Box component="img" src={candidate.image_url||''} alt={candidate.name} sx={{width:{xs:180,sm:220},borderRadius:2}}/>
+        <FoilArtwork src={candidate.image_url||''} alt={candidate.name} foil={effectiveFoil} sx={{width:{xs:180,sm:220},borderRadius:2}}/>
         <Box flex={1}>
           <Chip color={confidence>95?'success':'warning'} label={`${candidate.confidence.toFixed(1)}% confidence`} sx={{mb:2}}/>
           <Typography variant="h4">{candidate.name}</Typography>

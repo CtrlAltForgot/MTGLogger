@@ -6,6 +6,7 @@ import {
 } from '@mui/material'
 import { request, submitScan } from '../api'
 import ScanConfirmation from '../components/ScanConfirmation'
+import FoilArtwork from '../components/FoilArtwork'
 import { cardsPerMinute, initialSessionStats, recordSuccessfulAddition, reviewPercentage } from '../scanner/sessionStats'
 import { defaultTuning, useAutoScanner, type ScannerTuning } from '../scanner/useAutoScanner'
 import type { Candidate, Deck, Defaults, Inventory, ScanResult } from '../types'
@@ -147,7 +148,7 @@ export default function Scanner(){
     {candidate&&<ScanConfirmation candidates={result!.candidates} confidence={result!.confidence} foil={defaults.foil} onAccept={accept} onDecline={decline} busy={decisionBusy}/>}
     <Snackbar key={success?`${success.id}-${success.quantity}`:'empty'} open={!!success} autoHideDuration={1800} onClose={()=>setSuccess(null)} anchorOrigin={{vertical:'bottom',horizontal:'center'}}>
       <Card elevation={12} sx={{display:'flex',alignItems:'center',minWidth:{xs:320,sm:460},border:'2px solid',borderColor:'success.main',overflow:'hidden'}}>
-        {success?.image_url&&<Box component="img" src={success.image_url} alt={success.card_name} sx={{width:82,height:114,objectFit:'cover',objectPosition:'top'}}/>}
+        {success?.image_url&&<FoilArtwork src={success.image_url} alt={success.card_name} foil={success.foil} sx={{width:82,height:114}} imageSx={{objectFit:'cover',objectPosition:'top'}}/>}
         <Box px={2} py={1}><Typography color="success.main" fontWeight={900}>ADDED · {success?.quantity} OWNED</Typography><Typography variant="h6" fontWeight={900}>{success?.card_name}</Typography><Typography color="text.secondary">{success?.set_name} #{success?.collector_number} · ${Number(success?.market_price||0).toFixed(2)}</Typography></Box>
       </Card>
     </Snackbar>
