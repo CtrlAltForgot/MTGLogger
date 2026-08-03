@@ -1,3 +1,3 @@
-from .scryfall import ScryfallProvider
+from .scryfall import ScryfallProvider, close_scryfall_client
 
-__all__ = ["ScryfallProvider"]
+__all__ = ["ScryfallProvider", "close_scryfall_client"]

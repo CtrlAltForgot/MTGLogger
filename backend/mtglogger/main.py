@@ -9,6 +9,7 @@ from . import __version__
 from .api import dashboard, decks, inventory, prices, references, reviews, scanner, sealed
 from .config import get_settings
 from .database import Base, SessionLocal, engine
+from .providers import close_scryfall_client
 from .services.prices import price_refresh_loop
 
 
@@ -23,6 +24,7 @@ async def lifespan(_: FastAPI):
         price_task.cancel()
         with suppress(asyncio.CancelledError):
             await price_task
+        await close_scryfall_client()
 
 
 app = FastAPI(title="MTGLogger API", version=__version__, lifespan=lifespan)

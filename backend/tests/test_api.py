@@ -227,6 +227,17 @@ def test_scryfall_failure_preserves_recognition_for_local_review():
     assert cards == []
 
 
+def test_scryfall_connection_pool_is_reused_and_closed_cleanly():
+    import asyncio
+
+    from mtglogger.providers.scryfall import close_scryfall_client, scryfall_client
+
+    client = scryfall_client()
+    assert scryfall_client() is client
+    asyncio.run(close_scryfall_client())
+    assert client.is_closed
+
+
 def test_non_english_lookup_falls_back_to_exact_collector_and_language():
     import asyncio
 

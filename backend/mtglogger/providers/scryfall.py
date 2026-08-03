@@ -4,13 +4,36 @@ import httpx
 
 from ..config import get_settings
 
+_client: httpx.AsyncClient | None = None
+
+
+def scryfall_client() -> httpx.AsyncClient:
+    global _client
+    if _client is None or _client.is_closed:
+        settings = get_settings()
+        _client = httpx.AsyncClient(
+            headers={
+                "User-Agent": settings.scryfall_user_agent,
+                "Accept": "application/json",
+            },
+            timeout=settings.request_timeout,
+            limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+        )
+    return _client
+
+
+async def close_scryfall_client() -> None:
+    global _client
+    if _client is not None and not _client.is_closed:
+        await _client.aclose()
+    _client = None
+
 
 class ScryfallProvider:
     base_url = "https://api.scryfall.com"
 
     def __init__(self) -> None:
         settings = get_settings()
-        self.headers = {"User-Agent": settings.scryfall_user_agent, "Accept": "application/json"}
         self.timeout = settings.request_timeout
 
     async def search(
@@ -20,41 +43,38 @@ class ScryfallProvider:
             query = f"{query} set:{set_code}"
         if language:
             query = f"{query} lang:{language}"
-        async with httpx.AsyncClient(headers=self.headers, timeout=self.timeout) as client:
-            response = await client.get(
-                f"{self.base_url}/cards/search", params={"q": query, "unique": "prints"}
-            )
-            if response.status_code == 404:
-                return []
-            response.raise_for_status()
-            return response.json().get("data", [])[:12]
+        response = await scryfall_client().get(
+            f"{self.base_url}/cards/search", params={"q": query, "unique": "prints"}
+        )
+        if response.status_code == 404:
+            return []
+        response.raise_for_status()
+        return response.json().get("data", [])[:12]
 
     async def get_card(self, scryfall_id: str) -> dict:
-        async with httpx.AsyncClient(headers=self.headers, timeout=self.timeout) as client:
-            response = await client.get(f"{self.base_url}/cards/{scryfall_id}")
-            response.raise_for_status()
-            return response.json()
+        response = await scryfall_client().get(f"{self.base_url}/cards/{scryfall_id}")
+        response.raise_for_status()
+        return response.json()
 
     async def cards_for_set(self, set_code: str) -> list[dict]:
         cards: list[dict] = []
         url = f"{self.base_url}/cards/search"
         params = {"q": f"set:{set_code}", "unique": "prints", "order": "set"}
-        async with httpx.AsyncClient(headers=self.headers, timeout=self.timeout) as client:
-            while url:
-                response = await client.get(url, params=params if not cards else None)
-                if response.status_code == 404:
-                    return []
-                response.raise_for_status()
-                page = response.json()
-                cards.extend(page.get("data", []))
-                url = page.get("next_page") if page.get("has_more") else None
+        client = scryfall_client()
+        while url:
+            response = await client.get(url, params=params if not cards else None)
+            if response.status_code == 404:
+                return []
+            response.raise_for_status()
+            page = response.json()
+            cards.extend(page.get("data", []))
+            url = page.get("next_page") if page.get("has_more") else None
         return cards
 
     async def download_image(self, url: str) -> bytes:
-        async with httpx.AsyncClient(headers=self.headers, timeout=self.timeout) as client:
-            response = await client.get(url)
-            response.raise_for_status()
-            return response.content
+        response = await scryfall_client().get(url)
+        response.raise_for_status()
+        return response.content
 
     @staticmethod
     def market_price(card: dict, foil: bool = False) -> Decimal | None:
