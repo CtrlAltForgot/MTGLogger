@@ -28,9 +28,11 @@ def history(days: int = Query(365, ge=1, le=3650), db: Session = Depends(get_db)
         for item in reversed(snapshots)
     ]
     if not points:
-        from datetime import UTC, datetime
-
-        points = [{"recorded_at": datetime.now(UTC), "total_value": current}]
+        baseline = CollectionValueSnapshot(total_value=current)
+        db.add(baseline)
+        db.commit()
+        db.refresh(baseline)
+        points = [{"recorded_at": baseline.recorded_at, "total_value": current}]
     previous = points[-2]["total_value"] if len(points) > 1 else None
     change = current - previous if previous is not None else None
     percentage = (

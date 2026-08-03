@@ -67,6 +67,15 @@ def test_price_changes_retain_previous_value_and_collection_history(client):
     assert len(history["history"]) == 2
 
 
+def test_value_history_persists_its_initial_baseline(client):
+    client.post("/api/inventory", json=CARD)
+    first = client.get("/api/prices/history").json()
+    second = client.get("/api/prices/history").json()
+
+    assert first["history"] == second["history"]
+    assert first["current_value"] == 0.42
+
+
 def test_inventory_pagination_preserves_full_collection_totals(client):
     for index, name in enumerate(("Alpha", "Beta", "Gamma"), start=10):
         response = client.post(
