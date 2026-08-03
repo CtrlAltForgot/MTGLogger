@@ -1,7 +1,7 @@
 from sqlalchemy import and_, select
 from sqlalchemy.orm import Session
 
-from ..models import InventoryItem
+from ..models import InventoryItem, utc_now
 from ..schemas import InventoryCreate
 
 
@@ -21,6 +21,9 @@ def upsert_inventory(db: Session, data: InventoryCreate) -> InventoryItem:
     )
     if match:
         match.quantity += data.quantity
+        # Adding another physical copy is a new collection activity even though
+        # it intentionally reuses the same inventory row.
+        match.updated_at = utc_now()
         if data.market_price is not None:
             match.market_price = data.market_price
         db.commit()

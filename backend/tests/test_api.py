@@ -48,6 +48,27 @@ def test_duplicate_printing_increments_quantity(client):
     assert page["items"][0]["quantity"] == 2
 
 
+def test_duplicate_printing_becomes_most_recent_collection_activity(client):
+    first = client.post("/api/inventory", json=CARD).json()
+    client.post(
+        "/api/inventory",
+        json={
+            **CARD,
+            "card_name": "Later Card",
+            "scryfall_id": "00000000-0000-0000-0000-000000000099",
+        },
+    )
+
+    duplicate = client.post("/api/inventory", json=CARD).json()
+    recent = client.get(
+        "/api/inventory", params={"sort": "updated_at", "descending": True}
+    ).json()["items"]
+
+    assert duplicate["id"] == first["id"]
+    assert duplicate["updated_at"] > first["updated_at"]
+    assert recent[0]["id"] == first["id"]
+
+
 def test_price_changes_retain_previous_value_and_collection_history(client):
     item = client.post("/api/inventory", json=CARD).json()
     first = client.patch(f"/api/inventory/{item['id']}", json={"market_price": "0.84"})

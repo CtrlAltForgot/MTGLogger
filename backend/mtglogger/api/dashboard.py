@@ -47,7 +47,7 @@ def summary(db: Session = Depends(get_db)):
         )
     )
     newest = list(
-        db.scalars(select(InventoryItem).order_by(InventoryItem.date_added.desc()).limit(8))
+        db.scalars(select(InventoryItem).order_by(InventoryItem.updated_at.desc()).limit(8))
     )
     duplicates = list(
         db.scalars(

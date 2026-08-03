@@ -13,7 +13,7 @@ import type { Inventory } from '../types'
 
 const conditions=[['near_mint','Near Mint'],['lightly_played','Lightly Played'],['moderately_played','Moderately Played'],['heavily_played','Heavily Played'],['damaged','Damaged']]
 const conditionAbbreviation:Record<string,string>={near_mint:'NM',lightly_played:'LP',moderately_played:'MP',heavily_played:'HP',damaged:'DMG'}
-const sorts={newest:'sort=date_added&descending=true',name:'sort=card_name&descending=false',value:'sort=market_price&descending=true'}
+const sorts={newest:'sort=updated_at&descending=true',name:'sort=card_name&descending=false',value:'sort=market_price&descending=true'}
 
 export default function Collection(){
   const [items,setItems]=useState<Inventory[]>([]),[total,setTotal]=useState(0),[totalCards,setTotalCards]=useState(0),[collectionValue,setCollectionValue]=useState(0)
