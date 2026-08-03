@@ -14,7 +14,7 @@ By default, matches at 98.5% confidence or higher are added automatically. That 
 
 After every capture the camera stays latched in **Remove card** state. It must observe the calibrated empty guide for three consecutive checks before another capture is possible, so a stationary card cannot be logged twice. This still supports two copies of the same card back-to-back: briefly expose the empty guide between them.
 
-The scanner displays live session counters for captures, additions, percentage routed to Review, the last browser round-trip, backend recognition time, and running average. It also reports cards per minute from the intervals between consecutive successful additions. The first addition begins measurement, and idle gaps longer than 30 seconds are discarded, so breaks do not distort batch throughput. Use these counters during a physical batch to verify one capture per presented card and measure the actual camera-to-result throughput.
+The scanner displays live session counters for captures, additions, percentage routed to Review, the last browser round-trip, backend recognition time, and running average. It also reports cards per minute from the intervals between consecutive successful additions. The first addition begins measurement, and idle gaps longer than 30 seconds are discarded, so breaks do not distort batch throughput. Use these counters during a physical batch to verify one capture per presented card and measure the actual camera-to-result throughput. Scryfall metadata lookup shares a short time budget and runs alongside local artwork matching; if the network is unavailable, MTGLogger preserves the camera image in Review instead of losing the scan.
 
 ## Preparing Box Mode
 

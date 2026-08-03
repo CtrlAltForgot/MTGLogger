@@ -182,6 +182,23 @@ def test_artwork_alone_cannot_auto_add_a_reused_printing():
     assert CardRecognizer.visual_only_score(87.0) == 87.0
 
 
+def test_scryfall_failure_preserves_recognition_for_local_review():
+    import asyncio
+
+    import httpx
+
+    from mtglogger.services.recognition import CardRecognizer
+
+    class OfflineProvider:
+        async def search(self, _query, _set_code=None):
+            raise httpx.ConnectError("offline")
+
+    recognizer = CardRecognizer.__new__(CardRecognizer)
+    recognizer.provider = OfflineProvider()
+    cards = asyncio.run(recognizer._lookup_cards("Lightning Bolt", "188", "fdn", None))
+    assert cards == []
+
+
 def test_ocr_hints_normalize_printed_collector_number():
     from mtglogger.services.recognition import CardRecognizer
 

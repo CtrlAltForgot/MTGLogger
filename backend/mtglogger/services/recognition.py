@@ -7,6 +7,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 
 import cv2
+import httpx
 import numpy as np
 from sqlalchemy import select
 
@@ -211,6 +212,35 @@ class CardRecognizer:
         # the top of Review without allowing them to cross the 98.5% auto-add gate.
         return min(94.0, score)
 
+    async def _lookup_cards(
+        self,
+        title: str | None,
+        number: str | None,
+        printed_set_code: str | None,
+        box_set_code: str | None,
+    ) -> list[dict]:
+        if not title and not number:
+            return []
+        title_query = f'!"{title}"' if title else ""
+        query = f"{title_query} cn:{number}".strip() if number else title_query
+        preferred_set = printed_set_code or box_set_code
+        try:
+            # Recognition must not sit behind a long external outage. All lookup
+            # attempts share one short budget; the captured frame still proceeds
+            # through local artwork matching and into Review if Scryfall is down.
+            async with asyncio.timeout(3.5):
+                cards = await self.provider.search(query, preferred_set)
+                if not cards and title and number:
+                    cards = await self.provider.search(title_query, preferred_set)
+                # An imperfect set-code OCR should lower confidence, not erase otherwise
+                # useful candidates from the confirmation list.
+                if not cards and printed_set_code:
+                    cards = await self.provider.search(query, box_set_code)
+                return cards
+        except (TimeoutError, httpx.HTTPError, ValueError) as exc:
+            logger.warning("Scryfall lookup unavailable; preserving scan for Review: %s", exc)
+            return []
+
     async def recognize(self, raw: bytes, box_set_code: str | None = None) -> Recognition:
         async with self._recognition_lock:
             started = time.perf_counter()
@@ -219,25 +249,15 @@ class CardRecognizer:
             text = await asyncio.to_thread(self.extract_text, corrected)
             ocr_complete = time.perf_counter()
             title, number, printed_set_code, copyright_year = self.hints(text)
-            cards: list[dict] = []
-            if title or number:
-                title_query = f'!"{title}"' if title else ""
-                query = f"{title_query} cn:{number}".strip() if number else title_query
-                preferred_set = printed_set_code or box_set_code
-                cards = await self.provider.search(query, preferred_set)
-                if not cards and title and number:
-                    cards = await self.provider.search(title_query, preferred_set)
-                # An imperfect set-code OCR should lower confidence, not erase otherwise
-                # useful candidates from the confirmation list.
-                if not cards and printed_set_code:
-                    cards = await self.provider.search(query, box_set_code)
-            lookup_complete = time.perf_counter()
-
+            lookup_task = asyncio.create_task(
+                self._lookup_cards(title, number, printed_set_code, box_set_code)
+            )
             scan_hash = await asyncio.to_thread(artwork_hash, corrected)
             visual_matches = await asyncio.to_thread(
                 self._visual_matches, scan_hash, printed_set_code or box_set_code
             )
-            visual_complete = time.perf_counter()
+            cards = await lookup_task
+            matching_complete = time.perf_counter()
         visual_scores = {reference.scryfall_id: score for reference, score in visual_matches}
         ranked: dict[str, Candidate] = {}
         for card in cards:
@@ -306,12 +326,11 @@ class CardRecognizer:
         candidates = sorted(ranked.values(), key=lambda item: item.confidence, reverse=True)
         finished = time.perf_counter()
         logger.info(
-            "Recognition timings prep=%dms ocr=%dms lookup=%dms visual=%dms rank=%dms total=%dms",
+            "Recognition timings prep=%dms ocr=%dms lookup+visual=%dms rank=%dms total=%dms",
             (prepared - started) * 1000,
             (ocr_complete - prepared) * 1000,
-            (lookup_complete - ocr_complete) * 1000,
-            (visual_complete - lookup_complete) * 1000,
-            (finished - visual_complete) * 1000,
+            (matching_complete - ocr_complete) * 1000,
+            (finished - matching_complete) * 1000,
             (finished - started) * 1000,
         )
         return Recognition(
