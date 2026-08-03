@@ -28,8 +28,8 @@ export default function ScanConfirmation({candidates,confidence,foil,onAccept,on
         <FoilArtwork src={candidate.image_url||''} alt={candidate.name} foil={effectiveFoil} sx={{width:{xs:180,sm:220},borderRadius:2}}/>
         <Box flex={1}>
           <Chip color={confidence>95?'success':'warning'} label={`${candidate.confidence.toFixed(1)}% confidence`} sx={{mb:2}}/>
-          <Typography variant="h4">{candidate.name}</Typography>
-          <Typography variant="h6" color="text.secondary">{candidate.set_name} #{candidate.collector_number} · {candidate.language.toUpperCase()}</Typography>
+          <Typography className="card-title" variant="h4">{candidate.name}</Typography>
+          <Typography className="card-printing" variant="h6" color="text.secondary">{candidate.set_name} #{candidate.collector_number} · {candidate.language.toUpperCase()}</Typography>
           <Typography variant="h4" color="primary.main" mt={2}>${Number((effectiveFoil?(candidate.foil_market_price||candidate.market_price):candidate.market_price)||0).toFixed(2)}{effectiveFoil&&<Typography component="span" variant="body2" color="text.secondary"> · foil{!foil?' only':''}</Typography>}</Typography>
           <Typography color="text.secondary" mt={2}>Is this the exact printing?</Typography>
         </Box>
