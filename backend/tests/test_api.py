@@ -239,6 +239,22 @@ def test_perspective_quad_expands_to_preserve_printed_footer():
     assert expanded[:, 1].max() <= 199
 
 
+def test_rectify_finds_a_small_card_away_from_frame_center():
+    import cv2
+    import numpy as np
+
+    from mtglogger.services.recognition import CardRecognizer
+
+    frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+    cv2.rectangle(frame, (55, 110), (295, 450), (110, 110, 110), -1)
+    cv2.rectangle(frame, (55, 110), (295, 450), (255, 255, 255), 7)
+
+    corrected = CardRecognizer.rectify(frame)
+
+    assert corrected.shape == (840, 600, 3)
+    assert corrected.mean() > 70
+
+
 def test_card_structure_rejects_empty_table_but_accepts_card_frame():
     import cv2
     import numpy as np
@@ -535,6 +551,85 @@ def test_ocr_hints_recover_legacy_collector_pair_from_copyright_line():
     assert CardRecognizer.collector_score(number, "62") > CardRecognizer.collector_score(
         number, "222"
     )
+
+
+def test_ocr_hints_recovers_truncated_footer_year():
+    from mtglogger.services.recognition import CardRecognizer
+
+    assert CardRecognizer.hints("Death'sApproach\nTerese Nielsen\nco13rdsofthCat2")[3] == 2013
+
+
+def test_unique_copyright_year_disambiguates_reused_printing():
+    import asyncio
+
+    import numpy as np
+
+    from mtglogger.services.recognition import CardRecognizer
+
+    cards = [
+        {
+            "id": "jmp-death",
+            "name": "Death's Approach",
+            "set": "jmp",
+            "set_name": "Jumpstart",
+            "collector_number": "222",
+            "released_at": "2020-07-17",
+        },
+        {
+            "id": "gtc-death",
+            "name": "Death's Approach",
+            "set": "gtc",
+            "set_name": "Gatecrash",
+            "collector_number": "62",
+            "released_at": "2013-02-01",
+        },
+    ]
+
+    class Provider:
+        async def search(self, *_args, **_kwargs):
+            return cards
+
+        @staticmethod
+        def image_url(_card):
+            return None
+
+        @staticmethod
+        def market_price(_card, foil=False):
+            return None
+
+    recognizer = CardRecognizer.__new__(CardRecognizer)
+    recognizer.provider = Provider()
+    recognizer._recognition_lock = asyncio.Lock()
+    image = np.zeros((840, 600, 3), dtype=np.uint8)
+    recognizer.decode = lambda _raw: image
+    recognizer.rectify = lambda decoded: decoded
+    recognizer.extract_identification_text = lambda _image: "Death'sApproach\nco13rdsofthCat2"
+    recognizer._visual_matches = lambda _scan_hash, _set_code: []
+
+    result = asyncio.run(recognizer.recognize(b"camera-frame"))
+
+    assert result.candidates[0].set_code == "gtc"
+    assert result.candidates[0].collector_number == "62"
+    assert result.confidence == 98.5
+
+
+def test_finish_price_uses_requested_scryfall_finish(monkeypatch):
+    import asyncio
+    from decimal import Decimal
+
+    from mtglogger.api import inventory
+
+    class Prices:
+        async def get_card(self, scryfall_id):
+            assert scryfall_id == "printing-id"
+            return {"prices": {"usd": "0.40", "usd_foil": "2.75"}}
+
+        @staticmethod
+        def market_price(card, foil=False):
+            return Decimal(card["prices"]["usd_foil" if foil else "usd"])
+
+    monkeypatch.setattr(inventory, "prices", Prices())
+    assert asyncio.run(inventory.finish_price("printing-id", True)) == Decimal("2.75")
 
 
 def test_scans_auto_add_only_near_certain_matches_by_default():

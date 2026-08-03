@@ -83,42 +83,70 @@ class CardRecognizer:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         edges = cv2.Canny(cv2.GaussianBlur(gray, (5, 5), 0), 50, 140)
         contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-        for contour in sorted(contours, key=cv2.contourArea, reverse=True)[:10]:
+        minimum_area = image.shape[0] * image.shape[1] * 0.06
+        inspected = sorted(contours, key=cv2.contourArea, reverse=True)[:20]
+        for contour in inspected:
             perimeter = cv2.arcLength(contour, True)
             polygon = cv2.approxPolyDP(contour, 0.02 * perimeter, True)
-            if (
-                len(polygon) != 4
-                or cv2.contourArea(polygon) < image.shape[0] * image.shape[1] * 0.15
-            ):
+            if len(polygon) != 4 or cv2.contourArea(polygon) < minimum_area:
                 continue
             points = polygon.reshape(4, 2).astype("float32")
-            sums, diffs = points.sum(axis=1), np.diff(points, axis=1).ravel()
-            ordered = np.array(
-                [
-                    points[np.argmin(sums)],
-                    points[np.argmin(diffs)],
-                    points[np.argmax(sums)],
-                    points[np.argmax(diffs)],
-                ]
-            )
-            # Edge detection frequently locks onto the printed black border
-            # instead of the physical card edge. Preserve a small outer margin
-            # so collector number, set code, language, and copyright text are
-            # not clipped out of the normalized image.
-            ordered = CardRecognizer.expand_quad(ordered, image.shape)
-            target = np.array([[0, 0], [599, 0], [599, 839], [0, 839]], dtype="float32")
-            return cv2.warpPerspective(
-                image, cv2.getPerspectiveTransform(ordered, target), (600, 840)
-            )
-        # The browser deliberately centers cards in a fixed guide. Low-contrast
-        # sleeves may hide the outer contour, so normalize that guide instead of
-        # sending an entire widescreen frame through OCR and artwork matching.
+            warped = CardRecognizer.warp_card(image, points)
+            if warped is not None:
+                return warped
+        # Glare, sleeves, and worn borders can break one card edge into several
+        # contours. A rotated bounding rectangle still localizes an off-center
+        # card while its aspect-ratio check rejects ordinary widescreen regions.
+        for contour in inspected:
+            rectangle = cv2.minAreaRect(contour)
+            width, height = rectangle[1]
+            if width * height < minimum_area or min(width, height) <= 0:
+                continue
+            ratio = min(width, height) / max(width, height)
+            if not 0.48 <= ratio <= 0.9:
+                continue
+            warped = CardRecognizer.warp_card(image, cv2.boxPoints(rectangle))
+            if warped is not None:
+                return warped
+        # If no plausible card boundary exists, retain the old centered fallback
+        # for very low-contrast sleeves.
         height, width = image.shape[:2]
         crop_height = int(height * 0.98)
         crop_width = min(int(width * 0.52), int(crop_height * 63 / 88))
         x1, y1 = (width - crop_width) // 2, (height - crop_height) // 2
         guide = image[y1 : y1 + crop_height, x1 : x1 + crop_width]
         return cv2.resize(guide, (600, 840), interpolation=cv2.INTER_AREA)
+
+    @staticmethod
+    def warp_card(image: np.ndarray, points: np.ndarray) -> np.ndarray | None:
+        points = points.astype("float32")
+        widths = [
+            np.linalg.norm(points[0] - points[1]),
+            np.linalg.norm(points[2] - points[3]),
+        ]
+        heights = [
+            np.linalg.norm(points[1] - points[2]),
+            np.linalg.norm(points[3] - points[0]),
+        ]
+        ratio = min(max(widths), max(heights)) / max(max(widths), max(heights))
+        if not 0.48 <= ratio <= 0.9:
+            return None
+        sums, diffs = points.sum(axis=1), np.diff(points, axis=1).ravel()
+        ordered = np.array(
+            [
+                points[np.argmin(sums)],
+                points[np.argmin(diffs)],
+                points[np.argmax(sums)],
+                points[np.argmax(diffs)],
+            ]
+        )
+        # Edge detection frequently locks onto the printed black border instead
+        # of the physical card edge. Preserve the identifying footer margin.
+        ordered = CardRecognizer.expand_quad(ordered, image.shape)
+        target = np.array([[0, 0], [599, 0], [599, 839], [0, 839]], dtype="float32")
+        return cv2.warpPerspective(
+            image, cv2.getPerspectiveTransform(ordered, target), (600, 840)
+        )
 
     def extract_text(self, image: np.ndarray) -> str:
         if self._ocr is None:
@@ -184,6 +212,17 @@ class CardRecognizer:
         lines = [line.strip() for line in text.splitlines() if len(line.strip()) > 1]
         year_match = re.search(r"(?<!\d)((?:19|20)\d{2})(?!\d)", text)
         copyright_year = int(year_match.group(1)) if year_match else None
+        if copyright_year is None:
+            # Tiny copyright text often loses "20" while retaining a marker
+            # and the final two digits (for example ©2013 -> "co13").
+            footer = "\n".join(lines[-5:])
+            short_year = re.search(
+                r"(?:©|&|co|c|o)[^0-9\n]{0,2}([0-2]\d)(?!\d)", footer, re.I
+            )
+            if short_year:
+                inferred = 2000 + int(short_year.group(1))
+                if 1993 <= inferred <= 2030:
+                    copyright_year = inferred
         set_code = None
         languages = "EN|ES|FR|DE|IT|PT|JA|KO|RU|ZHS|ZHT|HE|LA|GRC|AR|SA|PHY"
         for line in reversed(lines):
@@ -418,6 +457,7 @@ class CardRecognizer:
             matching_complete = time.perf_counter()
         visual_scores = {reference.scryfall_id: score for reference, score in visual_matches}
         ranked: dict[str, Candidate] = {}
+        release_years = [int(card.get("released_at", "0000")[:4]) for card in cards]
         for card in cards:
             title_score = (
                 SequenceMatcher(None, (title or "").lower(), card["name"].lower()).ratio()
@@ -458,6 +498,16 @@ class CardRecognizer:
             confidence = self.structured_confidence(
                 confidence, title_score, number_score, set_score, year_score
             )
+            # An exact title with one known printing is an exact-printing match.
+            # A unique matching copyright year can distinguish reused artwork.
+            only_printing = len(cards) == 1
+            unique_release_year = bool(
+                copyright_year
+                and year_score == 1.0
+                and release_years.count(copyright_year) == 1
+            )
+            if title_score >= 0.93 and (only_printing or unique_release_year):
+                confidence = max(confidence, 98.5)
             confidence = min(99.5, confidence)
             ranked[card["id"]] = Candidate(
                 scryfall_id=card["id"],

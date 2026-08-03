@@ -94,7 +94,7 @@ export default function Scanner(){
         {scan.state==='idle'
           ?<Button size="large" variant="contained" startIcon={<CameraAlt/>} onClick={()=>void scan.start()}>Start scanning</Button>
           :<><Button size="large" variant="outlined" startIcon={<Stop/>} onClick={scan.stop}>Stop</Button><Button startIcon={<RestartAlt/>} onClick={scan.calibrate}>Reset background</Button></>}
-        <Typography color="text.secondary">Keep the guide empty during calibration, then place and hold a card.</Typography>
+        <Typography color="text.secondary">Keep the scan zone empty during calibration. Cards can be placed anywhere inside it.</Typography>
       </Stack>
       {scan.cameras.length>1&&<Select size="small" value={scan.selectedCamera} onChange={event=>void scan.switchCamera(event.target.value)} sx={{mt:1.5,minWidth:280}}>{scan.cameras.map((camera,index)=><MenuItem value={camera.deviceId} key={camera.deviceId}>{camera.label||`Camera ${index+1}`}</MenuItem>)}</Select>}
       <Stack direction="row" spacing={2} mt={1}>

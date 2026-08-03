@@ -8,17 +8,22 @@ export const defaultTuning:ScannerTuning={entryDifference:12,stableMotion:4,stab
 
 const FRAME_WIDTH=160,FRAME_HEIGHT=120,CALIBRATION_FRAMES=12
 
-function analyze(pixels:Uint8ClampedArray,previous?:Uint8ClampedArray,baseline?:Uint8ClampedArray){
+export function analyze(pixels:Uint8ClampedArray,previous?:Uint8ClampedArray,baseline?:Uint8ClampedArray){
   let brightness=0,variance=0,motion=0,sceneDifference=0,samples=0
-  // Analyze the central card guide, not hands and movement at the frame edges.
-  for(let y=5;y<115;y+=2)for(let x=50;x<110;x+=2){
+  const sceneChanges:number[]=[]
+  // Monitor nearly the full scan zone so the card does not need meticulous
+  // centering. A narrow outer gutter ignores preview borders and OBS overlays.
+  for(let y=4;y<116;y+=2)for(let x=6;x<154;x+=2){
     const index=(y*FRAME_WIDTH+x)*4,luminance=(pixels[index]+pixels[index+1]+pixels[index+2])/3
     brightness+=luminance;variance+=luminance*luminance;samples++
     if(previous)motion+=Math.abs(luminance-(previous[index]+previous[index+1]+previous[index+2])/3)
-    if(baseline)sceneDifference+=Math.abs(luminance-(baseline[index]+baseline[index+1]+baseline[index+2])/3)
+    if(baseline)sceneChanges.push(Math.abs(luminance-(baseline[index]+baseline[index+1]+baseline[index+2])/3))
   }
+  // A card may occupy only a quarter of a widescreen frame. Average the most
+  // changed third so a clearly visible off-center card is not diluted by table.
+  if(sceneChanges.length){sceneChanges.sort((a,b)=>b-a);const changed=Math.max(1,Math.ceil(sceneChanges.length/3));for(let i=0;i<changed;i++)sceneDifference+=sceneChanges[i];sceneDifference/=changed}
   const mean=brightness/samples
-  return {brightness:mean,contrast:Math.sqrt(Math.max(0,variance/samples-mean*mean)),motion:previous?motion/samples:99,sceneDifference:baseline?sceneDifference/samples:0}
+  return {brightness:mean,contrast:Math.sqrt(Math.max(0,variance/samples-mean*mean)),motion:previous?motion/samples:99,sceneDifference:baseline?sceneDifference:0}
 }
 
 export function useAutoScanner(onCapture:(blob:Blob)=>Promise<boolean>,tuning:ScannerTuning=defaultTuning){

@@ -2,16 +2,27 @@ import csv
 import io
 import json
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from ..database import get_db
 from ..models import DeckEntry, InventoryItem, ReviewItem
+from ..providers import ScryfallProvider
 from ..schemas import InventoryCreate, InventoryRead, InventoryUpdate, Page
 from ..services.inventory import upsert_inventory
 
 router = APIRouter(prefix="/inventory", tags=["inventory"])
+prices = ScryfallProvider()
+
+
+async def finish_price(scryfall_id: str, foil: bool):
+    try:
+        card = await prices.get_card(scryfall_id)
+        return prices.market_price(card, foil=foil)
+    except httpx.HTTPError as exc:
+        raise HTTPException(503, "Could not refresh the current card price") from exc
 
 
 def delete_item_preserving_reviews(db: Session, item: InventoryItem) -> None:
@@ -97,12 +108,24 @@ def create_inventory(data: InventoryCreate, db: Session = Depends(get_db)):
     return upsert_inventory(db, data)
 
 
+@router.get("/{item_id}/price")
+async def inventory_finish_price(
+    item_id: str, foil: bool = False, db: Session = Depends(get_db)
+):
+    item = db.get(InventoryItem, item_id)
+    if not item:
+        raise HTTPException(404, "Inventory item not found")
+    return {"market_price": await finish_price(item.scryfall_id, foil)}
+
+
 @router.patch("/{item_id}", response_model=InventoryRead)
-def update_inventory(item_id: str, data: InventoryUpdate, db: Session = Depends(get_db)):
+async def update_inventory(item_id: str, data: InventoryUpdate, db: Session = Depends(get_db)):
     item = db.get(InventoryItem, item_id)
     if not item:
         raise HTTPException(404, "Inventory item not found")
     changes = data.model_dump(exclude_unset=True)
+    if "foil" in changes and changes["foil"] != item.foil:
+        changes["market_price"] = await finish_price(item.scryfall_id, changes["foil"])
     if "quantity" in changes:
         assigned = db.scalar(
             select(func.coalesce(func.sum(DeckEntry.quantity), 0)).where(

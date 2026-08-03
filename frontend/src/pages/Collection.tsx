@@ -16,13 +16,14 @@ export default function Collection(){
   const [query,setQuery]=useState(''),[sort,setSort]=useState<keyof typeof sorts>('newest'),[reload,setReload]=useState(0)
   const [page,setPage]=useState(0),[pageSize,setPageSize]=useState(48)
   const [location,setLocation]=useState(''),[facets,setFacets]=useState<{collections:string[];storage_locations:string[]}>({collections:[],storage_locations:[]})
-  const [editing,setEditing]=useState<Inventory|null>(null),[deleting,setDeleting]=useState<Inventory|null>(null),[busy,setBusy]=useState(false)
+  const [editing,setEditing]=useState<Inventory|null>(null),[deleting,setDeleting]=useState<Inventory|null>(null),[busy,setBusy]=useState(false),[priceBusy,setPriceBusy]=useState(false)
   const [error,setError]=useState<string>()
 
   useEffect(()=>{void request<{collections:string[];storage_locations:string[]}>('/inventory/facets').then(setFacets)},[reload])
   useEffect(()=>{setPage(0)},[query,sort,location])
   useEffect(()=>{const params=new URLSearchParams({q:query,page:String(page+1),page_size:String(pageSize),...Object.fromEntries(new URLSearchParams(sorts[sort]))});if(location)params.set('storage_location',location);const timer=setTimeout(()=>request<{items:Inventory[],total:number,collection_value:number,page_size:number}>(`/inventory?${params}`).then(x=>{setItems(x.items);setTotal(x.total);setCollectionValue(Number(x.collection_value));if(x.total>0&&page*x.page_size>=x.total)setPage(Math.max(0,Math.ceil(x.total/x.page_size)-1))}).catch(e=>setError(e instanceof Error?e.message:'Could not load collection')),200);return()=>clearTimeout(timer)},[query,sort,location,page,pageSize,reload])
   const save=async()=>{if(!editing)return;setBusy(true);setError(undefined);try{await request(`/inventory/${editing.id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({quantity:editing.quantity,foil:editing.foil,condition:editing.condition,language:editing.language,storage_location:editing.storage_location,market_price:editing.market_price,purchase_price:editing.purchase_price,notes:editing.notes})});setEditing(null);setReload(x=>x+1)}catch(e){setError(e instanceof Error?e.message:'Could not save entry')}finally{setBusy(false)}}
+  const setFoil=async(foil:boolean)=>{if(!editing)return;const itemId=editing.id;setEditing({...editing,foil});setPriceBusy(true);setError(undefined);try{const price=await request<{market_price:number|null}>(`/inventory/${itemId}/price?foil=${foil}`);setEditing(current=>current?.id===itemId?{...current,foil,market_price:price.market_price}:current)}catch(e){setError(e instanceof Error?e.message:'Could not refresh finish price')}finally{setPriceBusy(false)}}
   const remove=async()=>{if(!deleting)return;setBusy(true);setError(undefined);try{await request(`/inventory/${deleting.id}`,{method:'DELETE'});setDeleting(null);setReload(x=>x+1)}catch(e){setError(e instanceof Error?e.message:'Could not delete entry')}finally{setBusy(false)}}
 
   return <>
@@ -58,11 +59,11 @@ export default function Collection(){
       <Typography variant="h6">{editing.card_name} · {editing.set_code.toUpperCase()} #{editing.collector_number}</Typography>
       <TextField label="Quantity" type="number" value={editing.quantity} onChange={e=>setEditing({...editing,quantity:Math.max(1,Number(e.target.value))})}/>
       <Select value={editing.condition} onChange={e=>setEditing({...editing,condition:e.target.value})}>{conditions.map(([value,label])=><MenuItem key={value} value={value}>{label}</MenuItem>)}</Select>
-      <FormControlLabel control={<Switch checked={editing.foil} onChange={e=>setEditing({...editing,foil:e.target.checked})}/>} label="Foil"/>
+      <FormControlLabel control={<Switch checked={editing.foil} onChange={e=>void setFoil(e.target.checked)}/>} label="Foil"/>
       <TextField label="Language" value={editing.language} onChange={e=>setEditing({...editing,language:e.target.value})}/>
       <TextField label="Deck" value={editing.deck_assignments.length?editing.deck_assignments.map(deck=>`${deck.deck_name} ×${deck.quantity}`).join(', '):'None'} helperText="Deck quantities are managed in the Decks tab." slotProps={{input:{readOnly:true}}}/>
       <TextField label="Storage location" value={editing.storage_location} onChange={e=>setEditing({...editing,storage_location:e.target.value})}/>
-      <Stack direction="row" spacing={2}><TextField fullWidth label="Purchase price" type="number" value={editing.purchase_price??''} onChange={e=>setEditing({...editing,purchase_price:e.target.value===''?null:Number(e.target.value)})}/><TextField fullWidth label="Market price" type="number" value={editing.market_price??''} onChange={e=>setEditing({...editing,market_price:e.target.value===''?null:Number(e.target.value)})}/></Stack>
+      <Stack direction="row" spacing={2}><TextField fullWidth label="Purchase price" type="number" value={editing.purchase_price??''} onChange={e=>setEditing({...editing,purchase_price:e.target.value===''?null:Number(e.target.value)})}/><TextField fullWidth disabled={priceBusy} label={priceBusy?'Market price · refreshing…':'Market price'} type="number" value={editing.market_price??''} onChange={e=>setEditing({...editing,market_price:e.target.value===''?null:Number(e.target.value)})}/></Stack>
       <TextField label="Notes" multiline minRows={2} value={editing.notes??''} onChange={e=>setEditing({...editing,notes:e.target.value})}/>
     </Stack></DialogContent>}<DialogActions><Button disabled={busy} onClick={()=>setEditing(null)}>Cancel</Button><Button disabled={busy} variant="contained" onClick={save}>Save changes</Button></DialogActions></Dialog>
 
