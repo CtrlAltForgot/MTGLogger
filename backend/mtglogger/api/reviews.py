@@ -1,13 +1,15 @@
 import json
 
+import cv2
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..models import ReviewItem, ReviewStatus
+from ..models import CardReference, ReviewItem, ReviewStatus
 from ..schemas import InventoryCreate, InventoryRead, ReviewRead, ReviewResolve
 from ..services.inventory import upsert_inventory
+from ..services.references import artwork_hash
 
 router = APIRouter(prefix="/reviews", tags=["reviews"])
 
@@ -65,6 +67,27 @@ def resolve_review(review_id: str, payload: ReviewResolve, db: Session = Depends
     )
     review.status = ReviewStatus.resolved
     review.resolved_inventory_id = item.id
+    # A user-confirmed correction becomes a local visual example. This makes
+    # repeated cards/printings faster to recognize without training a cloud model.
+    image = cv2.imread(review.image_path)
+    if image is not None and card.image_url:
+        reference = db.get(CardReference, card.scryfall_id)
+        learned_hash = artwork_hash(image)
+        if reference:
+            reference.art_hash = learned_hash
+        else:
+            db.add(
+                CardReference(
+                    scryfall_id=card.scryfall_id,
+                    name=card.name,
+                    set_code=card.set_code,
+                    set_name=card.set_name,
+                    collector_number=card.collector_number,
+                    image_url=card.image_url,
+                    art_hash=learned_hash,
+                    market_price=card.market_price,
+                )
+            )
     db.commit()
     return InventoryRead.model_validate(item)
 

@@ -31,6 +31,8 @@ class InventoryCreate(BaseModel):
 
 class InventoryUpdate(BaseModel):
     quantity: int | None = Field(None, ge=0)
+    foil: bool | None = None
+    language: str | None = None
     condition: str | None = None
     market_price: Decimal | None = None
     purchase_price: Decimal | None = None
@@ -62,7 +64,7 @@ class ScanDefaults(BaseModel):
     collection_name: str = "Main"
     status: InventoryStatus = InventoryStatus.owned
     box_set_code: str | None = None
-    auto_add: bool = False
+    auto_add: bool = True
 
 
 class Candidate(BaseModel):

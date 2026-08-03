@@ -66,15 +66,35 @@ def test_artwork_hash_is_stable_under_small_brightness_change():
 def test_ocr_hints_normalize_printed_collector_number():
     from mtglogger.services.recognition import CardRecognizer
 
-    title, number = CardRecognizer.hints(
+    title, number, set_code = CardRecognizer.hints(
         "Abrade\nInstant\nU 0188\nT™ & © 2024 Wizards of the Coast\nFDN · EN"
     )
     assert title == "Abrade"
     assert number == "188"
+    assert set_code == "fdn"
 
 
-def test_scans_require_confirmation_by_default():
+def test_ocr_hints_read_set_code_without_spaces():
+    from mtglogger.services.recognition import CardRecognizer
+
+    title, number, set_code = CardRecognizer.hints(
+        "Shadows of the Past\nEnchantment\n& 2015 Wizands of the Const\n118/272\nORI·EN RYANYEE"
+    )
+    assert title == "Shadows of the Past"
+    assert number == "118"
+    assert set_code == "ori"
+
+
+def test_scans_auto_add_only_near_certain_matches_by_default():
     from mtglogger.schemas import ScanDefaults
 
-    assert ScanDefaults().auto_add is False
-    assert ScanDefaults(auto_add=True).auto_add is True
+    assert ScanDefaults().auto_add is True
+    assert ScanDefaults(auto_add=False).auto_add is False
+
+
+def test_inventory_updates_allow_physical_card_attributes():
+    from mtglogger.schemas import InventoryUpdate
+
+    update = InventoryUpdate(foil=True, language="ja", condition="lightly_played")
+    assert update.foil is True
+    assert update.language == "ja"

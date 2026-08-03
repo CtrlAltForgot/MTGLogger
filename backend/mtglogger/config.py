@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     scryfall_user_agent: str = "MTGLogger/0.1"
     image_dir: Path = Path("data/scans")
     request_timeout: float = 8.0
+    price_refresh_hours: int = 24
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

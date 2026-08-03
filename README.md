@@ -10,13 +10,17 @@ MTGLogger is a speed-first Magic: The Gathering collection catalog. Its scanner 
 
 The browser owns webcam access and sends stable captures to the API. This works in Docker and avoids passing a host camera device into a container. On startup, keep the card guide empty briefly while the scanner learns the background and camera noise. Recognition uses OCR, Scryfall exact metadata lookup, and perceptual artwork matching.
 
-By default, a recognized card opens a keyboard-first confirmation: press **Enter** to add the exact printing or **Backspace** to decline it. The camera stays latched throughout the decision and cannot scan that card again until it leaves the calibrated guide. Disable **Confirm each identified card** in batch defaults to auto-add matches above 95% confidence. Low-confidence failures continue directly to the review queue without interrupting a batch.
+By default, matches at 98.5% confidence or higher are added automatically. That score requires near-exact OCR agreement; on modern frames the printed name, collector number, and set code all contribute independent evidence. Everything else opens a keyboard-first confirmation: use the arrow or number keys to select a printing, press **Enter** to add it, or **Backspace** to decline it. Turn off **Auto-add near-certain matches** to confirm every card.
+
+After every capture the camera stays latched in **Remove card** state. It must observe the calibrated empty guide for three consecutive checks before another capture is possible, so a stationary card cannot be logged twice. This still supports two copies of the same card back-to-back: briefly expose the empty guide between them.
 
 ## Preparing Box Mode
 
 Enter a Scryfall set code in the scanner (for example `FDN`) and choose **Index set artwork**. MTGLogger downloads that set's card images as a throttled background job, stores compact perceptual hashes rather than duplicate image files, and reports progress in the scanner. Scanning remains available while indexing runs. Once cached, artwork matching works without a Scryfall request and Box Mode strongly limits the visual search space.
 
 The production API image includes CPU PaddleOCR 3. Paddle's inference model is initialized when the API starts and cached in the persistent `ocr_models` volume. Check `GET /api/scanner/capabilities` and `GET /api/references/status` when diagnosing recognition.
+
+Market prices are refreshed from Scryfall in a background task every 24 hours and never block scanning. A refresh can also be started with `POST /api/prices/refresh`; progress is available from `GET /api/prices/status`.
 
 ## Local development
 

@@ -38,7 +38,9 @@ async def recognize_card(
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
-    if result.confidence > 95 and result.candidates and defaults.auto_add:
+    # Automatic inventory writes require near-certain agreement. Scores below
+    # this remain one-key confirmations, even when automatic mode is enabled.
+    if result.confidence >= 98.5 and result.candidates and defaults.auto_add:
         top = result.candidates[0]
         item = upsert_inventory(
             db,

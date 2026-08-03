@@ -79,11 +79,19 @@ class CardRecognizer:
                     points[np.argmax(diffs)],
                 ]
             )
-            target = np.array([[0, 0], [744, 0], [744, 1039], [0, 1039]], dtype="float32")
+            target = np.array([[0, 0], [599, 0], [599, 839], [0, 839]], dtype="float32")
             return cv2.warpPerspective(
-                image, cv2.getPerspectiveTransform(ordered, target), (745, 1040)
+                image, cv2.getPerspectiveTransform(ordered, target), (600, 840)
             )
-        return image
+        # The browser deliberately centers cards in a fixed guide. Low-contrast
+        # sleeves may hide the outer contour, so normalize that guide instead of
+        # sending an entire widescreen frame through OCR and artwork matching.
+        height, width = image.shape[:2]
+        crop_height = int(height * 0.96)
+        crop_width = min(int(width * 0.52), int(crop_height * 0.82))
+        x1, y1 = (width - crop_width) // 2, (height - crop_height) // 2
+        guide = image[y1 : y1 + crop_height, x1 : x1 + crop_width]
+        return cv2.resize(guide, (600, 840), interpolation=cv2.INTER_AREA)
 
     def extract_text(self, image: np.ndarray) -> str:
         if self._ocr is None:
@@ -103,8 +111,19 @@ class CardRecognizer:
             return ""
 
     @staticmethod
-    def hints(text: str) -> tuple[str | None, str | None]:
+    def hints(text: str) -> tuple[str | None, str | None, str | None]:
         lines = [line.strip() for line in text.splitlines() if len(line.strip()) > 1]
+        set_code = None
+        languages = "EN|ES|FR|DE|IT|PT|JA|KO|RU|ZHS|ZHT|HE|LA|GRC|AR|SA|PHY"
+        for line in reversed(lines):
+            match = re.match(
+                rf"^\s*([A-Z][A-Z0-9]{{1,5}})\s*[·•.\-:]\s*(?:{languages})(?:\s|$)",
+                line,
+                re.I,
+            )
+            if match:
+                set_code = match.group(1).lower()
+                break
         number = None
         for line in reversed(lines):
             matches = re.findall(r"(?:^|\s)(\d{1,4}[a-z]?)(?:/\d{1,4})?(?=\s|$)", line, re.I)
@@ -122,21 +141,26 @@ class CardRecognizer:
         title = next(
             (line for line in lines[:5] if not re.search(r"\d{3,}", line) and len(line) <= 60), None
         )
-        return title, number
+        return title, number, set_code
 
     async def recognize(self, raw: bytes, box_set_code: str | None = None) -> Recognition:
         corrected = self.rectify(self.decode(raw))
         text = self.extract_text(corrected)
-        title, number = self.hints(text)
+        title, number, printed_set_code = self.hints(text)
         cards: list[dict] = []
         if title or number:
             query = f'!"{title}"' if title else f"cn:{number}"
             if number:
                 query += f" cn:{number}"
-            cards = await self.provider.search(query, box_set_code)
+            preferred_set = printed_set_code or box_set_code
+            cards = await self.provider.search(query, preferred_set)
+            # An imperfect set-code OCR should lower confidence, not erase otherwise
+            # useful candidates from the confirmation list.
+            if not cards and printed_set_code:
+                cards = await self.provider.search(query, box_set_code)
 
         scan_hash = artwork_hash(corrected)
-        visual_matches = self._visual_matches(scan_hash, box_set_code)
+        visual_matches = self._visual_matches(scan_hash, printed_set_code or box_set_code)
         visual_scores = {reference.scryfall_id: score for reference, score in visual_matches}
         ranked: dict[str, Candidate] = {}
         for card in cards:
@@ -150,15 +174,28 @@ class CardRecognizer:
                 if number and number.lower() == card["collector_number"].lower()
                 else (0.45 if not number else 0)
             )
-            set_bonus = 0.08 if box_set_code and card["set"].lower() == box_set_code.lower() else 0
-            ocr_score = (title_score * 0.66 + number_score * 0.34) * 100
+            set_score = (
+                1.0
+                if printed_set_code and card["set"].lower() == printed_set_code
+                else (0.45 if not printed_set_code else 0.0)
+            )
+            if printed_set_code:
+                ocr_score = (title_score * 0.5 + number_score * 0.3 + set_score * 0.2) * 100
+            else:
+                ocr_score = (title_score * 0.66 + number_score * 0.34) * 100
             visual_score = visual_scores.get(card["id"])
             confidence = (
                 ocr_score * 0.62 + visual_score * 0.38
                 if visual_score is not None
-                else ocr_score * 0.92
+                else ocr_score * (0.995 if printed_set_code else 0.92)
             )
-            confidence = min(99.5, confidence + set_bonus * 100)
+            if (
+                not printed_set_code
+                and box_set_code
+                and card["set"].lower() == box_set_code.lower()
+            ):
+                confidence += 3
+            confidence = min(99.5, confidence)
             ranked[card["id"]] = Candidate(
                 scryfall_id=card["id"],
                 name=card["name"],

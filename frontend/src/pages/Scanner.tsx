@@ -9,7 +9,7 @@ import ScanConfirmation from '../components/ScanConfirmation'
 import { defaultTuning, useAutoScanner, type ScannerTuning } from '../scanner/useAutoScanner'
 import type { Candidate, Defaults, Inventory, ScanResult } from '../types'
 
-const initial:Defaults={condition:'near_mint',foil:false,language:'en',storage_location:'Unsorted',collection_name:'Main',status:'owned',box_set_code:null,auto_add:false}
+const initial:Defaults={condition:'near_mint',foil:false,language:'en',storage_location:'Unsorted',collection_name:'Main',status:'owned',box_set_code:null,auto_add:true}
 type ReferenceStatus={state:string;set_code:string|null;completed:number;total:number;indexed_cards:number;error:string|null}
 
 export default function Scanner(){
@@ -33,13 +33,13 @@ export default function Scanner(){
   useEffect(()=>{void refresh();const timer=setInterval(refresh,2500);return()=>clearInterval(timer)},[refresh])
 
   const finishDecision=()=>{decisionComplete.current?.();decisionComplete.current=null;setDecisionBusy(false)}
-  const accept=useCallback(async()=>{
-    if(!result?.review_id||!result.candidates[0])return
+  const accept=useCallback(async(candidate:Candidate)=>{
+    if(!result?.review_id)return
     setDecisionBusy(true)
     try{
       const inventory=await request<Inventory>(`/reviews/${result.review_id}/resolve`,{
         method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({candidate:result.candidates[0],defaults}),
+        body:JSON.stringify({candidate,defaults}),
       })
       setResult({...result,disposition:'added',inventory,message:`Added ${inventory.card_name}`})
       finishDecision()
@@ -99,7 +99,7 @@ export default function Scanner(){
           {['owned','wishlist','for_trade','for_sale','loaned'].map(value=><MenuItem value={value} key={value}>{value.replace('_',' ')}</MenuItem>)}
         </Select>
         <FormControlLabel control={<Switch checked={defaults.foil} onChange={event=>setDefaults({...defaults,foil:event.target.checked})}/>} label="Foil"/>
-        <FormControlLabel control={<Switch checked={!defaults.auto_add} onChange={event=>setDefaults({...defaults,auto_add:!event.target.checked})}/>} label="Confirm each identified card"/>
+        <FormControlLabel control={<Switch checked={defaults.auto_add} onChange={event=>setDefaults({...defaults,auto_add:event.target.checked})}/>} label="Auto-add near-certain matches (98.5%+)"/>
       </Stack></CardContent></Card>
 
       <Card sx={{mt:2}}><CardContent><Typography variant="h6">Camera calibration</Typography>
@@ -111,6 +111,6 @@ export default function Scanner(){
         <Slider min={3} max={12} value={tuning.stableFrames} onChange={(_,value)=>setTuning({...tuning,stableFrames:value as number})}/>
       </CardContent></Card>
     </Grid>
-    {candidate&&<ScanConfirmation candidate={candidate} confidence={result!.confidence} onAccept={accept} onDecline={decline} busy={decisionBusy}/>}
+    {candidate&&<ScanConfirmation candidates={result!.candidates} confidence={result!.confidence} onAccept={accept} onDecline={decline} busy={decisionBusy}/>}
   </Grid>
 }
