@@ -175,13 +175,29 @@ class CardRecognizer:
         title_text = self.extract_text(title)
         footer_text = self.extract_text(footer)
         focused = "\n".join(part for part in (title_text, footer_text) if part.strip())
-        focused_title, _, _, _ = self.hints(focused)
+        focused_title, number, set_code, _ = self.hints(focused)
+        if focused_title and (not number or not set_code):
+            # Tiny foil/set/collector text benefits from local contrast and
+            # sharpening. Run this extra OCR pass only when the normal footer
+            # did not already provide complete printing evidence.
+            enhanced_footer = self.enhance_footer(footer)
+            enhanced_text = self.extract_text(enhanced_footer)
+            if enhanced_text.strip():
+                focused = "\n".join((focused, enhanced_text))
         if focused_title:
             return focused
         # Showcase frames and older layouts occasionally place the title outside
         # the normal band. Preserve reliability with a full-card fallback only
         # when the fast title pass produced no usable text.
         return self.extract_text(image)
+
+    @staticmethod
+    def enhance_footer(footer: np.ndarray) -> np.ndarray:
+        gray = cv2.cvtColor(footer, cv2.COLOR_BGR2GRAY)
+        contrasted = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8)).apply(gray)
+        blurred = cv2.GaussianBlur(contrasted, (0, 0), 1.2)
+        sharpened = cv2.addWeighted(contrasted, 1.8, blurred, -0.8, 0)
+        return cv2.cvtColor(sharpened, cv2.COLOR_GRAY2BGR)
 
     @staticmethod
     def has_card_structure(image: np.ndarray) -> bool:
@@ -878,16 +894,22 @@ class CardRecognizer:
         if canonical is None or len(scan) == 1:
             return art_score
         weights = {
-            "full_hash": 0.14,
-            "title_hash": 0.11,
-            "footer_hash": 0.15,
+            "full_hash": 0.13,
+            "title_hash": 0.10,
+            "footer_hash": 0.12,
+            "symbol_hash": 0.10,
             "frame_hash": 0.05,
         }
-        score = art_score * 0.55
+        score = art_score * 0.50
+        total_weight = 0.50
         for field, weight in weights.items():
-            distance = hash_distance(scan[field], getattr(canonical, field))
+            canonical_hash = getattr(canonical, field, None)
+            if not canonical_hash or field not in scan:
+                continue
+            distance = hash_distance(scan[field], canonical_hash)
             score += max(0.0, 99.5 - distance * 1.55) * weight
-        return min(99.5, round(score, 3))
+            total_weight += weight
+        return min(99.5, round(score / total_weight, 3))
 
 
 def save_scan(image: np.ndarray, path: Path) -> None:

@@ -272,6 +272,7 @@ def test_multi_region_visual_fingerprints_are_stable_and_distinct():
         "art_hash",
         "title_hash",
         "footer_hash",
+        "symbol_hash",
         "frame_hash",
     }
     assert all(len(value) == 16 for value in original.values())
@@ -288,6 +289,7 @@ def test_multi_region_fingerprint_ranks_matching_footer_above_reprint():
         "full_hash": "0000000000000000",
         "title_hash": "0000000000000000",
         "footer_hash": "0000000000000000",
+        "symbol_hash": "0000000000000000",
         "frame_hash": "0000000000000000",
     }
     exact = SimpleNamespace(**scan)
@@ -299,6 +301,20 @@ def test_multi_region_fingerprint_ranks_matching_footer_above_reprint():
     assert CardRecognizer._fingerprint_score(scan, exact, 0) > (
         CardRecognizer._fingerprint_score(scan, reused_art, 0)
     )
+
+
+def test_footer_enhancement_preserves_dimensions_and_increases_local_contrast():
+    import cv2
+    import numpy as np
+
+    from mtglogger.services.recognition import CardRecognizer
+
+    footer = np.full((180, 600, 3), 92, dtype=np.uint8)
+    cv2.putText(footer, "123/272 ORI EN", (20, 110), 1, 2, (112, 112, 112), 2)
+    enhanced = CardRecognizer.enhance_footer(footer)
+
+    assert enhanced.shape == footer.shape
+    assert enhanced.std() > footer.std()
 
 
 def test_perspective_quad_expands_to_preserve_printed_footer():

@@ -8,7 +8,7 @@ from sqlalchemy import text
 from . import __version__
 from .api import dashboard, decks, inventory, prices, references, reviews, scanner, sealed
 from .config import get_settings
-from .database import Base, SessionLocal, engine
+from .database import Base, SessionLocal, engine, migrate_schema
 from .providers import close_scryfall_client
 from .services.prices import price_refresh_loop
 from .services.references import reference_refresh_loop
@@ -17,6 +17,7 @@ from .services.references import reference_refresh_loop
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     Base.metadata.create_all(bind=engine)
+    migrate_schema()
     get_settings().image_dir.mkdir(parents=True, exist_ok=True)
     get_settings().reference_image_dir.mkdir(parents=True, exist_ok=True)
     price_task = asyncio.create_task(price_refresh_loop(get_settings().price_refresh_hours))

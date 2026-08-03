@@ -58,6 +58,7 @@ def visual_fingerprints(image) -> dict[str, str]:
         "art_hash": artwork_hash(image),
         "title_hash": _region_hash(image, 0.045, 0.145, 0.04, 0.96),
         "footer_hash": _region_hash(image, 0.865, 0.99, 0.035, 0.965),
+        "symbol_hash": _region_hash(image, 0.545, 0.66, 0.72, 0.965),
         "frame_hash": str(imagehash.dhash(full, hash_size=8)),
     }
 
@@ -175,7 +176,13 @@ async def _index_card(db, provider: ScryfallProvider, card: dict) -> None:
     )
     image_unchanged = bool(existing and existing.image_url == image_url)
     cache_satisfied = not get_settings().cache_reference_images or cached_image_exists
-    if existing and fingerprint and image_unchanged and cache_satisfied:
+    if (
+        existing
+        and fingerprint
+        and fingerprint.symbol_hash
+        and image_unchanged
+        and cache_satisfied
+    ):
         # Metadata and prices can change without changing the canonical image.
         existing.name = card["name"]
         existing.set_code = card["set"]
