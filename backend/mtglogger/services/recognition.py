@@ -464,6 +464,17 @@ class CardRecognizer:
             return len(matching_years) == 1
         return False
 
+    @classmethod
+    def has_strong_card_identity(cls, title: str | None, cards: list[dict]) -> bool:
+        if not title or not cards:
+            return False
+        normalized_title = cls.normalized_name(title)
+        return any(
+            SequenceMatcher(None, normalized_title, cls.normalized_name(card["name"])).ratio()
+            >= 0.90
+            for card in cards
+        )
+
     @staticmethod
     def structured_confidence(
         confidence: float,
@@ -668,8 +679,12 @@ class CardRecognizer:
                     cards = recovery_cards
                 elif recovery_text.strip():
                     text = recovery_text
-                if recovery_text.strip() and not self.has_strong_lookup_evidence(
-                    title, number, printed_set_code, copyright_year, cards
+                if (
+                    recovery_text.strip()
+                    and not self.has_strong_lookup_evidence(
+                        title, number, printed_set_code, copyright_year, cards
+                    )
+                    and not self.has_strong_card_identity(title, cards)
                 ):
                     recovered_name, oracle_cards = await self._oracle_recovery(
                         recovery_text, language
@@ -797,6 +812,19 @@ class CardRecognizer:
             existing = ranked.get(reference.scryfall_id)
             if existing:
                 continue
+            # When OCR already established a card identity, visual evidence may
+            # distinguish its printings but must not inject unrelated cards that
+            # happen to have a similar low-resolution perceptual hash.
+            if cards and not any(
+                SequenceMatcher(
+                    None,
+                    self.normalized_name(reference.name),
+                    self.normalized_name(card["name"]),
+                ).ratio()
+                >= 0.90
+                for card in cards
+            ):
+                continue
             ranked[reference.scryfall_id] = Candidate(
                 scryfall_id=reference.scryfall_id,
                 name=reference.name,
@@ -880,7 +908,8 @@ class CardRecognizer:
                     score = CardRecognizer._fingerprint_score(
                         scan_fingerprints, fingerprint, art_distance
                     )
-                    matches.append((reference, score))
+                    if score >= 78:
+                        matches.append((reference, score))
             matches.sort(key=lambda item: item[1], reverse=True)
             return matches[:8]
 

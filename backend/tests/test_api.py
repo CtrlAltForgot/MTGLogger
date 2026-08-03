@@ -636,6 +636,15 @@ def test_rules_recovery_does_not_discard_independent_printing_signal():
     assert confidence == 98.5
 
 
+def test_exact_card_name_prevents_rules_fallback_from_replacing_identity():
+    from mtglogger.services.recognition import CardRecognizer
+
+    cards = [{"name": "Rite of the Serpent"}]
+    assert CardRecognizer.has_strong_card_identity("Rite of the Serpent", cards)
+    assert CardRecognizer.has_strong_card_identity("RiteoftheSerpent", cards)
+    assert not CardRecognizer.has_strong_card_identity("Sadistic Obsession", cards)
+
+
 def test_scryfall_failure_preserves_recognition_for_local_review():
     import asyncio
 
