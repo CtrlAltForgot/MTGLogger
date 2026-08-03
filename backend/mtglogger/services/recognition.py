@@ -740,6 +740,7 @@ class CardRecognizer:
                 title, number, printed_set_code, copyright_year, cards
             ):
                 recovery_used = True
+                focused_identity_is_strong = self.has_strong_card_identity(title, cards)
                 # A fast crop can occasionally lock onto an internal rules box,
                 # and tiny footers may be incomplete. OCR the original frame only
                 # for weak scans, then rerank before interrupting the user.
@@ -749,7 +750,37 @@ class CardRecognizer:
                 recovery_cards = await self._lookup_cards(
                     *recovery_hints[:3], box_set_code, language, recovery_promo
                 )
-                if recovery_cards:
+                if focused_identity_is_strong:
+                    # Full-frame OCR sees table texture, sleeves, and rules text.
+                    # It may therefore invent a plausible but unrelated title.
+                    # Never replace an identity already corroborated by Scryfall;
+                    # instead borrow only missing printing-specific footer fields
+                    # and re-query that original card name with the fused evidence.
+                    recovered_number, recovered_set, recovered_year = recovery_hints[1:]
+                    fused_number = number or recovered_number
+                    fused_set = printed_set_code or recovered_set
+                    fused_year = copyright_year or recovered_year
+                    if (
+                        fused_number != number
+                        or fused_set != printed_set_code
+                        or fused_year != copyright_year
+                    ):
+                        fused_cards = await self._lookup_cards(
+                            title,
+                            fused_number,
+                            fused_set,
+                            box_set_code,
+                            language,
+                            promo_type,
+                        )
+                        if self.has_strong_card_identity(title, fused_cards):
+                            cards = fused_cards
+                            number = fused_number
+                            printed_set_code = fused_set
+                            copyright_year = fused_year
+                    if recovery_text.strip():
+                        text = "\n".join((text, recovery_text))
+                elif recovery_cards:
                     text = recovery_text
                     title, number, printed_set_code, copyright_year = recovery_hints
                     cards = recovery_cards

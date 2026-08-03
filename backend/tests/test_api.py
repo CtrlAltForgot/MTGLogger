@@ -772,6 +772,76 @@ def test_exact_card_name_prevents_rules_fallback_from_replacing_identity():
     assert not CardRecognizer.has_strong_card_identity("Sadistic Obsession", cards)
 
 
+def test_full_frame_recovery_cannot_replace_a_proven_focused_title():
+    import asyncio
+
+    import numpy as np
+
+    from mtglogger.services.recognition import CardRecognizer
+
+    rite_printings = [
+        {
+            "id": "ktk-rite",
+            "name": "Rite of the Serpent",
+            "set": "ktk",
+            "set_name": "Khans of Tarkir",
+            "collector_number": "86",
+            "released_at": "2014-09-26",
+        },
+        {
+            "id": "c17-rite",
+            "name": "Rite of the Serpent",
+            "set": "c17",
+            "set_name": "Commander 2017",
+            "collector_number": "124",
+            "released_at": "2017-08-25",
+        },
+    ]
+    wrong_card = {
+        "id": "mh1-sadistic",
+        "name": "Sadistic Obsession",
+        "set": "mh1",
+        "set_name": "Modern Horizons",
+        "collector_number": "105",
+        "released_at": "2019-06-14",
+    }
+
+    class Provider:
+        async def search(self, query, set_code=None, language=None):
+            if "Rite of the Serpent" in query:
+                if "cn:86" in query and set_code == "ktk":
+                    return [rite_printings[0]]
+                return rite_printings
+            if "Sadistic Obsession" in query:
+                return [wrong_card]
+            return []
+
+        @staticmethod
+        def image_url(_card):
+            return None
+
+        @staticmethod
+        def market_price(_card, foil=False):
+            return None
+
+    recognizer = CardRecognizer.__new__(CardRecognizer)
+    recognizer.provider = Provider()
+    recognizer._recognition_lock = asyncio.Lock()
+    image = np.zeros((840, 600, 3), dtype=np.uint8)
+    recognizer.decode = lambda _raw: image
+    recognizer.rectify = lambda decoded: decoded
+    recognizer.extract_identification_text = lambda _image: "Rite of the Serpent"
+    recognizer.extract_text = lambda _image: "Sadistic Obsession\n86/269\nKTK·EN"
+    recognizer._visual_matches = lambda _scan_hash, _set_code: []
+
+    result = asyncio.run(recognizer.recognize(b"camera-frame"))
+
+    assert result.candidates[0].name == "Rite of the Serpent"
+    assert result.candidates[0].set_code == "ktk"
+    assert result.candidates[0].collector_number == "86"
+    assert result.confidence == 99.5
+
+
 def test_scryfall_failure_preserves_recognition_for_local_review():
     import asyncio
 
