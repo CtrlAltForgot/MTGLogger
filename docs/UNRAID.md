@@ -54,6 +54,8 @@ docker compose -f docker-compose.yml -f docker-compose.unraid.yml logs -f api
 
 The HTTP UI is then available at `http://UNRAID-IP:5173` for browsing. Webcam scanning from another device requires the trusted HTTPS route described below.
 
+The API validates pooled database connections before using them, so it reconnects after a PostgreSQL container restart without requiring the API container to be manually restarted.
+
 ## HTTPS and webcam access
 
 Proxy HTTPS to `http://UNRAID-IP:5173`; do not proxy port `8000`, because nginx already sends `/api` traffic to FastAPI over Docker's private network.
