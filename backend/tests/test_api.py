@@ -321,6 +321,73 @@ def test_ocr_hints_skip_mana_cost_noise_above_title():
     assert year == 2015
 
 
+def test_ocr_hints_read_set_code_when_language_and_artist_are_joined():
+    from mtglogger.services.recognition import CardRecognizer
+
+    title, number, set_code, year = CardRecognizer.hints(
+        "Touch of Moonglove\nInstant\n123/272C\n&\n"
+        "2015Wuarsoh\nORI·ENSCOTTMURPHY"
+    )
+    assert title == "Touch of Moonglove"
+    assert number == "123"
+    assert set_code == "ori"
+    assert year == 2015
+
+
+def test_exact_joined_footer_reaches_near_certain_auto_add_confidence():
+    import asyncio
+
+    import numpy as np
+
+    from mtglogger.services.recognition import CardRecognizer
+
+    class Provider:
+        async def search(self, query, set_code=None, language=None):
+            assert query == '!"Touch of Moonglove" cn:123'
+            assert set_code == "ori"
+            assert language == "en"
+            return [
+                {
+                    "id": "ori-touch",
+                    "name": "Touch of Moonglove",
+                    "set": "ori",
+                    "set_name": "Magic Origins",
+                    "collector_number": "123",
+                    "released_at": "2015-07-17",
+                    "lang": "en",
+                    "finishes": ["nonfoil", "foil"],
+                    "prices": {"usd": "0.09", "usd_foil": "1.14"},
+                    "image_uris": {"normal": "https://example.test/ori-123.jpg"},
+                }
+            ]
+
+        @staticmethod
+        def image_url(card):
+            return card["image_uris"]["normal"]
+
+        @staticmethod
+        def market_price(card, foil=False):
+            return card["prices"]["usd_foil" if foil else "usd"]
+
+    recognizer = CardRecognizer.__new__(CardRecognizer)
+    recognizer.provider = Provider()
+    recognizer._recognition_lock = asyncio.Lock()
+    image = np.zeros((840, 600, 3), dtype=np.uint8)
+    recognizer.decode = lambda _raw: image
+    recognizer.rectify = lambda decoded: decoded
+    recognizer.extract_text = lambda _image: (
+        "Touch of Moonglove\nInstant\n123/272C\n&\n"
+        "2015Wuarsoh\nORI·ENSCOTTMURPHY"
+    )
+    recognizer._visual_matches = lambda _scan_hash, _set_code: []
+
+    result = asyncio.run(recognizer.recognize(b"camera-frame"))
+
+    assert result.confidence == 99.5
+    assert result.candidates[0].set_code == "ori"
+    assert result.candidates[0].collector_number == "123"
+
+
 def test_ocr_hints_recover_legacy_collector_pair_from_copyright_line():
     from mtglogger.services.recognition import CardRecognizer
 

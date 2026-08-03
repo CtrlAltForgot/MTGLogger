@@ -131,7 +131,7 @@ class CardRecognizer:
         languages = "EN|ES|FR|DE|IT|PT|JA|KO|RU|ZHS|ZHT|HE|LA|GRC|AR|SA|PHY"
         for line in reversed(lines):
             match = re.match(
-                rf"^\s*([A-Z][A-Z0-9]{{1,5}})\s*[·•.\-:]\s*(?:{languages})(?:\s|$)",
+                rf"^\s*([A-Z][A-Z0-9]{{1,5}})\s*[·•.\-:]\s*(?:{languages})(?=\s|$|[A-Z])",
                 line,
                 re.I,
             )
