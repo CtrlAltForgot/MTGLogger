@@ -529,6 +529,32 @@ def test_artwork_alone_cannot_auto_add_a_reused_printing():
     assert CardRecognizer.visual_only_score(87.0) == 87.0
 
 
+def test_damaged_collector_number_can_uniquely_identify_printing():
+    from mtglogger.services.recognition import CardRecognizer
+
+    # Touch of Moonglove 123/272 was read as 23/272. The suffix remains a
+    # strong match and no competing printing comes close.
+    assert CardRecognizer.has_unique_printing_signal(
+        1.0, "23", 0.8, [0.44, 0.33], None, "ori", 1
+    )
+    # Equal printing scores (Death's Approach #62 vs #222 with no footer) are
+    # deliberately not enough to add anything automatically.
+    assert not CardRecognizer.has_unique_printing_signal(
+        1.0, None, 0.45, [0.45], None, "gtc", 1
+    )
+
+
+def test_exact_set_signal_can_uniquely_identify_printing():
+    from mtglogger.services.recognition import CardRecognizer
+
+    assert CardRecognizer.has_unique_printing_signal(
+        1.0, None, 0.45, [0.45], "ORI", "ori", 1
+    )
+    assert not CardRecognizer.has_unique_printing_signal(
+        1.0, None, 0.45, [0.45], "ORI", "ori", 2
+    )
+
+
 def test_scryfall_failure_preserves_recognition_for_local_review():
     import asyncio
 

@@ -1,4 +1,5 @@
 import asyncio
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
@@ -33,7 +34,15 @@ def history(days: int = Query(365, ge=1, le=3650), db: Session = Depends(get_db)
         db.commit()
         db.refresh(baseline)
         points = [{"recorded_at": baseline.recorded_at, "total_value": current}]
-    previous = points[-2]["total_value"] if len(points) > 1 else None
+    # Inventory additions and edits change the live total between scheduled
+    # market refreshes. Include that observed value in the response so the chart
+    # and headline always describe the same collection state.
+    latest = points[-1]["total_value"] if points else None
+    if latest != current:
+        previous = latest
+        points.append({"recorded_at": datetime.now(UTC), "total_value": current})
+    else:
+        previous = points[-2]["total_value"] if len(points) > 1 else None
     change = current - previous if previous is not None else None
     percentage = (
         change / previous * 100 if change is not None and previous not in (None, 0) else None

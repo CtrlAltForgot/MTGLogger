@@ -473,6 +473,31 @@ class CardRecognizer:
         return confidence
 
     @staticmethod
+    def has_unique_printing_signal(
+        title_score: float,
+        number: str | None,
+        number_score: float,
+        competing_number_scores: list[float],
+        printed_set_code: str | None,
+        candidate_set_code: str,
+        candidates_in_set: int,
+    ) -> bool:
+        unique_number = bool(
+            number
+            and number_score >= 0.78
+            and (
+                not competing_number_scores
+                or number_score - max(competing_number_scores) >= 0.12
+            )
+        )
+        unique_set = bool(
+            printed_set_code
+            and printed_set_code.casefold() == candidate_set_code.casefold()
+            and candidates_in_set == 1
+        )
+        return title_score >= 0.95 and (unique_number or unique_set)
+
+    @staticmethod
     def visual_only_score(score: float) -> float:
         # Artwork is intentionally supporting evidence, never proof of an exact
         # printing. Wizards frequently reuses identical art across sets, promos,
@@ -639,9 +664,20 @@ class CardRecognizer:
         visual_scores = {reference.scryfall_id: score for reference, score in visual_matches}
         ranked: dict[str, Candidate] = {}
         release_years = [int(card.get("released_at", "0000")[:4]) for card in cards]
+        number_scores = [
+            self.collector_score(number, card["collector_number"]) for card in cards
+        ]
+        exact_set_counts: dict[str, int] = {}
+        for card in cards:
+            code = card["set"].casefold()
+            exact_set_counts[code] = exact_set_counts.get(code, 0) + 1
         for card in cards:
             title_score = (
-                SequenceMatcher(None, (title or "").lower(), card["name"].lower()).ratio()
+                SequenceMatcher(
+                    None,
+                    self.normalized_name(title or ""),
+                    self.normalized_name(card["name"]),
+                ).ratio()
                 if title
                 else 0.55
             )
@@ -688,6 +724,25 @@ class CardRecognizer:
                 and release_years.count(copyright_year) == 1
             )
             if title_score >= 0.93 and (only_printing or unique_release_year):
+                confidence = max(confidence, 98.5)
+            # Footer OCR sometimes loses a leading digit (123/272 -> 23/272)
+            # while retaining enough evidence to distinguish every printing of
+            # an exactly-read card name. Accept it only when one candidate has a
+            # strong collector-number match with a clear margin over all others.
+            competing_number_scores = [
+                score
+                for candidate, score in zip(cards, number_scores, strict=True)
+                if candidate["id"] != card["id"]
+            ]
+            if self.has_unique_printing_signal(
+                title_score,
+                number,
+                number_score,
+                competing_number_scores,
+                printed_set_code,
+                card["set"],
+                exact_set_counts[card["set"].casefold()],
+            ):
                 confidence = max(confidence, 98.5)
             confidence = min(99.5, confidence)
             if oracle_recovery:
