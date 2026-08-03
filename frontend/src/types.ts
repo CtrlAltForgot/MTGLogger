@@ -1,0 +1,5 @@
+export type Inventory = { id:string; card_name:string; set_code:string; set_name:string; collector_number:string; scryfall_id:string; quantity:number; foil:boolean; language:string; condition:string; market_price:number|null; storage_location:string; collection_name:string; image_url:string|null; rarity:string|null; type_line:string|null; color_identity:string; status:string; date_added:string }
+export type Candidate = { scryfall_id:string; name:string; set_code:string; set_name:string; collector_number:string; image_url:string|null; market_price:number|null; confidence:number }
+export type ScanResult = { disposition:'added'|'suggestions'|'queued'; confidence:number; inventory:Inventory|null; candidates:Candidate[]; review_id:string|null; message:string }
+export type Defaults = { condition:string; foil:boolean; language:string; storage_location:string; collection_name:string; status:string; box_set_code:string|null }
+
