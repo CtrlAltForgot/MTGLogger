@@ -10,13 +10,13 @@ from threading import Lock
 import cv2
 import httpx
 import numpy as np
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from ..database import SessionLocal
 from ..models import CardReference, CardVisualExample, CardVisualFingerprint
 from ..providers import ScryfallProvider
 from ..schemas import Candidate
-from .references import hash_distance, visual_fingerprints
+from .references import artwork_descriptors, hash_distance, visual_fingerprints
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -715,6 +715,43 @@ class CardRecognizer:
                 *([ignored_visual_hashes] if ignored_visual_hashes is not None else []),
             )
             cards = await lookup_task
+            identity_names = {
+                card["name"] for card in cards
+            } or ({title} if title else set())
+            descriptor_matches = await asyncio.to_thread(
+                self._descriptor_matches,
+                corrected,
+                identity_names,
+                printed_set_code or box_set_code,
+            )
+            known_card_ids = {card["id"] for card in cards}
+            for reference, _score in descriptor_matches:
+                if reference.scryfall_id in known_card_ids:
+                    continue
+                cards.append(
+                    {
+                        "id": reference.scryfall_id,
+                        "name": reference.name,
+                        "set": reference.set_code,
+                        "set_name": reference.set_name,
+                        "collector_number": reference.collector_number,
+                        "released_at": (
+                            reference.released_at.isoformat()
+                            if reference.released_at
+                            else "0000"
+                        ),
+                        "image_uris": {"normal": reference.image_url},
+                        "prices": {
+                            "usd": (
+                                str(reference.market_price)
+                                if reference.market_price is not None
+                                else None
+                            )
+                        },
+                        "lang": language,
+                    }
+                )
+                known_card_ids.add(reference.scryfall_id)
             if not self.has_strong_lookup_evidence(
                 title, number, printed_set_code, copyright_year, cards
             ):
@@ -757,6 +794,19 @@ class CardRecognizer:
                 # OCR title without silently accepting a bad contour.
             matching_complete = time.perf_counter()
         visual_scores = {reference.scryfall_id: score for reference, score in visual_matches}
+        for reference, score in descriptor_matches:
+            visual_scores[reference.scryfall_id] = max(
+                score, visual_scores.get(reference.scryfall_id, 0)
+            )
+        descriptor_scores = {
+            reference.scryfall_id: score for reference, score in descriptor_matches
+        }
+        descriptor_top_id = descriptor_matches[0][0].scryfall_id if descriptor_matches else None
+        descriptor_margin = (
+            descriptor_matches[0][1] - descriptor_matches[1][1]
+            if len(descriptor_matches) > 1
+            else (descriptor_matches[0][1] if descriptor_matches else 0)
+        )
         ranked: dict[str, Candidate] = {}
         release_years = [int(card.get("released_at", "0000")[:4]) for card in cards]
         number_scores = [
@@ -840,6 +890,18 @@ class CardRecognizer:
             )
             if printing_signal:
                 confidence = max(confidence, 98.5)
+            descriptor_score = descriptor_scores.get(card["id"], 0)
+            if (
+                card["id"] == descriptor_top_id
+                and title_score >= 0.93
+                and descriptor_score >= 88
+                and descriptor_margin >= 10
+            ):
+                # Unique exact-art evidence is strong enough to put the right
+                # printing first immediately. It remains below auto-add until
+                # footer/set evidence agrees, because the exhaustive catalog
+                # may still be syncing and identical art can be reprinted.
+                confidence = max(confidence, 97.0)
             confidence = min(99.5, confidence)
             if oracle_recovery and not printing_signal:
                 # Rules text can identify a card, but it cannot prove which set,
@@ -954,6 +1016,62 @@ class CardRecognizer:
                     matches.append((reference, score))
         matches.sort(key=lambda item: item[1], reverse=True)
         return matches[:8]
+
+    @staticmethod
+    def _descriptor_matches(
+        image: np.ndarray,
+        identity_names: set[str],
+        box_set_code: str | None = None,
+    ) -> list[tuple[CardReference, float]]:
+        """Rerank printings of an OCR-established card using local artwork details."""
+        names = {name.casefold() for name in identity_names if name}
+        if not names:
+            return []
+        scan = artwork_descriptors(image)
+        if len(scan) < 12:
+            return []
+        with SessionLocal() as db:
+            statement = (
+                select(CardReference, CardVisualFingerprint)
+                .join(
+                    CardVisualFingerprint,
+                    CardVisualFingerprint.scryfall_id == CardReference.scryfall_id,
+                )
+                .where(func.lower(CardReference.name).in_(names))
+                .where(CardVisualFingerprint.descriptor_path.is_not(None))
+            )
+            if box_set_code:
+                statement = statement.where(CardReference.set_code == box_set_code.casefold())
+            rows = list(db.execute(statement))
+        ranked: list[tuple[CardReference, float]] = []
+        for reference, fingerprint in rows:
+            try:
+                canonical = np.load(fingerprint.descriptor_path, allow_pickle=False)
+            except (OSError, ValueError, TypeError):
+                continue
+            if len(canonical) < 12:
+                continue
+            score = CardRecognizer._descriptor_score(scan, canonical)
+            if score is None:
+                continue
+            if score >= 55:
+                ranked.append((reference, round(score, 3)))
+        ranked.sort(key=lambda item: item[1], reverse=True)
+        return ranked[:12]
+
+    @staticmethod
+    def _descriptor_score(scan: np.ndarray, canonical: np.ndarray) -> float | None:
+        if len(scan) < 12 or len(canonical) < 12:
+            return None
+        matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+        matches = sorted(matcher.match(scan, canonical), key=lambda match: match.distance)
+        keep = matches[: min(30, len(matches))]
+        if len(keep) < 8:
+            return None
+        mean_distance = sum(match.distance for match in keep) / len(keep)
+        # Webcam/canonical benchmarks place exact art around 20-35 and adjacent
+        # artwork around 47-65. The margin between candidates is the key signal.
+        return min(99.5, max(0.0, 124.0 - mean_distance * 1.25))
 
     @staticmethod
     def _get_visual_catalog() -> _VisualCatalog:

@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     scryfall_user_agent: str = "MTGLogger/0.1"
     image_dir: Path = Path("data/scans")
     reference_image_dir: Path = Path("data/references")
+    reference_descriptor_dir: Path = Path("data/descriptors")
     reference_image_cache: str = "compact"
     reference_refresh_hours: int = 24
     reference_auto_sync: bool = True

@@ -58,3 +58,11 @@ def migrate_schema() -> None:
                     "ON card_visual_fingerprints (symbol_hash)"
                 )
             )
+    if "descriptor_path" not in columns:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "ALTER TABLE card_visual_fingerprints "
+                    "ADD COLUMN descriptor_path TEXT"
+                )
+            )

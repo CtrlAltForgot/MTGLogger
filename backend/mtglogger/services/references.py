@@ -8,6 +8,7 @@ from threading import Lock
 
 import cv2
 import imagehash
+import numpy as np
 from PIL import Image
 from sqlalchemy import func, select
 
@@ -69,6 +70,41 @@ def visual_fingerprints(image) -> dict[str, str]:
     }
 
 
+def artwork_descriptors(image: np.ndarray, feature_count: int = 256) -> np.ndarray:
+    """Return compact local features for exact artwork comparison.
+
+    Unlike a single perceptual hash, ORB retains many local details and remains
+    useful through webcam perspective, exposure, and modest glare changes.
+    """
+    height, width = image.shape[:2]
+    art = image[
+        int(height * 0.12) : int(height * 0.58),
+        int(width * 0.055) : int(width * 0.945),
+    ]
+    gray = cv2.cvtColor(art, cv2.COLOR_BGR2GRAY)
+    gray = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
+    detector = cv2.ORB_create(nfeatures=feature_count, scaleFactor=1.2, nlevels=8)
+    _keypoints, descriptors = detector.detectAndCompute(gray, None)
+    if descriptors is None:
+        return np.empty((0, 32), dtype=np.uint8)
+    return descriptors.astype(np.uint8, copy=False)
+
+
+def save_artwork_descriptors(scryfall_id: str, descriptors: np.ndarray) -> Path | None:
+    if not len(descriptors):
+        return None
+    root = get_settings().reference_descriptor_dir
+    path = root / scryfall_id[:2] / f"{scryfall_id}.npy"
+    if path.exists():
+        return path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    with temporary.open("wb") as output:
+        np.save(output, descriptors, allow_pickle=False)
+    temporary.replace(path)
+    return path
+
+
 def hash_distance(left: str, right: str) -> int:
     return bin(int(left, 16) ^ int(right, 16)).count("1")
 
@@ -90,6 +126,14 @@ def sync_status() -> dict:
                 select(func.count())
                 .select_from(CardVisualFingerprint)
                 .where(CardVisualFingerprint.cached_image_path.is_not(None))
+            )
+            or 0
+        )
+        result["descriptor_cards"] = (
+            db.scalar(
+                select(func.count())
+                .select_from(CardVisualFingerprint)
+                .where(CardVisualFingerprint.descriptor_path.is_not(None))
             )
             or 0
         )
@@ -250,12 +294,18 @@ async def _index_card(db, provider: ScryfallProvider, card: dict) -> bool:
         and fingerprint.cached_image_path
         and Path(fingerprint.cached_image_path).is_file()
     )
+    descriptor_exists = bool(
+        fingerprint
+        and fingerprint.descriptor_path
+        and Path(fingerprint.descriptor_path).is_file()
+    )
     image_unchanged = bool(existing and existing.image_url == image_url)
     cache_satisfied = not get_settings().cache_reference_images or cached_image_exists
     if (
         existing
         and fingerprint
         and fingerprint.symbol_hash
+        and descriptor_exists
         and image_unchanged
         and cache_satisfied
     ):
@@ -288,6 +338,7 @@ async def _index_card(db, provider: ScryfallProvider, card: dict) -> bool:
         db.add(existing)
         db.flush()
     cache_path = _cache_image(card["id"], raw)
+    descriptor_path = save_artwork_descriptors(card["id"], artwork_descriptors(image))
     db.merge(
         CardVisualFingerprint(
             scryfall_id=card["id"],
@@ -295,6 +346,7 @@ async def _index_card(db, provider: ScryfallProvider, card: dict) -> bool:
             language=card.get("lang", "en"),
             layout=card.get("layout", "normal"),
             cached_image_path=str(cache_path) if cache_path else None,
+            descriptor_path=str(descriptor_path) if descriptor_path else None,
         )
     )
     db.commit()

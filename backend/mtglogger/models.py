@@ -185,6 +185,7 @@ class CardVisualFingerprint(Base):
     footer_hash: Mapped[str] = mapped_column(String(16), index=True)
     symbol_hash: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
     frame_hash: Mapped[str] = mapped_column(String(16), index=True)
+    descriptor_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     language: Mapped[str] = mapped_column(String(16), default="en", index=True)
     layout: Mapped[str] = mapped_column(String(32), default="normal")
     cached_image_path: Mapped[str | None] = mapped_column(Text, nullable=True)

@@ -323,6 +323,33 @@ def test_multi_region_visual_fingerprints_are_stable_and_distinct():
     assert all(hash_distance(original[key], adjusted[key]) <= 4 for key in original)
 
 
+def test_local_artwork_descriptors_prefer_same_art_under_camera_changes():
+    import cv2
+    import numpy as np
+
+    from mtglogger.services.recognition import CardRecognizer
+    from mtglogger.services.references import artwork_descriptors
+
+    image = np.zeros((840, 600, 3), dtype=np.uint8)
+    rng = np.random.default_rng(42)
+    texture = rng.integers(0, 256, (386, 534, 3), dtype=np.uint8)
+    image[101:487, 33:567] = texture
+    adjusted = cv2.convertScaleAbs(image, alpha=1.04, beta=5)
+    different_image = np.zeros_like(image)
+    different_image[101:487, 33:567] = rng.integers(
+        0, 256, (386, 534, 3), dtype=np.uint8
+    )
+
+    query = artwork_descriptors(adjusted)
+    same = CardRecognizer._descriptor_score(query, artwork_descriptors(image))
+    different = CardRecognizer._descriptor_score(
+        query, artwork_descriptors(different_image)
+    )
+
+    assert same is not None and different is not None
+    assert same > different + 10
+
+
 def test_multi_region_fingerprint_ranks_matching_footer_above_reprint():
     from types import SimpleNamespace
 

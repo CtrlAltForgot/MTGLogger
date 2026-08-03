@@ -21,9 +21,11 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
       SCRYFALL_USER_AGENT: ${SCRYFALL_USER_AGENT:-MTGLogger/0.1}
       PRICE_REFRESH_HOURS: ${PRICE_REFRESH_HOURS:-1}
+      REFERENCE_DESCRIPTOR_DIR: ${REFERENCE_DESCRIPTOR_DIR:-/app/descriptors}
     volumes:
       - card_images:/app/data
       - ocr_models:/root/.paddlex
+      - reference_descriptors:/app/descriptors
     ports: ["${API_BIND:-127.0.0.1}:${API_PORT:-8000}:8000"]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=2)"]
@@ -54,3 +56,4 @@ volumes:
   postgres_data:
   card_images:
   ocr_models:
+  reference_descriptors:
