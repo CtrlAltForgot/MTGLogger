@@ -304,6 +304,20 @@ class CardRecognizer:
             if match:
                 set_code = match.group(1).lower()
                 break
+        if not set_code:
+            # Low-resolution footer OCR often separates the set code from the
+            # adjacent language ("M15 · EN" -> standalone "MIS"). Only accept
+            # short uppercase/alphanumeric footer tokens, never ordinary title
+            # or rules text.
+            language_tokens = set(languages.split("|"))
+            for line in reversed(lines[-5:]):
+                token = line.strip()
+                if (
+                    re.fullmatch(r"[A-Z][A-Z0-9]{1,4}", token)
+                    and token not in language_tokens
+                ):
+                    set_code = token.lower()
+                    break
         number = None
         # Collector numbers often share the copyright line. Prefer an explicit
         # numerator/denominator pair before filtering copyright years.

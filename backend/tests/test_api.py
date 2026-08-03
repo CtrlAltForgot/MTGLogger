@@ -545,6 +545,7 @@ def test_set_code_score_handles_bounded_footer_glyph_confusion():
     assert CardRecognizer.set_code_score("MIS", "m15") == 1.0
     assert CardRecognizer.set_code_score("ISD", "isd") == 1.0
     assert CardRecognizer.set_code_score("MIS", "m13") < 1.0
+    assert CardRecognizer.hints("Swamp\nMIS\nBasic Land-Swamp")[2] == "mis"
 
 
 def test_focused_ocr_reads_only_enlarged_title_and_footer_when_title_is_usable():
