@@ -5,6 +5,7 @@ import time
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path
+from threading import Lock
 
 import cv2
 import httpx
@@ -18,6 +19,18 @@ from ..schemas import Candidate
 from .references import hash_distance, visual_fingerprints
 
 logger = logging.getLogger("uvicorn.error")
+
+
+@dataclass(frozen=True)
+class _VisualCatalog:
+    loaded_at: float
+    rows: tuple[tuple[CardReference, CardVisualFingerprint | None], ...]
+    examples: dict[str, tuple[str, ...]]
+
+
+_visual_catalog: _VisualCatalog | None = None
+_visual_catalog_lock = Lock()
+_VISUAL_CATALOG_TTL_SECONDS = 60
 
 
 @dataclass
@@ -873,45 +886,71 @@ class CardRecognizer:
         scan_fingerprints = (
             scan_hash if isinstance(scan_hash, dict) else {"art_hash": scan_hash}
         )
-        with SessionLocal() as db:
-            statement = select(CardReference, CardVisualFingerprint).outerjoin(
-                CardVisualFingerprint,
-                CardVisualFingerprint.scryfall_id == CardReference.scryfall_id,
+        catalog = CardRecognizer._get_visual_catalog()
+        set_code = box_set_code.lower() if box_set_code else None
+        scan_art = int(scan_fingerprints["art_hash"], 16)
+        matches = []
+        for reference, fingerprint in catalog.rows:
+            if set_code and reference.set_code != set_code:
+                continue
+            candidate_hashes = (reference.art_hash,) + tuple(
+                example_hash
+                for example_hash in catalog.examples.get(reference.scryfall_id, ())
+                if example_hash not in ignored_example_hashes
             )
-            if box_set_code:
-                statement = statement.where(CardReference.set_code == box_set_code.lower())
-            rows = list(db.execute(statement))
-            references = [reference for reference, _fingerprint in rows]
-            examples: dict[str, list[str]] = {}
-            if references:
-                for scryfall_id, example_hash in db.execute(
-                    select(CardVisualExample.scryfall_id, CardVisualExample.art_hash).where(
-                        CardVisualExample.scryfall_id.in_(
-                            [reference.scryfall_id for reference in references]
+            art_distance = min(
+                (scan_art ^ int(candidate_hash, 16)).bit_count()
+                for candidate_hash in candidate_hashes
+            )
+            # Artwork retrieves the card family. Complementary canonical
+            # regions then rank reprints that reuse the same illustration.
+            if art_distance <= 22:
+                score = CardRecognizer._fingerprint_score(
+                    scan_fingerprints, fingerprint, art_distance
+                )
+                if score >= 78:
+                    matches.append((reference, score))
+        matches.sort(key=lambda item: item[1], reverse=True)
+        return matches[:8]
+
+    @staticmethod
+    def _get_visual_catalog() -> _VisualCatalog:
+        """Reuse immutable visual rows instead of hydrating the full DB each scan."""
+        global _visual_catalog
+        now = time.monotonic()
+        cached = _visual_catalog
+        if cached and now - cached.loaded_at < _VISUAL_CATALOG_TTL_SECONDS:
+            return cached
+        with _visual_catalog_lock:
+            cached = _visual_catalog
+            if cached and now - cached.loaded_at < _VISUAL_CATALOG_TTL_SECONDS:
+                return cached
+            with SessionLocal() as db:
+                rows = tuple(
+                    db.execute(
+                        select(CardReference, CardVisualFingerprint).outerjoin(
+                            CardVisualFingerprint,
+                            CardVisualFingerprint.scryfall_id == CardReference.scryfall_id,
                         )
                     )
-                ):
-                    if example_hash not in ignored_example_hashes:
-                        examples.setdefault(scryfall_id, []).append(example_hash)
-            matches = []
-            for reference, fingerprint in rows:
-                art_distance = min(
-                    hash_distance(scan_fingerprints["art_hash"], candidate_hash)
-                    for candidate_hash in [
-                        reference.art_hash,
-                        *examples.get(reference.scryfall_id, []),
-                    ]
                 )
-                # Artwork retrieves the card family. Complementary canonical
-                # regions then rank reprints that reuse the same illustration.
-                if art_distance <= 22:
-                    score = CardRecognizer._fingerprint_score(
-                        scan_fingerprints, fingerprint, art_distance
-                    )
-                    if score >= 78:
-                        matches.append((reference, score))
-            matches.sort(key=lambda item: item[1], reverse=True)
-            return matches[:8]
+                examples: dict[str, list[str]] = {}
+                for scryfall_id, example_hash in db.execute(
+                    select(CardVisualExample.scryfall_id, CardVisualExample.art_hash)
+                ):
+                    examples.setdefault(scryfall_id, []).append(example_hash)
+            _visual_catalog = _VisualCatalog(
+                loaded_at=now,
+                rows=rows,
+                examples={key: tuple(value) for key, value in examples.items()},
+            )
+            return _visual_catalog
+
+    @staticmethod
+    def invalidate_visual_catalog() -> None:
+        global _visual_catalog
+        with _visual_catalog_lock:
+            _visual_catalog = None
 
     @staticmethod
     def _fingerprint_score(

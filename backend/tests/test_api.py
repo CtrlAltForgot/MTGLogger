@@ -1076,3 +1076,15 @@ def test_confirmed_visual_examples_supplement_canonical_artwork():
     matches = CardRecognizer._visual_matches("0000000000000000", None)
     assert matches[0][0].scryfall_id == CARD["scryfall_id"]
     assert matches[0][1] == 99.5
+
+
+def test_visual_catalog_is_reused_until_explicitly_invalidated():
+    from mtglogger.services.recognition import CardRecognizer
+
+    CardRecognizer.invalidate_visual_catalog()
+    first = CardRecognizer._get_visual_catalog()
+    second = CardRecognizer._get_visual_catalog()
+    assert second is first
+
+    CardRecognizer.invalidate_visual_catalog()
+    assert CardRecognizer._get_visual_catalog() is not first

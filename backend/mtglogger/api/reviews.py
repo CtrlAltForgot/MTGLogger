@@ -170,6 +170,7 @@ def resolve_review(review_id: str, payload: ReviewResolve, db: Session = Depends
             db.flush()
             db.add(CardVisualExample(scryfall_id=card.scryfall_id, art_hash=learned_hash))
     db.commit()
+    CardRecognizer.invalidate_visual_catalog()
     # Keep the confirmed camera frame as labeled ground truth. These examples
     # are what let us benchmark recognition and improve it from real hardware
     # instead of tuning confidence against synthetic fixtures.
