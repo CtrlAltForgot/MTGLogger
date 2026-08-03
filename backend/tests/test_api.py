@@ -26,6 +26,36 @@ def test_duplicate_printing_increments_quantity(client):
     assert page["items"][0]["quantity"] == 2
 
 
+def test_inventory_pagination_preserves_full_collection_totals(client):
+    for index, name in enumerate(("Alpha", "Beta", "Gamma"), start=10):
+        response = client.post(
+            "/api/inventory",
+            json={
+                **CARD,
+                "card_name": name,
+                "collector_number": str(index),
+                "scryfall_id": f"00000000-0000-0000-0000-{index:012d}",
+                "market_price": "1.00",
+            },
+        )
+        assert response.status_code == 201
+
+    first = client.get(
+        "/api/inventory",
+        params={"sort": "card_name", "descending": False, "page": 1, "page_size": 2},
+    ).json()
+    second = client.get(
+        "/api/inventory",
+        params={"sort": "card_name", "descending": False, "page": 2, "page_size": 2},
+    ).json()
+
+    assert first["total"] == second["total"] == 3
+    assert first["collection_value"] == second["collection_value"] == "3.00"
+    assert first["page_size"] == second["page_size"] == 2
+    assert [item["card_name"] for item in first["items"]] == ["Alpha", "Beta"]
+    assert [item["card_name"] for item in second["items"]] == ["Gamma"]
+
+
 def test_dashboard_and_exports(client):
     client.post("/api/inventory", json=CARD)
     summary = client.get("/api/dashboard/summary").json()

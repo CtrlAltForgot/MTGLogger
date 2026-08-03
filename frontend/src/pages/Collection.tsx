@@ -3,7 +3,7 @@ import { Delete, Download, Edit, Search } from '@mui/icons-material'
 import {
   Box, Button, Card, Chip, Dialog, DialogActions, DialogContent, DialogTitle,
   Alert, FormControlLabel, IconButton, InputAdornment, MenuItem, Select, Stack, Switch,
-  TextField, Tooltip, Typography,
+  TablePagination, TextField, Tooltip, Typography,
 } from '@mui/material'
 import { API, request } from '../api'
 import type { Inventory } from '../types'
@@ -14,12 +14,14 @@ const sorts={newest:'sort=date_added&descending=true',name:'sort=card_name&desce
 export default function Collection(){
   const [items,setItems]=useState<Inventory[]>([]),[total,setTotal]=useState(0),[collectionValue,setCollectionValue]=useState(0)
   const [query,setQuery]=useState(''),[sort,setSort]=useState<keyof typeof sorts>('newest'),[reload,setReload]=useState(0)
+  const [page,setPage]=useState(0),[pageSize,setPageSize]=useState(48)
   const [location,setLocation]=useState(''),[facets,setFacets]=useState<{collections:string[];storage_locations:string[]}>({collections:[],storage_locations:[]})
   const [editing,setEditing]=useState<Inventory|null>(null),[deleting,setDeleting]=useState<Inventory|null>(null),[busy,setBusy]=useState(false)
   const [error,setError]=useState<string>()
 
   useEffect(()=>{void request<{collections:string[];storage_locations:string[]}>('/inventory/facets').then(setFacets)},[reload])
-  useEffect(()=>{const params=new URLSearchParams({q:query,...Object.fromEntries(new URLSearchParams(sorts[sort]))});if(location)params.set('storage_location',location);const timer=setTimeout(()=>request<{items:Inventory[],total:number,collection_value:number}>(`/inventory?${params}`).then(x=>{setItems(x.items);setTotal(x.total);setCollectionValue(Number(x.collection_value))}),200);return()=>clearTimeout(timer)},[query,sort,location,reload])
+  useEffect(()=>{setPage(0)},[query,sort,location])
+  useEffect(()=>{const params=new URLSearchParams({q:query,page:String(page+1),page_size:String(pageSize),...Object.fromEntries(new URLSearchParams(sorts[sort]))});if(location)params.set('storage_location',location);const timer=setTimeout(()=>request<{items:Inventory[],total:number,collection_value:number,page_size:number}>(`/inventory?${params}`).then(x=>{setItems(x.items);setTotal(x.total);setCollectionValue(Number(x.collection_value));if(x.total>0&&page*x.page_size>=x.total)setPage(Math.max(0,Math.ceil(x.total/x.page_size)-1))}).catch(e=>setError(e instanceof Error?e.message:'Could not load collection')),200);return()=>clearTimeout(timer)},[query,sort,location,page,pageSize,reload])
   const save=async()=>{if(!editing)return;setBusy(true);setError(undefined);try{await request(`/inventory/${editing.id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({quantity:editing.quantity,foil:editing.foil,condition:editing.condition,language:editing.language,storage_location:editing.storage_location,market_price:editing.market_price,purchase_price:editing.purchase_price,notes:editing.notes})});setEditing(null);setReload(x=>x+1)}catch(e){setError(e instanceof Error?e.message:'Could not save entry')}finally{setBusy(false)}}
   const remove=async()=>{if(!deleting)return;setBusy(true);setError(undefined);try{await request(`/inventory/${deleting.id}`,{method:'DELETE'});setDeleting(null);setReload(x=>x+1)}catch(e){setError(e instanceof Error?e.message:'Could not delete entry')}finally{setBusy(false)}}
 
@@ -40,6 +42,17 @@ export default function Collection(){
       <Stack sx={{position:'absolute',right:4,top:4}}><Tooltip title="Edit entry"><IconButton aria-label={`Edit ${item.card_name}`} onClick={()=>setEditing({...item})}><Edit/></IconButton></Tooltip><Tooltip title="Delete entry"><IconButton color="error" aria-label={`Delete ${item.card_name}`} onClick={()=>setDeleting(item)}><Delete/></IconButton></Tooltip></Stack>
     </Card>)}</Box>
     {!items.length&&<Typography textAlign="center" color="text.secondary" mt={8}>No cards found. The scanner is ready when you are.</Typography>}
+    {total>0&&<TablePagination
+      component="div"
+      count={total}
+      page={page}
+      onPageChange={(_,nextPage)=>setPage(nextPage)}
+      rowsPerPage={pageSize}
+      onRowsPerPageChange={event=>{setPageSize(Number(event.target.value));setPage(0)}}
+      rowsPerPageOptions={[24,48,96,192]}
+      labelRowsPerPage="Cards per page"
+      sx={{mt:2}}
+    />}
 
     <Dialog open={!!editing} onClose={()=>!busy&&setEditing(null)} fullWidth maxWidth="sm"><DialogTitle>Edit collection entry</DialogTitle>{editing&&<DialogContent><Stack spacing={2} mt={1}>
       <Typography variant="h6">{editing.card_name} · {editing.set_code.toUpperCase()} #{editing.collector_number}</Typography>
