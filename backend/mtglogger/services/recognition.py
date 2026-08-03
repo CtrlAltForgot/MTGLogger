@@ -12,10 +12,10 @@ import numpy as np
 from sqlalchemy import select
 
 from ..database import SessionLocal
-from ..models import CardReference, CardVisualExample
+from ..models import CardReference, CardVisualExample, CardVisualFingerprint
 from ..providers import ScryfallProvider
 from ..schemas import Candidate
-from .references import artwork_hash, hash_distance
+from .references import hash_distance, visual_fingerprints
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -625,10 +625,10 @@ class CardRecognizer:
                     promo_type,
                 )
             )
-            scan_hash = await asyncio.to_thread(artwork_hash, corrected)
+            scan_fingerprints = await asyncio.to_thread(visual_fingerprints, corrected)
             visual_matches = await asyncio.to_thread(
                 self._visual_matches,
-                scan_hash,
+                scan_fingerprints,
                 printed_set_code or box_set_code,
                 *([ignored_visual_hashes] if ignored_visual_hashes is not None else []),
             )
@@ -666,7 +666,9 @@ class CardRecognizer:
                 # than a misleading enlarged internal rectangle.
                 corrected = decoded
                 card_structure = await asyncio.to_thread(self.has_card_structure, decoded)
-                visual_matches = []
+                # Keep visual candidates from the best localized crop. Visual
+                # evidence is capped below auto-add, so it can rescue a damaged
+                # OCR title without silently accepting a bad contour.
             matching_complete = time.perf_counter()
         visual_scores = {reference.scryfall_id: score for reference, score in visual_matches}
         ranked: dict[str, Candidate] = {}
@@ -819,16 +821,23 @@ class CardRecognizer:
 
     @staticmethod
     def _visual_matches(
-        scan_hash: str,
+        scan_hash: str | dict[str, str],
         box_set_code: str | None,
         ignored_example_hashes: set[str] | None = None,
     ) -> list[tuple[CardReference, float]]:
         ignored_example_hashes = ignored_example_hashes or set()
+        scan_fingerprints = (
+            scan_hash if isinstance(scan_hash, dict) else {"art_hash": scan_hash}
+        )
         with SessionLocal() as db:
-            statement = select(CardReference)
+            statement = select(CardReference, CardVisualFingerprint).outerjoin(
+                CardVisualFingerprint,
+                CardVisualFingerprint.scryfall_id == CardReference.scryfall_id,
+            )
             if box_set_code:
                 statement = statement.where(CardReference.set_code == box_set_code.lower())
-            references = list(db.scalars(statement))
+            rows = list(db.execute(statement))
+            references = [reference for reference, _fingerprint in rows]
             examples: dict[str, list[str]] = {}
             if references:
                 for scryfall_id, example_hash in db.execute(
@@ -841,20 +850,44 @@ class CardRecognizer:
                     if example_hash not in ignored_example_hashes:
                         examples.setdefault(scryfall_id, []).append(example_hash)
             matches = []
-            for reference in references:
-                distance = min(
-                    hash_distance(scan_hash, candidate_hash)
+            for reference, fingerprint in rows:
+                art_distance = min(
+                    hash_distance(scan_fingerprints["art_hash"], candidate_hash)
                     for candidate_hash in [
                         reference.art_hash,
                         *examples.get(reference.scryfall_id, []),
                     ]
                 )
-                # pHash has 64 bits. Distances above 18 are visually unrelated.
-                if distance <= 18:
-                    score = max(0.0, 99.5 - distance * 1.35)
+                # Artwork retrieves the card family. Complementary canonical
+                # regions then rank reprints that reuse the same illustration.
+                if art_distance <= 22:
+                    score = CardRecognizer._fingerprint_score(
+                        scan_fingerprints, fingerprint, art_distance
+                    )
                     matches.append((reference, score))
             matches.sort(key=lambda item: item[1], reverse=True)
             return matches[:8]
+
+    @staticmethod
+    def _fingerprint_score(
+        scan: dict[str, str],
+        canonical: CardVisualFingerprint | None,
+        art_distance: int,
+    ) -> float:
+        art_score = max(0.0, 99.5 - art_distance * 1.35)
+        if canonical is None or len(scan) == 1:
+            return art_score
+        weights = {
+            "full_hash": 0.14,
+            "title_hash": 0.11,
+            "footer_hash": 0.15,
+            "frame_hash": 0.05,
+        }
+        score = art_score * 0.55
+        for field, weight in weights.items():
+            distance = hash_distance(scan[field], getattr(canonical, field))
+            score += max(0.0, 99.5 - distance * 1.55) * weight
+        return min(99.5, round(score, 3))
 
 
 def save_scan(image: np.ndarray, path: Path) -> None:

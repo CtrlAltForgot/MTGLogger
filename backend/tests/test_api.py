@@ -278,6 +278,29 @@ def test_multi_region_visual_fingerprints_are_stable_and_distinct():
     assert all(hash_distance(original[key], adjusted[key]) <= 4 for key in original)
 
 
+def test_multi_region_fingerprint_ranks_matching_footer_above_reprint():
+    from types import SimpleNamespace
+
+    from mtglogger.services.recognition import CardRecognizer
+
+    scan = {
+        "art_hash": "0000000000000000",
+        "full_hash": "0000000000000000",
+        "title_hash": "0000000000000000",
+        "footer_hash": "0000000000000000",
+        "frame_hash": "0000000000000000",
+    }
+    exact = SimpleNamespace(**scan)
+    reused_art = SimpleNamespace(
+        **{**scan, "full_hash": "ffffffffffffffff", "footer_hash": "ffffffffffffffff"}
+    )
+
+    assert CardRecognizer._fingerprint_score(scan, exact, 0) == 99.5
+    assert CardRecognizer._fingerprint_score(scan, exact, 0) > (
+        CardRecognizer._fingerprint_score(scan, reused_art, 0)
+    )
+
+
 def test_perspective_quad_expands_to_preserve_printed_footer():
     import numpy as np
 
