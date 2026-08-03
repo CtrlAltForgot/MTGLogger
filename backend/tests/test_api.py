@@ -69,6 +69,41 @@ def test_duplicate_printing_becomes_most_recent_collection_activity(client):
     assert recent[0]["id"] == first["id"]
 
 
+def test_inventory_finish_move_splits_foil_and_nonfoil_quantities(monkeypatch):
+    import asyncio
+    from decimal import Decimal
+
+    from mtglogger.api import inventory
+    from mtglogger.database import Base, SessionLocal, engine
+    from mtglogger.models import InventoryItem
+    from mtglogger.schemas import InventoryFinishMove
+
+    async def foil_price(_scryfall_id: str, foil: bool):
+        return Decimal("2.75" if foil else "0.42")
+
+    monkeypatch.setattr(inventory, "finish_price", foil_price)
+    Base.metadata.drop_all(engine)
+    Base.metadata.create_all(engine)
+    with SessionLocal() as db:
+        item = InventoryItem(**CARD, quantity=3)
+        db.add(item)
+        db.commit()
+        target = asyncio.run(
+            inventory.move_inventory_finish(
+                item.id, InventoryFinishMove(foil=True, quantity=1), db
+            )
+        )
+        variants = list(db.query(InventoryItem).all())
+
+    assert target.foil is True
+    assert target.quantity == 1
+    assert target.market_price == Decimal("2.75")
+    assert {(variant.foil, variant.quantity) for variant in variants} == {
+        (False, 2),
+        (True, 1),
+    }
+
+
 def test_price_changes_retain_previous_value_and_collection_history(client):
     item = client.post("/api/inventory", json=CARD).json()
     first = client.patch(f"/api/inventory/{item['id']}", json={"market_price": "0.84"})

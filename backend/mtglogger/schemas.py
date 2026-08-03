@@ -42,6 +42,11 @@ class InventoryUpdate(BaseModel):
     status: InventoryStatus | None = None
 
 
+class InventoryFinishMove(BaseModel):
+    quantity: int = Field(1, ge=1)
+    foil: bool
+
+
 class InventoryDeckAssignment(BaseModel):
     deck_id: str
     deck_name: str

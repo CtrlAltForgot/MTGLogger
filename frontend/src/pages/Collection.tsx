@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Delete, Download, Edit, Search, TrendingDown, TrendingUp } from '@mui/icons-material'
 import {
   Box, Button, Card, Chip, Dialog, DialogActions, DialogContent, DialogTitle,
-  Alert, FormControlLabel, IconButton, InputAdornment, MenuItem, Select, Stack, Switch,
+  Alert, IconButton, InputAdornment, MenuItem, Select, Stack,
   TablePagination, TextField, Tooltip, Typography,
 } from '@mui/material'
 import { API, request } from '../api'
@@ -21,13 +21,14 @@ export default function Collection(){
   const [page,setPage]=useState(0),[pageSize,setPageSize]=useState(48)
   const [location,setLocation]=useState(''),[facets,setFacets]=useState<{collections:string[];storage_locations:string[]}>({collections:[],storage_locations:[]})
   const [editing,setEditing]=useState<Inventory|null>(null),[deleting,setDeleting]=useState<Inventory|null>(null),[busy,setBusy]=useState(false),[priceBusy,setPriceBusy]=useState(false)
+  const [finishMoveQuantity,setFinishMoveQuantity]=useState(1)
   const [error,setError]=useState<string>()
 
   useEffect(()=>{void request<{collections:string[];storage_locations:string[]}>('/inventory/facets').then(setFacets)},[reload])
   useEffect(()=>{setPage(0)},[query,sort,location])
   useEffect(()=>{const params=new URLSearchParams({q:query,page:String(page+1),page_size:String(pageSize),...Object.fromEntries(new URLSearchParams(sorts[sort]))});if(location)params.set('storage_location',location);const timer=setTimeout(()=>request<{items:Inventory[],total:number,total_cards:number,collection_value:number,page_size:number}>(`/inventory?${params}`).then(x=>{setItems(x.items);setTotal(x.total);setTotalCards(x.total_cards);setCollectionValue(Number(x.collection_value));if(x.total>0&&page*x.page_size>=x.total)setPage(Math.max(0,Math.ceil(x.total/x.page_size)-1))}).catch(e=>setError(e instanceof Error?e.message:'Could not load collection')),200);return()=>clearTimeout(timer)},[query,sort,location,page,pageSize,reload])
   const save=async()=>{if(!editing)return;setBusy(true);setError(undefined);try{await request(`/inventory/${editing.id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({quantity:editing.quantity,foil:editing.foil,condition:editing.condition,language:editing.language,storage_location:editing.storage_location,market_price:editing.market_price,purchase_price:editing.purchase_price,notes:editing.notes})});setEditing(null);setReload(x=>x+1)}catch(e){setError(e instanceof Error?e.message:'Could not save entry')}finally{setBusy(false)}}
-  const setFoil=async(foil:boolean)=>{if(!editing)return;const itemId=editing.id;setEditing({...editing,foil});setPriceBusy(true);setError(undefined);try{const price=await request<{market_price:number|null}>(`/inventory/${itemId}/price?foil=${foil}`);setEditing(current=>current?.id===itemId?{...current,foil,market_price:price.market_price}:current)}catch(e){setError(e instanceof Error?e.message:'Could not refresh finish price')}finally{setPriceBusy(false)}}
+  const moveFinish=async()=>{if(!editing)return;setPriceBusy(true);setError(undefined);try{await request(`/inventory/${editing.id}/move-finish`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({quantity:finishMoveQuantity,foil:!editing.foil})});setEditing(null);setReload(x=>x+1)}catch(e){setError(e instanceof Error?e.message:'Could not split finish quantities')}finally{setPriceBusy(false)}}
   const remove=async()=>{if(!deleting)return;setBusy(true);setError(undefined);try{await request(`/inventory/${deleting.id}`,{method:'DELETE'});setDeleting(null);setReload(x=>x+1)}catch(e){setError(e instanceof Error?e.message:'Could not delete entry')}finally{setBusy(false)}}
 
   return <>
@@ -45,7 +46,7 @@ export default function Collection(){
       {item.image_url?<FoilArtwork src={item.image_url} alt={item.card_name} foil={item.foil} sx={{width:{xs:116,sm:128},flexShrink:0,aspectRatio:'63 / 88',m:1,borderRadius:1.5,border:'1px solid',borderColor:'divider',bgcolor:'#080506'}} imageSx={{objectFit:'contain',objectPosition:'center'}}/>:<Box sx={{width:{xs:116,sm:128},flexShrink:0,aspectRatio:'63 / 88',m:1,bgcolor:'action.hover',border:'1px solid',borderColor:'divider',borderRadius:1.5}}/>}
       {item.quantity>1&&<Chip size="small" color="primary" label={`×${item.quantity}`} sx={{position:'absolute',left:14,top:14,zIndex:2,fontWeight:900,boxShadow:'0 2px 10px rgba(0,0,0,.55)'}}/>}
       <Box py={1.5} pl={.5} pr={1} pb={6} minWidth={0} flex={1}><Typography component="div" fontWeight={800}><OverflowMarquee className="card-title" title={item.card_name}><CardName scryfallId={item.scryfall_id}>{item.card_name}</CardName></OverflowMarquee></Typography><Typography component="div" color="text.secondary" variant="body2"><OverflowMarquee className="card-printing" title={`${item.set_name} #${item.collector_number}`}>{item.set_name} #{item.collector_number}</OverflowMarquee></Typography><PriceMovement item={item}/><Stack direction="row" spacing={.5} mt={1} flexWrap="wrap"><Chip size="small" variant="outlined" label={conditionAbbreviation[item.condition]||item.condition.toUpperCase()}/>{item.foil&&<Chip size="small" color="warning" label="Foil"/>}</Stack><Typography display="block" variant="caption" color="text.secondary">Deck · {item.deck_assignments.length?item.deck_assignments.map(deck=>`${deck.deck_name} ×${deck.quantity}`).join(', '):'None'}</Typography><Typography variant="caption" color="text.secondary">Storage · {item.storage_location}</Typography></Box>
-      <Stack direction="row" sx={{position:'absolute',right:4,bottom:4}}><Tooltip title="Edit entry"><IconButton aria-label={`Edit ${item.card_name}`} onClick={()=>setEditing({...item})}><Edit/></IconButton></Tooltip><Tooltip title="Delete entry"><IconButton color="error" aria-label={`Delete ${item.card_name}`} onClick={()=>setDeleting(item)}><Delete/></IconButton></Tooltip></Stack>
+      <Stack direction="row" sx={{position:'absolute',right:4,bottom:4}}><Tooltip title="Edit entry"><IconButton aria-label={`Edit ${item.card_name}`} onClick={()=>{setFinishMoveQuantity(1);setEditing({...item})}}><Edit/></IconButton></Tooltip><Tooltip title="Delete entry"><IconButton color="error" aria-label={`Delete ${item.card_name}`} onClick={()=>setDeleting(item)}><Delete/></IconButton></Tooltip></Stack>
     </Card>)}</Box>
     {!items.length&&<Typography textAlign="center" color="text.secondary" mt={8}>No cards found. The scanner is ready when you are.</Typography>}
     {total>0&&<TablePagination
@@ -65,7 +66,14 @@ export default function Collection(){
       <Typography className="card-title" variant="h6">{editing.card_name} · {editing.set_code.toUpperCase()} #{editing.collector_number}</Typography>
       <TextField label="Quantity" type="number" value={editing.quantity} onChange={e=>setEditing({...editing,quantity:Math.max(1,Number(e.target.value))})}/>
       <Select value={editing.condition} onChange={e=>setEditing({...editing,condition:e.target.value})}>{conditions.map(([value,label])=><MenuItem key={value} value={value}>{label}</MenuItem>)}</Select>
-      <FormControlLabel control={<Switch checked={editing.foil} onChange={e=>void setFoil(e.target.checked)}/>} label="Foil"/>
+      <Box sx={{p:1.5,border:'1px solid',borderColor:'divider',borderRadius:2}}>
+        <Typography fontWeight={800}>Finish · {editing.foil?'Foil':'Nonfoil'}</Typography>
+        <Typography variant="caption" color="text.secondary">Foil and nonfoil copies are tracked as separate entries with independent quantities and prices.</Typography>
+        <Stack direction={{xs:'column',sm:'row'}} spacing={1} mt={1.25}>
+          <TextField size="small" label="Copies to move" type="number" value={finishMoveQuantity} onChange={e=>setFinishMoveQuantity(Math.min(editing.quantity,Math.max(1,Number(e.target.value))))} slotProps={{htmlInput:{min:1,max:editing.quantity}}}/>
+          <Button disabled={priceBusy} variant="outlined" onClick={()=>void moveFinish()}>{priceBusy?'Refreshing price…':`Move to ${editing.foil?'nonfoil':'foil'} entry`}</Button>
+        </Stack>
+      </Box>
       <TextField label="Language" value={editing.language} onChange={e=>setEditing({...editing,language:e.target.value})}/>
       <TextField label="Deck" value={editing.deck_assignments.length?editing.deck_assignments.map(deck=>`${deck.deck_name} ×${deck.quantity}`).join(', '):'None'} helperText="Deck quantities are managed in the Decks tab." slotProps={{input:{readOnly:true}}}/>
       <TextField label="Storage location" value={editing.storage_location} onChange={e=>setEditing({...editing,storage_location:e.target.value})}/>

@@ -8,9 +8,15 @@ from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from ..database import get_db
-from ..models import DeckEntry, InventoryItem, PriceSnapshot, ReviewItem
+from ..models import DeckEntry, InventoryItem, PriceSnapshot, ReviewItem, utc_now
 from ..providers import ScryfallProvider
-from ..schemas import InventoryCreate, InventoryRead, InventoryUpdate, Page
+from ..schemas import (
+    InventoryCreate,
+    InventoryFinishMove,
+    InventoryRead,
+    InventoryUpdate,
+    Page,
+)
 from ..services.inventory import upsert_inventory
 from ..services.prices import apply_price, record_collection_value
 
@@ -134,6 +140,86 @@ async def inventory_finish_price(
     if not item:
         raise HTTPException(404, "Inventory item not found")
     return {"market_price": await finish_price(item.scryfall_id, foil)}
+
+
+@router.post("/{item_id}/move-finish", response_model=InventoryRead)
+async def move_inventory_finish(
+    item_id: str, data: InventoryFinishMove, db: Session = Depends(get_db)
+):
+    """Move unassigned copies into a distinct foil/nonfoil inventory variant."""
+    item = db.get(InventoryItem, item_id)
+    if not item:
+        raise HTTPException(404, "Inventory item not found")
+    if data.foil == item.foil:
+        raise HTTPException(422, "Copies already use that finish")
+    assigned = db.scalar(
+        select(func.coalesce(func.sum(DeckEntry.quantity), 0)).where(
+            DeckEntry.inventory_id == item.id
+        )
+    ) or 0
+    available = item.quantity - assigned
+    if data.quantity > available:
+        raise HTTPException(
+            409,
+            f"Only {available} unassigned copies can change finish",
+        )
+
+    target = db.scalar(
+        select(InventoryItem).where(
+            InventoryItem.scryfall_id == item.scryfall_id,
+            InventoryItem.foil == data.foil,
+            InventoryItem.language == item.language,
+            InventoryItem.condition == item.condition,
+            InventoryItem.collection_name == item.collection_name,
+            InventoryItem.storage_location == item.storage_location,
+            InventoryItem.status == item.status,
+        )
+    )
+    price = await finish_price(item.scryfall_id, data.foil)
+    activity_time = utc_now()
+    if target:
+        target.quantity += data.quantity
+        target.market_price = price
+        target.updated_at = activity_time
+    else:
+        target = InventoryItem(
+            card_name=item.card_name,
+            set_code=item.set_code,
+            set_name=item.set_name,
+            collector_number=item.collector_number,
+            scryfall_id=item.scryfall_id,
+            oracle_id=item.oracle_id,
+            quantity=data.quantity,
+            foil=data.foil,
+            language=item.language,
+            condition=item.condition,
+            purchase_price=item.purchase_price,
+            market_price=price,
+            storage_location=item.storage_location,
+            collection_name=item.collection_name,
+            image_url=item.image_url,
+            notes=item.notes,
+            color_identity=item.color_identity,
+            rarity=item.rarity,
+            type_line=item.type_line,
+            status=item.status,
+            updated_at=activity_time,
+        )
+        db.add(target)
+        db.flush()
+
+    item.quantity -= data.quantity
+    if item.quantity == 0:
+        db.execute(
+            update(ReviewItem)
+            .where(ReviewItem.resolved_inventory_id == item.id)
+            .values(resolved_inventory_id=target.id)
+        )
+        db.delete(item)
+    record_collection_value(db)
+    db.commit()
+    db.refresh(target)
+    return target
 
 
 @router.patch("/{item_id}", response_model=InventoryRead)
