@@ -28,8 +28,8 @@ export default function App(){
   const changePage=(value:number)=>{setPage(value);history.replaceState(null,'',`?page=${pages[value].name.toLowerCase()}`)}
   return <ThemeProvider theme={theme}><CssBaseline/>
     <AppBar position="sticky"><Toolbar sx={{minHeight:{xs:58,md:66},px:{xs:2,md:4}}}>
-      <Box sx={{width:36,height:36,borderRadius:'11px',background:'linear-gradient(145deg,#78F0A8,#31BA6B)',color:'#062510',display:'grid',placeItems:'center',fontWeight:900,mr:1.5,boxShadow:'0 7px 20px rgba(52,211,115,.25)'}}>M</Box>
-      <Box flex={1}><Typography variant="h6" lineHeight={1}>MTGLogger</Typography><Typography variant="caption" color="text.secondary">Collection, at card speed.</Typography></Box>
+      <Box component="img" src="/mtglogger-mark.svg" alt="" sx={{width:42,height:42,mr:1.25,filter:'drop-shadow(0 7px 14px rgba(190,35,54,.25))'}}/>
+      <Box flex={1}><Typography variant="h6" lineHeight={1}>MTGLogger</Typography><Typography variant="caption" color="text.secondary">Log your TCG collection</Typography></Box>
       <Tooltip title={dark?'Use light appearance':'Use dark appearance'}><IconButton onClick={toggleTheme} sx={{border:'1px solid',borderColor:'divider',bgcolor:'action.hover'}}>{dark?<LightMode/>:<DarkMode/>}</IconButton></Tooltip>
     </Toolbar>
     <Box sx={{px:{xs:1,md:4},display:'flex',justifyContent:{md:'center'}}}><Tabs value={page} onChange={(_,value)=>changePage(value)} variant="scrollable" scrollButtons="auto" allowScrollButtonsMobile>{pages.map(item=><Tab key={item.name} icon={item.icon} iconPosition="start" label={item.name}/>)}</Tabs></Box>

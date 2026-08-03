@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title id="title">MTGLogger stacked trading cards</title>
+  <defs>
+    <linearGradient id="back" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#ff8b86"/><stop offset="1" stop-color="#b7182b"/></linearGradient>
+    <linearGradient id="art" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#ffdad5"/><stop offset=".5" stop-color="#ed5960"/><stop offset="1" stop-color="#771326"/></linearGradient>
+  </defs>
+  <rect x="8" y="11" width="34" height="46" rx="5" fill="#66101e" transform="rotate(-12 25 34)" opacity=".68"/>
+  <rect x="22" y="7" width="34" height="46" rx="5" fill="#8e1727" transform="rotate(10 39 30)" opacity=".82"/>
+  <rect x="15" y="8" width="34" height="48" rx="6" fill="url(#back)" stroke="#fff" stroke-opacity=".76" stroke-width="2"/>
+  <rect x="20" y="14" width="24" height="22" rx="3" fill="url(#art)"/>
+  <path d="M21 32 28 23l5 6 4-5 7 8v4H20v-4Z" fill="#fff" fill-opacity=".58"/>
+  <circle cx="36" cy="20" r="3.5" fill="#fff" fill-opacity=".78"/>
+  <rect x="20" y="41" width="19" height="3" rx="1.5" fill="#fff" fill-opacity=".9"/>
+  <rect x="20" y="47" width="13" height="2.5" rx="1.25" fill="#fff" fill-opacity=".55"/>
+</svg>
