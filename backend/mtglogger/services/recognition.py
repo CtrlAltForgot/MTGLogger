@@ -499,6 +499,7 @@ class CardRecognizer:
     ) -> Recognition:
         async with self._recognition_lock:
             started = time.perf_counter()
+            recovery_used = False
             decoded = self.decode(raw)
             corrected = await asyncio.to_thread(lambda: self.rectify(decoded))
             prepared = time.perf_counter()
@@ -525,6 +526,7 @@ class CardRecognizer:
             if not self.has_strong_lookup_evidence(
                 title, number, printed_set_code, copyright_year, cards
             ):
+                recovery_used = True
                 # A fast crop can occasionally lock onto an internal rules box,
                 # and tiny footers may be incomplete. OCR the original frame only
                 # for weak scans, then rerank before interrupting the user.
@@ -634,18 +636,27 @@ class CardRecognizer:
         candidates = sorted(ranked.values(), key=lambda item: item.confidence, reverse=True)
         finished = time.perf_counter()
         logger.info(
-            "Recognition timings prep=%dms ocr=%dms lookup+visual=%dms rank=%dms total=%dms",
+            "Recognition timings frame=%dx%d recovery=%s prep=%dms ocr=%dms "
+            "lookup+visual=%dms rank=%dms total=%dms",
+            decoded.shape[1],
+            decoded.shape[0],
+            recovery_used,
             (prepared - started) * 1000,
             (ocr_complete - prepared) * 1000,
             (matching_complete - ocr_complete) * 1000,
             (finished - matching_complete) * 1000,
             (finished - started) * 1000,
         )
+        final_confidence = candidates[0].confidence if candidates else 0
+        # Review is an audit trail. Always retain the untouched camera frame for
+        # uncertain scans so a bad perspective contour can never masquerade as
+        # the photographed card or discard identifying regions.
+        review_image = corrected if final_confidence >= 98.5 else decoded
         return Recognition(
-            candidates[0].confidence if candidates else 0,
+            final_confidence,
             text,
             candidates[:5],
-            corrected,
+            review_image,
             round((finished - started) * 1000),
             card_structure,
         )
