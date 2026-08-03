@@ -61,3 +61,20 @@ def test_artwork_hash_is_stable_under_small_brightness_change():
     cv2.circle(image, (360, 350), 120, (230, 40, 80), -1)
     brighter = cv2.convertScaleAbs(image, alpha=1.02, beta=3)
     assert hash_distance(artwork_hash(image), artwork_hash(brighter)) <= 2
+
+
+def test_ocr_hints_normalize_printed_collector_number():
+    from mtglogger.services.recognition import CardRecognizer
+
+    title, number = CardRecognizer.hints(
+        "Abrade\nInstant\nU 0188\nT™ & © 2024 Wizards of the Coast\nFDN · EN"
+    )
+    assert title == "Abrade"
+    assert number == "188"
+
+
+def test_scans_require_confirmation_by_default():
+    from mtglogger.schemas import ScanDefaults
+
+    assert ScanDefaults().auto_add is False
+    assert ScanDefaults(auto_add=True).auto_add is True

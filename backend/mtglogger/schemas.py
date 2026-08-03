@@ -62,6 +62,7 @@ class ScanDefaults(BaseModel):
     collection_name: str = "Main"
     status: InventoryStatus = InventoryStatus.owned
     box_set_code: str | None = None
+    auto_add: bool = False
 
 
 class Candidate(BaseModel):
@@ -73,6 +74,10 @@ class Candidate(BaseModel):
     image_url: str | None = None
     market_price: Decimal | None = None
     confidence: float
+    oracle_id: str | None = None
+    color_identity: str = ""
+    rarity: str | None = None
+    type_line: str | None = None
 
 
 class ScanResult(BaseModel):

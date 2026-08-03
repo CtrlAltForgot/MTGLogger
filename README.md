@@ -8,7 +8,9 @@ MTGLogger is a speed-first Magic: The Gathering collection catalog. Its scanner 
 2. Run `docker compose up --build`.
 3. Open <http://localhost:5173>. API documentation is at <http://localhost:8000/docs>.
 
-The browser owns webcam access and sends stable captures to the API. This works in Docker and avoids passing a host camera device into a container. Recognition uses OCR when installed, Scryfall exact metadata lookup, and perceptual artwork matching. Uncertain scans are retained in the review queue without stopping the scan loop.
+The browser owns webcam access and sends stable captures to the API. This works in Docker and avoids passing a host camera device into a container. On startup, keep the card guide empty briefly while the scanner learns the background and camera noise. Recognition uses OCR, Scryfall exact metadata lookup, and perceptual artwork matching.
+
+By default, a recognized card opens a keyboard-first confirmation: press **Enter** to add the exact printing or **Backspace** to decline it. The camera stays latched throughout the decision and cannot scan that card again until it leaves the calibrated guide. Disable **Confirm each identified card** in batch defaults to auto-add matches above 95% confidence. Low-confidence failures continue directly to the review queue without interrupting a batch.
 
 ## Preparing Box Mode
 

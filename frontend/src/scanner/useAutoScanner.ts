@@ -1,31 +1,63 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-type State='idle'|'waiting'|'stabilizing'|'capturing'|'processing'|'remove'
-export type ScannerTuning={presenceContrast:number;stableMotion:number;leaveMotion:number;stableFrames:number}
-export type ScannerMetrics={brightness:number;contrast:number;motion:number}
-export const defaultTuning:ScannerTuning={presenceContrast:18,stableMotion:2.2,leaveMotion:8,stableFrames:5}
+type State='idle'|'calibrating'|'waiting'|'stabilizing'|'capturing'|'processing'|'remove'
+export type ScannerTuning={entryDifference:number;stableMotion:number;stableFrames:number}
+export type ScannerMetrics={brightness:number;contrast:number;motion:number;sceneDifference:number}
+export const defaultTuning:ScannerTuning={entryDifference:12,stableMotion:4,stableFrames:5}
 
-export function useAutoScanner(onCapture:(blob:Blob)=>Promise<void>,tuning:ScannerTuning=defaultTuning) {
+const FRAME_WIDTH=160,FRAME_HEIGHT=120,CALIBRATION_FRAMES=12
+
+function analyze(pixels:Uint8ClampedArray,previous?:Uint8ClampedArray,baseline?:Uint8ClampedArray){
+  let brightness=0,variance=0,motion=0,sceneDifference=0,samples=0
+  // Analyze the central card guide, not hands and movement at the frame edges.
+  for(let y=4;y<116;y+=2)for(let x=40;x<120;x+=2){
+    const index=(y*FRAME_WIDTH+x)*4,luminance=(pixels[index]+pixels[index+1]+pixels[index+2])/3
+    brightness+=luminance;variance+=luminance*luminance;samples++
+    if(previous)motion+=Math.abs(luminance-(previous[index]+previous[index+1]+previous[index+2])/3)
+    if(baseline)sceneDifference+=Math.abs(luminance-(baseline[index]+baseline[index+1]+baseline[index+2])/3)
+  }
+  const mean=brightness/samples
+  return {brightness:mean,contrast:Math.sqrt(Math.max(0,variance/samples-mean*mean)),motion:previous?motion/samples:99,sceneDifference:baseline?sceneDifference/samples:0}
+}
+
+export function useAutoScanner(onCapture:(blob:Blob)=>Promise<void>,tuning:ScannerTuning=defaultTuning){
   const video=useRef<HTMLVideoElement>(null),canvas=useRef<HTMLCanvasElement>(null)
-  const previous=useRef<Uint8ClampedArray|undefined>(undefined),stable=useRef(0),latched=useRef(false),busy=useRef(false)
-  const [state,setState]=useState<State>('idle'),[error,setError]=useState<string>(),[metrics,setMetrics]=useState<ScannerMetrics>({brightness:0,contrast:0,motion:0})
-  const start=useCallback(async()=>{try{const stream=await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280},height:{ideal:720},facingMode:'environment'},audio:false});if(video.current){video.current.srcObject=stream;await video.current.play();setState('waiting')}}catch(e){setError(e instanceof Error?e.message:'Camera unavailable')}},[])
-  const stop=useCallback(()=>{(video.current?.srcObject as MediaStream|null)?.getTracks().forEach(track=>track.stop());previous.current=undefined;setState('idle')},[])
+  const previous=useRef<Uint8ClampedArray|undefined>(undefined),baseline=useRef<Uint8ClampedArray|undefined>(undefined),calibrationCount=useRef(0),noiseMotion=useRef(0),stable=useRef(0),latched=useRef(false),busy=useRef(false)
+  const [state,setState]=useState<State>('idle'),[error,setError]=useState<string>(),[metrics,setMetrics]=useState<ScannerMetrics>({brightness:0,contrast:0,motion:0,sceneDifference:0})
+
+  const calibrate=useCallback(()=>{baseline.current=undefined;previous.current=undefined;calibrationCount.current=0;noiseMotion.current=0;stable.current=0;latched.current=false;setState('calibrating')},[])
+  const start=useCallback(async()=>{try{const stream=await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280},height:{ideal:720},facingMode:'environment'},audio:false});if(video.current){video.current.srcObject=stream;await video.current.play();calibrate()}}catch(e){setError(e instanceof Error?e.message:'Camera unavailable')}},[calibrate])
+  const stop=useCallback(()=>{(video.current?.srcObject as MediaStream|null)?.getTracks().forEach(track=>track.stop());baseline.current=undefined;previous.current=undefined;setState('idle')},[])
+
   useEffect(()=>{
     if(state==='idle'||error)return
     const timer=setInterval(()=>{
       const element=video.current,preview=canvas.current
       if(!element||!preview||element.readyState<2||busy.current)return
       const context=preview.getContext('2d',{willReadFrequently:true});if(!context)return
-      preview.width=160;preview.height=120;context.drawImage(element,0,0,160,120)
-      const pixels=context.getImageData(0,0,160,120).data
-      let brightness=0,variance=0,difference=0
-      for(let index=0;index<pixels.length;index+=16){const luminance=(pixels[index]+pixels[index+1]+pixels[index+2])/3;brightness+=luminance;variance+=luminance*luminance;if(previous.current)difference+=Math.abs(pixels[index]-previous.current[index])}
-      const samples=pixels.length/16,motion=previous.current?difference/samples:99,mean=brightness/samples,contrast=Math.sqrt(Math.max(0,variance/samples-mean*mean))
-      previous.current=new Uint8ClampedArray(pixels);setMetrics({brightness:mean,contrast,motion})
-      if(latched.current){if(motion>tuning.leaveMotion){stable.current++;if(stable.current>=3){latched.current=false;stable.current=0;setState('waiting')}}else stable.current=0;return}
-      if(mean<=25||contrast<tuning.presenceContrast){setState('waiting');stable.current=0;return}
-      if(motion<tuning.stableMotion){stable.current++;setState('stabilizing')}else{stable.current=0;setState('waiting')}
+      preview.width=FRAME_WIDTH;preview.height=FRAME_HEIGHT;context.drawImage(element,0,0,FRAME_WIDTH,FRAME_HEIGHT)
+      const pixels=context.getImageData(0,0,FRAME_WIDTH,FRAME_HEIGHT).data
+      if(!baseline.current){
+        if(!previous.current){previous.current=new Uint8ClampedArray(pixels);return}
+        // Let exposure settle, then retain the last empty frame as the baseline.
+        const calibrationMetrics=analyze(pixels,previous.current)
+        calibrationCount.current++
+        noiseMotion.current+=calibrationMetrics.motion
+        previous.current=new Uint8ClampedArray(pixels)
+        if(calibrationCount.current>=CALIBRATION_FRAMES){baseline.current=new Uint8ClampedArray(pixels);setState('waiting')}
+        return
+      }
+      const next=analyze(pixels,previous.current,baseline.current);previous.current=new Uint8ClampedArray(pixels);setMetrics(next)
+      const cardPresent=next.sceneDifference>=tuning.entryDifference
+      if(latched.current){
+        if(!cardPresent){stable.current++;if(stable.current>=3){latched.current=false;stable.current=0;setState('waiting')}}else stable.current=0
+        return
+      }
+      if(!cardPresent){setState('waiting');stable.current=0;return}
+      const calibratedNoise=noiseMotion.current/Math.max(1,calibrationCount.current)
+      const stableLimit=Math.max(tuning.stableMotion,calibratedNoise*1.6)
+      setState('stabilizing')
+      if(next.motion<stableLimit)stable.current++;else stable.current=0
       if(stable.current<tuning.stableFrames)return
       busy.current=true;setState('capturing')
       const full=document.createElement('canvas');full.width=element.videoWidth;full.height=element.videoHeight;full.getContext('2d')!.drawImage(element,0,0)
@@ -34,5 +66,5 @@ export function useAutoScanner(onCapture:(blob:Blob)=>Promise<void>,tuning:Scann
     return()=>clearInterval(timer)
   },[state,error,onCapture,tuning])
   useEffect(()=>stop,[stop])
-  return {video,canvas,state,error,metrics,start,stop,setError}
+  return {video,canvas,state,error,metrics,start,stop,calibrate,setError}
 }

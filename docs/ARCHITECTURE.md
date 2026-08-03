@@ -1,8 +1,10 @@
 # Architecture
 
-The React client performs low-cost motion and stability checks against downscaled webcam frames. A stable card is captured once, and another capture is prohibited until the card leaves. This keeps camera latency out of the server and preserves the no-click workflow.
+The React client calibrates an empty-guide baseline from downscaled webcam frames, measures the camera's idle noise, and then detects card entry as a sustained difference from that baseline. Stability uses an adaptive threshold derived from observed noise. A stable card is captured once, and another capture is prohibited until the guide returns to its baseline. This keeps camera latency out of the server and prevents repeated scans of a stationary card.
 
-FastAPI accepts the crop and runs recognition off the request thread. The recognizer rectifies the largest card-shaped quadrilateral, extracts PaddleOCR hints, computes a perceptual hash of the artwork region, and fuses OCR and visual scores. Box Mode restricts both Scryfall and local artwork candidates to its selected set. Scores above 95 are atomically upserted into inventory, scores from 70 through 95 are returned as suggestions, and lower scores enter the review queue.
+FastAPI accepts the crop and runs recognition off the request thread. The recognizer rectifies the largest card-shaped quadrilateral, extracts PaddleOCR hints, computes a perceptual hash of the artwork region, and fuses OCR and visual scores. Box Mode restricts both Scryfall and local artwork candidates to its selected set. Scores above 95 become high-confidence confirmations (or atomic upserts when auto-add is enabled), scores from 70 through 95 are returned as suggestions, and lower scores enter the review queue.
+
+Recognition and inventory mutation are separate by default. High-confidence results are stored as pending review records and shown in a modal; Enter resolves the record through the review API and performs the atomic inventory upsert, while Backspace deletes it. Optional auto-add mode preserves the original greater-than-95% path. The capture promise stays open while the modal is active, keeping the scanner busy and latched until the decision finishes.
 
 Reference indexing is explicitly set-scoped. `/api/references/sync/{set_code}` starts a throttled background download from Scryfall, computes 64-bit pHashes, and stores only metadata plus hashes in PostgreSQL. It is resumable because existing Scryfall IDs are skipped. This makes a booster-box workflow fast without imposing an enormous all-printings bootstrap.
 

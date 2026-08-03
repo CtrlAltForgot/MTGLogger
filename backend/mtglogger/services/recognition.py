@@ -1,3 +1,4 @@
+import logging
 import re
 from dataclasses import dataclass
 from difflib import SequenceMatcher
@@ -12,6 +13,8 @@ from ..models import CardReference
 from ..providers import ScryfallProvider
 from ..schemas import Candidate
 from .references import artwork_hash, hash_distance
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -35,6 +38,9 @@ class CardRecognizer:
                 use_doc_orientation_classify=False,
                 use_doc_unwarping=False,
                 use_textline_orientation=False,
+                # Paddle 3.3's oneDNN runner cannot execute the OCRv6 model's
+                # ArrayAttribute on common slim Linux images.
+                enable_mkldnn=False,
             )
         except (ImportError, RuntimeError):
             pass
@@ -93,19 +99,26 @@ class CardRecognizer:
                 texts.extend((data.get("res") or {}).get("rec_texts", []))
             return "\n".join(texts)
         except Exception:
+            logger.exception("PaddleOCR inference failed")
             return ""
 
     @staticmethod
     def hints(text: str) -> tuple[str | None, str | None]:
         lines = [line.strip() for line in text.splitlines() if len(line.strip()) > 1]
-        number = next(
-            (
-                m.group(1)
-                for line in reversed(lines)
-                if (m := re.search(r"(?:^|\s)(\d{1,4}[a-z]?)(?:/\d{1,4})?(?:\s|$)", line, re.I))
-            ),
-            None,
-        )
+        number = None
+        for line in reversed(lines):
+            matches = re.findall(r"(?:^|\s)(\d{1,4}[a-z]?)(?:/\d{1,4})?(?=\s|$)", line, re.I)
+            for value in matches:
+                numeric = int(re.match(r"\d+", value).group())
+                # Copyright years commonly appear below the collector number.
+                if 1900 <= numeric <= 2100 or "©" in line or "Wizards" in line:
+                    continue
+                number = value
+                break
+            if number:
+                break
+        if number:
+            number = number.lstrip("0") or "0"
         title = next(
             (line for line in lines[:5] if not re.search(r"\d{3,}", line) and len(line) <= 60), None
         )
@@ -155,6 +168,10 @@ class CardRecognizer:
                 image_url=self.provider.image_url(card),
                 market_price=self.provider.market_price(card),
                 confidence=round(confidence, 1),
+                oracle_id=card.get("oracle_id"),
+                color_identity="".join(card.get("color_identity", [])),
+                rarity=card.get("rarity"),
+                type_line=card.get("type_line"),
             )
         for reference, score in visual_matches:
             existing = ranked.get(reference.scryfall_id)

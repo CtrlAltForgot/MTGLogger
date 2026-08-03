@@ -38,7 +38,7 @@ async def recognize_card(
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
-    if result.confidence > 95 and result.candidates:
+    if result.confidence > 95 and result.candidates and defaults.auto_add:
         top = result.candidates[0]
         item = upsert_inventory(
             db,
@@ -48,6 +48,7 @@ async def recognize_card(
                 set_name=top.set_name,
                 collector_number=top.collector_number,
                 scryfall_id=top.scryfall_id,
+                oracle_id=top.oracle_id,
                 foil=defaults.foil,
                 language=defaults.language,
                 condition=defaults.condition,
@@ -55,6 +56,9 @@ async def recognize_card(
                 storage_location=defaults.storage_location,
                 collection_name=defaults.collection_name,
                 image_url=top.image_url,
+                color_identity=top.color_identity,
+                rarity=top.rarity,
+                type_line=top.type_line,
                 status=defaults.status,
             ),
         )
@@ -80,11 +84,19 @@ async def recognize_card(
     db.add(review)
     db.commit()
     db.refresh(review)
-    disposition = "suggestions" if result.confidence >= 70 else "queued"
+    disposition = (
+        "confirmation"
+        if result.confidence > 95
+        else ("suggestions" if result.confidence >= 70 else "queued")
+    )
     return ScanResult(
         disposition=disposition,
         confidence=result.confidence,
         candidates=result.candidates,
         review_id=review.id,
-        message="Choose a match" if disposition == "suggestions" else "Saved to review queue",
+        message=(
+            "Confirm this match"
+            if disposition == "confirmation"
+            else ("Choose a match" if disposition == "suggestions" else "Saved to review queue")
+        ),
     )

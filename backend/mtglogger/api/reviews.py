@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models import ReviewItem, ReviewStatus
-from ..schemas import InventoryCreate, ReviewRead, ReviewResolve
+from ..schemas import InventoryCreate, InventoryRead, ReviewRead, ReviewResolve
 from ..services.inventory import upsert_inventory
 
 router = APIRouter(prefix="/reviews", tags=["reviews"])
@@ -49,6 +49,7 @@ def resolve_review(review_id: str, payload: ReviewResolve, db: Session = Depends
             set_name=card.set_name,
             collector_number=card.collector_number,
             scryfall_id=card.scryfall_id,
+            oracle_id=card.oracle_id,
             foil=defaults.foil,
             language=defaults.language,
             condition=defaults.condition,
@@ -56,13 +57,16 @@ def resolve_review(review_id: str, payload: ReviewResolve, db: Session = Depends
             storage_location=defaults.storage_location,
             collection_name=defaults.collection_name,
             image_url=card.image_url,
+            color_identity=card.color_identity,
+            rarity=card.rarity,
+            type_line=card.type_line,
             status=defaults.status,
         ),
     )
     review.status = ReviewStatus.resolved
     review.resolved_inventory_id = item.id
     db.commit()
-    return {"inventory_id": item.id}
+    return InventoryRead.model_validate(item)
 
 
 @router.post("/{review_id}/ignore", status_code=204)
