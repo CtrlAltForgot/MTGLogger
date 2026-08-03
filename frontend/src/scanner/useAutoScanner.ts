@@ -10,7 +10,7 @@ const FRAME_WIDTH=160,FRAME_HEIGHT=120,CALIBRATION_FRAMES=12
 function analyze(pixels:Uint8ClampedArray,previous?:Uint8ClampedArray,baseline?:Uint8ClampedArray){
   let brightness=0,variance=0,motion=0,sceneDifference=0,samples=0
   // Analyze the central card guide, not hands and movement at the frame edges.
-  for(let y=4;y<116;y+=2)for(let x=40;x<120;x+=2){
+  for(let y=5;y<115;y+=2)for(let x=50;x<110;x+=2){
     const index=(y*FRAME_WIDTH+x)*4,luminance=(pixels[index]+pixels[index+1]+pixels[index+2])/3
     brightness+=luminance;variance+=luminance*luminance;samples++
     if(previous)motion+=Math.abs(luminance-(previous[index]+previous[index+1]+previous[index+2])/3)

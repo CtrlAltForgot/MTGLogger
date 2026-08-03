@@ -98,8 +98,8 @@ class CardRecognizer:
         # sleeves may hide the outer contour, so normalize that guide instead of
         # sending an entire widescreen frame through OCR and artwork matching.
         height, width = image.shape[:2]
-        crop_height = int(height * 0.96)
-        crop_width = min(int(width * 0.52), int(crop_height * 0.82))
+        crop_height = int(height * 0.92)
+        crop_width = min(int(width * 0.46), int(crop_height * 63 / 88))
         x1, y1 = (width - crop_width) // 2, (height - crop_height) // 2
         guide = image[y1 : y1 + crop_height, x1 : x1 + crop_width]
         return cv2.resize(guide, (600, 840), interpolation=cv2.INTER_AREA)
