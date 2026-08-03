@@ -153,6 +153,20 @@ class CardReference(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now
     )
+    visual_examples: Mapped[list["CardVisualExample"]] = relationship(
+        back_populates="reference", cascade="all, delete-orphan"
+    )
+
+
+class CardVisualExample(Base):
+    __tablename__ = "card_visual_examples"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    scryfall_id: Mapped[str] = mapped_column(
+        ForeignKey("card_references.scryfall_id", ondelete="CASCADE"), index=True
+    )
+    art_hash: Mapped[str] = mapped_column(String(16), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    reference: Mapped[CardReference] = relationship(back_populates="visual_examples")
 
 
 class Deck(Base):

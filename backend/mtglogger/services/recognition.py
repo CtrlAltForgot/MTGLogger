@@ -12,7 +12,7 @@ import numpy as np
 from sqlalchemy import select
 
 from ..database import SessionLocal
-from ..models import CardReference
+from ..models import CardReference, CardVisualExample
 from ..providers import ScryfallProvider
 from ..schemas import Candidate
 from .references import artwork_hash, hash_distance
@@ -386,6 +386,11 @@ class CardRecognizer:
     ) -> float:
         if title_score >= 0.72 and number_score == 1.0 and set_score == 1.0:
             return max(confidence, 99.5)
+        # Tiny footer OCR often drops one character from a three-letter set code
+        # (KTK -> TK). An exact title and collector number plus that near-exact
+        # independent set signal is still printing-specific evidence.
+        if title_score >= 0.93 and number_score == 1.0 and set_score >= 0.78:
+            return max(confidence, 98.5)
         if (
             title_score >= 0.9
             and number_score >= 0.78
@@ -670,9 +675,25 @@ class CardRecognizer:
             if box_set_code:
                 statement = statement.where(CardReference.set_code == box_set_code.lower())
             references = list(db.scalars(statement))
+            examples: dict[str, list[str]] = {}
+            if references:
+                for scryfall_id, example_hash in db.execute(
+                    select(CardVisualExample.scryfall_id, CardVisualExample.art_hash).where(
+                        CardVisualExample.scryfall_id.in_(
+                            [reference.scryfall_id for reference in references]
+                        )
+                    )
+                ):
+                    examples.setdefault(scryfall_id, []).append(example_hash)
             matches = []
             for reference in references:
-                distance = hash_distance(scan_hash, reference.art_hash)
+                distance = min(
+                    hash_distance(scan_hash, candidate_hash)
+                    for candidate_hash in [
+                        reference.art_hash,
+                        *examples.get(reference.scryfall_id, []),
+                    ]
+                )
                 # pHash has 64 bits. Distances above 18 are visually unrelated.
                 if distance <= 18:
                     score = max(0.0, 99.5 - distance * 1.35)

@@ -327,6 +327,7 @@ def test_structured_printing_evidence_promotes_safe_auto_adds_only():
     assert CardRecognizer.structured_confidence(91, 0.94, 1, 1, 0) == 99.5
     assert CardRecognizer.structured_confidence(88, 0.82, 1, 1, 0) == 99.5
     assert CardRecognizer.structured_confidence(90, 1, 0.8, 0.8, 1) == 98.5
+    assert CardRecognizer.structured_confidence(90, 0.96, 1, 0.8, 0) == 98.5
     assert CardRecognizer.structured_confidence(94, 1, 0.45, 0.45, 0) == 94
     assert CardRecognizer.structured_confidence(94, 0.7, 1, 1, 1) == 94
 
@@ -896,3 +897,35 @@ def test_inventory_delete_preserves_resolved_review_history():
         delete_item_preserving_reviews(db, item)
         assert db.get(InventoryItem, item_id) is None
         assert db.get(ReviewItem, review_id).resolved_inventory_id is None
+
+
+def test_confirmed_visual_examples_supplement_canonical_artwork():
+    from mtglogger.database import Base, SessionLocal, engine
+    from mtglogger.models import CardReference, CardVisualExample
+    from mtglogger.services.recognition import CardRecognizer
+
+    Base.metadata.drop_all(engine)
+    Base.metadata.create_all(engine)
+    with SessionLocal() as db:
+        reference = CardReference(
+            scryfall_id=CARD["scryfall_id"],
+            name=CARD["card_name"],
+            set_code=CARD["set_code"],
+            set_name=CARD["set_name"],
+            collector_number=CARD["collector_number"],
+            image_url="https://example.test/card.jpg",
+            art_hash="ffffffffffffffff",
+        )
+        db.add(reference)
+        db.flush()
+        db.add(
+            CardVisualExample(
+                scryfall_id=reference.scryfall_id,
+                art_hash="0000000000000000",
+            )
+        )
+        db.commit()
+
+    matches = CardRecognizer._visual_matches("0000000000000000", None)
+    assert matches[0][0].scryfall_id == CARD["scryfall_id"]
+    assert matches[0][1] == 99.5

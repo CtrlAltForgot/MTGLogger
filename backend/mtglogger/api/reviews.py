@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..models import CardReference, Deck, ReviewItem, ReviewStatus
+from ..models import CardReference, CardVisualExample, Deck, ReviewItem, ReviewStatus
 from ..providers import ScryfallProvider
 from ..schemas import (
     Candidate,
@@ -20,6 +20,7 @@ from ..schemas import (
 )
 from ..services.decks import assign_to_deck
 from ..services.inventory import upsert_inventory
+from ..services.recognition import CardRecognizer
 from ..services.references import artwork_hash
 
 router = APIRouter(prefix="/reviews", tags=["reviews"])
@@ -139,22 +140,35 @@ def resolve_review(review_id: str, payload: ReviewResolve, db: Session = Depends
     image = cv2.imread(review.image_path)
     if image is not None and card.image_url:
         reference = db.get(CardReference, card.scryfall_id)
-        learned_hash = artwork_hash(image)
+        learned_hash = artwork_hash(CardRecognizer.rectify(image))
         if reference:
-            reference.art_hash = learned_hash
-        else:
-            db.add(
-                CardReference(
-                    scryfall_id=card.scryfall_id,
-                    name=card.name,
-                    set_code=card.set_code,
-                    set_name=card.set_name,
-                    collector_number=card.collector_number,
-                    image_url=card.image_url,
-                    art_hash=learned_hash,
-                    market_price=card.market_price,
+            existing_example = db.scalar(
+                select(CardVisualExample).where(
+                    CardVisualExample.scryfall_id == card.scryfall_id,
+                    CardVisualExample.art_hash == learned_hash,
                 )
             )
+            if not existing_example:
+                db.add(
+                    CardVisualExample(
+                        scryfall_id=card.scryfall_id,
+                        art_hash=learned_hash,
+                    )
+                )
+        else:
+            reference = CardReference(
+                scryfall_id=card.scryfall_id,
+                name=card.name,
+                set_code=card.set_code,
+                set_name=card.set_name,
+                collector_number=card.collector_number,
+                image_url=card.image_url,
+                art_hash=learned_hash,
+                market_price=card.market_price,
+            )
+            db.add(reference)
+            db.flush()
+            db.add(CardVisualExample(scryfall_id=card.scryfall_id, art_hash=learned_hash))
     db.commit()
     Path(review.image_path).unlink(missing_ok=True)
     return InventoryRead.model_validate(item)
