@@ -5,6 +5,7 @@ type State='idle'|'calibrating'|'waiting'|'stabilizing'|'capturing'|'processing'
 export type ScannerTuning={entryDifference:number;stableMotion:number;stableFrames:number}
 export type ScannerMetrics={brightness:number;contrast:number;motion:number;sceneDifference:number}
 export const defaultTuning:ScannerTuning={entryDifference:12,stableMotion:4,stableFrames:5}
+export const pipelineHasCapacity=(inFlight:number,maxInFlight:number)=>inFlight<Math.max(1,maxInFlight)
 
 const FRAME_WIDTH=160,FRAME_HEIGHT=120,CALIBRATION_FRAMES=12
 
@@ -26,10 +27,15 @@ export function analyze(pixels:Uint8ClampedArray,previous?:Uint8ClampedArray,bas
   return {brightness:mean,contrast:Math.sqrt(Math.max(0,variance/samples-mean*mean)),motion:previous?motion/samples:99,sceneDifference:baseline?sceneDifference:0}
 }
 
-export function useAutoScanner(onCapture:(blob:Blob)=>Promise<boolean>,tuning:ScannerTuning=defaultTuning){
+export function useAutoScanner(
+  onCapture:(blob:Blob)=>Promise<boolean>,
+  tuning:ScannerTuning=defaultTuning,
+  maxInFlight=2,
+){
   const video=useRef<HTMLVideoElement>(null),canvas=useRef<HTMLCanvasElement>(null)
-  const previous=useRef<Uint8ClampedArray|undefined>(undefined),baseline=useRef<Uint8ClampedArray|undefined>(undefined),calibrationCount=useRef(0),noiseMotion=useRef(0),stable=useRef(0),removalGate=useRef<RemovalGate>({latched:false,emptyFrames:0}),busy=useRef(false)
+  const previous=useRef<Uint8ClampedArray|undefined>(undefined),baseline=useRef<Uint8ClampedArray|undefined>(undefined),calibrationCount=useRef(0),noiseMotion=useRef(0),stable=useRef(0),removalGate=useRef<RemovalGate>({latched:false,emptyFrames:0}),capturing=useRef(false),inFlight=useRef(0),sessionGeneration=useRef(0)
   const [state,setState]=useState<State>('idle'),[error,setError]=useState<string>(),[metrics,setMetrics]=useState<ScannerMetrics>({brightness:0,contrast:0,motion:0,sceneDifference:0})
+  const [pendingCaptures,setPendingCaptures]=useState(0)
   const [cameras,setCameras]=useState<MediaDeviceInfo[]>([]),[selectedCamera,setSelectedCamera]=useState('')
 
   const calibrate=useCallback(()=>{baseline.current=undefined;previous.current=undefined;calibrationCount.current=0;noiseMotion.current=0;stable.current=0;removalGate.current={latched:false,emptyFrames:0};setState('calibrating')},[])
@@ -39,14 +45,14 @@ export function useAutoScanner(onCapture:(blob:Blob)=>Promise<boolean>,tuning:Sc
     const stream=await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280},height:{ideal:720},...(deviceId?{deviceId:{exact:deviceId}}:{facingMode:'environment'})},audio:false})
     if(video.current){video.current.srcObject=stream;await video.current.play();const active=stream.getVideoTracks()[0]?.getSettings().deviceId||deviceId||'';setSelectedCamera(active);setCameras((await navigator.mediaDevices.enumerateDevices()).filter(device=>device.kind==='videoinput'));calibrate()}
   }catch(e){setError(e instanceof Error?e.message:'Camera unavailable')}},[calibrate])
-  const stop=useCallback(()=>{(video.current?.srcObject as MediaStream|null)?.getTracks().forEach(track=>track.stop());baseline.current=undefined;previous.current=undefined;setState('idle')},[])
+  const stop=useCallback(()=>{sessionGeneration.current++;(video.current?.srcObject as MediaStream|null)?.getTracks().forEach(track=>track.stop());baseline.current=undefined;previous.current=undefined;capturing.current=false;inFlight.current=0;setPendingCaptures(0);setState('idle')},[])
   const switchCamera=useCallback(async(deviceId:string)=>{stop();setSelectedCamera(deviceId);await start(deviceId)},[start,stop])
 
   useEffect(()=>{
     if(state==='idle'||error)return
     const timer=setInterval(()=>{
       const element=video.current,preview=canvas.current
-      if(!element||!preview||element.readyState<2||busy.current)return
+      if(!element||!preview||element.readyState<2||capturing.current)return
       const context=preview.getContext('2d',{willReadFrequently:true});if(!context)return
       preview.width=FRAME_WIDTH;preview.height=FRAME_HEIGHT;context.drawImage(element,0,0,FRAME_WIDTH,FRAME_HEIGHT)
       const pixels=context.getImageData(0,0,FRAME_WIDTH,FRAME_HEIGHT).data
@@ -69,23 +75,34 @@ export function useAutoScanner(onCapture:(blob:Blob)=>Promise<boolean>,tuning:Sc
         return
       }
       if(!cardPresent){setState('waiting');stable.current=0;return}
+      if(!pipelineHasCapacity(inFlight.current,maxInFlight)){
+        stable.current=0;setState('processing');return
+      }
       const calibratedNoise=noiseMotion.current/Math.max(1,calibrationCount.current)
       const stableLimit=Math.max(tuning.stableMotion,calibratedNoise*1.6)
       setState('stabilizing')
       if(next.motion<stableLimit)stable.current++;else stable.current=0
       if(stable.current<tuning.stableFrames)return
-      busy.current=true;setState('capturing')
+      capturing.current=true;setState('capturing')
       const full=document.createElement('canvas');full.width=element.videoWidth;full.height=element.videoHeight;full.getContext('2d')!.drawImage(element,0,0)
-      full.toBlob(async blob=>{
-        let cardCaptured=true
-        if(blob){setState('processing');try{cardCaptured=await onCapture(blob)}catch(e){setError(e instanceof Error?e.message:'Scan failed')}}
-        if(cardCaptured){removalGate.current={latched:true,emptyFrames:0};setState('remove')}
-        else{baseline.current=undefined;previous.current=undefined;calibrationCount.current=0;noiseMotion.current=0;removalGate.current={latched:false,emptyFrames:0};setState('calibrating')}
-        busy.current=false;stable.current=0
+      full.toBlob(blob=>{
+        capturing.current=false;stable.current=0
+        if(!blob){calibrate();return}
+        // Latch before network work begins. The video loop can observe removal
+        // and prepare another physical card while this request is identifying.
+        removalGate.current={latched:true,emptyFrames:0};setState('remove')
+        const generation=sessionGeneration.current
+        inFlight.current++;setPendingCaptures(inFlight.current)
+        void onCapture(blob).then(cardCaptured=>{
+          if(generation===sessionGeneration.current&&!cardCaptured)calibrate()
+        }).catch(e=>{if(generation===sessionGeneration.current)setError(e instanceof Error?e.message:'Scan failed')}).finally(()=>{
+          if(generation!==sessionGeneration.current)return
+          inFlight.current=Math.max(0,inFlight.current-1);setPendingCaptures(inFlight.current)
+        })
       },'image/jpeg',.9)
     },180)
     return()=>clearInterval(timer)
-  },[state,error,onCapture,tuning])
+  },[state,error,maxInFlight,onCapture,tuning,calibrate])
   useEffect(()=>stop,[stop])
-  return {video,canvas,state,error,metrics,cameras,selectedCamera,start,stop,switchCamera,calibrate,setError}
+  return {video,canvas,state,error,metrics,cameras,selectedCamera,pendingCaptures,start,stop,switchCamera,calibrate,setError}
 }

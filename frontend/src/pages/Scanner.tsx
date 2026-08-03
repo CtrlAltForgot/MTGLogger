@@ -48,7 +48,7 @@ export default function Scanner(){
     }
     return true
   },[defaults])
-  const scan=useAutoScanner(capture,tuning)
+  const scan=useAutoScanner(capture,tuning,defaults.auto_add?2:1)
 
   const refresh=useCallback(()=>request<ReferenceStatus>('/references/status').then(setReferences),[])
   useEffect(()=>{void refresh();const timer=setInterval(refresh,2500);return()=>clearInterval(timer)},[refresh])
@@ -105,6 +105,7 @@ export default function Scanner(){
       </Stack>
       <Stack direction="row" spacing={.75} mt={1.25} flexWrap="wrap" useFlexGap>
         <Chip size="small" variant="outlined" label={`Session · ${stats.scans} scanned`}/>
+        {scan.pendingCaptures>0&&<Chip size="small" color="info" variant="outlined" label={`Recognition queue · ${scan.pendingCaptures}`}/>}
         <Chip size="small" color="success" variant="outlined" label={`${stats.added} added`}/>
         <Chip size="small" color={stats.review?'warning':'default'} variant="outlined" label={`Review · ${sessionReviewPercentage.toFixed(1)}% (${stats.review})`}/>
         <Chip size="small" color={sessionCardsPerMinute===null?'default':'primary'} variant="outlined" label={sessionCardsPerMinute===null?'Cards/min · measuring':`Cards/min · ${sessionCardsPerMinute.toFixed(1)}`}/>

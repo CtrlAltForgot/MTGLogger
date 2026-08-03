@@ -1,5 +1,5 @@
 import {describe,expect,it} from 'vitest'
-import {analyze} from './useAutoScanner'
+import {analyze,pipelineHasCapacity} from './useAutoScanner'
 
 const width=160,height=120
 const frame=(value=20)=>new Uint8ClampedArray(width*height*4).map((_,index)=>index%4===3?255:value)
@@ -22,5 +22,14 @@ describe('wide scanner presence analysis',()=>{
 
   it('ignores the narrow preview gutter outside the scan zone',()=>{
     expect(analyze(changedRegion(0,5,0,120),undefined,frame()).sceneDifference).toBe(0)
+  })
+})
+
+describe('bounded recognition pipeline',()=>{
+  it('allows one queued automatic capture but keeps manual confirmation single-file',()=>{
+    expect(pipelineHasCapacity(0,2)).toBe(true)
+    expect(pipelineHasCapacity(1,2)).toBe(true)
+    expect(pipelineHasCapacity(2,2)).toBe(false)
+    expect(pipelineHasCapacity(1,1)).toBe(false)
   })
 })
