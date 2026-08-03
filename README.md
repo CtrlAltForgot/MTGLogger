@@ -28,7 +28,11 @@ Decks allocate physical copy quantities from inventory. The Deck Builder lists o
 
 ## Unraid and LAN deployment
 
+For the lowest possible scan latency, run MTGLogger on the same PC as the browser and webcam. The browser captures from that PC and the local API performs OCR without a network hop. Unraid is optional: it is useful for an always-on shared collection, but each capture must travel over the LAN and OCR speed will depend on the server CPU. Benchmark it before choosing it for a large scanning session.
+
 The Docker web container proxies `/api` internally to FastAPI, so the default Compose deployment works from other computers on the LAN without pointing their browsers at their own `localhost`. Leave `VITE_API_URL` blank (the recommended default), run `docker compose up -d --build`, and open `http://UNRAID-IP:5173`. Set strong PostgreSQL credentials in `.env` before a permanent deployment. Named volumes preserve PostgreSQL data, review images, and OCR models across container replacement.
+
+Run `docker compose ps` to check readiness: `db`, `api`, and `web` should all report healthy. The API health check allows extra startup time for the first PaddleOCR model initialization, and the web service waits for that check before starting. Use `docker compose logs -f api` to watch OCR initialization, recognition timings, artwork indexing, and background pricing.
 
 Browsers only permit webcam access in a secure context. `http://localhost:5173` works on the machine hosting the browser; access from another device using an Unraid IP or hostname must be placed behind a trusted HTTPS reverse proxy (for example, an Unraid-managed proxy with a valid local or public certificate). MTGLogger reports this requirement directly instead of failing with an unavailable-camera error.
 

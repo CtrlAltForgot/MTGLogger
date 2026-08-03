@@ -1,5 +1,5 @@
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,6 +20,8 @@ async def lifespan(_: FastAPI):
         yield
     finally:
         price_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await price_task
 
 
 app = FastAPI(title="MTGLogger API", version=__version__, lifespan=lifespan)
