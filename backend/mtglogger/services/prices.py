@@ -8,7 +8,7 @@ from threading import Lock
 from sqlalchemy import func, select
 
 from ..database import SessionLocal
-from ..models import InventoryItem
+from ..models import CollectionValueSnapshot, InventoryItem, PriceSnapshot
 from ..providers import ScryfallProvider
 
 logger = logging.getLogger(__name__)
@@ -41,6 +41,25 @@ def _price(card: dict, foil: bool) -> Decimal | None:
     return ScryfallProvider.market_price(card, foil)
 
 
+def apply_price(db, item: InventoryItem, value: Decimal | None) -> bool:
+    """Apply a genuine price change while retaining the previous observed value."""
+    if value is None or item.market_price == value:
+        return False
+    if item.market_price is not None:
+        db.add(PriceSnapshot(inventory_id=item.id, market_price=item.market_price))
+    item.market_price = value
+    return True
+
+
+def record_collection_value(db) -> CollectionValueSnapshot:
+    total = db.scalar(
+        select(func.coalesce(func.sum(InventoryItem.market_price * InventoryItem.quantity), 0))
+    ) or Decimal("0")
+    snapshot = CollectionValueSnapshot(total_value=total)
+    db.add(snapshot)
+    return snapshot
+
+
 async def refresh_prices() -> None:
     with _state_lock:
         if _state.state == "running":
@@ -65,8 +84,7 @@ async def refresh_prices() -> None:
                 )
                 for item in items:
                     value = _price(card, item.foil)
-                    if value is not None:
-                        item.market_price = value
+                    if apply_price(db, item, value):
                         with _state_lock:
                             _state.updated_items += 1
                 db.commit()
@@ -79,6 +97,9 @@ async def refresh_prices() -> None:
                 _state.completed += 1
         # Scryfall asks clients to remain below ten requests per second.
         await asyncio.sleep(0.12)
+    with SessionLocal() as db:
+        record_collection_value(db)
+        db.commit()
     with _state_lock:
         _state.state = "complete"
         _state.finished_at = datetime.now(UTC).isoformat()

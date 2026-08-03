@@ -8,10 +8,11 @@ from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from ..database import get_db
-from ..models import DeckEntry, InventoryItem, ReviewItem
+from ..models import DeckEntry, InventoryItem, PriceSnapshot, ReviewItem
 from ..providers import ScryfallProvider
 from ..schemas import InventoryCreate, InventoryRead, InventoryUpdate, Page
 from ..services.inventory import upsert_inventory
+from ..services.prices import apply_price, record_collection_value
 
 router = APIRouter(prefix="/inventory", tags=["inventory"])
 prices = ScryfallProvider()
@@ -70,13 +71,30 @@ def list_inventory(
     column = getattr(InventoryItem, sort, InventoryItem.date_added)
     statement = statement.order_by(column.desc() if descending else column.asc())
     total = db.scalar(select(func.count()).select_from(InventoryItem).where(*filters)) or 0
+    total_cards = db.scalar(select(func.coalesce(func.sum(InventoryItem.quantity), 0))) or 0
     collection_value = db.scalar(
         select(func.coalesce(func.sum(InventoryItem.market_price * InventoryItem.quantity), 0))
     ) or 0
     items = list(db.scalars(statement.offset((page - 1) * page_size).limit(page_size)))
+    previous: dict[str, object] = {}
+    if items:
+        snapshots = db.execute(
+            select(PriceSnapshot.inventory_id, PriceSnapshot.market_price)
+            .where(PriceSnapshot.inventory_id.in_([item.id for item in items]))
+            .order_by(PriceSnapshot.inventory_id, PriceSnapshot.recorded_at.desc())
+        )
+        for inventory_id, market_price in snapshots:
+            previous.setdefault(inventory_id, market_price)
+    serialized = [
+        InventoryRead.model_validate(item).model_copy(
+            update={"previous_market_price": previous.get(item.id)}
+        )
+        for item in items
+    ]
     return Page(
-        items=items,
+        items=serialized,
         total=total,
+        total_cards=total_cards,
         collection_value=collection_value,
         page=page,
         page_size=page_size,
@@ -137,11 +155,17 @@ async def update_inventory(item_id: str, data: InventoryUpdate, db: Session = De
                 409,
                 f"Quantity cannot be lower than the {assigned} copies assigned to decks",
             )
+    market_price = (
+        changes.pop("market_price", None) if "market_price" in changes else item.market_price
+    )
     for key, value in changes.items():
         setattr(item, key, value)
+    price_changed = apply_price(db, item, market_price)
     if item.quantity == 0:
         delete_item_preserving_reviews(db, item)
         raise HTTPException(204)
+    if price_changed or "quantity" in changes:
+        record_collection_value(db)
     db.commit()
     db.refresh(item)
     return item

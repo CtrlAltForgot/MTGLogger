@@ -44,7 +44,27 @@ def test_duplicate_printing_increments_quantity(client):
     assert second.json()["quantity"] == 2
     page = client.get("/api/inventory").json()
     assert page["total"] == 1
+    assert page["total_cards"] == 2
     assert page["items"][0]["quantity"] == 2
+
+
+def test_price_changes_retain_previous_value_and_collection_history(client):
+    item = client.post("/api/inventory", json=CARD).json()
+    first = client.patch(f"/api/inventory/{item['id']}", json={"market_price": "0.84"})
+    assert first.status_code == 200
+
+    listed = client.get("/api/inventory").json()["items"][0]
+    assert listed["market_price"] == "0.84"
+    assert listed["previous_market_price"] == "0.42"
+
+    second = client.patch(f"/api/inventory/{item['id']}", json={"market_price": "1.26"})
+    assert second.status_code == 200
+    history = client.get("/api/prices/history").json()
+    assert history["current_value"] == 1.26
+    assert history["previous_value"] == 0.84
+    assert history["change"] == 0.42
+    assert history["change_percentage"] == 50.0
+    assert len(history["history"]) == 2
 
 
 def test_inventory_pagination_preserves_full_collection_totals(client):

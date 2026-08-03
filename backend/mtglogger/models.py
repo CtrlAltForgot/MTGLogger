@@ -76,6 +76,9 @@ class InventoryItem(Base):
     deck_entries: Mapped[list["DeckEntry"]] = relationship(
         back_populates="inventory", cascade="all, delete-orphan"
     )
+    price_snapshots: Mapped[list["PriceSnapshot"]] = relationship(
+        back_populates="inventory", cascade="all, delete-orphan"
+    )
 
     @property
     def deck_assignments(self) -> list[dict]:
@@ -98,6 +101,28 @@ class ReviewItem(Base):
         ForeignKey("inventory_items.id"), nullable=True
     )
     resolved_inventory: Mapped[InventoryItem | None] = relationship()
+
+
+class PriceSnapshot(Base):
+    __tablename__ = "price_snapshots"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    inventory_id: Mapped[str] = mapped_column(
+        ForeignKey("inventory_items.id", ondelete="CASCADE"), index=True
+    )
+    market_price: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, index=True
+    )
+    inventory: Mapped[InventoryItem] = relationship(back_populates="price_snapshots")
+
+
+class CollectionValueSnapshot(Base):
+    __tablename__ = "collection_value_snapshots"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    total_value: Mapped[Decimal] = mapped_column(Numeric(14, 2))
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, index=True
+    )
 
 
 class SealedProduct(Base):

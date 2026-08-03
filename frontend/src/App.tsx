@@ -1,9 +1,10 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
-import { AllInbox, CameraAlt, DarkMode, Dashboard as DashboardIcon, Download, FactCheck, Inventory2, LightMode, Style } from '@mui/icons-material'
+import { AllInbox, CameraAlt, DarkMode, Dashboard as DashboardIcon, Download, FactCheck, Inventory2, LightMode, ShowChart, Style } from '@mui/icons-material'
 import { AppBar, Box, Button, CircularProgress, CssBaseline, IconButton, Tab, Tabs, ThemeProvider, Toolbar, Tooltip, Typography } from '@mui/material'
 import { appTheme } from './theme'
 
 const Collection=lazy(()=>import('./pages/Collection'))
+const Value=lazy(()=>import('./pages/Value'))
 const Dashboard=lazy(()=>import('./pages/Dashboard'))
 const Decks=lazy(()=>import('./pages/Decks'))
 const ReviewQueue=lazy(()=>import('./pages/ReviewQueue'))
@@ -14,6 +15,7 @@ const pages=[
   {name:'Dashboard',icon:<DashboardIcon/>,content:<Dashboard/>},
   {name:'Scanner',icon:<CameraAlt/>,content:<Scanner/>},
   {name:'Collection',icon:<Inventory2/>,content:<Collection/>},
+  {name:'Value',icon:<ShowChart/>,content:<Value/>},
   {name:'Decks',icon:<Style/>,content:<Decks/>},
   {name:'Review',icon:<FactCheck/>,content:<ReviewQueue/>},
   {name:'Sealed',icon:<AllInbox/>,content:<Sealed/>},

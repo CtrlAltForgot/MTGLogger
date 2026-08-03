@@ -53,12 +53,14 @@ class InventoryRead(InventoryCreate):
     id: str
     date_added: datetime
     updated_at: datetime
+    previous_market_price: Decimal | None = None
     deck_assignments: list[InventoryDeckAssignment] = []
 
 
 class Page(BaseModel):
     items: list[InventoryRead]
     total: int
+    total_cards: int
     collection_value: Decimal
     page: int
     page_size: int
