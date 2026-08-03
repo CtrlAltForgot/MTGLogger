@@ -42,11 +42,18 @@ class InventoryUpdate(BaseModel):
     status: InventoryStatus | None = None
 
 
+class InventoryDeckAssignment(BaseModel):
+    deck_id: str
+    deck_name: str
+    quantity: int
+
+
 class InventoryRead(InventoryCreate):
     model_config = ConfigDict(from_attributes=True)
     id: str
     date_added: datetime
     updated_at: datetime
+    deck_assignments: list[InventoryDeckAssignment] = []
 
 
 class Page(BaseModel):

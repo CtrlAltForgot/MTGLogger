@@ -78,8 +78,17 @@ def test_decks_allocate_only_unassigned_physical_copies(client):
     deck = client.post(f"/api/decks/{first_id}/entries", json=allocation)
     assert deck.status_code == 200
     assert deck.json()["total_cards"] == 2
+    listed = client.get("/api/inventory").json()["items"][0]
+    assert listed["deck_assignments"] == [
+        {"deck_id": first_id, "deck_name": "First Deck", "quantity": 2}
+    ]
+    protected = client.patch(f"/api/inventory/{inventory['id']}", json={"quantity": 1})
+    assert protected.status_code == 409
+    assert "2 copies assigned" in protected.json()["detail"]
+    resized = client.patch(f"/api/inventory/{inventory['id']}", json={"quantity": 2})
+    assert resized.status_code == 200
     available = client.get(f"/api/decks/{first_id}/available").json()
-    assert available[0]["available_quantity"] == 1
+    assert available == []
     too_many = client.post(
         f"/api/decks/{second_id}/entries",
         json={"entries": [{"inventory_id": inventory["id"], "quantity": 2}]},
@@ -90,9 +99,8 @@ def test_decks_allocate_only_unassigned_physical_copies(client):
             f"/api/decks/{second_id}/entries",
             json={"entries": [{"inventory_id": inventory["id"], "quantity": 1}]},
         ).status_code
-        == 200
+        == 409
     )
-    assert client.get(f"/api/decks/{second_id}/available").json() == []
     assert client.delete(f"/api/decks/{first_id}").status_code == 204
     available = client.get(f"/api/decks/{second_id}/available").json()
     assert available[0]["available_quantity"] == 2

@@ -73,6 +73,13 @@ class InventoryItem(Base):
         back_populates="inventory", cascade="all, delete-orphan"
     )
 
+    @property
+    def deck_assignments(self) -> list[dict]:
+        return [
+            {"deck_id": entry.deck_id, "deck_name": entry.deck.name, "quantity": entry.quantity}
+            for entry in self.deck_entries
+        ]
+
 
 class ReviewItem(Base):
     __tablename__ = "review_items"

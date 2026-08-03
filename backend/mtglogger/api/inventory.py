@@ -4,10 +4,10 @@ import json
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import func, or_, select, update
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from ..database import get_db
-from ..models import InventoryItem, ReviewItem
+from ..models import DeckEntry, InventoryItem, ReviewItem
 from ..schemas import InventoryCreate, InventoryRead, InventoryUpdate, Page
 from ..services.inventory import upsert_inventory
 
@@ -53,7 +53,9 @@ def list_inventory(
         filters.append(InventoryItem.collection_name == collection_name)
     if storage_location:
         filters.append(InventoryItem.storage_location == storage_location)
-    statement = select(InventoryItem).where(*filters)
+    statement = select(InventoryItem).options(
+        selectinload(InventoryItem.deck_entries).selectinload(DeckEntry.deck)
+    ).where(*filters)
     column = getattr(InventoryItem, sort, InventoryItem.date_added)
     statement = statement.order_by(column.desc() if descending else column.asc())
     total = db.scalar(select(func.count()).select_from(InventoryItem).where(*filters)) or 0
@@ -91,7 +93,19 @@ def update_inventory(item_id: str, data: InventoryUpdate, db: Session = Depends(
     item = db.get(InventoryItem, item_id)
     if not item:
         raise HTTPException(404, "Inventory item not found")
-    for key, value in data.model_dump(exclude_unset=True).items():
+    changes = data.model_dump(exclude_unset=True)
+    if "quantity" in changes:
+        assigned = db.scalar(
+            select(func.coalesce(func.sum(DeckEntry.quantity), 0)).where(
+                DeckEntry.inventory_id == item.id
+            )
+        ) or 0
+        if changes["quantity"] < assigned:
+            raise HTTPException(
+                409,
+                f"Quantity cannot be lower than the {assigned} copies assigned to decks",
+            )
+    for key, value in changes.items():
         setattr(item, key, value)
     if item.quantity == 0:
         delete_item_preserving_reviews(db, item)
@@ -113,7 +127,11 @@ def delete_inventory(item_id: str, db: Session = Depends(get_db)):
 def export_inventory(format: str, db: Session = Depends(get_db)):
     records = [
         InventoryRead.model_validate(item).model_dump(mode="json")
-        for item in db.scalars(select(InventoryItem))
+        for item in db.scalars(
+            select(InventoryItem).options(
+                selectinload(InventoryItem.deck_entries).selectinload(DeckEntry.deck)
+            )
+        )
     ]
     if format == "json":
         return Response(
