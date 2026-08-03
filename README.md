@@ -8,6 +8,8 @@ MTGLogger is a speed-first Magic: The Gathering collection catalog. Its scanner 
 2. Run `docker compose up --build`.
 3. Open <http://localhost:5173>. API documentation is at <http://localhost:8000/docs>.
 
+Once served from the final HTTPS hostname, Chrome or Edge can install MTGLogger from the **Install app** action or the browser's install menu. The installed desktop window uses the same server-hosted client and local webcam, so there is no second database or scanner service to keep synchronized. Its service worker only provides an offline launch shell; collection and recognition operations still require the Unraid service.
+
 With Chrome or Chromium installed, `./scripts/smoke-ui.sh` loads every lazy-rendered page through nginx and fails on missing content or browser runtime exceptions. Set `MTGLOGGER_URL=https://your-hostname` to check a remote deployment.
 
 The included nginx layer accepts webcam payloads up to 16 MB (the API rejects anything above 15 MB), preserves the original HTTPS forwarding signal from an outer proxy, and allows camera access only from the page's own origin. The smoke script also proves a 2 MB request reaches FastAPI instead of being rejected by either proxy.

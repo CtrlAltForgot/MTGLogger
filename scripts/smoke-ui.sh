@@ -34,6 +34,18 @@ if [[ "$upload_status" != "404" ]]; then
 fi
 printf 'proxy upload limit: 2 MB request reached API\n'
 
+for asset in manifest.webmanifest service-worker.js mtglogger-192.png mtglogger-512.png; do
+  asset_status=$(curl --silent --output "$validation_dir/$asset" --write-out '%{http_code}' \
+    "${mtglogger_url%/}/$asset")
+  if [[ "$asset_status" != "200" || ! -s "$validation_dir/$asset" ]]; then
+    echo "desktop app asset $asset expected HTTP 200 with content, received HTTP $asset_status" >&2
+    exit 1
+  fi
+done
+grep -q '"name": "MTGLogger"' "$validation_dir/manifest.webmanifest"
+grep -q "CACHE_NAME = 'mtglogger-shell" "$validation_dir/service-worker.js"
+printf 'desktop install assets: manifest, service worker, and icons available\n'
+
 while IFS='|' read -r page expected; do
   profile="$validation_dir/profile-$page"
   dom="$validation_dir/$page.html"
@@ -53,6 +65,10 @@ while IFS='|' read -r page expected; do
   if grep -Eiq 'Uncaught|TypeError|ReferenceError|Minified React error' "$log"; then
     echo "$page emitted a browser runtime error:" >&2
     grep -Ei 'Uncaught|TypeError|ReferenceError|Minified React error' "$log" >&2
+    exit 1
+  fi
+  if [[ "$page" == "scanner" && ! -d "$profile/Default/Service Worker" ]]; then
+    echo "scanner loaded, but Chrome did not register the desktop app service worker" >&2
     exit 1
   fi
   printf '%s rendered: %s\n' "$page" "$expected"

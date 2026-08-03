@@ -1,0 +1,14 @@
+{
+  "name": "MTGLogger",
+  "short_name": "MTGLogger",
+  "description": "Log your TCG collection",
+  "start_url": "/?page=scanner",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#080d0c",
+  "theme_color": "#c92b3d",
+  "icons": [
+    {"src": "/mtglogger-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable"},
+    {"src": "/mtglogger-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"}
+  ]
+}
