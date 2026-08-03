@@ -67,6 +67,7 @@ async def search_cards(q: str = Query(min_length=2, max_length=100)):
             collector_number=card["collector_number"],
             image_url=provider.image_url(card),
             market_price=provider.market_price(card),
+            foil_market_price=provider.market_price(card, foil=True),
             confidence=0,
             oracle_id=card.get("oracle_id"),
             color_identity="".join(card.get("color_identity", [])),
@@ -110,7 +111,11 @@ def resolve_review(review_id: str, payload: ReviewResolve, db: Session = Depends
             foil=defaults.foil,
             language=defaults.language,
             condition=defaults.condition,
-            market_price=card.market_price,
+            market_price=(
+                (card.foil_market_price or card.market_price)
+                if defaults.foil
+                else card.market_price
+            ),
             storage_location=defaults.storage_location,
             collection_name=defaults.collection_name,
             image_url=card.image_url,

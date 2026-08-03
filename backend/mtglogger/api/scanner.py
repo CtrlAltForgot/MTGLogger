@@ -57,7 +57,11 @@ async def recognize_card(
                 foil=defaults.foil,
                 language=defaults.language,
                 condition=defaults.condition,
-                market_price=top.market_price,
+                market_price=(
+                    (top.foil_market_price or top.market_price)
+                    if defaults.foil
+                    else top.market_price
+                ),
                 storage_location=defaults.storage_location,
                 collection_name=defaults.collection_name,
                 image_url=top.image_url,

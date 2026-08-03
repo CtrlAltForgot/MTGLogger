@@ -3,9 +3,9 @@ import { Backspace, KeyboardArrowLeft, KeyboardArrowRight, KeyboardReturn } from
 import { Box, Button, Chip, Dialog, DialogActions, DialogContent, IconButton, Stack, Typography } from '@mui/material'
 import type { Candidate } from '../types'
 
-type Props={candidates:Candidate[];confidence:number;onAccept:(candidate:Candidate)=>void;onDecline:()=>void;busy:boolean}
+type Props={candidates:Candidate[];confidence:number;foil:boolean;onAccept:(candidate:Candidate)=>void;onDecline:()=>void;busy:boolean}
 
-export default function ScanConfirmation({candidates,confidence,onAccept,onDecline,busy}:Props){
+export default function ScanConfirmation({candidates,confidence,foil,onAccept,onDecline,busy}:Props){
   const [selected,setSelected]=useState(0)
   const candidate=candidates[selected]
   useEffect(()=>{
@@ -28,7 +28,7 @@ export default function ScanConfirmation({candidates,confidence,onAccept,onDecli
           <Chip color={confidence>95?'success':'warning'} label={`${candidate.confidence.toFixed(1)}% confidence`} sx={{mb:2}}/>
           <Typography variant="h4">{candidate.name}</Typography>
           <Typography variant="h6" color="text.secondary">{candidate.set_name} #{candidate.collector_number}</Typography>
-          <Typography variant="h4" color="primary.main" mt={2}>${Number(candidate.market_price||0).toFixed(2)}</Typography>
+          <Typography variant="h4" color="primary.main" mt={2}>${Number((foil?(candidate.foil_market_price||candidate.market_price):candidate.market_price)||0).toFixed(2)}{foil&&<Typography component="span" variant="body2" color="text.secondary"> · foil</Typography>}</Typography>
           <Typography color="text.secondary" mt={2}>Is this the exact printing?</Typography>
         </Box>
       </Stack>

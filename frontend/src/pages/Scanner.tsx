@@ -116,7 +116,7 @@ export default function Scanner(){
         <Slider min={3} max={12} value={tuning.stableFrames} onChange={(_,value)=>setTuning({...tuning,stableFrames:value as number})}/>
       </CardContent></Card>
     </Grid>
-    {candidate&&<ScanConfirmation candidates={result!.candidates} confidence={result!.confidence} onAccept={accept} onDecline={decline} busy={decisionBusy}/>}
+    {candidate&&<ScanConfirmation candidates={result!.candidates} confidence={result!.confidence} foil={defaults.foil} onAccept={accept} onDecline={decline} busy={decisionBusy}/>}
     <Snackbar key={success?`${success.id}-${success.quantity}`:'empty'} open={!!success} autoHideDuration={1800} onClose={()=>setSuccess(null)} anchorOrigin={{vertical:'bottom',horizontal:'center'}}>
       <Card elevation={12} sx={{display:'flex',alignItems:'center',minWidth:{xs:320,sm:460},border:'2px solid',borderColor:'success.main',overflow:'hidden'}}>
         {success?.image_url&&<Box component="img" src={success.image_url} alt={success.card_name} sx={{width:82,height:114,objectFit:'cover',objectPosition:'top'}}/>}

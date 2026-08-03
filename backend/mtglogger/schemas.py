@@ -83,6 +83,7 @@ class Candidate(BaseModel):
     collector_number: str
     image_url: str | None = None
     market_price: Decimal | None = None
+    foil_market_price: Decimal | None = None
     confidence: float
     oracle_id: str | None = None
     color_identity: str = ""

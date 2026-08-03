@@ -234,6 +234,23 @@ def test_inventory_updates_allow_physical_card_attributes():
     assert update.language == "ja"
 
 
+def test_candidate_supports_separate_foil_price():
+    from mtglogger.schemas import Candidate
+
+    candidate = Candidate(
+        scryfall_id=CARD["scryfall_id"],
+        name=CARD["card_name"],
+        set_code=CARD["set_code"],
+        set_name=CARD["set_name"],
+        collector_number=CARD["collector_number"],
+        market_price="0.42",
+        foil_market_price="1.25",
+        confidence=99.5,
+    )
+    assert str(candidate.market_price) == "0.42"
+    assert str(candidate.foil_market_price) == "1.25"
+
+
 def test_inventory_delete_preserves_resolved_review_history():
     from mtglogger.api.inventory import delete_item_preserving_reviews
     from mtglogger.database import Base, SessionLocal, engine
