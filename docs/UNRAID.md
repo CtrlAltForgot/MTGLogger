@@ -66,6 +66,14 @@ Good private options are:
 
 Afterward, open the HTTPS hostname on the PC, allow camera access, select the USB or phone camera, and keep the guide empty during calibration. Scan 5–10 cards and compare **Last** with **Recognition**. A small difference means LAN/proxy overhead is not a bottleneck; high **Recognition** means the Unraid CPU itself is slower.
 
+From a workstation clone with Chrome or Chromium installed, verify that every page and the same-origin API proxy render through the final HTTPS route:
+
+```bash
+MTGLOGGER_URL=https://mtglogger.example.com ./scripts/smoke-ui.sh
+```
+
+This smoke check is read-only. Webcam permission and physical capture still require the manual browser test described above.
+
 ## Updates
 
 From `/mnt/user/appdata/mtglogger-src`:
