@@ -722,7 +722,10 @@ class CardRecognizer:
                 self._descriptor_matches,
                 corrected,
                 identity_names,
-                printed_set_code or box_set_code,
+                # A tiny footer can turn M15 into MIS. Never let uncertain OCR
+                # remove the correct artwork candidate; only explicit Box Mode
+                # is authoritative enough to constrain descriptor retrieval.
+                box_set_code,
             )
             known_card_ids = {card["id"] for card in cards}
             for reference, _score in descriptor_matches:
