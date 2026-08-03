@@ -304,6 +304,14 @@ class CardRecognizer:
         return "".join(character for character in value.casefold() if character.isalnum())
 
     @classmethod
+    def promo_type_hint(cls, text: str) -> str | None:
+        normalized = cls.normalized_name(text)
+        # OCR commonly renders the tiny "Intro Pack" footer as InroOPack.
+        if re.search(r"in(?:t)?r[o0]+pack", normalized):
+            return "intropack"
+        return None
+
+    @classmethod
     def closest_catalog_names(
         cls, title: str, names: list[str], limit: int = 3
     ) -> list[tuple[str, float]]:
@@ -331,6 +339,42 @@ class CardRecognizer:
             0.85,
             SequenceMatcher(None, ocr_set.casefold(), printed_set.casefold()).ratio(),
         )
+
+    @classmethod
+    def has_strong_lookup_evidence(
+        cls,
+        title: str | None,
+        number: str | None,
+        printed_set_code: str | None,
+        copyright_year: int | None,
+        cards: list[dict],
+    ) -> bool:
+        if not title or not cards:
+            return False
+        title_scores = [
+            SequenceMatcher(None, title.casefold(), card["name"].casefold()).ratio()
+            for card in cards
+        ]
+        best_index = max(range(len(cards)), key=title_scores.__getitem__)
+        if title_scores[best_index] < 0.9:
+            return False
+        best = cards[best_index]
+        exactish_footer = bool(
+            number
+            and printed_set_code
+            and cls.collector_score(number, best["collector_number"]) >= 0.78
+            and cls.set_code_score(printed_set_code, best["set"]) >= 0.78
+        )
+        if exactish_footer or len(cards) == 1:
+            return True
+        if copyright_year:
+            matching_years = [
+                card
+                for card in cards
+                if int(card.get("released_at", "0000")[:4]) == copyright_year
+            ]
+            return len(matching_years) == 1
+        return False
 
     @staticmethod
     def structured_confidence(
@@ -366,6 +410,7 @@ class CardRecognizer:
         printed_set_code: str | None,
         box_set_code: str | None,
         language: str,
+        promo_type: str | None = None,
     ) -> list[dict]:
         if not title and not number:
             return []
@@ -375,9 +420,13 @@ class CardRecognizer:
             candidate_title: str, *, relaxed: bool = False
         ) -> list[dict]:
             title_query = f'!"{candidate_title}"'
+            if promo_type:
+                title_query += " is:promo"
             variants: list[tuple[str, str | None]] = []
             if number:
-                variants.append((f"{title_query} cn:{number}", preferred_set))
+                variants.append(
+                    (f"{title_query} cn:{number}", None if promo_type else preferred_set)
+                )
                 if relaxed:
                     variants.append((f"{title_query} cn:{number}", None))
             if relaxed or not number:
@@ -391,6 +440,16 @@ class CardRecognizer:
                     continue
                 seen.add(key)
                 cards = await self.provider.search(query, set_code, language)
+                if promo_type:
+                    cards = [
+                        card
+                        for card in cards
+                        if promo_type in card.get("promo_types", [])
+                        and (
+                            not number
+                            or self.collector_score(number, card["collector_number"]) == 1.0
+                        )
+                    ]
                 if cards:
                     return cards
             return []
@@ -404,7 +463,7 @@ class CardRecognizer:
                 # Set code + collector number directly identifies a printing and
                 # is more reliable than forcing a misspelled OCR title into the
                 # initial query.
-                if not cards and number and printed_set_code:
+                if not cards and number and printed_set_code and not promo_type:
                     cards = await self.provider.search(
                         f"cn:{number}", printed_set_code, language
                     )
@@ -440,20 +499,52 @@ class CardRecognizer:
     ) -> Recognition:
         async with self._recognition_lock:
             started = time.perf_counter()
-            corrected = await asyncio.to_thread(lambda: self.rectify(self.decode(raw)))
+            decoded = self.decode(raw)
+            corrected = await asyncio.to_thread(lambda: self.rectify(decoded))
             prepared = time.perf_counter()
             card_structure = await asyncio.to_thread(self.has_card_structure, corrected)
             text = await asyncio.to_thread(self.extract_identification_text, corrected)
             ocr_complete = time.perf_counter()
             title, number, printed_set_code, copyright_year = self.hints(text)
+            promo_type = self.promo_type_hint(text)
             lookup_task = asyncio.create_task(
-                self._lookup_cards(title, number, printed_set_code, box_set_code, language)
+                self._lookup_cards(
+                    title,
+                    number,
+                    printed_set_code,
+                    box_set_code,
+                    language,
+                    promo_type,
+                )
             )
             scan_hash = await asyncio.to_thread(artwork_hash, corrected)
             visual_matches = await asyncio.to_thread(
                 self._visual_matches, scan_hash, printed_set_code or box_set_code
             )
             cards = await lookup_task
+            if not self.has_strong_lookup_evidence(
+                title, number, printed_set_code, copyright_year, cards
+            ):
+                # A fast crop can occasionally lock onto an internal rules box,
+                # and tiny footers may be incomplete. OCR the original frame only
+                # for weak scans, then rerank before interrupting the user.
+                recovery_text = await asyncio.to_thread(self.extract_text, decoded)
+                recovery_hints = self.hints(recovery_text)
+                recovery_promo = self.promo_type_hint(recovery_text)
+                recovery_cards = await self._lookup_cards(
+                    *recovery_hints[:3], box_set_code, language, recovery_promo
+                )
+                if recovery_cards:
+                    text = recovery_text
+                    title, number, printed_set_code, copyright_year = recovery_hints
+                    cards = recovery_cards
+                elif recovery_text.strip():
+                    text = recovery_text
+                # If this still needs Review, preserve what the camera saw rather
+                # than a misleading enlarged internal rectangle.
+                corrected = decoded
+                card_structure = await asyncio.to_thread(self.has_card_structure, decoded)
+                visual_matches = []
             matching_complete = time.perf_counter()
         visual_scores = {reference.scryfall_id: score for reference, score in visual_matches}
         ranked: dict[str, Candidate] = {}

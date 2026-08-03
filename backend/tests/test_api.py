@@ -358,6 +358,114 @@ def test_catalog_fallback_recovers_canonical_name_with_exact_printing():
     assert ('!"Consecrated by Blood" cn:087', "ori", "en") in recognizer.provider.calls
 
 
+def test_intro_pack_footer_selects_promo_printing_not_regular_set_card():
+    import asyncio
+
+    from mtglogger.services.recognition import CardRecognizer
+
+    regular = {
+        "id": "regular-ori",
+        "name": "Kothophed, Soul Hoarder",
+        "set": "ori",
+        "collector_number": "104",
+        "promo_types": [],
+    }
+    intro_pack = {
+        "id": "intro-pori",
+        "name": "Kothophed, Soul Hoarder",
+        "set": "pori",
+        "collector_number": "104",
+        "promo_types": ["setpromo", "intropack"],
+    }
+    prerelease = {
+        "id": "prerelease-pori",
+        "name": "Kothophed, Soul Hoarder",
+        "set": "pori",
+        "collector_number": "104s",
+        "promo_types": ["setpromo", "prerelease", "datestamped"],
+    }
+
+    class Provider:
+        def __init__(self):
+            self.calls = []
+
+        async def search(self, query, set_code=None, language=None):
+            self.calls.append((query, set_code, language))
+            return [regular, intro_pack, prerelease]
+
+    recognizer = CardRecognizer.__new__(CardRecognizer)
+    recognizer.provider = Provider()
+    cards = asyncio.run(
+        recognizer._lookup_cards(
+            "Kothophed, Soul Hoarder", "104", "ori", None, "en", "intropack"
+        )
+    )
+
+    assert cards == [intro_pack]
+    assert recognizer.provider.calls[0] == (
+        '!"Kothophed, Soul Hoarder" is:promo cn:104',
+        None,
+        "en",
+    )
+
+
+def test_intro_pack_hint_tolerates_footer_ocr_damage():
+    from mtglogger.services.recognition import CardRecognizer
+
+    assert CardRecognizer.promo_type_hint("104/272RInroOPack\nORIENTIANHUAX") == (
+        "intropack"
+    )
+
+
+def test_weak_internal_crop_recovers_from_original_camera_frame():
+    import asyncio
+
+    import numpy as np
+
+    from mtglogger.services.recognition import CardRecognizer
+
+    card = {
+        "id": "ori-centaur",
+        "name": "Returned Centaur",
+        "set": "ori",
+        "set_name": "Magic Origins",
+        "collector_number": "116",
+        "released_at": "2015-07-17",
+    }
+
+    class Provider:
+        async def search(self, query, set_code=None, language=None):
+            return [card] if "Returned Centaur" in query else []
+
+        @staticmethod
+        def image_url(_card):
+            return None
+
+        @staticmethod
+        def market_price(_card, foil=False):
+            return None
+
+    recognizer = CardRecognizer.__new__(CardRecognizer)
+    recognizer.provider = Provider()
+    recognizer._recognition_lock = asyncio.Lock()
+    original = np.zeros((720, 1280, 3), dtype=np.uint8)
+    bad_crop = np.zeros((840, 600, 3), dtype=np.uint8)
+    recognizer.decode = lambda _raw: original
+    recognizer.rectify = lambda _decoded: bad_crop
+    recognizer.extract_identification_text = lambda _image: "Rerurnd entaur\n11/272\nORI·EN"
+    recognizer.extract_text = lambda _image: (
+        "Returned Centaur\n116/272 C\nORI·EN LUCAS GRACIANO\n2015"
+    )
+    recognizer._visual_matches = lambda _scan_hash, _set_code: []
+
+    result = asyncio.run(recognizer.recognize(b"camera-frame"))
+
+    assert result.candidates[0].name == "Returned Centaur"
+    assert result.candidates[0].collector_number == "116"
+    assert result.confidence == 99.5
+    assert result.corrected is original
+
+
 def test_artwork_alone_cannot_auto_add_a_reused_printing():
     from mtglogger.services.recognition import CardRecognizer
 
