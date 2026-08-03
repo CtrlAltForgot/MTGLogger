@@ -128,6 +128,15 @@ class ScryfallProvider:
             url = page.get("next_page") if page.get("has_more") else None
             params = None
 
+    async def paper_printing_count(self) -> int:
+        """Return Scryfall's current number of distinct paper printings."""
+        response = await scryfall_client().get(
+            f"{self.base_url}/cards/search",
+            params={"q": "game:paper", "unique": "prints", "page": 1},
+        )
+        response.raise_for_status()
+        return int(response.json().get("total_cards") or 0)
+
     async def download_image(self, url: str) -> bytes:
         response = await scryfall_client().get(url)
         response.raise_for_status()

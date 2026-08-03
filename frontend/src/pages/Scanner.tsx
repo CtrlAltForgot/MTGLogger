@@ -9,7 +9,7 @@ import ScanConfirmation from '../components/ScanConfirmation'
 import FoilArtwork from '../components/FoilArtwork'
 import { cardsPerMinute, initialSessionStats, recordSuccessfulAddition, reviewPercentage } from '../scanner/sessionStats'
 import { defaultTuning, useAutoScanner, type ScannerTuning } from '../scanner/useAutoScanner'
-import type { Candidate, Deck, Defaults, Inventory, ScanResult } from '../types'
+import type { Candidate, Deck, Defaults, Inventory, ReferenceStatus, ScanResult } from '../types'
 
 const initial:Defaults={condition:'near_mint',foil:false,language:'en',storage_location:'Unsorted',collection_name:'Main',status:'owned',box_set_code:null,auto_add:true,deck_id:null}
 const languages=[
@@ -18,7 +18,6 @@ const languages=[
   ['zhs','Chinese (Simplified)'],['zht','Chinese (Traditional)'],['he','Hebrew'],
   ['la','Latin'],['grc','Ancient Greek'],['ar','Arabic'],['sa','Sanskrit'],['phy','Phyrexian'],
 ]
-type ReferenceStatus={state:string;set_code:string|null;completed:number;total:number;indexed_cards:number;error:string|null}
 export default function Scanner(){
   const [defaults,setDefaults]=useState(initial)
   const [result,setResult]=useState<ScanResult|null>(null)

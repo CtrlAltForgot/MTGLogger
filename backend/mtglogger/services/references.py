@@ -24,6 +24,7 @@ class SyncState:
     error: str | None = None
     errors: int = 0
     updated_at: str | None = None
+    catalog_total: int | None = None
 
 
 _state = SyncState()
@@ -78,6 +79,18 @@ def sync_status() -> dict:
         result["fingerprinted_cards"] = (
             db.scalar(select(func.count()).select_from(CardVisualFingerprint)) or 0
         )
+        result["cached_images"] = (
+            db.scalar(
+                select(func.count())
+                .select_from(CardVisualFingerprint)
+                .where(CardVisualFingerprint.cached_image_path.is_not(None))
+            )
+            or 0
+        )
+    total = result["catalog_total"] or 0
+    result["coverage_percent"] = (
+        min(100.0, round(result["fingerprinted_cards"] / total * 100, 2)) if total else None
+    )
     return result
 
 
@@ -131,6 +144,9 @@ async def sync_all() -> None:
         _state.completed = _state.total = _state.errors = 0
         _state.error = None
     try:
+        catalog_total = await provider.paper_printing_count()
+        with _state_lock:
+            _state.catalog_total = catalog_total
         with SessionLocal() as db:
             # Make the catalog useful quickly for the user's active collection,
             # then continue exhaustively through every paper printing.

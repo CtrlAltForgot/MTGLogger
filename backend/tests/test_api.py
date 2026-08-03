@@ -235,7 +235,12 @@ def test_deck_builder_pages_through_all_unassigned_entries(client):
 def test_recognition_reference_status(client):
     response = client.get("/api/references/status")
     assert response.status_code == 200
-    assert response.json()["indexed_cards"] == 0
+    status = response.json()
+    assert status["indexed_cards"] == 0
+    assert status["fingerprinted_cards"] == 0
+    assert status["cached_images"] == 0
+    assert status["catalog_total"] is None
+    assert status["coverage_percent"] is None
 
 
 def test_reference_priority_sets_are_normalized(monkeypatch):
