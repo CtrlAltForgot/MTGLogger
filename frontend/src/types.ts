@@ -6,3 +6,4 @@ export type Defaults = { condition:string; foil:boolean; language:string; storag
 export type DeckEntry = { id:string; quantity:number; inventory:Inventory }
 export type Deck = { id:string; name:string; format:string|null; description:string|null; total_cards:number; unique_cards:number; total_value:number; created_at:string; updated_at:string; entries:DeckEntry[] }
 export type AvailableCard = { inventory:Inventory; assigned_quantity:number; available_quantity:number }
+export type AvailablePage = { items:AvailableCard[]; total:number; page:number; page_size:number }

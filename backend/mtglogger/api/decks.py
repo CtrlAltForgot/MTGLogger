@@ -8,6 +8,7 @@ from ..database import get_db
 from ..models import Deck, DeckEntry, InventoryItem, InventoryStatus
 from ..schemas import (
     AvailableCard,
+    AvailablePage,
     DeckAllocations,
     DeckCreate,
     DeckEntryRead,
@@ -88,11 +89,12 @@ def delete_deck(deck_id: str, db: Session = Depends(get_db)):
     db.commit()
 
 
-@router.get("/{deck_id}/available", response_model=list[AvailableCard])
+@router.get("/{deck_id}/available", response_model=AvailablePage)
 def available_cards(
     deck_id: str,
     q: str | None = None,
-    page_size: int = Query(250, ge=1, le=250),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=250),
     db: Session = Depends(get_db),
 ):
     get_deck(db, deck_id)
@@ -101,25 +103,36 @@ def available_cards(
         .group_by(DeckEntry.inventory_id)
         .subquery()
     )
-    statement = (
-        select(InventoryItem, func.coalesce(assigned.c.assigned, 0))
-        .outerjoin(assigned, assigned.c.inventory_id == InventoryItem.id)
-        .where(
-            InventoryItem.status == InventoryStatus.owned,
-            InventoryItem.quantity > func.coalesce(assigned.c.assigned, 0),
-        )
-        .order_by(InventoryItem.card_name.asc())
-        .limit(page_size)
-    )
+    filters = [
+        InventoryItem.status == InventoryStatus.owned,
+        InventoryItem.quantity > func.coalesce(assigned.c.assigned, 0),
+    ]
     if q:
-        statement = statement.where(
+        filters.append(
             or_(
                 InventoryItem.card_name.ilike(f"%{q}%"),
                 InventoryItem.set_code.ilike(f"%{q}%"),
                 InventoryItem.collector_number.ilike(f"%{q}%"),
             )
         )
-    return [
+    base = (
+        select(InventoryItem, func.coalesce(assigned.c.assigned, 0))
+        .outerjoin(assigned, assigned.c.inventory_id == InventoryItem.id)
+        .where(*filters)
+    )
+    statement = (
+        base
+        .order_by(InventoryItem.card_name.asc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+    total = db.scalar(
+        select(func.count())
+        .select_from(InventoryItem)
+        .outerjoin(assigned, assigned.c.inventory_id == InventoryItem.id)
+        .where(*filters)
+    ) or 0
+    items = [
         AvailableCard(
             inventory=InventoryRead.model_validate(item),
             assigned_quantity=assigned_quantity,
@@ -127,6 +140,7 @@ def available_cards(
         )
         for item, assigned_quantity in db.execute(statement)
     ]
+    return AvailablePage(items=items, total=total, page=page, page_size=page_size)
 
 
 @router.post("/{deck_id}/entries", response_model=DeckRead)

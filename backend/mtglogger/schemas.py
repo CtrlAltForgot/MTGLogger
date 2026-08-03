@@ -209,3 +209,10 @@ class AvailableCard(BaseModel):
     inventory: InventoryRead
     assigned_quantity: int
     available_quantity: int
+
+
+class AvailablePage(BaseModel):
+    items: list[AvailableCard]
+    total: int
+    page: int
+    page_size: int

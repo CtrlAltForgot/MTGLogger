@@ -136,7 +136,8 @@ def test_decks_allocate_only_unassigned_physical_copies(client):
     resized = client.patch(f"/api/inventory/{inventory['id']}", json={"quantity": 2})
     assert resized.status_code == 200
     available = client.get(f"/api/decks/{first_id}/available").json()
-    assert available == []
+    assert available["total"] == 0
+    assert available["items"] == []
     too_many = client.post(
         f"/api/decks/{second_id}/entries",
         json={"entries": [{"inventory_id": inventory["id"], "quantity": 2}]},
@@ -151,7 +152,34 @@ def test_decks_allocate_only_unassigned_physical_copies(client):
     )
     assert client.delete(f"/api/decks/{first_id}").status_code == 204
     available = client.get(f"/api/decks/{second_id}/available").json()
-    assert available[0]["available_quantity"] == 2
+    assert available["total"] == 1
+    assert available["items"][0]["available_quantity"] == 2
+
+
+def test_deck_builder_pages_through_all_unassigned_entries(client):
+    for index, name in enumerate(("Alpha", "Beta", "Gamma"), start=20):
+        response = client.post(
+            "/api/inventory",
+            json={
+                **CARD,
+                "card_name": name,
+                "collector_number": str(index),
+                "scryfall_id": f"00000000-0000-0000-0000-{index:012d}",
+            },
+        )
+        assert response.status_code == 201
+    deck_id = client.post("/api/decks", json={"name": "Paged Deck"}).json()["id"]
+
+    first = client.get(
+        f"/api/decks/{deck_id}/available", params={"page": 1, "page_size": 2}
+    ).json()
+    second = client.get(
+        f"/api/decks/{deck_id}/available", params={"page": 2, "page_size": 2}
+    ).json()
+
+    assert first["total"] == second["total"] == 3
+    assert [item["inventory"]["card_name"] for item in first["items"]] == ["Alpha", "Beta"]
+    assert [item["inventory"]["card_name"] for item in second["items"]] == ["Gamma"]
 
 
 def test_recognition_reference_status(client):
