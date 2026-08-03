@@ -118,8 +118,16 @@ def sync_status() -> dict:
         result["indexed_sets"] = (
             db.scalar(select(func.count(func.distinct(CardReference.set_code)))) or 0
         )
+        # A printing is exact-art ready only after its compact local descriptor
+        # exists. Legacy perceptual hashes remain useful supporting evidence but
+        # must not make the UI overstate exact-printing coverage.
         result["fingerprinted_cards"] = (
-            db.scalar(select(func.count()).select_from(CardVisualFingerprint)) or 0
+            db.scalar(
+                select(func.count())
+                .select_from(CardVisualFingerprint)
+                .where(CardVisualFingerprint.descriptor_path.is_not(None))
+            )
+            or 0
         )
         result["cached_images"] = (
             db.scalar(
@@ -129,14 +137,7 @@ def sync_status() -> dict:
             )
             or 0
         )
-        result["descriptor_cards"] = (
-            db.scalar(
-                select(func.count())
-                .select_from(CardVisualFingerprint)
-                .where(CardVisualFingerprint.descriptor_path.is_not(None))
-            )
-            or 0
-        )
+        result["descriptor_cards"] = result["fingerprinted_cards"]
     total = result["catalog_total"] or 0
     result["coverage_percent"] = (
         min(100.0, round(result["fingerprinted_cards"] / total * 100, 2)) if total else None

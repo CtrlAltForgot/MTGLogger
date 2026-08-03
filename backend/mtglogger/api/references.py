@@ -28,7 +28,9 @@ def indexed_sets(db: Session = Depends(get_db)):
             CardReference.set_code,
             CardReference.set_name,
             func.count(CardReference.scryfall_id),
-            func.count(CardVisualFingerprint.scryfall_id),
+            func.count(CardVisualFingerprint.scryfall_id).filter(
+                CardVisualFingerprint.descriptor_path.is_not(None)
+            ),
             func.max(CardReference.released_at),
             func.max(CardVisualFingerprint.updated_at),
         )
@@ -67,6 +69,7 @@ def indexed_cards(
             CardVisualFingerprint.scryfall_id == CardReference.scryfall_id,
         )
         .where(CardReference.set_code == set_code.lower())
+        .where(CardVisualFingerprint.descriptor_path.is_not(None))
     )
     term = search.strip()
     if term:
