@@ -132,6 +132,26 @@ async def sync_all() -> None:
         _state.error = None
     try:
         with SessionLocal() as db:
+            # Make the catalog useful quickly for the user's active collection,
+            # then continue exhaustively through every paper printing.
+            for set_code in get_settings().priority_reference_sets:
+                cards = await provider.cards_for_set(set_code)
+                with _state_lock:
+                    _state.set_code = f"priority:{set_code}"
+                    _state.total += len(cards)
+                for card in cards:
+                    try:
+                        await _index_card(db, provider, card)
+                    except Exception:
+                        db.rollback()
+                        with _state_lock:
+                            _state.errors += 1
+                    finally:
+                        with _state_lock:
+                            _state.completed += 1
+                    await asyncio.sleep(0.1)
+            with _state_lock:
+                _state.set_code = "all-paper"
             async for cards in provider.paper_printing_pages():
                 with _state_lock:
                     _state.total += len(cards)

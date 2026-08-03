@@ -238,6 +238,13 @@ def test_recognition_reference_status(client):
     assert response.json()["indexed_cards"] == 0
 
 
+def test_reference_priority_sets_are_normalized(monkeypatch):
+    from mtglogger.config import Settings
+
+    settings = Settings(reference_priority_sets=" ORI,ktk, M15 ,,ori ")
+    assert settings.priority_reference_sets == ["ori", "ktk", "m15"]
+
+
 def test_artwork_hash_is_stable_under_small_brightness_change():
     import cv2
     import numpy as np

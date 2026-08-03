@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     reference_image_cache: str = "compact"
     reference_refresh_hours: int = 24
     reference_auto_sync: bool = True
+    reference_priority_sets: str = "ori,ktk,m15,isd,gtc,jou,m13"
     request_timeout: float = 8.0
     price_refresh_hours: int = 12
 
@@ -25,6 +26,15 @@ class Settings(BaseSettings):
     @property
     def cache_reference_images(self) -> bool:
         return self.reference_image_cache.casefold() == "full"
+
+    @property
+    def priority_reference_sets(self) -> list[str]:
+        values = [
+            value.strip().casefold()
+            for value in self.reference_priority_sets.split(",")
+            if value.strip()
+        ]
+        return list(dict.fromkeys(values))
 
 
 @lru_cache
