@@ -49,6 +49,14 @@ def summary(db: Session = Depends(get_db)):
     newest = list(
         db.scalars(select(InventoryItem).order_by(InventoryItem.date_added.desc()).limit(8))
     )
+    duplicates = list(
+        db.scalars(
+            select(InventoryItem)
+            .where(InventoryItem.quantity > 1)
+            .order_by(InventoryItem.quantity.desc(), InventoryItem.card_name.asc())
+            .limit(8)
+        )
+    )
     return DashboardSummary(
         total_value=total_value,
         total_cards=total_cards,
@@ -57,6 +65,8 @@ def summary(db: Session = Depends(get_db)):
         by_set=group(InventoryItem.set_name),
         by_color=group(InventoryItem.color_identity),
         by_rarity=group(InventoryItem.rarity),
+        by_type=group(InventoryItem.type_line),
         most_valuable=valuable,
         newest=newest,
+        duplicate_cards=duplicates,
     )

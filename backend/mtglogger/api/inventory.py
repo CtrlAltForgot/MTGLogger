@@ -3,15 +3,25 @@ import io
 import json
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..models import InventoryItem
+from ..models import InventoryItem, ReviewItem
 from ..schemas import InventoryCreate, InventoryRead, InventoryUpdate, Page
 from ..services.inventory import upsert_inventory
 
 router = APIRouter(prefix="/inventory", tags=["inventory"])
+
+
+def delete_item_preserving_reviews(db: Session, item: InventoryItem) -> None:
+    db.execute(
+        update(ReviewItem)
+        .where(ReviewItem.resolved_inventory_id == item.id)
+        .values(resolved_inventory_id=None)
+    )
+    db.delete(item)
+    db.commit()
 
 
 @router.get("", response_model=Page)
@@ -58,8 +68,7 @@ def update_inventory(item_id: str, data: InventoryUpdate, db: Session = Depends(
     for key, value in data.model_dump(exclude_unset=True).items():
         setattr(item, key, value)
     if item.quantity == 0:
-        db.delete(item)
-        db.commit()
+        delete_item_preserving_reviews(db, item)
         raise HTTPException(204)
     db.commit()
     db.refresh(item)
@@ -71,8 +80,7 @@ def delete_inventory(item_id: str, db: Session = Depends(get_db)):
     item = db.get(InventoryItem, item_id)
     if not item:
         raise HTTPException(404, "Inventory item not found")
-    db.delete(item)
-    db.commit()
+    delete_item_preserving_reviews(db, item)
 
 
 @router.get("/export/{format}")

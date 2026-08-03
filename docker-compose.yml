@@ -18,7 +18,7 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://mtglogger:change-me@db:5432/mtglogger}
-      CORS_ORIGINS: http://localhost:5173
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
       SCRYFALL_USER_AGENT: ${SCRYFALL_USER_AGENT:-MTGLogger/0.1}
     volumes:
       - card_images:/app/data
@@ -31,7 +31,7 @@ services:
     build:
       context: ./frontend
       args:
-        VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
+        VITE_API_URL: ${VITE_API_URL:-}
     restart: unless-stopped
     ports: ["5173:80"]
     depends_on: [api]

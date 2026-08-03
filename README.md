@@ -10,7 +10,7 @@ MTGLogger is a speed-first Magic: The Gathering collection catalog. Its scanner 
 
 The browser owns webcam access and sends stable captures to the API. This works in Docker and avoids passing a host camera device into a container. On startup, keep the card guide empty briefly while the scanner learns the background and camera noise. Recognition uses OCR, Scryfall exact metadata lookup, and perceptual artwork matching.
 
-By default, matches at 98.5% confidence or higher are added automatically. That score requires near-exact OCR agreement; on modern frames the printed name, collector number, and set code all contribute independent evidence. Everything else opens a keyboard-first confirmation: use the arrow or number keys to select a printing, press **Enter** to add it, or **Backspace** to decline it. Turn off **Auto-add near-certain matches** to confirm every card.
+By default, matches at 98.5% confidence or higher are added automatically. That score requires near-exact OCR agreement; on modern frames the printed name, collector number, and set code all contribute independent evidence. A brief card-image receipt confirms the exact printing, price, and quantity without pausing capture. Uncertain scans are saved with their camera image to Review, show a brief warning receipt, and never interrupt the batch. Turn off **Auto-add near-certain matches** when you explicitly want the keyboard-first candidate dialog (arrow/number keys, **Enter** to accept, **Backspace** to decline).
 
 After every capture the camera stays latched in **Remove card** state. It must observe the calibrated empty guide for three consecutive checks before another capture is possible, so a stationary card cannot be logged twice. This still supports two copies of the same card back-to-back: briefly expose the empty guide between them.
 
@@ -21,6 +21,12 @@ Enter a Scryfall set code in the scanner (for example `FDN`) and choose **Index 
 The production API image includes CPU PaddleOCR 3. Paddle's inference model is initialized when the API starts and cached in the persistent `ocr_models` volume. Check `GET /api/scanner/capabilities` and `GET /api/references/status` when diagnosing recognition.
 
 Market prices are refreshed from Scryfall in a background task every 24 hours and never block scanning. A refresh can also be started with `POST /api/prices/refresh`; progress is available from `GET /api/prices/status`.
+
+Collection entries can be searched, sorted by newest/name/value, edited, or deleted. Review supports the captured camera image, automatic candidates, manual Scryfall printing search, ignore, and delete. The dashboard includes set/color/rarity/type breakdowns, valuable/newest cards, and duplicate printings. Sealed products are stored separately from singles.
+
+## Unraid and LAN deployment
+
+The Docker web container proxies `/api` internally to FastAPI, so the default Compose deployment works from other computers on the LAN without pointing their browsers at their own `localhost`. Leave `VITE_API_URL` blank (the recommended default), run `docker compose up -d --build`, and open `http://UNRAID-IP:5173`. Set strong PostgreSQL credentials in `.env` before a permanent deployment. Named volumes preserve PostgreSQL data, review images, and OCR models across container replacement.
 
 ## Local development
 

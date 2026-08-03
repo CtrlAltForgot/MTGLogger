@@ -112,3 +112,28 @@ def test_inventory_updates_allow_physical_card_attributes():
     update = InventoryUpdate(foil=True, language="ja", condition="lightly_played")
     assert update.foil is True
     assert update.language == "ja"
+
+
+def test_inventory_delete_preserves_resolved_review_history():
+    from mtglogger.api.inventory import delete_item_preserving_reviews
+    from mtglogger.database import Base, SessionLocal, engine
+    from mtglogger.models import InventoryItem, ReviewItem, ReviewStatus
+
+    Base.metadata.drop_all(engine)
+    Base.metadata.create_all(engine)
+    with SessionLocal() as db:
+        item = InventoryItem(**CARD)
+        db.add(item)
+        db.flush()
+        review = ReviewItem(
+            image_path="test.jpg",
+            candidates_json="[]",
+            status=ReviewStatus.resolved,
+            resolved_inventory_id=item.id,
+        )
+        db.add(review)
+        db.commit()
+        item_id, review_id = item.id, review.id
+        delete_item_preserving_reviews(db, item)
+        assert db.get(InventoryItem, item_id) is None
+        assert db.get(ReviewItem, review_id).resolved_inventory_id is None

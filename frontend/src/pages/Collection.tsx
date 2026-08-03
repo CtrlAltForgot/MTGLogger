@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Delete, Download, Edit, Search } from '@mui/icons-material'
 import {
   Box, Button, Card, Chip, Dialog, DialogActions, DialogContent, DialogTitle,
-  FormControlLabel, IconButton, InputAdornment, MenuItem, Select, Stack, Switch,
+  Alert, FormControlLabel, IconButton, InputAdornment, MenuItem, Select, Stack, Switch,
   TextField, Tooltip, Typography,
 } from '@mui/material'
 import { API, request } from '../api'
@@ -16,16 +16,18 @@ export default function Collection(){
   const [items,setItems]=useState<Inventory[]>([]),[total,setTotal]=useState(0)
   const [query,setQuery]=useState(''),[sort,setSort]=useState<keyof typeof sorts>('newest'),[reload,setReload]=useState(0)
   const [editing,setEditing]=useState<Inventory|null>(null),[deleting,setDeleting]=useState<Inventory|null>(null),[busy,setBusy]=useState(false)
+  const [error,setError]=useState<string>()
 
   useEffect(()=>{const timer=setTimeout(()=>request<{items:Inventory[],total:number}>(`/inventory?q=${encodeURIComponent(query)}&${sorts[sort]}`).then(x=>{setItems(x.items);setTotal(x.total)}),200);return()=>clearTimeout(timer)},[query,sort,reload])
   const save=async()=>{if(!editing)return;setBusy(true);try{await request(`/inventory/${editing.id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({quantity:editing.quantity,foil:editing.foil,condition:editing.condition,language:editing.language,storage_location:editing.storage_location,collection_name:editing.collection_name,status:editing.status,market_price:editing.market_price,purchase_price:editing.purchase_price,notes:editing.notes})});setEditing(null);setReload(x=>x+1)}finally{setBusy(false)}}
-  const remove=async()=>{if(!deleting)return;setBusy(true);try{await request(`/inventory/${deleting.id}`,{method:'DELETE'});setDeleting(null);setReload(x=>x+1)}finally{setBusy(false)}}
+  const remove=async()=>{if(!deleting)return;setBusy(true);setError(undefined);try{await request(`/inventory/${deleting.id}`,{method:'DELETE'});setDeleting(null);setReload(x=>x+1)}catch(e){setError(e instanceof Error?e.message:'Could not delete entry')}finally{setBusy(false)}}
 
   return <>
     <Stack direction={{xs:'column',sm:'row'}} justifyContent="space-between" gap={2} mb={3}>
       <Box><Typography variant="h4">Collection</Typography><Typography color="text.secondary">{total} unique inventory entries</Typography></Box>
       <Stack direction="row" spacing={1}><Button startIcon={<Download/>} href={`${API}/api/inventory/export/csv`}>CSV</Button><Button startIcon={<Download/>} href={`${API}/api/inventory/export/json`}>JSON</Button></Stack>
     </Stack>
+    {error&&<Alert severity="error" onClose={()=>setError(undefined)} sx={{mb:2}}>{error}</Alert>}
     <Stack direction={{xs:'column',sm:'row'}} spacing={2}>
       <TextField fullWidth placeholder="Search name or collector number" value={query} onChange={e=>setQuery(e.target.value)} slotProps={{input:{startAdornment:<InputAdornment position="start"><Search/></InputAdornment>}}}/>
       <Select value={sort} onChange={e=>setSort(e.target.value as keyof typeof sorts)} sx={{minWidth:190}}><MenuItem value="newest">Recently added</MenuItem><MenuItem value="name">Name A–Z</MenuItem><MenuItem value="value">Most valuable</MenuItem></Select>

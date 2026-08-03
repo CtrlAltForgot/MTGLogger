@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { CameraAlt, CloudDownload, RestartAlt, Stop } from '@mui/icons-material'
 import {
   Alert, Box, Button, Card, CardContent, Chip, FormControlLabel, Grid,
-  LinearProgress, MenuItem, Select, Slider, Stack, Switch, TextField, Typography,
+  LinearProgress, MenuItem, Select, Slider, Snackbar, Stack, Switch, TextField, Typography,
 } from '@mui/material'
 import { request, submitScan } from '../api'
 import ScanConfirmation from '../components/ScanConfirmation'
@@ -18,12 +18,16 @@ export default function Scanner(){
   const [tuning,setTuning]=useState<ScannerTuning>(defaultTuning)
   const [references,setReferences]=useState<ReferenceStatus>()
   const [decisionBusy,setDecisionBusy]=useState(false)
+  const [success,setSuccess]=useState<Inventory|null>(null)
+  const [reviewNotice,setReviewNotice]=useState<ScanResult|null>(null)
   const decisionComplete=useRef<(()=>void)|null>(null)
 
   const capture=useCallback(async(blob:Blob)=>{
     const next=await submitScan(blob,defaults) as ScanResult
     setResult(next)
-    if((next.disposition==='confirmation'||next.disposition==='suggestions')&&next.candidates.length){
+    if(next.disposition==='added'&&next.inventory)setSuccess(next.inventory)
+    if(next.disposition!=='added'&&defaults.auto_add)setReviewNotice(next)
+    if(!defaults.auto_add&&(next.disposition==='confirmation'||next.disposition==='suggestions')&&next.candidates.length){
       await new Promise<void>(resolve=>{decisionComplete.current=resolve})
     }
   },[defaults])
@@ -42,6 +46,7 @@ export default function Scanner(){
         body:JSON.stringify({candidate,defaults}),
       })
       setResult({...result,disposition:'added',inventory,message:`Added ${inventory.card_name}`})
+      setSuccess(inventory)
       finishDecision()
     }catch(error){setDecisionBusy(false);scan.setError(error instanceof Error?error.message:'Could not accept card')}
   },[defaults,result,scan])
@@ -53,7 +58,7 @@ export default function Scanner(){
   },[result,scan])
 
   const indexSet=async()=>{if(defaults.box_set_code){await request(`/references/sync/${defaults.box_set_code}`,{method:'POST'});refresh()}}
-  const candidate:Candidate|undefined=(result?.disposition==='confirmation'||result?.disposition==='suggestions')?result.candidates[0]:undefined
+  const candidate:Candidate|undefined=!defaults.auto_add&&(result?.disposition==='confirmation'||result?.disposition==='suggestions')?result.candidates[0]:undefined
   const tone=result?.disposition==='added'?'success':result?.disposition==='suggestions'||result?.disposition==='confirmation'?'warning':'error'
   const stateLabel=scan.state==='remove'?'Remove card':scan.state==='processing'?'Identifying…':scan.state==='stabilizing'?'Hold still…':scan.state==='calibrating'?'Keep guide empty…':scan.state==='waiting'?'Ready for card':'Camera stopped'
 
@@ -112,5 +117,14 @@ export default function Scanner(){
       </CardContent></Card>
     </Grid>
     {candidate&&<ScanConfirmation candidates={result!.candidates} confidence={result!.confidence} onAccept={accept} onDecline={decline} busy={decisionBusy}/>}
+    <Snackbar key={success?`${success.id}-${success.quantity}`:'empty'} open={!!success} autoHideDuration={1800} onClose={()=>setSuccess(null)} anchorOrigin={{vertical:'bottom',horizontal:'center'}}>
+      <Card elevation={12} sx={{display:'flex',alignItems:'center',minWidth:{xs:320,sm:460},border:'2px solid',borderColor:'success.main',overflow:'hidden'}}>
+        {success?.image_url&&<Box component="img" src={success.image_url} alt={success.card_name} sx={{width:82,height:114,objectFit:'cover',objectPosition:'top'}}/>}
+        <Box px={2} py={1}><Typography color="success.main" fontWeight={900}>ADDED · {success?.quantity} OWNED</Typography><Typography variant="h6" fontWeight={900}>{success?.card_name}</Typography><Typography color="text.secondary">{success?.set_name} #{success?.collector_number} · ${Number(success?.market_price||0).toFixed(2)}</Typography></Box>
+      </Card>
+    </Snackbar>
+    <Snackbar key={reviewNotice?.review_id||'no-review'} open={!!reviewNotice} autoHideDuration={1800} onClose={()=>setReviewNotice(null)} anchorOrigin={{vertical:'bottom',horizontal:'center'}}>
+      <Alert severity="warning" variant="filled" sx={{minWidth:{xs:320,sm:460}}}><Typography fontWeight={900}>SAVED FOR REVIEW · {reviewNotice?.confidence.toFixed(1)}%</Typography><Typography>{reviewNotice?.candidates[0]?.name||'Printing uncertain'} · Keep scanning</Typography></Alert>
+    </Snackbar>
   </Grid>
 }

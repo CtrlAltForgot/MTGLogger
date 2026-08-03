@@ -132,5 +132,7 @@ class DashboardSummary(BaseModel):
     by_set: list[dict]
     by_color: list[dict]
     by_rarity: list[dict]
+    by_type: list[dict]
     most_valuable: list[InventoryRead]
     newest: list[InventoryRead]
+    duplicate_cards: list[InventoryRead]

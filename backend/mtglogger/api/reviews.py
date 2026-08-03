@@ -1,17 +1,21 @@
 import json
+from pathlib import Path
 
 import cv2
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models import CardReference, ReviewItem, ReviewStatus
-from ..schemas import InventoryCreate, InventoryRead, ReviewRead, ReviewResolve
+from ..providers import ScryfallProvider
+from ..schemas import Candidate, InventoryCreate, InventoryRead, ReviewRead, ReviewResolve
 from ..services.inventory import upsert_inventory
 from ..services.references import artwork_hash
 
 router = APIRouter(prefix="/reviews", tags=["reviews"])
+provider = ScryfallProvider()
 
 
 def serialize(item: ReviewItem) -> ReviewRead:
@@ -34,6 +38,37 @@ def list_reviews(status: ReviewStatus = ReviewStatus.pending, db: Session = Depe
             .order_by(ReviewItem.created_at.desc())
         )
     ]
+
+
+@router.get("/search", response_model=list[Candidate])
+async def search_cards(q: str = Query(min_length=2, max_length=100)):
+    escaped = q.strip().replace('"', "")
+    cards = await provider.search(f'name:"{escaped}"')
+    return [
+        Candidate(
+            scryfall_id=card["id"],
+            name=card["name"],
+            set_code=card["set"],
+            set_name=card["set_name"],
+            collector_number=card["collector_number"],
+            image_url=provider.image_url(card),
+            market_price=provider.market_price(card),
+            confidence=0,
+            oracle_id=card.get("oracle_id"),
+            color_identity="".join(card.get("color_identity", [])),
+            rarity=card.get("rarity"),
+            type_line=card.get("type_line"),
+        )
+        for card in cards
+    ]
+
+
+@router.get("/{review_id}/image", response_class=FileResponse)
+def review_image(review_id: str, db: Session = Depends(get_db)):
+    review = db.get(ReviewItem, review_id)
+    if not review:
+        raise HTTPException(404, "Review item not found")
+    return FileResponse(review.image_path, media_type="image/jpeg")
 
 
 @router.post("/{review_id}/resolve")
@@ -89,6 +124,7 @@ def resolve_review(review_id: str, payload: ReviewResolve, db: Session = Depends
                 )
             )
     db.commit()
+    Path(review.image_path).unlink(missing_ok=True)
     return InventoryRead.model_validate(item)
 
 
@@ -106,5 +142,7 @@ def delete_review(review_id: str, db: Session = Depends(get_db)):
     review = db.get(ReviewItem, review_id)
     if not review:
         raise HTTPException(404, "Review item not found")
+    image_path = review.image_path
     db.delete(review)
     db.commit()
+    Path(image_path).unlink(missing_ok=True)
