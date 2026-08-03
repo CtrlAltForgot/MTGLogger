@@ -37,7 +37,7 @@ async def recognize_card(
     if len(raw) > 15_000_000:
         raise HTTPException(413, "Image is larger than 15 MB")
     try:
-        result = await recognizer.recognize(raw, defaults.box_set_code)
+        result = await recognizer.recognize(raw, defaults.box_set_code, defaults.language)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 

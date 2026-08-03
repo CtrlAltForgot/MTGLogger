@@ -55,9 +55,12 @@ def list_reviews(status: ReviewStatus = ReviewStatus.pending, db: Session = Depe
 
 
 @router.get("/search", response_model=list[Candidate])
-async def search_cards(q: str = Query(min_length=2, max_length=100)):
+async def search_cards(
+    q: str = Query(min_length=2, max_length=100),
+    lang: str = Query("en", pattern=r"^[a-z]{2,3}$"),
+):
     escaped = q.strip().replace('"', "")
-    cards = await provider.search(f'name:"{escaped}"')
+    cards = await provider.search(f'name:"{escaped}"', language=lang)
     return [
         Candidate(
             scryfall_id=card["id"],
@@ -69,6 +72,7 @@ async def search_cards(q: str = Query(min_length=2, max_length=100)):
             market_price=provider.market_price(card),
             foil_market_price=provider.market_price(card, foil=True),
             finishes=card.get("finishes", []),
+            language=card.get("lang", "en"),
             confidence=0,
             oracle_id=card.get("oracle_id"),
             color_identity="".join(card.get("color_identity", [])),

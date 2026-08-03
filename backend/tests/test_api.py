@@ -190,13 +190,38 @@ def test_scryfall_failure_preserves_recognition_for_local_review():
     from mtglogger.services.recognition import CardRecognizer
 
     class OfflineProvider:
-        async def search(self, _query, _set_code=None):
+        async def search(self, _query, _set_code=None, _language=None):
             raise httpx.ConnectError("offline")
 
     recognizer = CardRecognizer.__new__(CardRecognizer)
     recognizer.provider = OfflineProvider()
-    cards = asyncio.run(recognizer._lookup_cards("Lightning Bolt", "188", "fdn", None))
+    cards = asyncio.run(recognizer._lookup_cards("Lightning Bolt", "188", "fdn", None, "en"))
     assert cards == []
+
+
+def test_non_english_lookup_falls_back_to_exact_collector_and_language():
+    import asyncio
+
+    from mtglogger.services.recognition import CardRecognizer
+
+    class LocalizedProvider:
+        def __init__(self):
+            self.calls = []
+
+        async def search(self, query, set_code=None, language=None):
+            self.calls.append((query, set_code, language))
+            return [{"id": "japanese-printing"}] if query == "cn:188" else []
+
+    recognizer = CardRecognizer.__new__(CardRecognizer)
+    recognizer.provider = LocalizedProvider()
+    cards = asyncio.run(
+        recognizer._lookup_cards("稲妻", "188", "fdn", None, "ja")
+    )
+    assert cards == [{"id": "japanese-printing"}]
+    assert recognizer.provider.calls == [
+        ('!"稲妻" cn:188', "fdn", "ja"),
+        ("cn:188", "fdn", "ja"),
+    ]
 
 
 def test_ocr_hints_normalize_printed_collector_number():

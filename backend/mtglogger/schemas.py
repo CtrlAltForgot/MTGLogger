@@ -15,7 +15,7 @@ class InventoryCreate(BaseModel):
     oracle_id: str | None = None
     quantity: int = Field(1, ge=1)
     foil: bool = False
-    language: str = "en"
+    language: str = Field("en", pattern=r"^[a-z]{2,3}$")
     condition: str = "near_mint"
     purchase_price: Decimal | None = None
     market_price: Decimal | None = None
@@ -32,7 +32,7 @@ class InventoryCreate(BaseModel):
 class InventoryUpdate(BaseModel):
     quantity: int | None = Field(None, ge=0)
     foil: bool | None = None
-    language: str | None = None
+    language: str | None = Field(None, pattern=r"^[a-z]{2,3}$")
     condition: str | None = None
     market_price: Decimal | None = None
     purchase_price: Decimal | None = None
@@ -67,7 +67,7 @@ class Page(BaseModel):
 class ScanDefaults(BaseModel):
     condition: str = "near_mint"
     foil: bool = False
-    language: str = "en"
+    language: str = Field("en", pattern=r"^[a-z]{2,3}$")
     storage_location: str = "Unsorted"
     collection_name: str = "Main"
     status: InventoryStatus = InventoryStatus.owned
@@ -86,6 +86,7 @@ class Candidate(BaseModel):
     market_price: Decimal | None = None
     foil_market_price: Decimal | None = None
     finishes: list[str] = Field(default_factory=list)
+    language: str = "en"
     confidence: float
     oracle_id: str | None = None
     color_identity: str = ""

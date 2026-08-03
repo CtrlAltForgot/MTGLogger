@@ -13,9 +13,13 @@ class ScryfallProvider:
         self.headers = {"User-Agent": settings.scryfall_user_agent, "Accept": "application/json"}
         self.timeout = settings.request_timeout
 
-    async def search(self, query: str, set_code: str | None = None) -> list[dict]:
+    async def search(
+        self, query: str, set_code: str | None = None, language: str | None = None
+    ) -> list[dict]:
         if set_code:
             query = f"{query} set:{set_code}"
+        if language:
+            query = f"{query} lang:{language}"
         async with httpx.AsyncClient(headers=self.headers, timeout=self.timeout) as client:
             response = await client.get(
                 f"{self.base_url}/cards/search", params={"q": query, "unique": "prints"}

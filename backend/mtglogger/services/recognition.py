@@ -218,6 +218,7 @@ class CardRecognizer:
         number: str | None,
         printed_set_code: str | None,
         box_set_code: str | None,
+        language: str,
     ) -> list[dict]:
         if not title and not number:
             return []
@@ -229,19 +230,28 @@ class CardRecognizer:
             # attempts share one short budget; the captured frame still proceeds
             # through local artwork matching and into Review if Scryfall is down.
             async with asyncio.timeout(3.5):
-                cards = await self.provider.search(query, preferred_set)
+                cards = await self.provider.search(query, preferred_set, language)
+                # Localized title text is not consistently searchable through
+                # Scryfall's canonical-name field. Set + collector number + chosen
+                # language identifies the printing without guessing an English ID.
+                if not cards and number and language != "en" and preferred_set:
+                    cards = await self.provider.search(
+                        f"cn:{number}", preferred_set, language
+                    )
                 if not cards and title and number:
-                    cards = await self.provider.search(title_query, preferred_set)
+                    cards = await self.provider.search(title_query, preferred_set, language)
                 # An imperfect set-code OCR should lower confidence, not erase otherwise
                 # useful candidates from the confirmation list.
                 if not cards and printed_set_code:
-                    cards = await self.provider.search(query, box_set_code)
+                    cards = await self.provider.search(query, box_set_code, language)
                 return cards
         except (TimeoutError, httpx.HTTPError, ValueError) as exc:
             logger.warning("Scryfall lookup unavailable; preserving scan for Review: %s", exc)
             return []
 
-    async def recognize(self, raw: bytes, box_set_code: str | None = None) -> Recognition:
+    async def recognize(
+        self, raw: bytes, box_set_code: str | None = None, language: str = "en"
+    ) -> Recognition:
         async with self._recognition_lock:
             started = time.perf_counter()
             corrected = await asyncio.to_thread(lambda: self.rectify(self.decode(raw)))
@@ -250,7 +260,7 @@ class CardRecognizer:
             ocr_complete = time.perf_counter()
             title, number, printed_set_code, copyright_year = self.hints(text)
             lookup_task = asyncio.create_task(
-                self._lookup_cards(title, number, printed_set_code, box_set_code)
+                self._lookup_cards(title, number, printed_set_code, box_set_code, language)
             )
             scan_hash = await asyncio.to_thread(artwork_hash, corrected)
             visual_matches = await asyncio.to_thread(
@@ -303,6 +313,7 @@ class CardRecognizer:
                 market_price=self.provider.market_price(card),
                 foil_market_price=self.provider.market_price(card, foil=True),
                 finishes=card.get("finishes", []),
+                language=card.get("lang", "en"),
                 confidence=round(confidence, 1),
                 oracle_id=card.get("oracle_id"),
                 color_identity="".join(card.get("color_identity", [])),
