@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import re
 import time
@@ -32,6 +33,7 @@ class CardRecognizer:
 
     def __init__(self) -> None:
         self.provider = ScryfallProvider()
+        self._recognition_lock = asyncio.Lock()
         self._ocr = None
         try:
             from paddleocr import PaddleOCR
@@ -202,29 +204,32 @@ class CardRecognizer:
         return min(0.85, max(direct, inferred))
 
     async def recognize(self, raw: bytes, box_set_code: str | None = None) -> Recognition:
-        started = time.perf_counter()
-        corrected = self.rectify(self.decode(raw))
-        prepared = time.perf_counter()
-        text = self.extract_text(corrected)
-        ocr_complete = time.perf_counter()
-        title, number, printed_set_code, copyright_year = self.hints(text)
-        cards: list[dict] = []
-        if title or number:
-            title_query = f'!"{title}"' if title else ""
-            query = f"{title_query} cn:{number}".strip() if number else title_query
-            preferred_set = printed_set_code or box_set_code
-            cards = await self.provider.search(query, preferred_set)
-            if not cards and title and number:
-                cards = await self.provider.search(title_query, preferred_set)
-            # An imperfect set-code OCR should lower confidence, not erase otherwise
-            # useful candidates from the confirmation list.
-            if not cards and printed_set_code:
-                cards = await self.provider.search(query, box_set_code)
-        lookup_complete = time.perf_counter()
+        async with self._recognition_lock:
+            started = time.perf_counter()
+            corrected = await asyncio.to_thread(lambda: self.rectify(self.decode(raw)))
+            prepared = time.perf_counter()
+            text = await asyncio.to_thread(self.extract_text, corrected)
+            ocr_complete = time.perf_counter()
+            title, number, printed_set_code, copyright_year = self.hints(text)
+            cards: list[dict] = []
+            if title or number:
+                title_query = f'!"{title}"' if title else ""
+                query = f"{title_query} cn:{number}".strip() if number else title_query
+                preferred_set = printed_set_code or box_set_code
+                cards = await self.provider.search(query, preferred_set)
+                if not cards and title and number:
+                    cards = await self.provider.search(title_query, preferred_set)
+                # An imperfect set-code OCR should lower confidence, not erase otherwise
+                # useful candidates from the confirmation list.
+                if not cards and printed_set_code:
+                    cards = await self.provider.search(query, box_set_code)
+            lookup_complete = time.perf_counter()
 
-        scan_hash = artwork_hash(corrected)
-        visual_matches = self._visual_matches(scan_hash, printed_set_code or box_set_code)
-        visual_complete = time.perf_counter()
+            scan_hash = await asyncio.to_thread(artwork_hash, corrected)
+            visual_matches = await asyncio.to_thread(
+                self._visual_matches, scan_hash, printed_set_code or box_set_code
+            )
+            visual_complete = time.perf_counter()
         visual_scores = {reference.scryfall_id: score for reference, score in visual_matches}
         ranked: dict[str, Candidate] = {}
         for card in cards:
