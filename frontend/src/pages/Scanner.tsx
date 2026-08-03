@@ -28,6 +28,7 @@ export default function Scanner(){
   const [decisionBusy,setDecisionBusy]=useState(false)
   const [success,setSuccess]=useState<Inventory|null>(null)
   const [reviewNotice,setReviewNotice]=useState<ScanResult|null>(null)
+  const [resolveImmediately,setResolveImmediately]=useState(true)
   const [stats,setStats]=useState(initialSessionStats)
   const decisionComplete=useRef<(()=>void)|null>(null)
 
@@ -42,13 +43,17 @@ export default function Scanner(){
     })
     setResult(next)
     if(next.disposition==='added'&&next.inventory)setSuccess(next.inventory)
-    if(next.disposition!=='added'&&defaults.auto_add)setReviewNotice(next)
-    if(!defaults.auto_add&&(next.disposition==='confirmation'||next.disposition==='suggestions')&&next.candidates.length){
+    if(next.disposition!=='added'&&defaults.auto_add&&!resolveImmediately)setReviewNotice(next)
+    if(
+      next.disposition!=='added'
+      && next.candidates.length
+      && (resolveImmediately||!defaults.auto_add)
+    ){
       await new Promise<void>(resolve=>{decisionComplete.current=resolve})
     }
     return true
-  },[defaults])
-  const scan=useAutoScanner(capture,tuning,defaults.auto_add?2:1)
+  },[defaults,resolveImmediately])
+  const scan=useAutoScanner(capture,tuning,resolveImmediately||!defaults.auto_add?1:2)
 
   const refresh=useCallback(()=>request<ReferenceStatus>('/references/status').then(setReferences),[])
   useEffect(()=>{void refresh();const timer=setInterval(refresh,2500);return()=>clearInterval(timer)},[refresh])
@@ -77,7 +82,8 @@ export default function Scanner(){
   },[result,scan])
 
   const indexSet=async()=>{if(defaults.box_set_code){await request(`/references/sync/${defaults.box_set_code}`,{method:'POST'});refresh()}}
-  const candidate:Candidate|undefined=!defaults.auto_add&&(result?.disposition==='confirmation'||result?.disposition==='suggestions')?result.candidates[0]:undefined
+  const uncertain=result&&result.disposition!=='added'&&result.disposition!=='empty'
+  const candidate:Candidate|undefined=uncertain&&result.candidates.length&&(resolveImmediately||!defaults.auto_add)?result.candidates[0]:undefined
   const tone=result?.disposition==='added'?'success':result?.disposition==='suggestions'||result?.disposition==='confirmation'?'warning':'error'
   const stateLabel=scan.state==='remove'?'Remove card':scan.state==='processing'?'Identifying…':scan.state==='stabilizing'?'Hold still…':scan.state==='calibrating'?'Keep guide empty…':scan.state==='waiting'?'Ready for card':'Camera stopped'
   const sessionCardsPerMinute=cardsPerMinute(stats)
@@ -135,6 +141,8 @@ export default function Scanner(){
         {references?.error&&<Alert severity="error">{references.error}</Alert>}
         <FormControlLabel control={<Switch checked={defaults.foil} onChange={event=>setDefaults({...defaults,foil:event.target.checked})}/>} label="Foil"/>
         <FormControlLabel control={<Switch checked={defaults.auto_add} onChange={event=>setDefaults({...defaults,auto_add:event.target.checked})}/>} label="Auto-add near-certain matches (98.5%+)"/>
+        <FormControlLabel control={<Switch checked={resolveImmediately} onChange={event=>setResolveImmediately(event.target.checked)}/>} label="Resolve uncertain cards immediately"/>
+        <Typography variant="caption" color="text.secondary">Turn this off only when you prefer uninterrupted scanning into the Review queue.</Typography>
       </Stack></CardContent></Card>
 
       <Card sx={{mt:2}}><CardContent><Typography variant="h6">Camera calibration</Typography>
