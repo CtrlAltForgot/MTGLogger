@@ -6,6 +6,7 @@ COPY pyproject.toml ./
 COPY mtglogger/__init__.py ./mtglogger/
 RUN pip install --no-cache-dir '.[ocr]'
 COPY mtglogger ./mtglogger
+COPY evaluation ./evaluation
 RUN mkdir -p /app/data
 EXPOSE 8000
 CMD ["uvicorn", "mtglogger.main:app", "--host", "0.0.0.0", "--port", "8000"]
