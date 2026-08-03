@@ -1,13 +1,14 @@
-import { useMemo, useState } from 'react'
+import { lazy, Suspense, useMemo, useState } from 'react'
 import { AllInbox, CameraAlt, DarkMode, Dashboard as DashboardIcon, FactCheck, Inventory2, LightMode, Style } from '@mui/icons-material'
-import { AppBar, Box, CssBaseline, IconButton, Tab, Tabs, ThemeProvider, Toolbar, Tooltip, Typography } from '@mui/material'
-import Collection from './pages/Collection'
-import Dashboard from './pages/Dashboard'
-import Decks from './pages/Decks'
-import ReviewQueue from './pages/ReviewQueue'
-import Scanner from './pages/Scanner'
-import Sealed from './pages/Sealed'
+import { AppBar, Box, CircularProgress, CssBaseline, IconButton, Tab, Tabs, ThemeProvider, Toolbar, Tooltip, Typography } from '@mui/material'
 import { appTheme } from './theme'
+
+const Collection=lazy(()=>import('./pages/Collection'))
+const Dashboard=lazy(()=>import('./pages/Dashboard'))
+const Decks=lazy(()=>import('./pages/Decks'))
+const ReviewQueue=lazy(()=>import('./pages/ReviewQueue'))
+const Scanner=lazy(()=>import('./pages/Scanner'))
+const Sealed=lazy(()=>import('./pages/Sealed'))
 
 const pages=[
   {name:'Dashboard',icon:<DashboardIcon/>,content:<Dashboard/>},
@@ -34,6 +35,6 @@ export default function App(){
     </Toolbar>
     <Box sx={{px:{xs:1,md:4},display:'flex',justifyContent:{md:'center'}}}><Tabs value={page} onChange={(_,value)=>changePage(value)} variant="scrollable" scrollButtons="auto" allowScrollButtonsMobile>{pages.map(item=><Tab key={item.name} icon={item.icon} iconPosition="start" label={item.name}/>)}</Tabs></Box>
     </AppBar>
-    <Box component="main" sx={{maxWidth:1500,mx:'auto',px:{xs:2,sm:3,lg:4},py:{xs:3,md:4},minHeight:'calc(100vh - 112px)'}}>{pages[page].content}</Box>
+    <Box component="main" sx={{maxWidth:1500,mx:'auto',px:{xs:2,sm:3,lg:4},py:{xs:3,md:4},minHeight:'calc(100vh - 112px)'}}><Suspense fallback={<Box minHeight="50vh" display="grid" sx={{placeItems:'center'}}><CircularProgress/></Box>}>{pages[page].content}</Suspense></Box>
   </ThemeProvider>
 }
