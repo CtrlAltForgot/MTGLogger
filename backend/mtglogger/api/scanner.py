@@ -1,5 +1,5 @@
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
@@ -83,7 +83,7 @@ async def recognize_card(
             processing_ms=result.processing_ms,
         )
 
-    timestamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S-%f")
+    timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S-%f")
     path = get_settings().image_dir / f"{timestamp}.jpg"
     save_scan(result.corrected, path)
     review = ReviewItem(

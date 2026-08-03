@@ -216,7 +216,7 @@ def test_scan_results_expose_recognition_latency():
 
 
 def test_review_serialization_preserves_scan_defaults():
-    from datetime import datetime
+    from datetime import UTC, datetime
 
     from mtglogger.api.reviews import serialize
     from mtglogger.models import ReviewItem, ReviewStatus
@@ -226,7 +226,7 @@ def test_review_serialization_preserves_scan_defaults():
         id="review-1",
         confidence=42,
         status=ReviewStatus.pending,
-        created_at=datetime.now(),
+        created_at=datetime.now(UTC),
         candidates_json='{"candidates": [], "defaults": {"foil": true, '
         '"condition": "lightly_played", "storage_location": "Box 7", '
         '"deck_id": "deck-1"}}',
@@ -239,7 +239,7 @@ def test_review_serialization_preserves_scan_defaults():
 
 
 def test_review_serialization_supports_legacy_candidate_lists():
-    from datetime import datetime
+    from datetime import UTC, datetime
 
     from mtglogger.api.reviews import serialize
     from mtglogger.models import ReviewItem, ReviewStatus
@@ -250,7 +250,7 @@ def test_review_serialization_supports_legacy_candidate_lists():
         candidates_json="[]",
         confidence=0,
         status=ReviewStatus.pending,
-        created_at=datetime.now(),
+        created_at=datetime.now(UTC),
     )
     serialized = serialize(review)
     assert serialized.candidates == []

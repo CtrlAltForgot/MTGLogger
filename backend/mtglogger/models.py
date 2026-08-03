@@ -1,6 +1,6 @@
 import enum
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from sqlalchemy import DateTime, Enum, ForeignKey, Index, Numeric, String, Text, UniqueConstraint
@@ -11,6 +11,10 @@ from .database import Base
 
 def uid() -> str:
     return str(uuid.uuid4())
+
+
+def utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 class InventoryStatus(str, enum.Enum):
@@ -55,9 +59,9 @@ class InventoryItem(Base):
     condition: Mapped[str] = mapped_column(String(32), default="near_mint")
     purchase_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     market_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
-    date_added: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    date_added: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
     )
     storage_location: Mapped[str] = mapped_column(String(255), default="Unsorted")
     collection_name: Mapped[str] = mapped_column(String(255), default="Main")
@@ -89,7 +93,7 @@ class ReviewItem(Base):
     ocr_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     candidates_json: Mapped[str] = mapped_column(Text, default="[]")
     status: Mapped[ReviewStatus] = mapped_column(Enum(ReviewStatus), default=ReviewStatus.pending)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     resolved_inventory_id: Mapped[str | None] = mapped_column(
         ForeignKey("inventory_items.id"), nullable=True
     )
@@ -107,7 +111,7 @@ class SealedProduct(Base):
     market_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     storage_location: Mapped[str] = mapped_column(String(255), default="Unsorted")
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
-    date_added: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    date_added: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
 class CardReference(Base):
@@ -122,7 +126,7 @@ class CardReference(Base):
     art_hash: Mapped[str] = mapped_column(String(16), index=True)
     market_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
     )
 
 
@@ -132,9 +136,9 @@ class Deck(Base):
     name: Mapped[str] = mapped_column(String(255), index=True)
     format: Mapped[str | None] = mapped_column(String(64), nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
     )
     entries: Mapped[list["DeckEntry"]] = relationship(
         back_populates="deck", cascade="all, delete-orphan", order_by="DeckEntry.id"
