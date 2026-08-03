@@ -1,13 +1,14 @@
 import asyncio
 from contextlib import asynccontextmanager, suppress
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
 
 from . import __version__
 from .api import dashboard, decks, inventory, prices, references, reviews, scanner, sealed
 from .config import get_settings
-from .database import Base, engine
+from .database import Base, SessionLocal, engine
 from .services.prices import price_refresh_loop
 
 
@@ -44,4 +45,9 @@ app.include_router(decks.router, prefix="/api")
 
 @app.get("/api/health")
 def health():
+    try:
+        with SessionLocal() as db:
+            db.execute(text("SELECT 1"))
+    except Exception as exc:
+        raise HTTPException(503, "Database unavailable") from exc
     return {"status": "ok", "version": __version__}
