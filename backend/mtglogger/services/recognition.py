@@ -734,7 +734,7 @@ class CardRecognizer:
                 for candidate, score in zip(cards, number_scores, strict=True)
                 if candidate["id"] != card["id"]
             ]
-            if self.has_unique_printing_signal(
+            printing_signal = self.has_unique_printing_signal(
                 title_score,
                 number,
                 number_score,
@@ -742,12 +742,14 @@ class CardRecognizer:
                 printed_set_code,
                 card["set"],
                 exact_set_counts[card["set"].casefold()],
-            ):
+            )
+            if printing_signal:
                 confidence = max(confidence, 98.5)
             confidence = min(99.5, confidence)
-            if oracle_recovery:
+            if oracle_recovery and not printing_signal:
                 # Rules text can identify a card, but it cannot prove which set,
-                # collector number, or finish is physically present.
+                # collector number, or finish is physically present. Independent
+                # collector/set footer evidence may still prove the printing.
                 confidence = min(89.0, confidence)
             ranked[card["id"]] = Candidate(
                 scryfall_id=card["id"],

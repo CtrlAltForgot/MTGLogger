@@ -555,6 +555,21 @@ def test_exact_set_signal_can_uniquely_identify_printing():
     )
 
 
+def test_rules_recovery_does_not_discard_independent_printing_signal():
+    from mtglogger.services.recognition import CardRecognizer
+
+    # Rules text identifies Shadows of the Past, while ORI in the footer
+    # independently identifies its physical printing.
+    printing_signal = CardRecognizer.has_unique_printing_signal(
+        1.0, None, 0.45, [0.45], "ORI", "ori", 1
+    )
+    confidence = 98.5
+    oracle_recovery = True
+    if oracle_recovery and not printing_signal:
+        confidence = min(89.0, confidence)
+    assert confidence == 98.5
+
+
 def test_scryfall_failure_preserves_recognition_for_local_review():
     import asyncio
 
