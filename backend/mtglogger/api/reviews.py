@@ -21,7 +21,7 @@ from ..schemas import (
 from ..services.decks import assign_to_deck
 from ..services.inventory import upsert_inventory
 from ..services.recognition import CardRecognizer
-from ..services.references import artwork_hash
+from ..services.references import artwork_descriptors, artwork_hash, save_example_descriptors
 
 router = APIRouter(prefix="/reviews", tags=["reviews"])
 provider = ScryfallProvider()
@@ -140,7 +140,11 @@ def resolve_review(review_id: str, payload: ReviewResolve, db: Session = Depends
     image = cv2.imread(review.image_path)
     if image is not None and card.image_url:
         reference = db.get(CardReference, card.scryfall_id)
-        learned_hash = artwork_hash(CardRecognizer.rectify(image))
+        corrected = CardRecognizer.rectify(image)
+        learned_hash = artwork_hash(corrected)
+        descriptor_path = save_example_descriptors(
+            card.scryfall_id, review.id, artwork_descriptors(corrected)
+        )
         if reference:
             existing_example = db.scalar(
                 select(CardVisualExample).where(
@@ -153,8 +157,13 @@ def resolve_review(review_id: str, payload: ReviewResolve, db: Session = Depends
                     CardVisualExample(
                         scryfall_id=card.scryfall_id,
                         art_hash=learned_hash,
+                        descriptor_path=str(descriptor_path) if descriptor_path else None,
+                        source_review_id=review.id,
                     )
                 )
+            elif descriptor_path and not existing_example.descriptor_path:
+                existing_example.descriptor_path = str(descriptor_path)
+                existing_example.source_review_id = review.id
         else:
             reference = CardReference(
                 scryfall_id=card.scryfall_id,
@@ -168,7 +177,14 @@ def resolve_review(review_id: str, payload: ReviewResolve, db: Session = Depends
             )
             db.add(reference)
             db.flush()
-            db.add(CardVisualExample(scryfall_id=card.scryfall_id, art_hash=learned_hash))
+            db.add(
+                CardVisualExample(
+                    scryfall_id=card.scryfall_id,
+                    art_hash=learned_hash,
+                    descriptor_path=str(descriptor_path) if descriptor_path else None,
+                    source_review_id=review.id,
+                )
+            )
     db.commit()
     CardRecognizer.invalidate_visual_catalog()
     # Keep the confirmed camera frame as labeled ground truth. These examples

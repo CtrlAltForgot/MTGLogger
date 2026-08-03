@@ -1268,6 +1268,77 @@ def test_confirmed_visual_examples_supplement_canonical_artwork():
     assert matches[0][1] == 99.5
 
 
+def test_confirmed_descriptor_examples_improve_matching_without_leaking_into_holdout(
+    monkeypatch, tmp_path
+):
+    import numpy as np
+
+    from mtglogger.database import Base, SessionLocal, engine
+    from mtglogger.models import CardReference, CardVisualExample, CardVisualFingerprint
+    from mtglogger.services import recognition
+    from mtglogger.services.recognition import CardRecognizer
+
+    canonical_path = tmp_path / "canonical.npy"
+    example_path = tmp_path / "example.npy"
+    np.save(canonical_path, np.full((16, 32), 200, dtype=np.uint8))
+    np.save(example_path, np.full((16, 32), 1, dtype=np.uint8))
+    monkeypatch.setattr(
+        recognition,
+        "artwork_descriptors",
+        lambda _image: np.full((16, 32), 1, dtype=np.uint8),
+    )
+    monkeypatch.setattr(
+        CardRecognizer,
+        "_descriptor_score",
+        staticmethod(lambda _scan, known: 92.0 if int(known[0, 0]) == 1 else 10.0),
+    )
+
+    Base.metadata.drop_all(engine)
+    Base.metadata.create_all(engine)
+    with SessionLocal() as db:
+        reference = CardReference(
+            scryfall_id=CARD["scryfall_id"],
+            name=CARD["card_name"],
+            set_code=CARD["set_code"],
+            set_name=CARD["set_name"],
+            collector_number=CARD["collector_number"],
+            image_url="https://example.test/card.jpg",
+            art_hash="ffffffffffffffff",
+        )
+        db.add(reference)
+        db.flush()
+        db.add(
+            CardVisualFingerprint(
+                scryfall_id=reference.scryfall_id,
+                full_hash="0" * 16,
+                art_hash="0" * 16,
+                title_hash="0" * 16,
+                footer_hash="0" * 16,
+                frame_hash="0" * 16,
+                descriptor_path=str(canonical_path),
+            )
+        )
+        db.add(
+            CardVisualExample(
+                scryfall_id=reference.scryfall_id,
+                art_hash="0" * 16,
+                descriptor_path=str(example_path),
+                source_review_id="held-out-review",
+            )
+        )
+        db.commit()
+
+    image = np.zeros((840, 600, 3), dtype=np.uint8)
+    learned = CardRecognizer._descriptor_matches(image, {CARD["card_name"]})
+    held_out = CardRecognizer._descriptor_matches(
+        image, {CARD["card_name"]}, ignored_example_review_ids={"held-out-review"}
+    )
+
+    assert learned[0][0].scryfall_id == CARD["scryfall_id"]
+    assert learned[0][1] == 92.0
+    assert held_out == []
+
+
 def test_visual_catalog_is_reused_until_explicitly_invalidated():
     from mtglogger.services.recognition import CardRecognizer
 

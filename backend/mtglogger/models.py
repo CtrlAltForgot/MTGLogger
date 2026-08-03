@@ -202,6 +202,8 @@ class CardVisualExample(Base):
         ForeignKey("card_references.scryfall_id", ondelete="CASCADE"), index=True
     )
     art_hash: Mapped[str] = mapped_column(String(16), index=True)
+    descriptor_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_review_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     reference: Mapped[CardReference] = relationship(back_populates="visual_examples")
 

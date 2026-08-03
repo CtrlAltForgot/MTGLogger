@@ -105,6 +105,24 @@ def save_artwork_descriptors(scryfall_id: str, descriptors: np.ndarray) -> Path 
     return path
 
 
+def save_example_descriptors(
+    scryfall_id: str, source_review_id: str, descriptors: np.ndarray
+) -> Path | None:
+    """Persist a compact user-confirmed camera example without retaining another JPEG."""
+    if not len(descriptors):
+        return None
+    root = get_settings().reference_descriptor_dir / "examples" / scryfall_id[:2]
+    path = root / f"{scryfall_id}-{source_review_id}.npy"
+    if path.exists():
+        return path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    with temporary.open("wb") as output:
+        np.save(output, descriptors, allow_pickle=False)
+    temporary.replace(path)
+    return path
+
+
 def hash_distance(left: str, right: str) -> int:
     return bin(int(left, 16) ^ int(right, 16)).count("1")
 

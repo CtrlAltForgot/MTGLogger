@@ -66,3 +66,22 @@ def migrate_schema() -> None:
                     "ADD COLUMN descriptor_path TEXT"
                 )
             )
+    example_columns = {
+        column["name"] for column in inspector.get_columns("card_visual_examples")
+    }
+    if "descriptor_path" not in example_columns:
+        with engine.begin() as connection:
+            connection.execute(
+                text("ALTER TABLE card_visual_examples ADD COLUMN descriptor_path TEXT")
+            )
+    if "source_review_id" not in example_columns:
+        with engine.begin() as connection:
+            connection.execute(
+                text("ALTER TABLE card_visual_examples ADD COLUMN source_review_id VARCHAR(36)")
+            )
+            connection.execute(
+                text(
+                    "CREATE INDEX ix_card_visual_examples_source_review_id "
+                    "ON card_visual_examples (source_review_id)"
+                )
+            )

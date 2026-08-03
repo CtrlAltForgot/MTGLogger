@@ -704,6 +704,7 @@ class CardRecognizer:
         box_set_code: str | None = None,
         language: str = "en",
         ignored_visual_hashes: set[str] | None = None,
+        ignored_example_review_ids: set[str] | None = None,
     ) -> Recognition:
         async with self._recognition_lock:
             started = time.perf_counter()
@@ -818,6 +819,7 @@ class CardRecognizer:
                 # remove the correct artwork candidate; only explicit Box Mode
                 # is authoritative enough to constrain descriptor retrieval.
                 box_set_code,
+                ignored_example_review_ids,
             )
             known_card_ids = {card["id"] for card in cards}
             for reference, _score in descriptor_matches:
@@ -1077,6 +1079,7 @@ class CardRecognizer:
         image: np.ndarray,
         identity_names: set[str],
         box_set_code: str | None = None,
+        ignored_example_review_ids: set[str] | None = None,
     ) -> list[tuple[CardReference, float]]:
         """Rerank printings of an OCR-established card using local artwork details."""
         names = {name.casefold() for name in identity_names if name}
@@ -1098,17 +1101,43 @@ class CardRecognizer:
             if box_set_code:
                 statement = statement.where(CardReference.set_code == box_set_code.casefold())
             rows = list(db.execute(statement))
+            reference_ids = [reference.scryfall_id for reference, _fingerprint in rows]
+            example_rows = list(
+                db.scalars(
+                    select(CardVisualExample).where(
+                        CardVisualExample.scryfall_id.in_(reference_ids),
+                        CardVisualExample.descriptor_path.is_not(None),
+                    )
+                )
+            ) if reference_ids else []
+        ignored_reviews = ignored_example_review_ids or set()
+        examples: dict[str, list[str]] = {}
+        for example in example_rows:
+            if example.source_review_id in ignored_reviews or not example.descriptor_path:
+                continue
+            examples.setdefault(example.scryfall_id, []).append(example.descriptor_path)
         ranked: list[tuple[CardReference, float]] = []
         for reference, fingerprint in rows:
-            try:
-                canonical = np.load(fingerprint.descriptor_path, allow_pickle=False)
-            except (OSError, ValueError, TypeError):
+            descriptor_paths = [
+                fingerprint.descriptor_path,
+                *examples.get(reference.scryfall_id, []),
+            ]
+            scores: list[float] = []
+            for descriptor_path in descriptor_paths:
+                if not descriptor_path:
+                    continue
+                try:
+                    known = np.load(descriptor_path, allow_pickle=False)
+                except (OSError, ValueError, TypeError):
+                    continue
+                if len(known) < 12:
+                    continue
+                score = CardRecognizer._descriptor_score(scan, known)
+                if score is not None:
+                    scores.append(score)
+            if not scores:
                 continue
-            if len(canonical) < 12:
-                continue
-            score = CardRecognizer._descriptor_score(scan, canonical)
-            if score is None:
-                continue
+            score = max(scores)
             if score >= 55:
                 ranked.append((reference, round(score, 3)))
         ranked.sort(key=lambda item: item[1], reverse=True)

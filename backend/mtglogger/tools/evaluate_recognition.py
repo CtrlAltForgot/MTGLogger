@@ -54,6 +54,7 @@ async def evaluate(limit: int | None, manifest: Path | None = None) -> dict:
             raw,
             language=getattr(expected, "language", "en"),
             ignored_visual_hashes={held_out_hash},
+            ignored_example_review_ids={review.id},
         )
         ids = [candidate.scryfall_id for candidate in result.candidates]
         top_id = ids[0] if ids else None
@@ -111,6 +112,7 @@ async def evaluate(limit: int | None, manifest: Path | None = None) -> dict:
             sorted(latencies)[max(0, int(len(latencies) * 0.95) - 1)] if latencies else None
         ),
         "failures": [item for item in results if not item["top1_correct"]],
+        "uncertain": [item for item in results if not item["auto_add"]],
     }
     return summary
 
