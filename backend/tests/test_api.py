@@ -222,6 +222,105 @@ def test_artwork_hash_is_stable_under_small_brightness_change():
     assert hash_distance(artwork_hash(image), artwork_hash(brighter)) <= 2
 
 
+def test_perspective_quad_expands_to_preserve_printed_footer():
+    import numpy as np
+
+    from mtglogger.services.recognition import CardRecognizer
+
+    quad = np.array([[10, 10], [90, 10], [90, 190], [10, 190]], dtype="float32")
+    expanded = CardRecognizer.expand_quad(quad, (200, 100, 3))
+
+    assert expanded[0, 0] < quad[0, 0]
+    assert expanded[0, 1] < quad[0, 1]
+    assert expanded[2, 0] > quad[2, 0]
+    assert expanded[2, 1] > quad[2, 1]
+    assert expanded.min() >= 0
+    assert expanded[:, 0].max() <= 99
+    assert expanded[:, 1].max() <= 199
+
+
+def test_card_structure_rejects_empty_table_but_accepts_card_frame():
+    import cv2
+    import numpy as np
+
+    from mtglogger.services.recognition import CardRecognizer
+
+    empty = np.zeros((840, 600, 3), dtype=np.uint8)
+    card = empty.copy()
+    for y in (80, 300, 610, 760):
+        cv2.line(card, (80, y), (520, y), (255, 255, 255), 4)
+
+    assert CardRecognizer.has_card_structure(empty) is False
+    assert CardRecognizer.has_card_structure(card) is True
+
+
+def test_card_name_catalog_recovers_joined_and_misspelled_titles():
+    from mtglogger.services.recognition import CardRecognizer
+
+    names = [
+        "Shadows of the Past",
+        "Consecrated by Blood",
+        "Gurmag Swiftwing",
+        "Cast into Darkness",
+        "Sins of the Past",
+    ]
+
+    assert CardRecognizer.closest_catalog_names("ShafowsofthePasi", names, 1)[0][0] == (
+        "Shadows of the Past"
+    )
+    assert CardRecognizer.closest_catalog_names("Consecrafed by Blood", names, 1)[0][0] == (
+        "Consecrated by Blood"
+    )
+    assert CardRecognizer.closest_catalog_names("Gurmag Swifrwing", names, 1)[0][0] == (
+        "Gurmag Swiftwing"
+    )
+
+
+def test_structured_printing_evidence_promotes_safe_auto_adds_only():
+    from mtglogger.services.recognition import CardRecognizer
+
+    assert CardRecognizer.structured_confidence(91, 0.94, 1, 1, 0) == 99.5
+    assert CardRecognizer.structured_confidence(90, 1, 0.8, 0.8, 1) == 98.5
+    assert CardRecognizer.structured_confidence(94, 1, 0.45, 0.45, 0) == 94
+    assert CardRecognizer.structured_confidence(94, 0.7, 1, 1, 1) == 94
+
+
+def test_catalog_fallback_recovers_canonical_name_with_exact_printing():
+    import asyncio
+
+    from mtglogger.services.recognition import CardRecognizer
+
+    card = {
+        "id": "ori-consecrated",
+        "name": "Consecrated by Blood",
+        "set": "ori",
+        "set_name": "Magic Origins",
+        "collector_number": "87",
+    }
+
+    class CatalogProvider:
+        def __init__(self):
+            self.calls = []
+
+        async def search(self, query, set_code=None, language=None):
+            self.calls.append((query, set_code, language))
+            if query == '!"Consecrated by Blood" cn:087' and set_code == "ori":
+                return [card]
+            return []
+
+        async def card_names(self):
+            return ["Consecrated by Blood", "Consumed by Greed", "Blood Artist"]
+
+    recognizer = CardRecognizer.__new__(CardRecognizer)
+    recognizer.provider = CatalogProvider()
+    cards = asyncio.run(
+        recognizer._lookup_cards("Consecrafed by Blood", "087", "ori", None, "en")
+    )
+
+    assert cards == [card]
+    assert ('!"Consecrated by Blood" cn:087', "ori", "en") in recognizer.provider.calls
+
+
 def test_artwork_alone_cannot_auto_add_a_reused_printing():
     from mtglogger.services.recognition import CardRecognizer
 

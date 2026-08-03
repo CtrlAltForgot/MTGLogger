@@ -27,6 +27,7 @@ class Recognition:
     candidates: list[Candidate]
     corrected: np.ndarray
     processing_ms: int
+    card_structure: bool
 
 
 class CardRecognizer:
@@ -69,6 +70,15 @@ class CardRecognizer:
         return image
 
     @staticmethod
+    def expand_quad(
+        ordered: np.ndarray, image_shape: tuple[int, ...], scale: float = 1.06
+    ) -> np.ndarray:
+        expanded = ordered.mean(axis=0) + (ordered - ordered.mean(axis=0)) * scale
+        expanded[:, 0] = np.clip(expanded[:, 0], 0, image_shape[1] - 1)
+        expanded[:, 1] = np.clip(expanded[:, 1], 0, image_shape[0] - 1)
+        return expanded.astype("float32")
+
+    @staticmethod
     def rectify(image: np.ndarray) -> np.ndarray:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         edges = cv2.Canny(cv2.GaussianBlur(gray, (5, 5), 0), 50, 140)
@@ -91,6 +101,11 @@ class CardRecognizer:
                     points[np.argmax(diffs)],
                 ]
             )
+            # Edge detection frequently locks onto the printed black border
+            # instead of the physical card edge. Preserve a small outer margin
+            # so collector number, set code, language, and copyright text are
+            # not clipped out of the normalized image.
+            ordered = CardRecognizer.expand_quad(ordered, image.shape)
             target = np.array([[0, 0], [599, 0], [599, 839], [0, 839]], dtype="float32")
             return cv2.warpPerspective(
                 image, cv2.getPerspectiveTransform(ordered, target), (600, 840)
@@ -99,8 +114,8 @@ class CardRecognizer:
         # sleeves may hide the outer contour, so normalize that guide instead of
         # sending an entire widescreen frame through OCR and artwork matching.
         height, width = image.shape[:2]
-        crop_height = int(height * 0.92)
-        crop_width = min(int(width * 0.46), int(crop_height * 63 / 88))
+        crop_height = int(height * 0.98)
+        crop_width = min(int(width * 0.52), int(crop_height * 63 / 88))
         x1, y1 = (width - crop_width) // 2, (height - crop_height) // 2
         guide = image[y1 : y1 + crop_height, x1 : x1 + crop_width]
         return cv2.resize(guide, (600, 840), interpolation=cv2.INTER_AREA)
@@ -121,6 +136,30 @@ class CardRecognizer:
         except Exception:
             logger.exception("PaddleOCR inference failed")
             return ""
+
+    @staticmethod
+    def has_card_structure(image: np.ndarray) -> bool:
+        """Detect long horizontal frame/text-box edges absent from an empty table."""
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        edges = cv2.Canny(gray, 50, 140)
+        lines = cv2.HoughLinesP(
+            edges,
+            1,
+            np.pi / 180,
+            threshold=45,
+            minLineLength=int(image.shape[1] * 0.38),
+            maxLineGap=18,
+        )
+        if lines is None:
+            return False
+        horizontal = 0
+        for [[x1, y1, x2, y2]] in lines:
+            width = abs(x2 - x1)
+            if abs(y2 - y1) <= max(4, width * 0.08):
+                horizontal += 1
+                if horizontal >= 3:
+                    return True
+        return False
 
     @staticmethod
     def hints(text: str) -> tuple[str | None, str | None, str | None, int | None]:
@@ -205,6 +244,58 @@ class CardRecognizer:
         return min(0.85, max(direct, inferred))
 
     @staticmethod
+    def normalized_name(value: str) -> str:
+        return "".join(character for character in value.casefold() if character.isalnum())
+
+    @classmethod
+    def closest_catalog_names(
+        cls, title: str, names: list[str], limit: int = 3
+    ) -> list[tuple[str, float]]:
+        query = cls.normalized_name(title)
+        if len(query) < 4:
+            return []
+        ranked = sorted(
+            (
+                (name, SequenceMatcher(None, query, cls.normalized_name(name)).ratio())
+                for name in names
+                if abs(len(cls.normalized_name(name)) - len(query)) <= max(5, len(query) // 2)
+            ),
+            key=lambda item: item[1],
+            reverse=True,
+        )
+        return [item for item in ranked[:limit] if item[1] >= 0.72]
+
+    @staticmethod
+    def set_code_score(ocr_set: str | None, printed_set: str) -> float:
+        if not ocr_set:
+            return 0.45
+        if ocr_set.casefold() == printed_set.casefold():
+            return 1.0
+        return min(
+            0.85,
+            SequenceMatcher(None, ocr_set.casefold(), printed_set.casefold()).ratio(),
+        )
+
+    @staticmethod
+    def structured_confidence(
+        confidence: float,
+        title_score: float,
+        number_score: float,
+        set_score: float,
+        year_score: float,
+    ) -> float:
+        if title_score >= 0.86 and number_score == 1.0 and set_score == 1.0:
+            return max(confidence, 99.5)
+        if (
+            title_score >= 0.9
+            and number_score >= 0.78
+            and set_score >= 0.78
+            and year_score == 1.0
+        ):
+            return max(confidence, 98.5)
+        return confidence
+
+    @staticmethod
     def visual_only_score(score: float) -> float:
         # Artwork is intentionally supporting evidence, never proof of an exact
         # printing. Wizards frequently reuses identical art across sets, promos,
@@ -222,15 +313,38 @@ class CardRecognizer:
     ) -> list[dict]:
         if not title and not number:
             return []
-        title_query = f'!"{title}"' if title else ""
-        query = f"{title_query} cn:{number}".strip() if number else title_query
         preferred_set = printed_set_code or box_set_code
+
+        async def search_variants(
+            candidate_title: str, *, relaxed: bool = False
+        ) -> list[dict]:
+            title_query = f'!"{candidate_title}"'
+            variants: list[tuple[str, str | None]] = []
+            if number:
+                variants.append((f"{title_query} cn:{number}", preferred_set))
+                if relaxed:
+                    variants.append((f"{title_query} cn:{number}", None))
+            if relaxed or not number:
+                variants.append((title_query, preferred_set))
+            if relaxed:
+                variants.append((title_query, None))
+            seen: set[tuple[str, str | None]] = set()
+            for query, set_code in variants:
+                key = (query, set_code)
+                if key in seen:
+                    continue
+                seen.add(key)
+                cards = await self.provider.search(query, set_code, language)
+                if cards:
+                    return cards
+            return []
+
         try:
             # Recognition must not sit behind a long external outage. All lookup
             # attempts share one short budget; the captured frame still proceeds
             # through local artwork matching and into Review if Scryfall is down.
             async with asyncio.timeout(3.5):
-                cards = await self.provider.search(query, preferred_set, language)
+                cards = await search_variants(title) if title else []
                 # Localized title text is not consistently searchable through
                 # Scryfall's canonical-name field. Set + collector number + chosen
                 # language identifies the printing without guessing an English ID.
@@ -238,12 +352,17 @@ class CardRecognizer:
                     cards = await self.provider.search(
                         f"cn:{number}", preferred_set, language
                     )
-                if not cards and title and number:
-                    cards = await self.provider.search(title_query, preferred_set, language)
-                # An imperfect set-code OCR should lower confidence, not erase otherwise
-                # useful candidates from the confirmation list.
-                if not cards and printed_set_code:
-                    cards = await self.provider.search(query, box_set_code, language)
+                if not cards and title and hasattr(self.provider, "card_names"):
+                    catalog = await self.provider.card_names()
+                    closest = await asyncio.to_thread(
+                        self.closest_catalog_names, title, catalog
+                    )
+                    for canonical_name, _similarity in closest:
+                        cards = await search_variants(canonical_name, relaxed=True)
+                        if cards:
+                            break
+                if not cards and title:
+                    cards = await search_variants(title, relaxed=True)
                 return cards
         except (TimeoutError, httpx.HTTPError, ValueError) as exc:
             logger.warning("Scryfall lookup unavailable; preserving scan for Review: %s", exc)
@@ -256,6 +375,7 @@ class CardRecognizer:
             started = time.perf_counter()
             corrected = await asyncio.to_thread(lambda: self.rectify(self.decode(raw)))
             prepared = time.perf_counter()
+            card_structure = await asyncio.to_thread(self.has_card_structure, corrected)
             text = await asyncio.to_thread(self.extract_text, corrected)
             ocr_complete = time.perf_counter()
             title, number, printed_set_code, copyright_year = self.hints(text)
@@ -277,16 +397,17 @@ class CardRecognizer:
                 else 0.55
             )
             number_score = self.collector_score(number, card["collector_number"])
-            set_score = (
-                1.0
-                if printed_set_code and card["set"].lower() == printed_set_code
-                else (0.45 if not printed_set_code else 0.0)
-            )
+            set_score = self.set_code_score(printed_set_code, card["set"])
+            released_year = int(card.get("released_at", "0000")[:4])
+            year_score = 1.0 if copyright_year and released_year == copyright_year else 0.0
             if printed_set_code:
-                ocr_score = (title_score * 0.5 + number_score * 0.3 + set_score * 0.2) * 100
+                ocr_score = (
+                    title_score * 0.45
+                    + number_score * 0.25
+                    + set_score * 0.2
+                    + (year_score if copyright_year else 0.5) * 0.1
+                ) * 100
             elif copyright_year:
-                released_year = int(card.get("released_at", "0000")[:4])
-                year_score = 1.0 if released_year == copyright_year else 0.0
                 ocr_score = (title_score * 0.58 + number_score * 0.27 + year_score * 0.15) * 100
             else:
                 ocr_score = (title_score * 0.66 + number_score * 0.34) * 100
@@ -302,6 +423,13 @@ class CardRecognizer:
                 and card["set"].lower() == box_set_code.lower()
             ):
                 confidence += 3
+            # Exact collector+set evidence identifies a printing even when OCR
+            # misspells one title character. A one-character loss in both footer
+            # fields is also near-certain when the copyright year independently
+            # agrees. Neither path allows name/artwork similarity alone to add.
+            confidence = self.structured_confidence(
+                confidence, title_score, number_score, set_score, year_score
+            )
             confidence = min(99.5, confidence)
             ranked[card["id"]] = Candidate(
                 scryfall_id=card["id"],
@@ -350,6 +478,7 @@ class CardRecognizer:
             candidates[:5],
             corrected,
             round((finished - started) * 1000),
+            card_structure,
         )
 
     @staticmethod

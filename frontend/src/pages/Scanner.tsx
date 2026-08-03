@@ -34,6 +34,7 @@ export default function Scanner(){
     const started=performance.now()
     const next=await submitScan(blob,defaults) as ScanResult
     const elapsed=performance.now()-started
+    if(next.disposition==='empty'){setResult(null);return false}
     setStats(current=>{
       const updated={...current,scans:current.scans+1,review:current.review+(next.disposition==='added'?0:1),totalMs:current.totalMs+elapsed,lastMs:elapsed,serverMs:next.processing_ms}
       return next.disposition==='added'?recordSuccessfulAddition(updated,performance.now()):updated
@@ -44,6 +45,7 @@ export default function Scanner(){
     if(!defaults.auto_add&&(next.disposition==='confirmation'||next.disposition==='suggestions')&&next.candidates.length){
       await new Promise<void>(resolve=>{decisionComplete.current=resolve})
     }
+    return true
   },[defaults])
   const scan=useAutoScanner(capture,tuning)
 

@@ -21,7 +21,7 @@ function analyze(pixels:Uint8ClampedArray,previous?:Uint8ClampedArray,baseline?:
   return {brightness:mean,contrast:Math.sqrt(Math.max(0,variance/samples-mean*mean)),motion:previous?motion/samples:99,sceneDifference:baseline?sceneDifference/samples:0}
 }
 
-export function useAutoScanner(onCapture:(blob:Blob)=>Promise<void>,tuning:ScannerTuning=defaultTuning){
+export function useAutoScanner(onCapture:(blob:Blob)=>Promise<boolean>,tuning:ScannerTuning=defaultTuning){
   const video=useRef<HTMLVideoElement>(null),canvas=useRef<HTMLCanvasElement>(null)
   const previous=useRef<Uint8ClampedArray|undefined>(undefined),baseline=useRef<Uint8ClampedArray|undefined>(undefined),calibrationCount=useRef(0),noiseMotion=useRef(0),stable=useRef(0),removalGate=useRef<RemovalGate>({latched:false,emptyFrames:0}),busy=useRef(false)
   const [state,setState]=useState<State>('idle'),[error,setError]=useState<string>(),[metrics,setMetrics]=useState<ScannerMetrics>({brightness:0,contrast:0,motion:0,sceneDifference:0})
@@ -71,7 +71,13 @@ export function useAutoScanner(onCapture:(blob:Blob)=>Promise<void>,tuning:Scann
       if(stable.current<tuning.stableFrames)return
       busy.current=true;setState('capturing')
       const full=document.createElement('canvas');full.width=element.videoWidth;full.height=element.videoHeight;full.getContext('2d')!.drawImage(element,0,0)
-      full.toBlob(async blob=>{if(blob){setState('processing');try{await onCapture(blob)}catch(e){setError(e instanceof Error?e.message:'Scan failed')}}removalGate.current={latched:true,emptyFrames:0};busy.current=false;stable.current=0;setState('remove')},'image/jpeg',.9)
+      full.toBlob(async blob=>{
+        let cardCaptured=true
+        if(blob){setState('processing');try{cardCaptured=await onCapture(blob)}catch(e){setError(e instanceof Error?e.message:'Scan failed')}}
+        if(cardCaptured){removalGate.current={latched:true,emptyFrames:0};setState('remove')}
+        else{baseline.current=undefined;previous.current=undefined;calibrationCount.current=0;noiseMotion.current=0;removalGate.current={latched:false,emptyFrames:0};setState('calibrating')}
+        busy.current=false;stable.current=0
+      },'image/jpeg',.9)
     },180)
     return()=>clearInterval(timer)
   },[state,error,onCapture,tuning])

@@ -1,3 +1,5 @@
+import asyncio
+import time
 from decimal import Decimal, InvalidOperation
 
 import httpx
@@ -5,6 +7,9 @@ import httpx
 from ..config import get_settings
 
 _client: httpx.AsyncClient | None = None
+_card_names: list[str] | None = None
+_card_names_loaded_at = 0.0
+_card_names_lock = asyncio.Lock()
 
 
 def scryfall_client() -> httpx.AsyncClient:
@@ -55,6 +60,20 @@ class ScryfallProvider:
         response = await scryfall_client().get(f"{self.base_url}/cards/{scryfall_id}")
         response.raise_for_status()
         return response.json()
+
+    async def card_names(self) -> list[str]:
+        """Return Scryfall's small canonical-name catalog, cached for one day."""
+        global _card_names, _card_names_loaded_at
+        if _card_names is not None and time.monotonic() - _card_names_loaded_at < 86_400:
+            return _card_names
+        async with _card_names_lock:
+            if _card_names is not None and time.monotonic() - _card_names_loaded_at < 86_400:
+                return _card_names
+            response = await scryfall_client().get(f"{self.base_url}/catalog/card-names")
+            response.raise_for_status()
+            _card_names = response.json().get("data", [])
+            _card_names_loaded_at = time.monotonic()
+            return _card_names
 
     async def cards_for_set(self, set_code: str) -> list[dict]:
         cards: list[dict] = []

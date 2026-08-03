@@ -58,6 +58,15 @@ async def recognize_card(
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
+    if not result.card_structure and not result.ocr_text.strip() and not result.candidates:
+        return ScanResult(
+            disposition="empty",
+            confidence=0,
+            candidates=[],
+            message="Empty guide recalibrated",
+            processing_ms=result.processing_ms,
+        )
+
     # Automatic inventory writes require near-certain agreement. Scores below
     # this remain one-key confirmations, even when automatic mode is enabled.
     if result.confidence >= 98.5 and result.candidates and defaults.auto_add:
