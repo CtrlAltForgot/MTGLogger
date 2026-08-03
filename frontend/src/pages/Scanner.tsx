@@ -6,6 +6,7 @@ import {
 } from '@mui/material'
 import { request, submitScan } from '../api'
 import ScanConfirmation from '../components/ScanConfirmation'
+import { cardsPerMinute, initialSessionStats, recordSuccessfulAddition, reviewPercentage } from '../scanner/sessionStats'
 import { defaultTuning, useAutoScanner, type ScannerTuning } from '../scanner/useAutoScanner'
 import type { Candidate, Deck, Defaults, Inventory, ScanResult } from '../types'
 
@@ -17,20 +18,6 @@ const languages=[
   ['la','Latin'],['grc','Ancient Greek'],['ar','Arabic'],['sa','Sanskrit'],['phy','Phyrexian'],
 ]
 type ReferenceStatus={state:string;set_code:string|null;completed:number;total:number;indexed_cards:number;error:string|null}
-type SessionStats={scans:number;added:number;review:number;totalMs:number;lastMs:number;serverMs:number;paceIntervals:number;paceMs:number;lastAddedAt:number|null}
-
-function recordSuccessfulAddition(current:SessionStats,now:number):SessionStats{
-  const interval=current.lastAddedAt===null?null:now-current.lastAddedAt
-  const countsTowardPace=interval!==null&&interval<30_000
-  return {
-    ...current,
-    added:current.added+1,
-    lastAddedAt:now,
-    paceIntervals:current.paceIntervals+(countsTowardPace?1:0),
-    paceMs:current.paceMs+(countsTowardPace?interval:0),
-  }
-}
-
 export default function Scanner(){
   const [defaults,setDefaults]=useState(initial)
   const [result,setResult]=useState<ScanResult|null>(null)
@@ -40,7 +27,7 @@ export default function Scanner(){
   const [decisionBusy,setDecisionBusy]=useState(false)
   const [success,setSuccess]=useState<Inventory|null>(null)
   const [reviewNotice,setReviewNotice]=useState<ScanResult|null>(null)
-  const [stats,setStats]=useState<SessionStats>({scans:0,added:0,review:0,totalMs:0,lastMs:0,serverMs:0,paceIntervals:0,paceMs:0,lastAddedAt:null})
+  const [stats,setStats]=useState(initialSessionStats)
   const decisionComplete=useRef<(()=>void)|null>(null)
 
   const capture=useCallback(async(blob:Blob)=>{
@@ -90,8 +77,8 @@ export default function Scanner(){
   const candidate:Candidate|undefined=!defaults.auto_add&&(result?.disposition==='confirmation'||result?.disposition==='suggestions')?result.candidates[0]:undefined
   const tone=result?.disposition==='added'?'success':result?.disposition==='suggestions'||result?.disposition==='confirmation'?'warning':'error'
   const stateLabel=scan.state==='remove'?'Remove card':scan.state==='processing'?'Identifying…':scan.state==='stabilizing'?'Hold still…':scan.state==='calibrating'?'Keep guide empty…':scan.state==='waiting'?'Ready for card':'Camera stopped'
-  const cardsPerMinute=stats.paceIntervals>0?60_000*stats.paceIntervals/stats.paceMs:null
-  const reviewPercentage=stats.scans>0?100*stats.review/stats.scans:0
+  const sessionCardsPerMinute=cardsPerMinute(stats)
+  const sessionReviewPercentage=reviewPercentage(stats)
 
   return <Grid container spacing={3}>
     <Grid size={{xs:12,lg:8}}>
@@ -116,8 +103,8 @@ export default function Scanner(){
       <Stack direction="row" spacing={.75} mt={1.25} flexWrap="wrap" useFlexGap>
         <Chip size="small" variant="outlined" label={`Session · ${stats.scans} scanned`}/>
         <Chip size="small" color="success" variant="outlined" label={`${stats.added} added`}/>
-        <Chip size="small" color={stats.review?'warning':'default'} variant="outlined" label={`Review · ${reviewPercentage.toFixed(1)}% (${stats.review})`}/>
-        <Chip size="small" color={cardsPerMinute===null?'default':'primary'} variant="outlined" label={cardsPerMinute===null?'Cards/min · measuring':`Cards/min · ${cardsPerMinute.toFixed(1)}`}/>
+        <Chip size="small" color={stats.review?'warning':'default'} variant="outlined" label={`Review · ${sessionReviewPercentage.toFixed(1)}% (${stats.review})`}/>
+        <Chip size="small" color={sessionCardsPerMinute===null?'default':'primary'} variant="outlined" label={sessionCardsPerMinute===null?'Cards/min · measuring':`Cards/min · ${sessionCardsPerMinute.toFixed(1)}`}/>
         {stats.scans>0&&<><Chip size="small" label={`Last ${(stats.lastMs/1000).toFixed(1)}s`}/><Chip size="small" label={`Recognition ${(stats.serverMs/1000).toFixed(1)}s`}/><Chip size="small" label={`Average ${(stats.totalMs/stats.scans/1000).toFixed(1)}s`}/></>}
       </Stack>
       {scan.error&&<Alert severity="error" sx={{mt:2}} onClose={()=>scan.setError(undefined)}>{scan.error}</Alert>}

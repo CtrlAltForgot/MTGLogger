@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import {advanceRemovalGate,type RemovalGate} from './removalGate'
 
 type State='idle'|'calibrating'|'waiting'|'stabilizing'|'capturing'|'processing'|'remove'
 export type ScannerTuning={entryDifference:number;stableMotion:number;stableFrames:number}
@@ -22,11 +23,11 @@ function analyze(pixels:Uint8ClampedArray,previous?:Uint8ClampedArray,baseline?:
 
 export function useAutoScanner(onCapture:(blob:Blob)=>Promise<void>,tuning:ScannerTuning=defaultTuning){
   const video=useRef<HTMLVideoElement>(null),canvas=useRef<HTMLCanvasElement>(null)
-  const previous=useRef<Uint8ClampedArray|undefined>(undefined),baseline=useRef<Uint8ClampedArray|undefined>(undefined),calibrationCount=useRef(0),noiseMotion=useRef(0),stable=useRef(0),latched=useRef(false),busy=useRef(false)
+  const previous=useRef<Uint8ClampedArray|undefined>(undefined),baseline=useRef<Uint8ClampedArray|undefined>(undefined),calibrationCount=useRef(0),noiseMotion=useRef(0),stable=useRef(0),removalGate=useRef<RemovalGate>({latched:false,emptyFrames:0}),busy=useRef(false)
   const [state,setState]=useState<State>('idle'),[error,setError]=useState<string>(),[metrics,setMetrics]=useState<ScannerMetrics>({brightness:0,contrast:0,motion:0,sceneDifference:0})
   const [cameras,setCameras]=useState<MediaDeviceInfo[]>([]),[selectedCamera,setSelectedCamera]=useState('')
 
-  const calibrate=useCallback(()=>{baseline.current=undefined;previous.current=undefined;calibrationCount.current=0;noiseMotion.current=0;stable.current=0;latched.current=false;setState('calibrating')},[])
+  const calibrate=useCallback(()=>{baseline.current=undefined;previous.current=undefined;calibrationCount.current=0;noiseMotion.current=0;stable.current=0;removalGate.current={latched:false,emptyFrames:0};setState('calibrating')},[])
   const start=useCallback(async(deviceId?:string)=>{try{
     if(!window.isSecureContext||!navigator.mediaDevices?.getUserMedia)throw new Error('Camera access requires HTTPS or localhost. Use an HTTPS reverse proxy when opening MTGLogger from another computer.')
     setError(undefined)
@@ -56,8 +57,10 @@ export function useAutoScanner(onCapture:(blob:Blob)=>Promise<void>,tuning:Scann
       }
       const next=analyze(pixels,previous.current,baseline.current);previous.current=new Uint8ClampedArray(pixels);setMetrics(next)
       const cardPresent=next.sceneDifference>=tuning.entryDifference
-      if(latched.current){
-        if(!cardPresent){stable.current++;if(stable.current>=3){latched.current=false;stable.current=0;setState('waiting')}}else stable.current=0
+      if(removalGate.current.latched){
+        const update=advanceRemovalGate(removalGate.current,cardPresent)
+        removalGate.current=update.gate
+        if(update.rearmed){stable.current=0;setState('waiting')}
         return
       }
       if(!cardPresent){setState('waiting');stable.current=0;return}
@@ -68,7 +71,7 @@ export function useAutoScanner(onCapture:(blob:Blob)=>Promise<void>,tuning:Scann
       if(stable.current<tuning.stableFrames)return
       busy.current=true;setState('capturing')
       const full=document.createElement('canvas');full.width=element.videoWidth;full.height=element.videoHeight;full.getContext('2d')!.drawImage(element,0,0)
-      full.toBlob(async blob=>{if(blob){setState('processing');try{await onCapture(blob)}catch(e){setError(e instanceof Error?e.message:'Scan failed')}}latched.current=true;busy.current=false;stable.current=0;setState('remove')},'image/jpeg',.9)
+      full.toBlob(async blob=>{if(blob){setState('processing');try{await onCapture(blob)}catch(e){setError(e instanceof Error?e.message:'Scan failed')}}removalGate.current={latched:true,emptyFrames:0};busy.current=false;stable.current=0;setState('remove')},'image/jpeg',.9)
     },180)
     return()=>clearInterval(timer)
   },[state,error,onCapture,tuning])
