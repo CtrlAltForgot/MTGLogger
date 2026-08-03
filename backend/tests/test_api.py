@@ -16,6 +16,27 @@ def test_health(client):
     assert client.get("/api/health").json()["status"] == "ok"
 
 
+def test_upload_check_consumes_camera_payload_without_persisting(client):
+    payload = b"x" * (2 * 1024 * 1024)
+    response = client.post(
+        "/api/scanner/upload-check",
+        files={"image": ("probe.bin", payload, "application/octet-stream")},
+    )
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "bytes": len(payload)}
+    assert client.get("/api/inventory").json()["total"] == 0
+    assert client.get("/api/reviews").json() == []
+
+
+def test_upload_check_rejects_payloads_above_recognition_limit(client):
+    response = client.post(
+        "/api/scanner/upload-check",
+        files={"image": ("probe.bin", b"x" * 15_000_001, "application/octet-stream")},
+    )
+    assert response.status_code == 413
+    assert response.json()["detail"] == "Image is larger than 15 MB"
+
+
 def test_duplicate_printing_increments_quantity(client):
     first = client.post("/api/inventory", json=CARD)
     second = client.post("/api/inventory", json=CARD)

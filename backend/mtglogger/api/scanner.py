@@ -14,11 +14,30 @@ from ..services.recognition import CardRecognizer, save_scan
 
 router = APIRouter(prefix="/scanner", tags=["scanner"])
 recognizer = CardRecognizer()
+MAX_IMAGE_BYTES = 15_000_000
+
+
+async def read_bounded_upload(upload: UploadFile) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    while chunk := await upload.read(1024 * 1024):
+        total += len(chunk)
+        if total > MAX_IMAGE_BYTES:
+            raise HTTPException(413, "Image is larger than 15 MB")
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 @router.get("/capabilities")
 def capabilities():
     return {"ocr": recognizer.ocr_available, "artwork_matching": True}
+
+
+@router.post("/upload-check")
+async def upload_check(image: UploadFile = File(...)):
+    """Consume a camera-sized multipart upload without recognition or persistence."""
+    raw = await read_bounded_upload(image)
+    return {"status": "ok", "bytes": len(raw)}
 
 
 @router.post("/recognize", response_model=ScanResult)
@@ -33,9 +52,7 @@ async def recognize_card(
         raise HTTPException(422, f"Invalid scan defaults: {exc}") from exc
     if defaults.deck_id and not db.get(Deck, defaults.deck_id):
         raise HTTPException(422, "Selected deck no longer exists")
-    raw = await image.read()
-    if len(raw) > 15_000_000:
-        raise HTTPException(413, "Image is larger than 15 MB")
+    raw = await read_bounded_upload(image)
     try:
         result = await recognizer.recognize(raw, defaults.box_set_code, defaults.language)
     except ValueError as exc:

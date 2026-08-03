@@ -26,13 +26,14 @@ trap cleanup_ui EXIT
 
 upload_probe="$validation_dir/2mb-upload-probe.bin"
 truncate -s 2M "$upload_probe"
-upload_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
-  -F "image=@$upload_probe" "${mtglogger_url%/}/api/upload-limit-validation")
-if [[ "$upload_status" != "404" ]]; then
-  echo "2 MB proxy upload expected API 404, received HTTP $upload_status" >&2
+upload_response="$validation_dir/upload-response.json"
+upload_status=$(curl --silent --output "$upload_response" --write-out '%{http_code}' \
+  -F "image=@$upload_probe" "${mtglogger_url%/}/api/scanner/upload-check")
+if [[ "$upload_status" != "200" ]] || ! grep -q '"bytes":2097152' "$upload_response"; then
+  echo "2 MB proxy upload expected a complete API response, received HTTP $upload_status" >&2
   exit 1
 fi
-printf 'proxy upload limit: 2 MB request reached API\n'
+printf 'proxy upload limit: API consumed complete 2 MB request\n'
 
 for asset in manifest.webmanifest service-worker.js mtglogger-192.png mtglogger-512.png; do
   asset_status=$(curl --silent --output "$validation_dir/$asset" --write-out '%{http_code}' \

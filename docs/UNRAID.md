@@ -75,7 +75,7 @@ MTGLOGGER_URL=https://mtglogger.example.com ./scripts/smoke-ui.sh
 ```
 
 This smoke check is read-only. Webcam permission and physical capture still require the manual browser test described above.
-It also sends a disposable 2 MB payload to a nonexistent API route and expects FastAPI's 404 response, proving that neither Nginx Proxy Manager nor MTGLogger's nginx layer is imposing a smaller upload limit than typical webcam captures.
+It also sends a disposable 2 MB payload to a non-mutating upload-check route and verifies the byte count returned by FastAPI, proving that neither Nginx Proxy Manager nor MTGLogger's nginx layer is rejecting or truncating typical webcam captures.
 
 ## Updates
 
