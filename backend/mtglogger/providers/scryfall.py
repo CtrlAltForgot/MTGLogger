@@ -121,8 +121,22 @@ class ScryfallProvider:
         params = {"q": "game:paper", "unique": "prints", "order": "set"}
         client = scryfall_client()
         while url:
-            response = await client.get(url, params=params)
-            response.raise_for_status()
+            response = None
+            for attempt in range(6):
+                try:
+                    response = await client.get(url, params=params)
+                    if response.status_code == 429:
+                        delay = float(response.headers.get("Retry-After", attempt + 1))
+                        await asyncio.sleep(min(30, delay))
+                        continue
+                    response.raise_for_status()
+                    break
+                except (httpx.TimeoutException, httpx.TransportError):
+                    if attempt == 5:
+                        raise
+                    await asyncio.sleep(min(10, 1.5**attempt))
+            if response is None:
+                raise RuntimeError("Scryfall catalog page did not return a response")
             page = response.json()
             yield page.get("data", [])
             url = page.get("next_page") if page.get("has_more") else None

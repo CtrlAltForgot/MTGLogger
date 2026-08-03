@@ -23,6 +23,7 @@ import {
   Typography,
 } from "@mui/material";
 import { request } from "../api";
+import { CardName } from "../components/CardDetails";
 import type { AvailableCard, AvailablePage, Deck } from "../types";
 
 export default function Decks() {
@@ -349,7 +350,9 @@ export default function Decks() {
                   />
                   <Box flex={1} minWidth={0}>
                     <Typography fontWeight={750} noWrap>
-                      {entry.inventory.card_name}
+                      <CardName scryfallId={entry.inventory.scryfall_id}>
+                        {entry.inventory.card_name}
+                      </CardName>
                     </Typography>
                     <Typography variant="caption" color="text.secondary">
                       {entry.inventory.set_code.toUpperCase()} #
@@ -465,7 +468,9 @@ export default function Decks() {
                   />
                   <Box flex={1} minWidth={0}>
                     <Typography fontWeight={750} noWrap>
-                      {card.inventory.card_name}
+                      <CardName scryfallId={card.inventory.scryfall_id}>
+                        {card.inventory.card_name}
+                      </CardName>
                     </Typography>
                     <Typography variant="caption" color="text.secondary">
                       {card.inventory.set_code.toUpperCase()} #

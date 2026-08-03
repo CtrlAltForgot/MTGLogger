@@ -249,6 +249,32 @@ def test_recognition_reference_status(client):
     assert cards == {"items": [], "total": 0, "page": 1, "page_size": 40}
 
 
+def test_exact_printing_details_preserve_scryfall_identity():
+    from mtglogger.api.references import serialize_card_details
+
+    details = serialize_card_details(
+        {
+            "id": "00000000-0000-0000-0000-000000000099",
+            "oracle_id": "00000000-0000-0000-0000-000000000100",
+            "name": "Test Card",
+            "set": "tst",
+            "set_name": "Test Set",
+            "collector_number": "42",
+            "image_uris": {"normal": "https://example.test/42.jpg"},
+            "mana_cost": "{2}{B}",
+            "type_line": "Creature — Test",
+            "oracle_text": "Exact printing details.",
+            "prices": {"usd": "1.25", "usd_foil": "2.50"},
+            "legalities": {"commander": "legal"},
+            "finishes": ["nonfoil", "foil"],
+        }
+    )
+    assert details["scryfall_id"] == "00000000-0000-0000-0000-000000000099"
+    assert details["collector_number"] == "42"
+    assert details["image_url"] == "https://example.test/42.jpg"
+    assert details["prices"]["usd_foil"] == "2.50"
+
+
 def test_reference_priority_sets_are_normalized(monkeypatch):
     from mtglogger.config import Settings
 

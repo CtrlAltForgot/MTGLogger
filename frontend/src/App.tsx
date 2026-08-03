@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
 import { AllInbox, CameraAlt, DarkMode, Dashboard as DashboardIcon, Download, FactCheck, Inventory2, LightMode, ShowChart, Storage, Style } from '@mui/icons-material'
 import { AppBar, Box, Button, CircularProgress, CssBaseline, IconButton, Tab, Tabs, ThemeProvider, Toolbar, Tooltip, Typography } from '@mui/material'
 import { appTheme } from './theme'
+import { CardDetailsProvider } from './components/CardDetails'
 
 const Collection=lazy(()=>import('./pages/Collection'))
 const Value=lazy(()=>import('./pages/Value'))
@@ -45,7 +46,7 @@ export default function App(){
   const toggleTheme=()=>setDark(value=>{localStorage.setItem('mtglogger-theme',value?'light':'dark');return !value})
   const changePage=(value:number)=>{setPage(value);history.replaceState(null,'',`?page=${pages[value].name.toLowerCase()}`)}
   const install=async()=>{if(!installPrompt)return;await installPrompt.prompt();await installPrompt.userChoice;setInstallPrompt(undefined)}
-  return <ThemeProvider theme={theme}><CssBaseline/>
+  return <ThemeProvider theme={theme}><CssBaseline/><CardDetailsProvider>
     <AppBar position="sticky"><Toolbar sx={{minHeight:{xs:58,md:66},px:{xs:2,md:4}}}>
       <Box component="img" src="/mtglogger-mark.svg" alt="" sx={{width:42,height:42,mr:1.25,filter:'drop-shadow(0 7px 14px rgba(190,35,54,.25))'}}/>
       <Box flex={1}><Typography variant="h6" lineHeight={1}>MTGLogger</Typography><Typography variant="caption" color="text.secondary">Log your TCG collection</Typography></Box>
@@ -55,5 +56,5 @@ export default function App(){
     <Box sx={{px:{xs:1,md:4},display:'flex',justifyContent:{md:'center'}}}><Tabs value={page} onChange={(_,value)=>changePage(value)} variant="scrollable" scrollButtons="auto" allowScrollButtonsMobile>{pages.map(item=><Tab key={item.name} icon={item.icon} iconPosition="start" label={item.name}/>)}</Tabs></Box>
     </AppBar>
     <Box component="main" sx={{maxWidth:1500,mx:'auto',px:{xs:2,sm:3,lg:4},py:{xs:3,md:4},minHeight:'calc(100vh - 112px)'}}><Suspense fallback={<Box minHeight="50vh" display="grid" sx={{placeItems:'center'}}><CircularProgress/></Box>}>{pages[page].content}</Suspense></Box>
-  </ThemeProvider>
+  </CardDetailsProvider></ThemeProvider>
 }

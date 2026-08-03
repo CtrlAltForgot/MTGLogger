@@ -1,5 +1,6 @@
 import asyncio
 import re
+import time
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, or_, select
@@ -7,9 +8,12 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models import CardReference, CardVisualFingerprint
+from ..providers import ScryfallProvider
 from ..services.references import sync_all, sync_set, sync_status
 
 router = APIRouter(prefix="/references", tags=["recognition references"])
+provider = ScryfallProvider()
+_detail_cache: dict[str, tuple[float, dict]] = {}
 
 
 @router.get("/status")
@@ -93,6 +97,66 @@ def indexed_cards(
         "page": page,
         "page_size": page_size,
     }
+
+
+def serialize_card_details(card: dict) -> dict:
+    faces = card.get("card_faces") or []
+    image_url = provider.image_url(card)
+    return {
+        "scryfall_id": card["id"],
+        "oracle_id": card.get("oracle_id"),
+        "name": card["name"],
+        "set_code": card.get("set", ""),
+        "set_name": card.get("set_name", ""),
+        "collector_number": card.get("collector_number", ""),
+        "image_url": image_url,
+        "mana_cost": card.get("mana_cost") or (faces[0].get("mana_cost") if faces else None),
+        "type_line": card.get("type_line") or (faces[0].get("type_line") if faces else None),
+        "oracle_text": card.get("oracle_text") or "\n\n".join(
+            face.get("oracle_text", "") for face in faces if face.get("oracle_text")
+        ),
+        "flavor_text": card.get("flavor_text") or (faces[0].get("flavor_text") if faces else None),
+        "power": card.get("power") or (faces[0].get("power") if faces else None),
+        "toughness": card.get("toughness") or (faces[0].get("toughness") if faces else None),
+        "loyalty": card.get("loyalty") or (faces[0].get("loyalty") if faces else None),
+        "rarity": card.get("rarity"),
+        "artist": card.get("artist"),
+        "language": card.get("lang", "en"),
+        "released_at": card.get("released_at"),
+        "finishes": card.get("finishes", []),
+        "prices": card.get("prices", {}),
+        "legalities": card.get("legalities", {}),
+        "scryfall_uri": card.get("scryfall_uri"),
+    }
+
+
+@router.get("/card/{scryfall_id}")
+async def card_details(scryfall_id: str, db: Session = Depends(get_db)):
+    if not re.fullmatch(r"[0-9a-fA-F-]{36}", scryfall_id):
+        raise HTTPException(422, "Invalid Scryfall ID")
+    cached = _detail_cache.get(scryfall_id)
+    if cached and time.monotonic() - cached[0] < 86_400:
+        return cached[1]
+    try:
+        details = serialize_card_details(await provider.get_card(scryfall_id))
+    except Exception as exc:
+        reference = db.get(CardReference, scryfall_id)
+        if not reference:
+            raise HTTPException(404, "Card printing not found") from exc
+        details = {
+            "scryfall_id": reference.scryfall_id,
+            "name": reference.name,
+            "set_code": reference.set_code,
+            "set_name": reference.set_name,
+            "collector_number": reference.collector_number,
+            "image_url": reference.image_url,
+            "prices": {"usd": str(reference.market_price) if reference.market_price else None},
+        }
+    if len(_detail_cache) >= 512:
+        oldest = min(_detail_cache, key=lambda key: _detail_cache[key][0])
+        _detail_cache.pop(oldest, None)
+    _detail_cache[scryfall_id] = (time.monotonic(), details)
+    return details
 
 
 @router.post("/sync/{set_code}", status_code=202)

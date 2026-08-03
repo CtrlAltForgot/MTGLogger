@@ -145,15 +145,17 @@ async def sync_set(set_code: str) -> None:
             _state.total = len(cards)
         with SessionLocal() as db:
             for card in cards:
+                downloaded = False
                 try:
-                    await _index_card(db, provider, card)
+                    downloaded = await _index_card(db, provider, card)
                 except Exception:
                     db.rollback()
                     with _state_lock:
                         _state.errors += 1
                 with _state_lock:
                     _state.completed += 1
-                await asyncio.sleep(0.1)
+                if downloaded:
+                    await asyncio.sleep(0.1)
         with _state_lock:
             _state.state = "complete"
     except Exception as exc:
@@ -189,8 +191,9 @@ async def sync_all() -> None:
                     _state.set_code = f"priority:{set_code}"
                     _state.total += len(cards)
                 for card in cards:
+                    downloaded = False
                     try:
-                        await _index_card(db, provider, card)
+                        downloaded = await _index_card(db, provider, card)
                     except Exception:
                         db.rollback()
                         with _state_lock:
@@ -198,15 +201,17 @@ async def sync_all() -> None:
                     finally:
                         with _state_lock:
                             _state.completed += 1
-                    await asyncio.sleep(0.1)
+                    if downloaded:
+                        await asyncio.sleep(0.1)
             with _state_lock:
                 _state.set_code = "all-paper"
             async for cards in provider.paper_printing_pages():
                 with _state_lock:
                     _state.total += len(cards)
                 for card in cards:
+                    downloaded = False
                     try:
-                        await _index_card(db, provider, card)
+                        downloaded = await _index_card(db, provider, card)
                     except Exception:
                         db.rollback()
                         with _state_lock:
@@ -214,7 +219,8 @@ async def sync_all() -> None:
                     finally:
                         with _state_lock:
                             _state.completed += 1
-                    await asyncio.sleep(0.1)
+                    if downloaded:
+                        await asyncio.sleep(0.1)
         with _state_lock:
             _state.state = "complete"
     except Exception as exc:
@@ -229,13 +235,14 @@ async def reference_refresh_loop(interval_hours: int) -> None:
     await asyncio.sleep(300)
     while True:
         await sync_all()
-        await asyncio.sleep(max(1, interval_hours) * 3600)
+        delay = 60 if sync_status()["state"] == "failed" else max(1, interval_hours) * 3600
+        await asyncio.sleep(delay)
 
 
-async def _index_card(db, provider: ScryfallProvider, card: dict) -> None:
+async def _index_card(db, provider: ScryfallProvider, card: dict) -> bool:
     image_url = provider.image_url(card)
     if not image_url:
-        return
+        return False
     existing = db.get(CardReference, card["id"])
     fingerprint = db.get(CardVisualFingerprint, card["id"])
     cached_image_exists = bool(
@@ -260,7 +267,7 @@ async def _index_card(db, provider: ScryfallProvider, card: dict) -> None:
         existing.image_url = image_url
         existing.market_price = provider.market_price(card)
         db.commit()
-        return
+        return False
     raw = await provider.download_image(image_url)
     image = cv2.imdecode(__import__("numpy").frombuffer(raw, dtype="uint8"), cv2.IMREAD_COLOR)
     if image is None:
@@ -289,6 +296,7 @@ async def _index_card(db, provider: ScryfallProvider, card: dict) -> None:
         )
     )
     db.commit()
+    return True
 
 
 def _cache_image(scryfall_id: str, raw: bytes) -> Path | None:
