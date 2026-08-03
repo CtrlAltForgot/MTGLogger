@@ -11,6 +11,7 @@ import cv2
 import httpx
 import numpy as np
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 
 from ..database import SessionLocal
 from ..models import CardReference, CardVisualExample, CardVisualFingerprint
@@ -864,6 +865,9 @@ class CardRecognizer:
             if len(descriptor_matches) > 1
             else (descriptor_matches[0][1] if descriptor_matches else 0)
         )
+        descriptor_catalog_complete = self._descriptor_catalog_complete(
+            {card["id"] for card in cards}
+        )
         ranked: dict[str, Candidate] = {}
         release_years = [int(card.get("released_at", "0000")[:4]) for card in cards]
         number_scores = [
@@ -959,6 +963,16 @@ class CardRecognizer:
                 # footer/set evidence agrees, because the exhaustive catalog
                 # may still be syncing and identical art can be reprinted.
                 confidence = max(confidence, 97.0)
+                if (
+                    descriptor_catalog_complete
+                    and descriptor_score >= 80
+                    and descriptor_margin >= 12
+                ):
+                    # Once every known printing of this exact card identity has
+                    # a local descriptor, a decisive unique-art margin is
+                    # printing-specific evidence. Reused art naturally fails
+                    # the margin and remains an immediate user decision.
+                    confidence = max(confidence, 98.5)
             confidence = min(99.5, confidence)
             if oracle_recovery and not printing_signal:
                 # Rules text can identify a card, but it cannot prove which set,
@@ -1142,6 +1156,24 @@ class CardRecognizer:
                 ranked.append((reference, round(score, 3)))
         ranked.sort(key=lambda item: item[1], reverse=True)
         return ranked[:12]
+
+    @staticmethod
+    def _descriptor_catalog_complete(scryfall_ids: set[str]) -> bool:
+        if not scryfall_ids:
+            return False
+        try:
+            with SessionLocal() as db:
+                ready = set(
+                    db.scalars(
+                        select(CardVisualFingerprint.scryfall_id).where(
+                            CardVisualFingerprint.scryfall_id.in_(scryfall_ids),
+                            CardVisualFingerprint.descriptor_path.is_not(None),
+                        )
+                    )
+                )
+        except SQLAlchemyError:
+            return False
+        return ready == scryfall_ids
 
     @staticmethod
     def _descriptor_score(scan: np.ndarray, canonical: np.ndarray) -> float | None:

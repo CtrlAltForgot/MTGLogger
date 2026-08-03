@@ -1339,6 +1339,60 @@ def test_confirmed_descriptor_examples_improve_matching_without_leaking_into_hol
     assert held_out == []
 
 
+def test_descriptor_catalog_must_cover_every_candidate_before_visual_auto_add():
+    from mtglogger.database import Base, SessionLocal, engine
+    from mtglogger.models import CardReference, CardVisualFingerprint
+    from mtglogger.services.recognition import CardRecognizer
+
+    Base.metadata.drop_all(engine)
+    Base.metadata.create_all(engine)
+    ids = {"printing-a", "printing-b"}
+    with SessionLocal() as db:
+        for scryfall_id in ids:
+            db.add(
+                CardReference(
+                    scryfall_id=scryfall_id,
+                    name="Repeated Art Card",
+                    set_code="one" if scryfall_id == "printing-a" else "two",
+                    set_name="Set One" if scryfall_id == "printing-a" else "Set Two",
+                    collector_number="1",
+                    image_url=f"https://example.test/{scryfall_id}.jpg",
+                    art_hash="0" * 16,
+                )
+            )
+        db.flush()
+        db.add(
+            CardVisualFingerprint(
+                scryfall_id="printing-a",
+                full_hash="0" * 16,
+                art_hash="0" * 16,
+                title_hash="0" * 16,
+                footer_hash="0" * 16,
+                frame_hash="0" * 16,
+                descriptor_path="/descriptors/printing-a.npy",
+            )
+        )
+        db.commit()
+
+    assert not CardRecognizer._descriptor_catalog_complete(ids)
+
+    with SessionLocal() as db:
+        db.add(
+            CardVisualFingerprint(
+                scryfall_id="printing-b",
+                full_hash="0" * 16,
+                art_hash="0" * 16,
+                title_hash="0" * 16,
+                footer_hash="0" * 16,
+                frame_hash="0" * 16,
+                descriptor_path="/descriptors/printing-b.npy",
+            )
+        )
+        db.commit()
+
+    assert CardRecognizer._descriptor_catalog_complete(ids)
+
+
 def test_visual_catalog_is_reused_until_explicitly_invalidated():
     from mtglogger.services.recognition import CardRecognizer
 
