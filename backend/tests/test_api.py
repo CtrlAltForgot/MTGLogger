@@ -539,6 +539,14 @@ def test_structured_printing_evidence_promotes_safe_auto_adds_only():
     assert CardRecognizer.structured_confidence(94, 0.7, 1, 1, 1) == 94
 
 
+def test_set_code_score_handles_bounded_footer_glyph_confusion():
+    from mtglogger.services.recognition import CardRecognizer
+
+    assert CardRecognizer.set_code_score("MIS", "m15") == 1.0
+    assert CardRecognizer.set_code_score("ISD", "isd") == 1.0
+    assert CardRecognizer.set_code_score("MIS", "m13") < 1.0
+
+
 def test_focused_ocr_reads_only_enlarged_title_and_footer_when_title_is_usable():
     import numpy as np
 

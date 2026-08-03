@@ -476,11 +476,17 @@ class CardRecognizer:
     def set_code_score(ocr_set: str | None, printed_set: str) -> float:
         if not ocr_set:
             return 0.45
-        if ocr_set.casefold() == printed_set.casefold():
+        source = ocr_set.casefold()
+        target = printed_set.casefold()
+        variants = {
+            source,
+            source.translate(str.maketrans({"i": "1", "l": "1", "s": "5", "o": "0"})),
+        }
+        if target in variants:
             return 1.0
         return min(
             0.85,
-            SequenceMatcher(None, ocr_set.casefold(), printed_set.casefold()).ratio(),
+            max(SequenceMatcher(None, variant, target).ratio() for variant in variants),
         )
 
     @classmethod
