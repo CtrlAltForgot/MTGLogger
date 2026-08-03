@@ -812,18 +812,33 @@ class CardRecognizer:
             identity_names = {
                 card["name"] for card in cards
             } or ({title} if title else set())
-            descriptor_matches = await asyncio.to_thread(
-                self._descriptor_matches,
-                descriptor_image,
-                identity_names,
-                # A tiny footer can turn M15 into MIS. Never let uncertain OCR
-                # remove the correct artwork candidate; only explicit Box Mode
-                # is authoritative enough to constrain descriptor retrieval.
-                box_set_code,
-                ignored_example_review_ids,
+            descriptor_matches, identity_visual_matches = await asyncio.gather(
+                asyncio.to_thread(
+                    self._descriptor_matches,
+                    descriptor_image,
+                    identity_names,
+                    # A tiny footer can turn M15 into MIS. Never let uncertain OCR
+                    # remove the correct artwork candidate; only explicit Box Mode
+                    # is authoritative enough to constrain descriptor retrieval.
+                    box_set_code,
+                    ignored_example_review_ids,
+                ),
+                asyncio.to_thread(
+                    self._identity_visual_matches,
+                    scan_fingerprints,
+                    identity_names,
+                    box_set_code,
+                ),
             )
             known_card_ids = {card["id"] for card in cards}
-            for reference, _score in descriptor_matches:
+            # The remote title lookup is intentionally bounded and may return
+            # only the newest page of a name with hundreds of printings (basic
+            # lands are the important case). Local identity-scoped matching can
+            # find an older exact artwork/footer, so promote those references
+            # into the ranking pool instead of merely attaching a score to a
+            # card the pool does not contain.
+            local_matches = [*descriptor_matches, *identity_visual_matches]
+            for reference, _score in local_matches:
                 if reference.scryfall_id in known_card_ids:
                     continue
                 cards.append(
@@ -852,6 +867,10 @@ class CardRecognizer:
                 known_card_ids.add(reference.scryfall_id)
             matching_complete = time.perf_counter()
         visual_scores = {reference.scryfall_id: score for reference, score in visual_matches}
+        for reference, score in identity_visual_matches:
+            visual_scores[reference.scryfall_id] = max(
+                score, visual_scores.get(reference.scryfall_id, 0)
+            )
         for reference, score in descriptor_matches:
             visual_scores[reference.scryfall_id] = max(
                 score, visual_scores.get(reference.scryfall_id, 0)
@@ -1154,6 +1173,51 @@ class CardRecognizer:
             score = max(scores)
             if score >= 55:
                 ranked.append((reference, round(score, 3)))
+        ranked.sort(key=lambda item: item[1], reverse=True)
+        return ranked[:12]
+
+    @staticmethod
+    def _identity_visual_matches(
+        scan_fingerprints: dict[str, str],
+        identity_names: set[str],
+        box_set_code: str | None = None,
+    ) -> list[tuple[CardReference, float]]:
+        """Compare all visual regions after OCR has constrained the card identity.
+
+        The global catalog uses a strict artwork-hash prefilter for speed. That
+        can miss a genuine webcam image with glare or perspective distortion.
+        Once the title is known, the candidate set is tiny enough to score frame,
+        footer, title, and set-symbol regions without that lossy prefilter.
+        """
+        names = {name.casefold() for name in identity_names if name}
+        if not names:
+            return []
+        try:
+            with SessionLocal() as db:
+                statement = (
+                    select(CardReference, CardVisualFingerprint)
+                    .join(
+                        CardVisualFingerprint,
+                        CardVisualFingerprint.scryfall_id == CardReference.scryfall_id,
+                    )
+                    .where(func.lower(CardReference.name).in_(names))
+                )
+                if box_set_code:
+                    statement = statement.where(
+                        CardReference.set_code == box_set_code.casefold()
+                    )
+                rows = list(db.execute(statement))
+        except SQLAlchemyError:
+            return []
+        scan_art = int(scan_fingerprints["art_hash"], 16)
+        ranked = []
+        for reference, fingerprint in rows:
+            art_distance = (scan_art ^ int(fingerprint.art_hash, 16)).bit_count()
+            score = CardRecognizer._fingerprint_score(
+                scan_fingerprints, fingerprint, art_distance
+            )
+            if score >= 55:
+                ranked.append((reference, score))
         ranked.sort(key=lambda item: item[1], reverse=True)
         return ranked[:12]
 

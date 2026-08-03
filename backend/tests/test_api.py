@@ -1393,6 +1393,54 @@ def test_descriptor_catalog_must_cover_every_candidate_before_visual_auto_add():
     assert CardRecognizer._descriptor_catalog_complete(ids)
 
 
+def test_identity_visual_matching_bypasses_global_artwork_prefilter():
+    from mtglogger.database import Base, SessionLocal, engine
+    from mtglogger.models import CardReference, CardVisualFingerprint
+    from mtglogger.services.recognition import CardRecognizer
+
+    Base.metadata.drop_all(engine)
+    Base.metadata.create_all(engine)
+    with SessionLocal() as db:
+        db.add(
+            CardReference(
+                scryfall_id="identity-printing",
+                name="Known Card Name",
+                set_code="set",
+                set_name="Known Set",
+                collector_number="12",
+                image_url="https://example.test/identity.jpg",
+                art_hash="ffffffffffffffff",
+            )
+        )
+        db.flush()
+        db.add(
+            CardVisualFingerprint(
+                scryfall_id="identity-printing",
+                # Deliberately outside the global <=22 art-distance gate.
+                full_hash="0" * 16,
+                art_hash="f" * 16,
+                title_hash="0" * 16,
+                footer_hash="0" * 16,
+                symbol_hash="0" * 16,
+                frame_hash="0" * 16,
+            )
+        )
+        db.commit()
+
+    scan = {
+        "full_hash": "0" * 16,
+        "art_hash": "0" * 16,
+        "title_hash": "0" * 16,
+        "footer_hash": "0" * 16,
+        "symbol_hash": "0" * 16,
+        "frame_hash": "0" * 16,
+    }
+    matches = CardRecognizer._identity_visual_matches(scan, {"Known Card Name"})
+
+    assert matches[0][0].scryfall_id == "identity-printing"
+    assert matches[0][1] > 55
+
+
 def test_visual_catalog_is_reused_until_explicitly_invalidated():
     from mtglogger.services.recognition import CardRecognizer
 

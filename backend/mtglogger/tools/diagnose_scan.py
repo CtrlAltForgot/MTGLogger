@@ -35,8 +35,8 @@ async def diagnose(review_id: str) -> dict:
     corrected = recognizer.rectify(decoded)
     result = await recognizer.recognize(raw)
     fingerprints = visual_fingerprints(corrected)
-    visual = recognizer._visual_matches(fingerprints, None)
     names = {candidate.name for candidate in result.candidates}
+    visual = recognizer._identity_visual_matches(fingerprints, names)
     descriptors = recognizer._descriptor_matches(
         corrected, names, ignored_example_review_ids={review_id}
     )
