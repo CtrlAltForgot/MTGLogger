@@ -268,6 +268,7 @@ class CardRecognizer:
                 image_url=self.provider.image_url(card),
                 market_price=self.provider.market_price(card),
                 foil_market_price=self.provider.market_price(card, foil=True),
+                finishes=card.get("finishes", []),
                 confidence=round(confidence, 1),
                 oracle_id=card.get("oracle_id"),
                 color_identity="".join(card.get("color_identity", [])),

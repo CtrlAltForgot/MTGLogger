@@ -31,6 +31,7 @@ def test_dashboard_and_exports(client):
     summary = client.get("/api/dashboard/summary").json()
     assert summary["total_cards"] == 1
     assert summary["total_value"] == "0.42"
+    assert client.get("/api/inventory").json()["collection_value"] == "0.42"
     assert "Lightning Bolt" in client.get("/api/inventory/export/csv").text
     assert client.get("/api/inventory/export/json").json()[0]["set_code"] == "fdn"
 
@@ -249,6 +250,23 @@ def test_candidate_supports_separate_foil_price():
     )
     assert str(candidate.market_price) == "0.42"
     assert str(candidate.foil_market_price) == "1.25"
+
+
+def test_candidate_identifies_only_metadata_proven_foil_printings():
+    from mtglogger.schemas import Candidate
+
+    common = {
+        "scryfall_id": CARD["scryfall_id"],
+        "name": CARD["card_name"],
+        "set_code": CARD["set_code"],
+        "set_name": CARD["set_name"],
+        "collector_number": CARD["collector_number"],
+        "confidence": 99.5,
+    }
+    assert Candidate(**common, finishes=["foil"]).is_foil_only() is True
+    assert Candidate(**common, finishes=["etched"]).is_foil_only() is True
+    assert Candidate(**common, finishes=["nonfoil", "foil"]).is_foil_only() is False
+    assert Candidate(**common).is_foil_only() is False
 
 
 def test_inventory_delete_preserves_resolved_review_history():

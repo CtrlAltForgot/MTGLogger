@@ -59,6 +59,7 @@ class InventoryRead(InventoryCreate):
 class Page(BaseModel):
     items: list[InventoryRead]
     total: int
+    collection_value: Decimal
     page: int
     page_size: int
 
@@ -84,11 +85,17 @@ class Candidate(BaseModel):
     image_url: str | None = None
     market_price: Decimal | None = None
     foil_market_price: Decimal | None = None
+    finishes: list[str] = Field(default_factory=list)
     confidence: float
     oracle_id: str | None = None
     color_identity: str = ""
     rarity: str | None = None
     type_line: str | None = None
+
+    def is_foil_only(self) -> bool:
+        return bool(self.finishes) and "nonfoil" not in self.finishes and any(
+            finish in self.finishes for finish in ("foil", "etched")
+        )
 
 
 class ScanResult(BaseModel):

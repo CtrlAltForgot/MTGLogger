@@ -59,8 +59,17 @@ def list_inventory(
     column = getattr(InventoryItem, sort, InventoryItem.date_added)
     statement = statement.order_by(column.desc() if descending else column.asc())
     total = db.scalar(select(func.count()).select_from(InventoryItem).where(*filters)) or 0
+    collection_value = db.scalar(
+        select(func.coalesce(func.sum(InventoryItem.market_price * InventoryItem.quantity), 0))
+    ) or 0
     items = list(db.scalars(statement.offset((page - 1) * page_size).limit(page_size)))
-    return Page(items=items, total=total, page=page, page_size=page_size)
+    return Page(
+        items=items,
+        total=total,
+        collection_value=collection_value,
+        page=page,
+        page_size=page_size,
+    )
 
 
 @router.get("/facets")

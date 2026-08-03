@@ -68,6 +68,7 @@ async def search_cards(q: str = Query(min_length=2, max_length=100)):
             image_url=provider.image_url(card),
             market_price=provider.market_price(card),
             foil_market_price=provider.market_price(card, foil=True),
+            finishes=card.get("finishes", []),
             confidence=0,
             oracle_id=card.get("oracle_id"),
             color_identity="".join(card.get("color_identity", [])),
@@ -108,12 +109,12 @@ def resolve_review(review_id: str, payload: ReviewResolve, db: Session = Depends
             collector_number=card.collector_number,
             scryfall_id=card.scryfall_id,
             oracle_id=card.oracle_id,
-            foil=defaults.foil,
+            foil=(defaults.foil or card.is_foil_only()),
             language=defaults.language,
             condition=defaults.condition,
             market_price=(
                 (card.foil_market_price or card.market_price)
-                if defaults.foil
+                if (defaults.foil or card.is_foil_only())
                 else card.market_price
             ),
             storage_location=defaults.storage_location,

@@ -12,20 +12,20 @@ const conditions=[['near_mint','Near Mint'],['lightly_played','Lightly Played'],
 const sorts={newest:'sort=date_added&descending=true',name:'sort=card_name&descending=false',value:'sort=market_price&descending=true'}
 
 export default function Collection(){
-  const [items,setItems]=useState<Inventory[]>([]),[total,setTotal]=useState(0)
+  const [items,setItems]=useState<Inventory[]>([]),[total,setTotal]=useState(0),[collectionValue,setCollectionValue]=useState(0)
   const [query,setQuery]=useState(''),[sort,setSort]=useState<keyof typeof sorts>('newest'),[reload,setReload]=useState(0)
   const [location,setLocation]=useState(''),[facets,setFacets]=useState<{collections:string[];storage_locations:string[]}>({collections:[],storage_locations:[]})
   const [editing,setEditing]=useState<Inventory|null>(null),[deleting,setDeleting]=useState<Inventory|null>(null),[busy,setBusy]=useState(false)
   const [error,setError]=useState<string>()
 
   useEffect(()=>{void request<{collections:string[];storage_locations:string[]}>('/inventory/facets').then(setFacets)},[reload])
-  useEffect(()=>{const params=new URLSearchParams({q:query,...Object.fromEntries(new URLSearchParams(sorts[sort]))});if(location)params.set('storage_location',location);const timer=setTimeout(()=>request<{items:Inventory[],total:number}>(`/inventory?${params}`).then(x=>{setItems(x.items);setTotal(x.total)}),200);return()=>clearTimeout(timer)},[query,sort,location,reload])
+  useEffect(()=>{const params=new URLSearchParams({q:query,...Object.fromEntries(new URLSearchParams(sorts[sort]))});if(location)params.set('storage_location',location);const timer=setTimeout(()=>request<{items:Inventory[],total:number,collection_value:number}>(`/inventory?${params}`).then(x=>{setItems(x.items);setTotal(x.total);setCollectionValue(Number(x.collection_value))}),200);return()=>clearTimeout(timer)},[query,sort,location,reload])
   const save=async()=>{if(!editing)return;setBusy(true);setError(undefined);try{await request(`/inventory/${editing.id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({quantity:editing.quantity,foil:editing.foil,condition:editing.condition,language:editing.language,storage_location:editing.storage_location,market_price:editing.market_price,purchase_price:editing.purchase_price,notes:editing.notes})});setEditing(null);setReload(x=>x+1)}catch(e){setError(e instanceof Error?e.message:'Could not save entry')}finally{setBusy(false)}}
   const remove=async()=>{if(!deleting)return;setBusy(true);setError(undefined);try{await request(`/inventory/${deleting.id}`,{method:'DELETE'});setDeleting(null);setReload(x=>x+1)}catch(e){setError(e instanceof Error?e.message:'Could not delete entry')}finally{setBusy(false)}}
 
   return <>
     <Stack direction={{xs:'column',sm:'row'}} justifyContent="space-between" gap={2} mb={3}>
-      <Box><Typography variant="h4">Collection</Typography><Typography color="text.secondary">{total} unique inventory entries</Typography></Box>
+      <Box><Typography variant="h4">Collection</Typography><Typography color="text.secondary">{total} unique inventory entries · Collection value: <Box component="span" color="primary.main" fontWeight={750}>${collectionValue.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</Box></Typography></Box>
       <Stack direction="row" spacing={1}><Button startIcon={<Download/>} href={`${API}/api/inventory/export/csv`}>CSV</Button><Button startIcon={<Download/>} href={`${API}/api/inventory/export/json`}>JSON</Button></Stack>
     </Stack>
     {error&&<Alert severity="error" onClose={()=>setError(undefined)} sx={{mb:2}}>{error}</Alert>}

@@ -8,6 +8,7 @@ type Props={candidates:Candidate[];confidence:number;foil:boolean;onAccept:(cand
 export default function ScanConfirmation({candidates,confidence,foil,onAccept,onDecline,busy}:Props){
   const [selected,setSelected]=useState(0)
   const candidate=candidates[selected]
+  const effectiveFoil=foil||(!candidate.finishes.includes('nonfoil')&&candidate.finishes.some(finish=>finish==='foil'||finish==='etched'))
   useEffect(()=>{
     const handle=(event:KeyboardEvent)=>{
       if(busy)return
@@ -28,7 +29,7 @@ export default function ScanConfirmation({candidates,confidence,foil,onAccept,on
           <Chip color={confidence>95?'success':'warning'} label={`${candidate.confidence.toFixed(1)}% confidence`} sx={{mb:2}}/>
           <Typography variant="h4">{candidate.name}</Typography>
           <Typography variant="h6" color="text.secondary">{candidate.set_name} #{candidate.collector_number}</Typography>
-          <Typography variant="h4" color="primary.main" mt={2}>${Number((foil?(candidate.foil_market_price||candidate.market_price):candidate.market_price)||0).toFixed(2)}{foil&&<Typography component="span" variant="body2" color="text.secondary"> · foil</Typography>}</Typography>
+          <Typography variant="h4" color="primary.main" mt={2}>${Number((effectiveFoil?(candidate.foil_market_price||candidate.market_price):candidate.market_price)||0).toFixed(2)}{effectiveFoil&&<Typography component="span" variant="body2" color="text.secondary"> · foil{!foil?' only':''}</Typography>}</Typography>
           <Typography color="text.secondary" mt={2}>Is this the exact printing?</Typography>
         </Box>
       </Stack>

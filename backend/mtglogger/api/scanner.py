@@ -45,6 +45,7 @@ async def recognize_card(
     # this remain one-key confirmations, even when automatic mode is enabled.
     if result.confidence >= 98.5 and result.candidates and defaults.auto_add:
         top = result.candidates[0]
+        foil = defaults.foil or top.is_foil_only()
         item = upsert_inventory(
             db,
             InventoryCreate(
@@ -54,12 +55,12 @@ async def recognize_card(
                 collector_number=top.collector_number,
                 scryfall_id=top.scryfall_id,
                 oracle_id=top.oracle_id,
-                foil=defaults.foil,
+                foil=foil,
                 language=defaults.language,
                 condition=defaults.condition,
                 market_price=(
                     (top.foil_market_price or top.market_price)
-                    if defaults.foil
+                    if foil
                     else top.market_price
                 ),
                 storage_location=defaults.storage_location,
@@ -78,7 +79,7 @@ async def recognize_card(
             confidence=result.confidence,
             inventory=InventoryRead.model_validate(item),
             candidates=result.candidates,
-            message=f"Added {top.name}",
+            message=f"Added {top.name}{' · foil' if foil else ''}",
         )
 
     timestamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S-%f")
