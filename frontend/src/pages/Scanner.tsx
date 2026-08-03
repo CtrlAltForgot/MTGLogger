@@ -11,6 +11,7 @@ import type { Candidate, Deck, Defaults, Inventory, ScanResult } from '../types'
 
 const initial:Defaults={condition:'near_mint',foil:false,language:'en',storage_location:'Unsorted',collection_name:'Main',status:'owned',box_set_code:null,auto_add:true,deck_id:null}
 type ReferenceStatus={state:string;set_code:string|null;completed:number;total:number;indexed_cards:number;error:string|null}
+type SessionStats={scans:number;added:number;review:number;totalMs:number;lastMs:number;serverMs:number}
 
 export default function Scanner(){
   const [defaults,setDefaults]=useState(initial)
@@ -21,10 +22,14 @@ export default function Scanner(){
   const [decisionBusy,setDecisionBusy]=useState(false)
   const [success,setSuccess]=useState<Inventory|null>(null)
   const [reviewNotice,setReviewNotice]=useState<ScanResult|null>(null)
+  const [stats,setStats]=useState<SessionStats>({scans:0,added:0,review:0,totalMs:0,lastMs:0,serverMs:0})
   const decisionComplete=useRef<(()=>void)|null>(null)
 
   const capture=useCallback(async(blob:Blob)=>{
+    const started=performance.now()
     const next=await submitScan(blob,defaults) as ScanResult
+    const elapsed=performance.now()-started
+    setStats(current=>({scans:current.scans+1,added:current.added+(next.disposition==='added'?1:0),review:current.review+(next.disposition==='added'?0:1),totalMs:current.totalMs+elapsed,lastMs:elapsed,serverMs:next.processing_ms}))
     setResult(next)
     if(next.disposition==='added'&&next.inventory)setSuccess(next.inventory)
     if(next.disposition!=='added'&&defaults.auto_add)setReviewNotice(next)
@@ -49,6 +54,7 @@ export default function Scanner(){
       })
       setResult({...result,disposition:'added',inventory,message:`Added ${inventory.card_name}`})
       setSuccess(inventory)
+      setStats(current=>({...current,added:current.added+1}))
       finishDecision()
     }catch(error){setDecisionBusy(false);scan.setError(error instanceof Error?error.message:'Could not accept card')}
   },[defaults,result,scan])
@@ -83,6 +89,12 @@ export default function Scanner(){
         <Typography variant="caption">Scene change {scan.metrics.sceneDifference.toFixed(1)}</Typography>
         <Typography variant="caption">Contrast {scan.metrics.contrast.toFixed(1)}</Typography>
         <Typography variant="caption">Motion {scan.metrics.motion.toFixed(1)}</Typography>
+      </Stack>
+      <Stack direction="row" spacing={.75} mt={1.25} flexWrap="wrap" useFlexGap>
+        <Chip size="small" variant="outlined" label={`Session · ${stats.scans} scanned`}/>
+        <Chip size="small" color="success" variant="outlined" label={`${stats.added} added`}/>
+        <Chip size="small" color={stats.review?'warning':'default'} variant="outlined" label={`${stats.review} review`}/>
+        {stats.scans>0&&<><Chip size="small" label={`Last ${(stats.lastMs/1000).toFixed(1)}s`}/><Chip size="small" label={`Recognition ${(stats.serverMs/1000).toFixed(1)}s`}/><Chip size="small" label={`Average ${(stats.totalMs/stats.scans/1000).toFixed(1)}s`}/></>}
       </Stack>
       {scan.error&&<Alert severity="error" sx={{mt:2}} onClose={()=>scan.setError(undefined)}>{scan.error}</Alert>}
       {result&&!candidate&&<Alert severity={tone} variant="filled" sx={{mt:2,fontSize:'1.05rem'}}>

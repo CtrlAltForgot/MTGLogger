@@ -24,6 +24,7 @@ class Recognition:
     ocr_text: str
     candidates: list[Candidate]
     corrected: np.ndarray
+    processing_ms: int
 
 
 class CardRecognizer:
@@ -301,7 +302,11 @@ class CardRecognizer:
             (finished - started) * 1000,
         )
         return Recognition(
-            candidates[0].confidence if candidates else 0, text, candidates[:5], corrected
+            candidates[0].confidence if candidates else 0,
+            text,
+            candidates[:5],
+            corrected,
+            round((finished - started) * 1000),
         )
 
     @staticmethod

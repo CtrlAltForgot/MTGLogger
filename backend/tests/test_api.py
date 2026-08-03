@@ -185,6 +185,19 @@ def test_scans_auto_add_only_near_certain_matches_by_default():
     assert ScanDefaults(auto_add=False).auto_add is False
 
 
+def test_scan_results_expose_recognition_latency():
+    from mtglogger.schemas import ScanResult
+
+    result = ScanResult(
+        disposition="queued",
+        confidence=0,
+        candidates=[],
+        message="Saved to review queue",
+        processing_ms=2784,
+    )
+    assert result.processing_ms == 2784
+
+
 def test_review_serialization_preserves_scan_defaults():
     from datetime import datetime
 

@@ -80,6 +80,7 @@ async def recognize_card(
             inventory=InventoryRead.model_validate(item),
             candidates=result.candidates,
             message=f"Added {top.name}{' · foil' if foil else ''}",
+            processing_ms=result.processing_ms,
         )
 
     timestamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S-%f")
@@ -116,4 +117,5 @@ async def recognize_card(
             if disposition == "confirmation"
             else ("Choose a match" if disposition == "suggestions" else "Saved to review queue")
         ),
+        processing_ms=result.processing_ms,
     )

@@ -14,6 +14,8 @@ By default, matches at 98.5% confidence or higher are added automatically. That 
 
 After every capture the camera stays latched in **Remove card** state. It must observe the calibrated empty guide for three consecutive checks before another capture is possible, so a stationary card cannot be logged twice. This still supports two copies of the same card back-to-back: briefly expose the empty guide between them.
 
+The scanner displays live session counters for captures, additions, and review routing, plus the last browser round-trip, backend recognition time, and running average. Use these counters during a physical batch to verify one capture per presented card and measure the actual camera-to-result throughput.
+
 ## Preparing Box Mode
 
 Enter a Scryfall set code in the scanner (for example `FDN`) and choose **Index set artwork**. MTGLogger downloads that set's card images as a throttled background job, stores compact perceptual hashes rather than duplicate image files, and reports progress in the scanner. Scanning remains available while indexing runs. Once cached, artwork matching works without a Scryfall request and Box Mode strongly limits the visual search space.
@@ -28,7 +30,9 @@ Decks allocate physical copy quantities from inventory. The Deck Builder lists o
 
 ## Unraid and LAN deployment
 
-For the lowest possible scan latency, run MTGLogger on the same PC as the browser and webcam. The browser captures from that PC and the local API performs OCR without a network hop. Unraid is optional: it is useful for an always-on shared collection, but each capture must travel over the LAN and OCR speed will depend on the server CPU. Benchmark it before choosing it for a large scanning session.
+For an always-available collection, run MTGLogger on Unraid as the canonical service. No separate scanner program must remain open on the PC: a browser on the PC captures its attached webcam and sends the image to the Unraid API, while a phone browser can use the phone camera against the same collection. `restart: unless-stopped` brings every service back after a server restart.
+
+LAN transfer is normally small compared with OCR, but server CPU speed varies. Compare the scanner's **Last** round-trip with **Recognition** time during a short batch; the difference exposes browser/network overhead. If Unraid recognition itself is materially slower, running the same Compose stack locally remains the lowest-latency option. An optional local recognition worker can be added later without moving the canonical database, but only if measurements justify that extra architecture.
 
 The Docker web container proxies `/api` internally to FastAPI, so the default Compose deployment works from other computers on the LAN without pointing their browsers at their own `localhost`. Leave `VITE_API_URL` blank (the recommended default), run `docker compose up -d --build`, and open `http://UNRAID-IP:5173`. Set strong PostgreSQL credentials in `.env` before a permanent deployment. Named volumes preserve PostgreSQL data, review images, and OCR models across container replacement.
 

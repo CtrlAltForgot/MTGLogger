@@ -105,6 +105,7 @@ class ScanResult(BaseModel):
     candidates: list[Candidate] = []
     review_id: str | None = None
     message: str
+    processing_ms: int
 
 
 class ReviewRead(BaseModel):
