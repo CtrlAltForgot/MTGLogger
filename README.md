@@ -10,6 +10,8 @@ MTGLogger is a speed-first Magic: The Gathering collection catalog. Its scanner 
 
 With Chrome or Chromium installed, `./scripts/smoke-ui.sh` loads every lazy-rendered page through nginx and fails on missing content or browser runtime exceptions. Set `MTGLOGGER_URL=https://your-hostname` to check a remote deployment.
 
+The included nginx layer accepts webcam payloads up to 16 MB (the API rejects anything above 15 MB), preserves the original HTTPS forwarding signal from an outer proxy, and allows camera access only from the page's own origin. The smoke script also proves a 2 MB request reaches FastAPI instead of being rejected by either proxy.
+
 The browser owns webcam access and sends stable captures to the API. This works in Docker and avoids passing a host camera device into a container. After camera permission is granted, a selector appears when multiple webcams are connected. On startup—or after changing cameras—keep the card guide empty briefly while the scanner learns the background and camera noise. Recognition uses OCR, Scryfall exact metadata lookup, and perceptual artwork matching.
 
 Before a batch, choose condition, language, foil, storage location, and optionally a target deck or Box Mode set. Those defaults apply to every accepted card and are preserved with uncertain captures in Review. Recognition and manual Review searches constrain Scryfall by the selected language, preventing a foreign-language card from silently inheriting an English printing ID.

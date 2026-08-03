@@ -24,6 +24,16 @@ cleanup_ui() {
 }
 trap cleanup_ui EXIT
 
+upload_probe="$validation_dir/2mb-upload-probe.bin"
+truncate -s 2M "$upload_probe"
+upload_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -F "image=@$upload_probe" "${mtglogger_url%/}/api/upload-limit-validation")
+if [[ "$upload_status" != "404" ]]; then
+  echo "2 MB proxy upload expected API 404, received HTTP $upload_status" >&2
+  exit 1
+fi
+printf 'proxy upload limit: 2 MB request reached API\n'
+
 while IFS='|' read -r page expected; do
   profile="$validation_dir/profile-$page"
   dom="$validation_dir/$page.html"
