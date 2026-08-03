@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models import SealedProduct
-from ..schemas import SealedCreate, SealedRead
+from ..schemas import SealedCreate, SealedRead, SealedUpdate
 
 router = APIRouter(prefix="/sealed", tags=["sealed"])
 
@@ -18,6 +18,18 @@ def list_sealed(db: Session = Depends(get_db)):
 def create_sealed(payload: SealedCreate, db: Session = Depends(get_db)):
     item = SealedProduct(**payload.model_dump())
     db.add(item)
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+@router.patch("/{item_id}", response_model=SealedRead)
+def update_sealed(item_id: str, payload: SealedUpdate, db: Session = Depends(get_db)):
+    item = db.get(SealedProduct, item_id)
+    if not item:
+        raise HTTPException(404, "Sealed product not found")
+    for key, value in payload.model_dump(exclude_unset=True).items():
+        setattr(item, key, value)
     db.commit()
     db.refresh(item)
     return item

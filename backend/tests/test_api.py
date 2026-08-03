@@ -66,6 +66,23 @@ def test_sealed_inventory(client):
     )
     assert response.status_code == 201
     assert client.get("/api/sealed").json()[0]["quantity"] == 2
+    item_id = response.json()["id"]
+    updated = client.patch(
+        f"/api/sealed/{item_id}",
+        json={
+            "quantity": 3,
+            "market_price": "149.99",
+            "storage_location": "Shelf B",
+            "notes": "Keep sealed",
+        },
+    )
+    assert updated.status_code == 200
+    assert updated.json()["quantity"] == 3
+    assert updated.json()["market_price"] == "149.99"
+    assert updated.json()["storage_location"] == "Shelf B"
+    assert client.patch(f"/api/sealed/{item_id}", json={"quantity": 0}).status_code == 422
+    assert client.delete(f"/api/sealed/{item_id}").status_code == 204
+    assert client.get("/api/sealed").json() == []
 
 
 def test_decks_allocate_only_unassigned_physical_copies(client):

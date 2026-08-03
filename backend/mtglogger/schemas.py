@@ -136,6 +136,17 @@ class SealedCreate(BaseModel):
     notes: str | None = None
 
 
+class SealedUpdate(BaseModel):
+    name: str | None = Field(None, min_length=1, max_length=255)
+    product_type: str | None = Field(None, max_length=64)
+    set_code: str | None = Field(None, max_length=16)
+    quantity: int | None = Field(None, ge=1)
+    purchase_price: Decimal | None = None
+    market_price: Decimal | None = None
+    storage_location: str | None = Field(None, max_length=255)
+    notes: str | None = None
+
+
 class SealedRead(SealedCreate):
     model_config = ConfigDict(from_attributes=True)
     id: str
