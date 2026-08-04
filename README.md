@@ -1,60 +1,223 @@
 # MTGLogger
 
-MTGLogger is a speed-first Magic: The Gathering collection catalog. Its scanner watches a webcam, waits for a card to become stable, identifies the exact printing, and records it without requiring a confirmation click when confidence is high.
+> **Log your TCG collection.**
 
-## Quick start
+MTGLogger is a fast, camera-powered catalog for **Magic: The Gathering** cards. Hold a card under a webcam, let MTGLogger identify the exact printing, and move on to the next card. High-confidence matches are added automatically; uncertain cards stay attached to their camera capture so you can resolve them safely.
 
-1. Optionally copy `.env.example` to `.env` to change database credentials and set a descriptive Scryfall user agent.
-2. Run `docker compose up --build`.
-3. Open <http://localhost:5173>. API documentation is at <http://localhost:8000/docs>.
+<p align="center">
+  <img src="frontend/public/mtglogger-card-stack.png" alt="MTGLogger card-stack logo" width="160">
+</p>
 
-Once served from the final HTTPS hostname, Chrome or Edge can install MTGLogger from the **Install app** action or the browser's install menu. The installed desktop window uses the same server-hosted client and local webcam, so there is no second database or scanner service to keep synchronized. Its service worker only provides an offline launch shell; collection and recognition operations still require the Unraid service.
+## What you get
 
-With Chrome or Chromium installed, `./scripts/smoke-ui.sh` loads every lazy-rendered page through nginx and fails on missing content or browser runtime exceptions. Set `MTGLOGGER_URL=https://your-hostname` to check a remote deployment.
+- Automatic webcam capture when a card is present and steady
+- Exact-printing recognition using card text, artwork, frame, set, and collector-number evidence
+- Protection against counting the same physical card twice
+- Collection browsing, search, sorting, editing, and deletion
+- Current Scryfall prices and collection-value history
+- Deck organization and physical-copy allocation
+- CSV and JSON export
+- An always-on web app that can run on a PC or Unraid server
+- A local MTG recognition database covering current Scryfall paper printings
 
-The included nginx layer accepts webcam payloads up to 16 MB (the API rejects anything above 15 MB), preserves the original HTTPS forwarding signal from an outer proxy, and allows camera access only from the page's own origin. The smoke script also proves FastAPI fully consumes a 2 MB request instead of either proxy rejecting or truncating it; the diagnostic endpoint never runs recognition or writes collection data.
+MTGLogger is currently a **usable beta**. Keep the confirmation/review workflow enabled while testing valuable, unusual, foreign-language, heavily foiled, damaged, or visually similar printings.
 
-The browser owns webcam access and sends stable captures to the API. This works in Docker and avoids passing a host camera device into a container. After camera permission is granted, a selector appears when multiple webcams are connected. On startup—or after changing cameras—keep the card guide empty briefly while the scanner learns the background and camera noise. Recognition uses OCR, Scryfall exact metadata lookup, and perceptual artwork matching.
+## Choose your setup
 
-Before a batch, choose condition, language, foil, storage location, and optionally a target deck or Box Mode set. Those defaults apply to every accepted card and are preserved with uncertain captures in Review. Recognition and manual Review searches constrain Scryfall by the selected language, preventing a foreign-language card from silently inheriting an English printing ID.
+| I want to… | Recommended setup | Camera location |
+| --- | --- | --- |
+| Try MTGLogger on one computer | Docker Desktop or Docker Engine | Attached to that computer |
+| Keep my collection available all the time | Unraid | Attached to any PC or phone opening the site |
+| Develop or change the code | Local Python and Node.js tools | Attached to the development computer |
 
-By default, matches at 98.5% confidence or higher are added automatically. That score requires near-exact printed evidence; artwork similarity alone is deliberately capped below the auto-add threshold because the same art can appear on multiple printings. On modern frames the printed name, collector number, and set code all contribute independent evidence. A brief card-image receipt confirms the exact printing, price, and quantity without pausing capture. Uncertain scans are saved with their camera image to Review, show a brief warning receipt, and never interrupt the batch. Turn off **Auto-add near-certain matches** when you explicitly want the keyboard-first candidate dialog (arrow/number keys, **Enter** to accept, **Backspace** to decline).
+The webcam is used by your **web browser**, not by Docker. An Unraid server can therefore store and recognize your collection while the camera remains connected to your PC.
 
-When a partial English capture loses the title but retains distinctive rules text, MTGLogger can use multiple oracle-text terms to recover the card name and populate Review choices. These matches are always capped below automatic-add confidence: rules text is shared by every printing and cannot establish the collector number, set, or finish.
+## Quick start — try it on one computer
 
-After every capture the camera stays latched in **Remove card** state. It must observe the calibrated empty guide for three consecutive checks before another capture is possible, so a stationary card cannot be logged twice. This still supports two copies of the same card back-to-back: briefly expose the empty guide between them. In automatic mode, removal detection continues while the server identifies the prior image and one next capture may wait in a bounded recognition queue; network work therefore does not force the user to stop physically handling cards.
+### 1. Install the prerequisites
 
-The scanner displays live session counters for captures, additions, percentage routed to Review, the last browser round-trip, backend recognition time, and running average. It also reports cards per minute from the intervals between consecutive successful additions. The first addition begins measurement, and idle gaps longer than 30 seconds are discarded, so breaks do not distort batch throughput. Use these counters during a physical batch to verify one capture per presented card and measure the actual camera-to-result throughput. Scryfall metadata lookup shares a short time budget and runs alongside local artwork matching; if the network is unavailable, MTGLogger preserves the camera image in Review instead of losing the scan.
+Install:
 
-## Preparing Box Mode
+- [Git](https://git-scm.com/downloads)
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) on Windows or macOS, or Docker Engine with Compose on Linux
+- Chrome, Edge, or another modern Chromium-based browser
 
-Enter a Scryfall set code in the scanner (for example `FDN`) and choose **Index set artwork**. MTGLogger downloads that set's card images as a throttled background job, stores compact perceptual hashes rather than duplicate image files, and reports progress in the scanner. Scanning remains available while indexing runs. Once cached, artwork matching works without a Scryfall request and Box Mode strongly limits the visual search space.
+Open Docker Desktop and wait until it reports that Docker is running.
 
-The production API image includes CPU PaddleOCR 3 with the PP-OCRv4 mobile detection and recognition models. The mobile models keep CPU scans responsive while the ranking stage combines the printed name, collector number, set code, copyright year, Box Mode, and cached artwork similarity. Paddle's inference model is initialized when the API starts and cached in the persistent `ocr_models` volume. Check `GET /api/scanner/capabilities` and `GET /api/references/status` when diagnosing recognition; per-stage recognition timings are also written to the API log.
+### 2. Download MTGLogger
 
-Saved pending captures can be replayed through the current recognizer without changing Review or inventory: `docker compose exec api python -m mtglogger.tools.replay_reviews --limit 20`. This is useful after recognition upgrades because it compares old and current confidence against the same physical images.
+Open a terminal and run:
 
-Market prices are refreshed from Scryfall in a throttled background task every hour and never block scanning. Metadata and price requests reuse a bounded HTTP connection pool, avoiding a new TLS handshake for every card. Set `PRICE_REFRESH_HOURS` to a different whole-hour interval when deploying. A refresh can also be started with `POST /api/prices/refresh`; progress is available from `GET /api/prices/status`. Collection value and the displayed physical-card count are quantity-aware. Changed card prices retain their prior observation for up/down indicators, while the Value tab charts real hourly collection snapshots without fabricating historical data.
+```bash
+git clone https://github.com/CtrlAltForgot/MTGLogger.git
+cd MTGLogger
+```
 
-Collection entries can be searched, sorted by newest/name/value, paged at user-selectable sizes, edited, or deleted, so collections containing thousands of printings remain browsable without rendering every card image at once. Review preserves the captured camera image and the scan-time condition, foil, storage, and deck defaults, then supports automatic candidates, manual Scryfall printing search, ignore, and delete. Resolving an item applies those original defaults, so cards do not need to be physically resorted after a batch. The dashboard includes set/color/rarity/type breakdowns, valuable/newest cards, and duplicate printings. Sealed products are stored separately from singles and can be edited for type, set, quantity, purchase/market price, storage, and notes.
+If you downloaded a ZIP instead, extract it, open the extracted `MTGLogger` folder in a terminal, and continue below.
 
-Decks allocate physical copy quantities from inventory. The Deck Builder lists only copies that remain unassigned across all decks, supports search, paginated browsing, and select-all on the current filtered page, and returns copies to availability when an entry or deck is removed. A scan session can target `Deck · None` or an existing deck, causing each accepted copy to be assigned immediately. Storage Location remains free text for physical labels such as boxes and rows; user-facing collection-name and inventory-status controls are intentionally omitted.
+### 3. Start the app
 
-## Unraid and LAN deployment
+```bash
+docker compose up -d --build
+```
 
-For an always-available collection, run MTGLogger on Unraid as the canonical service. No separate scanner program must remain open on the PC: a browser on the PC captures its attached webcam and sends the image to the Unraid API, while a phone browser can use the phone camera against the same collection. `restart: unless-stopped` brings every service back after a server restart.
+The first launch can take several minutes while Docker builds the app and the OCR engine initializes. Later launches are faster.
 
-LAN transfer is normally small compared with OCR, but server CPU speed varies. Compare the scanner's **Last** round-trip with **Recognition** time during a short batch; the difference exposes browser/network overhead. If Unraid recognition itself is materially slower, running the same Compose stack locally remains the lowest-latency option. An optional local recognition worker can be added later without moving the canonical database, but only if measurements justify that extra architecture.
+### 4. Check that it started
 
-The Docker web container proxies `/api` internally to FastAPI, so the default Compose deployment works from other computers on the LAN without pointing their browsers at their own `localhost`. Leave `VITE_API_URL` blank (the recommended default), run `docker compose up -d --build`, and open `http://UNRAID-IP:5173`. Set strong PostgreSQL credentials in `.env` before a permanent deployment. Named volumes preserve PostgreSQL data, review images, and OCR models across container replacement.
+```bash
+docker compose ps
+```
 
-Run `docker compose ps` to check readiness: `db`, `api`, and `web` should all report healthy. API health verifies PostgreSQL rather than only the HTTP process, and web health verifies the nginx-to-API proxy, so a green stack represents a usable collection path. The API health check allows extra startup time for the first PaddleOCR model initialization, and the web service waits for that check before starting. Use `docker compose logs -f api` to watch OCR initialization, recognition timings, artwork indexing, and background pricing.
+Wait until `db`, `api`, and `web` show **healthy**. Then open:
 
-Browsers only permit webcam access in a secure context. `http://localhost:5173` works on the machine hosting the browser; access from another device using an Unraid IP or hostname must be placed behind a trusted HTTPS reverse proxy (for example, an Unraid-managed proxy with a valid local or public certificate). MTGLogger reports this requirement directly instead of failing with an unavailable-camera error.
+**[http://localhost:5173](http://localhost:5173)**
 
-See [the Unraid deployment guide](docs/UNRAID.md) for persistent appdata bind mounts, private API binding, HTTPS choices, updates, verified PostgreSQL backup/restore commands, and latency measurement.
+### 5. Scan your first card
 
-## Local development
+1. Open **Scanner** and allow camera access.
+2. Choose the correct camera if more than one is connected.
+3. Leave the table empty briefly so MTGLogger can calibrate.
+4. Place one card anywhere clearly visible in the camera view.
+5. Hold it still while MTGLogger captures and identifies it.
+6. Check the large last-scan image before moving to the next card.
+
+For the best results, fill a useful portion of the frame, avoid glare, keep the full card visible, and place the camera parallel to the card. A fixed camera mount or card slinger can improve consistency.
+
+## Everyday use
+
+### Automatic and reviewed matches
+
+- **Near-certain match:** added automatically when strict printing-specific evidence reaches the configured threshold.
+- **Uncertain match:** shown for immediate resolution or saved with its camera capture for later review, depending on your scanner setting.
+- **Failed match:** never silently added as a guess.
+
+Artwork alone cannot always prove an exact printing because multiple sets can reuse the same art. MTGLogger also looks for collector numbers, set/footer details, card frames, language, and other visible evidence. This is especially important for basic lands.
+
+### Avoiding duplicate scans
+
+After identifying a card, MTGLogger compares the live view with the previous card. It will not log another copy until it sees that the physical card changed or left the view. Two identical cards can still be scanned back-to-back as separate physical copies.
+
+### Batch defaults
+
+Before a session, set the condition, language, foil status, storage location, and optional deck. These defaults are applied to accepted cards and preserved with uncertain captures.
+
+### Collection and decks
+
+The **Collection** page lets you search, sort, edit, delete, export, inspect, and assign physical copies to decks. Foil and nonfoil copies are tracked separately because their prices differ. Deck allocation prevents the same physical copy from being assigned to multiple decks.
+
+### Prices
+
+Scryfall prices refresh in the background, normally once per hour. Price requests never pause scanning. The **Value** page shows observed collection snapshots; it does not invent history from before MTGLogger began recording it.
+
+### Installing it like a desktop app
+
+When MTGLogger is served from `localhost` or a trusted HTTPS address, Chrome and Edge can install it from the browser's install menu. The installed window still uses the same server, collection, and local camera—there is no second database to synchronize.
+
+## Run it on Unraid
+
+Use Unraid when you want the collection and dashboard available even while your scanning PC is off.
+
+Important points:
+
+- Your webcam stays connected to the PC or phone running the browser.
+- Only the web port (`5173` by default) should be exposed through your reverse proxy.
+- Remote camera access requires a trusted **HTTPS** address; browsers normally block webcams on plain HTTP LAN addresses.
+- MTGLogger does not yet include user accounts. Do not expose it openly to the internet without an authenticated access layer.
+- Collection data and recognition profiles should live on persistent Unraid shares, not disposable container storage.
+
+Follow the step-by-step **[Unraid installation guide](docs/UNRAID.md)** for folders, permissions, HTTPS, updates, backups, and recovery.
+
+## Configuration
+
+The included defaults work for a local trial. For a permanent installation, copy the example configuration:
+
+macOS or Linux:
+
+```bash
+cp .env.example .env
+```
+
+Windows PowerShell:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Open `.env` in a text editor and change at least:
+
+- `POSTGRES_PASSWORD`
+- the same password inside `DATABASE_URL`
+- `SCRYFALL_USER_AGENT` to include a contact email
+
+Keep `VITE_API_URL` blank for the normal same-origin Docker setup.
+
+After changing configuration, apply it with:
+
+```bash
+docker compose up -d --build
+```
+
+## Updating
+
+From the MTGLogger folder:
+
+```bash
+git pull --ff-only
+docker compose up -d --build
+docker compose ps
+```
+
+Normal updates preserve the database and saved scans.
+
+> [!WARNING]
+> Do not run `docker compose down -v` unless you intentionally want to delete Docker-managed MTGLogger data. On Unraid, also keep the persistent appdata and reference-data directories intact.
+
+## Troubleshooting
+
+### The page does not open
+
+Run:
+
+```bash
+docker compose ps
+docker compose logs --tail=100 web api db
+```
+
+All three services should be healthy. If this is the first launch, give the API additional time to initialize OCR.
+
+### The camera is black or unavailable
+
+- Confirm another app is not exclusively using the camera.
+- Allow camera permission in the browser's address-bar settings.
+- Refresh the page after changing permission.
+- Use `http://localhost:5173` on the same computer, or a trusted HTTPS address when connecting to another machine.
+- Select the correct camera in Scanner when multiple cameras exist.
+
+### Cards capture too early or never capture
+
+- Recalibrate with an empty table.
+- Improve lighting and reduce reflections.
+- Keep the full card visible and reasonably large in frame.
+- Adjust the scanner calibration controls gradually rather than changing all of them at once.
+
+### Recognition is slow
+
+The scanner shows browser round-trip and backend recognition timing separately. If recognition time is high, the server CPU is the bottleneck; if only round-trip time is high, inspect the network or reverse proxy.
+
+### A card is identified as the wrong printing
+
+Do not accept it. Choose the exact printing in the uncertainty screen or correct it from Review. Clear images of the collector/footer area are essential when printings share artwork.
+
+### The MTG database is incomplete or interrupted
+
+Open **Database** to see its live status. Syncing is resumable and keeps completed profiles; a restart should continue missing work instead of rebuilding the completed database.
+
+## Backups
+
+A collection is worth backing up. The Unraid guide contains verified PostgreSQL backup and restore commands and explains which scan/reference folders should be included. For other Docker hosts, preserve both the PostgreSQL volume and API data volume.
+
+## For developers
 
 Backend:
 
@@ -76,4 +239,21 @@ npm test
 npm run dev
 ```
 
-Without `DATABASE_URL`, the backend uses `backend/mtglogger.db`. Install `.[ocr]` instead of `.` to enable PaddleOCR during local development. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the recognition flow and extension points.
+Without `DATABASE_URL`, the backend uses `backend/mtglogger.db`. Install `.[ocr]` to enable PaddleOCR locally.
+
+Useful references:
+
+- [Architecture and recognition flow](docs/ARCHITECTURE.md)
+- [Unraid deployment, updates, and backup](docs/UNRAID.md)
+- [Project roadmap](docs/ROADMAP.md)
+- API documentation while running: [http://localhost:8000/docs](http://localhost:8000/docs)
+
+## Project direction
+
+MTGLogger prioritizes scanning speed, exact-printing reliability, and a pleasant collection workflow over feature count. Pokémon, Yu-Gi-Oh!, Lorcana, sports cards, marketplace synchronization, automated condition grading, and automatic deck building are intentionally outside the current MVP.
+
+See the **[project roadmap](docs/ROADMAP.md)** for the deliberately separated future mobile companion work.
+
+## Scryfall
+
+MTGLogger uses data and images from [Scryfall](https://scryfall.com/). Scryfall is not produced by or endorsed by Wizards of the Coast. Card images and Magic: The Gathering are property of Wizards of the Coast.
