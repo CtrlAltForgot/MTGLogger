@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { CameraAlt, RestartAlt, Stop } from '@mui/icons-material'
+import { CameraAlt, RestartAlt, VideocamOff } from '@mui/icons-material'
 import {
   Alert, Box, Button, Card, CardContent, Chip, FormControlLabel, Grid,
-  LinearProgress, MenuItem, Select, Slider, Snackbar, Stack, Switch, TextField, Typography,
+  IconButton, LinearProgress, MenuItem, Select, Slider, Snackbar, Stack, Switch, TextField, Tooltip, Typography,
 } from '@mui/material'
 import { request, submitScan } from '../api'
 import ScanConfirmation from '../components/ScanConfirmation'
@@ -92,7 +92,7 @@ export default function Scanner(){
         <canvas ref={scan.canvas} hidden/>
         {scan.metrics.bounds&&scan.state!=='calibrating'&&<Box sx={{position:'absolute',left:`${scan.metrics.bounds.left}%`,top:`${scan.metrics.bounds.top}%`,width:`${scan.metrics.bounds.width}%`,height:`${scan.metrics.bounds.height}%`,border:'3px solid',borderColor:'success.main',borderRadius:2,boxShadow:'0 0 0 1px rgba(0,0,0,.4), 0 0 24px rgba(100,217,151,.28)',transition:'all 120ms linear',pointerEvents:'none'}}/>}
         {stateLabel&&<Chip label={stateLabel} color={scan.state==='remove'?'success':scan.state==='processing'?'warning':'default'} sx={{position:'absolute',top:16,left:16,fontWeight:700,backdropFilter:'blur(12px)'}}/>}
-        {scan.state!=='idle'&&<Button color="inherit" variant="contained" startIcon={<Stop/>} onClick={scan.stop} sx={{position:'absolute',right:16,top:16,bgcolor:'rgba(10,7,8,.62)','&:hover':{bgcolor:'rgba(10,7,8,.82)'}}}>Camera off</Button>}
+        {scan.state!=='idle'&&<Tooltip title="Turn camera off"><IconButton aria-label="Turn camera off" onClick={scan.stop} sx={{position:'absolute',right:16,top:16,color:'common.white',bgcolor:'rgba(10,7,8,.55)',backdropFilter:'blur(12px)','&:hover':{bgcolor:'rgba(10,7,8,.78)'}}}><VideocamOff/></IconButton></Tooltip>}
         {scan.state==='processing'&&<LinearProgress sx={{position:'absolute',bottom:0,left:0,right:0}}/>}
       </Box>
       <Stack direction="row" spacing={2} mt={2} alignItems="center">

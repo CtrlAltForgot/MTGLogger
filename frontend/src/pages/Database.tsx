@@ -18,7 +18,8 @@ const setSummary=(set:IndexedSet)=>`${set.set_code.toUpperCase()}${set.released_
 const setSymbol=(setCode:string)=>`https://svgs.scryfall.io/sets/${encodeURIComponent(setCode.toLowerCase())}.svg`
 const symbolAliases:Record<string,string>={ '4bb':'4ed' }
 const symbolFallbacks=new Set(['plst'])
-const SetSymbol=({code,size=20}:{code:string;size?:number})=>{const normalized=code.toLowerCase(),symbolCode=symbolAliases[normalized]||normalized;const [failed,setFailed]=useState(symbolFallbacks.has(normalized));return failed?<Box sx={{width:Math.max(size,30),height:size,display:'grid',placeItems:'center',flex:'0 0 auto',border:'1px solid',borderColor:'divider',borderRadius:1,fontSize:9,fontWeight:900,color:'text.secondary'}}>{code.toUpperCase()}</Box>:<Box component="img" src={setSymbol(symbolCode)} alt="" loading="lazy" onError={()=>setFailed(true)} sx={{width:size,height:size,objectFit:'contain',flex:'0 0 auto',filter:'invert(1)',opacity:.86}}/>}
+const fallbackMark=(code:string)=>/^[fg]\d{2}$/i.test(code)?'DCI':code.toUpperCase()
+const SetSymbol=({code,size=20}:{code:string;size?:number})=>{const normalized=code.toLowerCase(),symbolCode=symbolAliases[normalized]||normalized;const [failed,setFailed]=useState(symbolFallbacks.has(normalized));return failed?<Box title={`${code.toUpperCase()} set mark`} sx={{width:Math.max(size,30),height:size,display:'grid',placeItems:'center',flex:'0 0 auto',border:'1px solid',borderColor:'divider',borderRadius:99,fontSize:fallbackMark(code)==='DCI'?7.5:8,fontWeight:900,fontStyle:fallbackMark(code)==='DCI'?'italic':'normal',letterSpacing:'-.03em',color:'text.secondary'}}>{fallbackMark(code)}</Box>:<Box component="img" src={setSymbol(symbolCode)} alt={`${code.toUpperCase()} set symbol`} loading="lazy" onError={()=>setFailed(true)} sx={{width:size,height:size,objectFit:'contain',flex:'0 0 auto',filter:'invert(1)',opacity:.86}}/>}
 
 export default function Database(){
   const [status,setStatus]=useState<ReferenceStatus>()
@@ -56,7 +57,7 @@ export default function Database(){
 
   return <>
     <Stack direction={{xs:'column',md:'row'}} justifyContent="space-between" spacing={2} mb={3}>
-      <Box><Typography variant="h4">MTG Database</Typography><Typography color="text.secondary">Server-side copy of the entire MTG card database to heavily increase performance and speed.</Typography></Box>
+      <Box><Typography variant="h4">MTG Database</Typography><Typography color="text.secondary">Server-side copy of the entire MTG card database to heavily increase recognition accuracy and speed.</Typography></Box>
       <Stack direction="row" spacing={1} alignItems="center"><Chip color={status?.state==='running'?'primary':status?.state==='failed'?'error':status?.coverage_percent===100?'success':'warning'} label={status?.state==='running'?'Syncing…':status?.state==='failed'?'Update interrupted':status?.coverage_percent===100?'Up to date':'Resuming…'}/><Chip variant="outlined" label="All printings"/></Stack>
     </Stack>
     {(error||status?.state==='failed')&&<Alert severity="error" sx={{mb:2}}>{error||status?.error||'Catalog update was interrupted and will retry automatically.'}</Alert>}

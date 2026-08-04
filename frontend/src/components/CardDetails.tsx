@@ -21,7 +21,8 @@ export function CardDetailsProvider({children}:{children:ReactNode}){
 function displayRules(details:Details){
   const lines=(details.oracle_text||'').split('\n').filter(line=>{
     if(!details.type_line?.includes('Land'))return true
-    return !/^\s*\(?\s*\{T\}\s*:\s*Add\s+.*?\.?\s*\)?\s*$/i.test(line)
+    const normalized=line.replace(/[()]/g,'').replace(/\s+/g,' ').trim()
+    return !/^\{T\}\s*:\s*Add\s+(?:\{[^}]+\}|one mana of any color).*?\.?$/i.test(normalized)
   })
   return lines.join('\n').trim()
 }
