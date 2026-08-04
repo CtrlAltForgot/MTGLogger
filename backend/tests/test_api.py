@@ -1699,6 +1699,92 @@ def test_confirmed_visual_examples_supplement_canonical_artwork():
     assert matches[0][1] == 99.5
 
 
+def test_reference_metadata_enrichment_reuses_finished_visual_profile(tmp_path, monkeypatch):
+    """New catalog fields must not trigger another image/descriptor rebuild."""
+    import asyncio
+    from datetime import date
+    from types import SimpleNamespace
+
+    from mtglogger.database import Base, SessionLocal, engine
+    from mtglogger.models import CardReference, CardVisualFingerprint
+    from mtglogger.services import references
+
+    descriptor = tmp_path / "v3" / "00" / "printing.npz"
+    descriptor.parent.mkdir(parents=True)
+    descriptor.write_bytes(b"already indexed")
+    monkeypatch.setattr(
+        references,
+        "get_settings",
+        lambda: SimpleNamespace(cache_reference_images=False),
+    )
+
+    class Provider:
+        @staticmethod
+        def image_url(_card):
+            return "https://example.test/card.jpg"
+
+        @staticmethod
+        def market_price(_card):
+            return "1.23"
+
+        async def download_image(self, _url):  # pragma: no cover - must never run
+            raise AssertionError("finished visual profile was downloaded again")
+
+    Base.metadata.drop_all(engine)
+    Base.metadata.create_all(engine)
+    with SessionLocal() as db:
+        db.add(
+            CardReference(
+                scryfall_id="printing",
+                name="Old name",
+                set_code="old",
+                set_name="Old Set",
+                collector_number="1",
+                image_url="https://example.test/card.jpg",
+                art_hash="0" * 16,
+            )
+        )
+        db.add(
+            CardVisualFingerprint(
+                scryfall_id="printing",
+                full_hash="0" * 16,
+                art_hash="0" * 16,
+                title_hash="0" * 16,
+                footer_hash="0" * 16,
+                symbol_hash="0" * 16,
+                frame_hash="0" * 16,
+                descriptor_path=str(descriptor),
+            )
+        )
+        db.commit()
+        downloaded = asyncio.run(
+            references._index_card(
+                db,
+                Provider(),
+                {
+                    "id": "printing",
+                    "name": "Enriched name",
+                    "set": "new",
+                    "set_name": "New Set",
+                    "collector_number": "42",
+                    "oracle_id": "oracle-family",
+                    "lang": "en",
+                    "oracle_text": "Updated rules text",
+                    "promo_types": ["setpromo"],
+                    "released_at": "2026-08-04",
+                },
+            )
+        )
+        enriched = db.get(CardReference, "printing")
+
+    assert downloaded is False
+    assert enriched is not None
+    assert enriched.oracle_id == "oracle-family"
+    assert enriched.oracle_text == "Updated rules text"
+    assert enriched.promo_types == '["setpromo"]'
+    assert enriched.released_at == date(2026, 8, 4)
+
+
 def test_confirmed_descriptor_examples_improve_matching_without_leaking_into_holdout(
     monkeypatch, tmp_path
 ):
