@@ -652,6 +652,7 @@ def test_printing_family_reports_when_a_result_is_truncated(monkeypatch):
         assert kwargs["params"]["unique"] == "prints"
         return Response()
 
+    scryfall._printing_family_cache.clear()
     monkeypatch.setattr(scryfall, "scryfall_api_get", fake_get)
     cards, total = asyncio.run(
         scryfall.ScryfallProvider().printing_family("Swamp", limit=12)
@@ -659,6 +660,39 @@ def test_printing_family_reports_when_a_result_is_truncated(monkeypatch):
 
     assert len(cards) == 12
     assert total == 27
+
+
+def test_printing_family_reuses_successful_lookup_for_one_day(monkeypatch):
+    import asyncio
+
+    from mtglogger.providers import scryfall
+
+    calls = 0
+
+    class Response:
+        status_code = 200
+
+        @staticmethod
+        def raise_for_status():
+            return None
+
+        @staticmethod
+        def json():
+            return {"total_cards": 2, "data": [{"id": "gtc"}, {"id": "jmp"}]}
+
+    async def fake_get(_url, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return Response()
+
+    scryfall._printing_family_cache.clear()
+    monkeypatch.setattr(scryfall, "scryfall_api_get", fake_get)
+    provider = scryfall.ScryfallProvider()
+    first = asyncio.run(provider.printing_family("Death's Approach"))
+    second = asyncio.run(provider.printing_family("Death's Approach"))
+
+    assert first == second
+    assert calls == 1
 
 
 def test_focused_ocr_reads_only_enlarged_title_and_footer_when_title_is_usable():

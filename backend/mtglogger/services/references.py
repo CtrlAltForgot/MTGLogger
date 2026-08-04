@@ -341,10 +341,25 @@ async def sync_all() -> None:
             _state.state = "complete"
     except Exception as exc:
         with _state_lock:
-            _state.state, _state.error = "failed", str(exc)
+            # Profiles are committed one at a time and remain valid. Treat a
+            # temporary provider/network failure as a pause, then resume the
+            # exhaustive pass; the global ready count never rolls backward.
+            _state.state = "running"
+            _state.set_code = "all-paper"
+            _state.error = f"Temporary sync pause; retrying automatically: {exc}"
+        asyncio.create_task(_retry_full_sync())
     finally:
         with _state_lock:
             _state.updated_at = datetime.now(UTC).isoformat()
+
+
+async def _retry_full_sync(delay_seconds: int = 60) -> None:
+    await asyncio.sleep(delay_seconds)
+    with _state_lock:
+        if _state.state != "running" or not _state.error:
+            return
+        _state.state = "idle"
+    await sync_all()
 
 
 async def reference_refresh_loop(interval_hours: int) -> None:

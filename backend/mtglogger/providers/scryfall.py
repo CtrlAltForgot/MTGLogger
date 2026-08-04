@@ -13,6 +13,8 @@ _card_names_loaded_at = 0.0
 _card_names_lock = asyncio.Lock()
 _api_request_lock = asyncio.Lock()
 _api_last_request_at = 0.0
+_printing_family_cache: dict[tuple[str, str, int], tuple[float, list[dict], int]] = {}
+_printing_family_lock = asyncio.Lock()
 
 
 async def scryfall_api_get(url: str, **kwargs) -> httpx.Response:
@@ -147,18 +149,32 @@ class ScryfallProvider:
         Recognition uses the total to distinguish a complete small family from
         a truncated result such as a basic land with hundreds of printings.
         """
-        query = f'!"{name}" game:paper'
-        if language:
-            query += f" lang:{language}"
-        response = await scryfall_api_get(
-            f"{self.base_url}/cards/search",
-            params={"q": query, "unique": "prints", "order": "released"},
-        )
-        if response.status_code == 404:
-            return [], 0
-        response.raise_for_status()
-        page = response.json()
-        return page.get("data", [])[:limit], int(page.get("total_cards") or 0)
+        key = (name.casefold(), language.casefold(), limit)
+        cached = _printing_family_cache.get(key)
+        if cached and time.monotonic() - cached[0] < 86_400:
+            return cached[1], cached[2]
+        async with _printing_family_lock:
+            cached = _printing_family_cache.get(key)
+            if cached and time.monotonic() - cached[0] < 86_400:
+                return cached[1], cached[2]
+            query = f'!"{name}" game:paper'
+            if language:
+                query += f" lang:{language}"
+            response = await scryfall_api_get(
+                f"{self.base_url}/cards/search",
+                params={"q": query, "unique": "prints", "order": "released"},
+            )
+            if response.status_code == 404:
+                result = ([], 0)
+            else:
+                response.raise_for_status()
+                page = response.json()
+                result = (
+                    page.get("data", [])[:limit],
+                    int(page.get("total_cards") or 0),
+                )
+            _printing_family_cache[key] = (time.monotonic(), *result)
+            return result
 
     async def paper_printing_pages(self) -> AsyncIterator[list[dict]]:
         """Stream every paper printing without holding the catalog in memory."""
