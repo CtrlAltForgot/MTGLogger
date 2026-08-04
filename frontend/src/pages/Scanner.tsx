@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { CameraAlt, RestartAlt, VideocamOff } from '@mui/icons-material'
 import {
-  Alert, Box, Button, Card, CardContent, Chip, FormControlLabel, Grid,
+  Alert, Box, Button, Card, CardContent, Chip, Divider, FormControlLabel, Grid,
   IconButton, LinearProgress, MenuItem, Select, Slider, Snackbar, Stack, Switch, TextField, Tooltip, Typography,
 } from '@mui/material'
 import { request, submitScan } from '../api'
@@ -102,11 +102,6 @@ export default function Scanner(){
         <Typography color="text.secondary">Place a card anywhere in view and hold it steady. Swap directly to the next card when identified.</Typography>
       </Stack>
       {scan.cameras.length>1&&<Select size="small" value={scan.selectedCamera} onChange={event=>void scan.switchCamera(event.target.value)} sx={{mt:1.5,minWidth:280}}>{scan.cameras.map((camera,index)=><MenuItem value={camera.deviceId} key={camera.deviceId}>{camera.label||`Camera ${index+1}`}</MenuItem>)}</Select>}
-      <Stack direction="row" spacing={2} mt={1}>
-        <Typography variant="caption">Scene change {scan.metrics.sceneDifference.toFixed(1)}</Typography>
-        <Typography variant="caption">Contrast {scan.metrics.contrast.toFixed(1)}</Typography>
-        <Typography variant="caption">Motion {scan.metrics.motion.toFixed(1)}</Typography>
-      </Stack>
       <Grid container spacing={1.5} mt={.75}>
         <Grid size={{xs:12,sm:6}}><ScannerGauge label="Scanning pace" value={sessionCardsPerMinute} max={30} display={sessionCardsPerMinute===null?'Measuring':sessionCardsPerMinute.toFixed(1)} unit="cards/min" tone="primary" helper={stats.paceIntervals?`${stats.paceIntervals} recent interval${stats.paceIntervals===1?'':'s'} measured`:'Scan two cards within 30 seconds'}/></Grid>
         <Grid size={{xs:12,sm:6}}><ScannerGauge label="Review rate" value={sessionReviewPercentage} max={100} display={`${sessionReviewPercentage.toFixed(1)}%`} unit={`${stats.review} of ${stats.scans}`} tone={sessionReviewPercentage>25?'warning':'success'} helper={stats.scans?'Lower is better':'Waiting for the first scan'}/></Grid>
@@ -139,9 +134,10 @@ export default function Scanner(){
         <FormControlLabel control={<Switch checked={defaults.auto_add} onChange={event=>setDefaults({...defaults,auto_add:event.target.checked})}/>} label="Auto-add near-certain matches (98.5%+)"/>
         <FormControlLabel control={<Switch checked={resolveImmediately} onChange={event=>setResolveImmediately(event.target.checked)}/>} label="Resolve uncertain cards immediately"/>
         <Typography variant="caption" color="text.secondary">Turn this off only when you prefer uninterrupted scanning into the Review queue.</Typography>
-      </Stack></CardContent></Card>
-
-      <Card sx={{mt:2}}><CardContent><Typography variant="h6">Camera calibration</Typography>
+      </Stack>
+      <Divider sx={{my:2.5}}/>
+      <Typography variant="h6">Camera calibration</Typography>
+      <Typography variant="body2" color="text.secondary" mb={1.5}>Tune only if cards capture too early or while still moving.</Typography>
         <Typography variant="caption">Card entry difference: {tuning.entryDifference}</Typography>
         <Slider min={5} max={35} value={tuning.entryDifference} onChange={(_,value)=>setTuning({...tuning,entryDifference:value as number})}/>
         <Typography variant="caption">Minimum stable motion: {tuning.stableMotion.toFixed(1)}</Typography>

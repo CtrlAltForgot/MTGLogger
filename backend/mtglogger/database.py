@@ -59,7 +59,7 @@ def migrate_schema() -> None:
         existing_indexes = {
             index["name"] for index in inspect(engine).get_indexes("card_references")
         }
-        for column_name in ("oracle_id", "language"):
+        for column_name in ("oracle_id", "language", "released_at"):
             index_name = f"ix_card_references_{column_name}"
             if column_name in refreshed_columns and index_name not in existing_indexes:
                 with engine.begin() as connection:
@@ -68,12 +68,6 @@ def migrate_schema() -> None:
                             f"CREATE INDEX {index_name} ON card_references ({column_name})"
                         )
                     )
-                connection.execute(
-                    text(
-                        "CREATE INDEX ix_card_references_released_at "
-                        "ON card_references (released_at)"
-                    )
-                )
     if "card_visual_fingerprints" not in tables:
         return
     columns = {column["name"] for column in inspector.get_columns("card_visual_fingerprints")}
