@@ -1,15 +1,15 @@
 import { useEffect, useState } from 'react'
-import { Delete, Download, Edit, Search, TrendingDown, TrendingUp } from '@mui/icons-material'
+import { AddToPhotos, CheckBox, CheckBoxOutlineBlank, Close, Delete, Download, Edit, Search, TrendingDown, TrendingUp } from '@mui/icons-material'
 import {
   Box, Button, Card, Chip, Dialog, DialogActions, DialogContent, DialogTitle,
-  Alert, IconButton, InputAdornment, MenuItem, Select, Stack,
+  Alert, Checkbox, Divider, Drawer, IconButton, InputAdornment, List, ListItemButton, ListItemText, MenuItem, Select, Stack,
   TablePagination, TextField, Tooltip, Typography,
 } from '@mui/material'
 import { API, request } from '../api'
 import FoilArtwork from '../components/FoilArtwork'
 import { CardName } from '../components/CardDetails'
 import OverflowMarquee from '../components/OverflowMarquee'
-import type { Inventory } from '../types'
+import type { Deck, Inventory } from '../types'
 
 const conditions=[['near_mint','Near Mint'],['lightly_played','Lightly Played'],['moderately_played','Moderately Played'],['heavily_played','Heavily Played'],['damaged','Damaged']]
 const conditionAbbreviation:Record<string,string>={near_mint:'NM',lightly_played:'LP',moderately_played:'MP',heavily_played:'HP',damaged:'DMG'}
@@ -23,6 +23,7 @@ export default function Collection(){
   const [editing,setEditing]=useState<Inventory|null>(null),[deleting,setDeleting]=useState<Inventory|null>(null),[busy,setBusy]=useState(false),[priceBusy,setPriceBusy]=useState(false)
   const [finishMoveQuantity,setFinishMoveQuantity]=useState(1)
   const [error,setError]=useState<string>()
+  const [deckMode,setDeckMode]=useState(false),[decks,setDecks]=useState<Deck[]>([]),[selected,setSelected]=useState<Set<string>>(new Set()),[targetDeck,setTargetDeck]=useState<Deck|null>(null)
 
   useEffect(()=>{void request<{collections:string[];storage_locations:string[]}>('/inventory/facets').then(setFacets)},[reload])
   useEffect(()=>{setPage(0)},[query,sort,location])
@@ -30,11 +31,18 @@ export default function Collection(){
   const save=async()=>{if(!editing)return;setBusy(true);setError(undefined);try{await request(`/inventory/${editing.id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({quantity:editing.quantity,foil:editing.foil,condition:editing.condition,language:editing.language,storage_location:editing.storage_location,market_price:editing.market_price,purchase_price:editing.purchase_price,notes:editing.notes})});setEditing(null);setReload(x=>x+1)}catch(e){setError(e instanceof Error?e.message:'Could not save entry')}finally{setBusy(false)}}
   const moveFinish=async()=>{if(!editing)return;setPriceBusy(true);setError(undefined);try{await request(`/inventory/${editing.id}/move-finish`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({quantity:finishMoveQuantity,foil:!editing.foil})});setEditing(null);setReload(x=>x+1)}catch(e){setError(e instanceof Error?e.message:'Could not split finish quantities')}finally{setPriceBusy(false)}}
   const remove=async()=>{if(!deleting)return;setBusy(true);setError(undefined);try{await request(`/inventory/${deleting.id}`,{method:'DELETE'});setDeleting(null);setReload(x=>x+1)}catch(e){setError(e instanceof Error?e.message:'Could not delete entry')}finally{setBusy(false)}}
+  const available=(item:Inventory)=>Math.max(0,item.quantity-item.deck_assignments.reduce((sum,deck)=>sum+deck.quantity,0))
+  const selectedItems=items.filter(item=>selected.has(item.id)&&available(item)>0)
+  const selectedCards=selectedItems.reduce((sum,item)=>sum+available(item),0)
+  const openDeckMode=async()=>{setError(undefined);try{setDecks(await request<Deck[]>('/decks'));setDeckMode(true);setSelected(new Set())}catch(e){setError(e instanceof Error?e.message:'Could not load decks')}}
+  const closeDeckMode=()=>{if(busy)return;setDeckMode(false);setSelected(new Set());setTargetDeck(null)}
+  const toggleSelected=(item:Inventory)=>setSelected(current=>{const next=new Set(current);next.has(item.id)?next.delete(item.id):next.add(item.id);return next})
+  const addToDeck=async()=>{if(!targetDeck||!selectedItems.length)return;setBusy(true);setError(undefined);try{await request(`/decks/${targetDeck.id}/entries`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({entries:selectedItems.map(item=>({inventory_id:item.id,quantity:available(item)}))})});closeDeckMode();setReload(x=>x+1)}catch(e){setError(e instanceof Error?e.message:'Could not add cards to deck')}finally{setBusy(false)}}
 
   return <>
     <Stack direction={{xs:'column',sm:'row'}} justifyContent="space-between" gap={2} mb={3}>
       <Box><Typography variant="h4">Collection</Typography><Typography color="text.secondary">{totalCards.toLocaleString()} {totalCards===1?'card':'cards'} · Collection value: <Box component="span" color="primary.main" fontWeight={750}>${collectionValue.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</Box></Typography></Box>
-      <Stack direction="row" spacing={1}><Button startIcon={<Download/>} href={`${API}/api/inventory/export/csv`}>CSV</Button><Button startIcon={<Download/>} href={`${API}/api/inventory/export/json`}>JSON</Button></Stack>
+      <Stack direction="row" spacing={1}><Button startIcon={<AddToPhotos/>} variant={deckMode?'contained':'text'} onClick={()=>deckMode?closeDeckMode():void openDeckMode()}>{deckMode?'Cancel':'Add to Deck'}</Button><Button startIcon={<Download/>} href={`${API}/api/inventory/export/csv`}>CSV</Button><Button startIcon={<Download/>} href={`${API}/api/inventory/export/json`}>JSON</Button></Stack>
     </Stack>
     {error&&<Alert severity="error" onClose={()=>setError(undefined)} sx={{mb:2}}>{error}</Alert>}
     <Stack direction={{xs:'column',sm:'row'}} spacing={2}>
@@ -42,12 +50,13 @@ export default function Collection(){
       <Select value={sort} onChange={e=>setSort(e.target.value as keyof typeof sorts)} sx={{minWidth:190}}><MenuItem value="newest">Recently added</MenuItem><MenuItem value="name">Name A–Z</MenuItem><MenuItem value="value">Most valuable</MenuItem></Select>
     </Stack>
     {facets.storage_locations.length>1&&<Stack direction="row" spacing={1} mt={1.5}><Select size="small" displayEmpty value={location} onChange={e=>setLocation(e.target.value)} sx={{minWidth:190}}><MenuItem value="">All storage locations</MenuItem>{facets.storage_locations.map(value=><MenuItem key={value} value={value}>{value}</MenuItem>)}</Select></Stack>}
-    <Box className="collection-grid" mt={3}>{items.map(item=><Card key={item.id} sx={{display:'flex',overflow:'hidden',position:'relative',alignItems:'flex-start',minHeight:202}}>
+    <Box className="collection-grid" mt={3}>{items.map(item=>{const remaining=available(item),checked=selected.has(item.id);return <Card key={item.id} onClick={()=>deckMode&&remaining>0&&toggleSelected(item)} sx={{display:'flex',overflow:'hidden',position:'relative',alignItems:'flex-start',minHeight:202,cursor:deckMode&&remaining>0?'pointer':'default',outline:checked?'3px solid':'none',outlineColor:'primary.main',opacity:deckMode&&remaining===0?.48:1}}>
       {item.image_url?<FoilArtwork src={item.image_url} alt={item.card_name} foil={item.foil} sx={{width:{xs:116,sm:128},flexShrink:0,aspectRatio:'63 / 88',m:1,borderRadius:1.5,border:'1px solid',borderColor:'divider',bgcolor:'#080506'}} imageSx={{objectFit:'contain',objectPosition:'center'}}/>:<Box sx={{width:{xs:116,sm:128},flexShrink:0,aspectRatio:'63 / 88',m:1,bgcolor:'action.hover',border:'1px solid',borderColor:'divider',borderRadius:1.5}}/>}
       {item.quantity>1&&<Chip size="small" color="primary" label={`×${item.quantity}`} sx={{position:'absolute',left:14,top:14,zIndex:2,fontWeight:900,boxShadow:'0 2px 10px rgba(0,0,0,.55)'}}/>}
+      {deckMode&&<Checkbox checked={checked} disabled={remaining===0} icon={<CheckBoxOutlineBlank/>} checkedIcon={<CheckBox/>} inputProps={{'aria-label':`Select ${item.card_name}`}} onClick={event=>event.stopPropagation()} onChange={()=>toggleSelected(item)} sx={{position:'absolute',right:5,top:5,zIndex:3,bgcolor:'background.paper','&:hover':{bgcolor:'background.paper'}}}/>}
       <Box py={1.5} pl={.5} pr={1} pb={6} minWidth={0} flex={1}><Typography component="div" fontWeight={800}><OverflowMarquee className="card-title" title={item.card_name}><CardName scryfallId={item.scryfall_id}>{item.card_name}</CardName></OverflowMarquee></Typography><Typography component="div" color="text.secondary" variant="body2"><OverflowMarquee className="card-printing" title={`${item.set_name} #${item.collector_number}`}>{item.set_name} #{item.collector_number}</OverflowMarquee></Typography><PriceMovement item={item}/><Stack direction="row" spacing={.5} mt={1} flexWrap="wrap"><Chip size="small" variant="outlined" label={conditionAbbreviation[item.condition]||item.condition.toUpperCase()}/>{item.foil&&<Chip size="small" color="warning" label="Foil"/>}</Stack><Typography display="block" variant="caption" color="text.secondary">Deck · {item.deck_assignments.length?item.deck_assignments.map(deck=>`${deck.deck_name} ×${deck.quantity}`).join(', '):'None'}</Typography><Typography variant="caption" color="text.secondary">Storage · {item.storage_location}</Typography></Box>
-      <Stack direction="row" sx={{position:'absolute',right:4,bottom:4}}><Tooltip title="Edit entry"><IconButton aria-label={`Edit ${item.card_name}`} onClick={()=>{setFinishMoveQuantity(1);setEditing({...item})}}><Edit/></IconButton></Tooltip><Tooltip title="Delete entry"><IconButton color="error" aria-label={`Delete ${item.card_name}`} onClick={()=>setDeleting(item)}><Delete/></IconButton></Tooltip></Stack>
-    </Card>)}</Box>
+      {!deckMode&&<Stack direction="row" sx={{position:'absolute',right:4,bottom:4}}><Tooltip title="Edit entry"><IconButton aria-label={`Edit ${item.card_name}`} onClick={()=>{setFinishMoveQuantity(1);setEditing({...item})}}><Edit/></IconButton></Tooltip><Tooltip title="Delete entry"><IconButton color="error" aria-label={`Delete ${item.card_name}`} onClick={()=>setDeleting(item)}><Delete/></IconButton></Tooltip></Stack>}
+    </Card>})}</Box>
     {!items.length&&<Typography textAlign="center" color="text.secondary" mt={8}>No cards found. The scanner is ready when you are.</Typography>}
     {total>0&&<TablePagination
       component="div"
@@ -82,6 +91,9 @@ export default function Collection(){
     </Stack></DialogContent>}<DialogActions><Button disabled={busy} onClick={()=>setEditing(null)}>Cancel</Button><Button disabled={busy} variant="contained" onClick={save}>Save changes</Button></DialogActions></Dialog>
 
     <Dialog open={!!deleting} onClose={()=>!busy&&setDeleting(null)}><DialogTitle>Delete this entry?</DialogTitle><DialogContent><Typography>This permanently removes all {deleting?.quantity} logged copies of <strong>{deleting?.card_name}</strong> ({deleting?.set_code.toUpperCase()} #{deleting?.collector_number}) from this collection.</Typography></DialogContent><DialogActions><Button disabled={busy} onClick={()=>setDeleting(null)}>Cancel</Button><Button disabled={busy} color="error" variant="contained" onClick={remove}>Delete entry</Button></DialogActions></Dialog>
+
+    <Drawer anchor="left" open={deckMode} onClose={closeDeckMode}><Box sx={{width:{xs:290,sm:350},p:2.5,pt:3}}><Stack direction="row" justifyContent="space-between" alignItems="center"><Typography variant="h5">Add to Deck</Typography><IconButton onClick={closeDeckMode}><Close/></IconButton></Stack><Typography color="text.secondary" mt={1}>{selectedCards} {selectedCards===1?'card':'cards'} selected from {selectedItems.length} {selectedItems.length===1?'printing':'printings'}.</Typography><Divider sx={{my:2}}/><Typography fontWeight={800} mb={1}>Choose a deck</Typography><List disablePadding>{decks.map(deck=><ListItemButton key={deck.id} disabled={!selectedCards} onClick={()=>setTargetDeck(deck)} sx={{border:'1px solid',borderColor:'divider',borderRadius:2,mb:1}}><ListItemText primary={deck.name} secondary={`${deck.total_cards} cards`}/></ListItemButton>)}</List>{!decks.length&&<Typography color="text.secondary">Create a deck in the Decks tab first.</Typography>}<Typography variant="caption" color="text.secondary" display="block" mt={2}>Checking a printing selects all of its currently unassigned copies.</Typography></Box></Drawer>
+    <Dialog open={!!targetDeck} onClose={()=>!busy&&setTargetDeck(null)}><DialogTitle>Add cards to {targetDeck?.name}?</DialogTitle><DialogContent><Typography>Are you sure you want to add <strong>{selectedCards} {selectedCards===1?'card':'cards'}</strong> across {selectedItems.length} {selectedItems.length===1?'printing':'printings'} to <strong>{targetDeck?.name}</strong>?</Typography></DialogContent><DialogActions><Button disabled={busy} onClick={()=>setTargetDeck(null)}>No</Button><Button disabled={busy||!selectedCards} variant="contained" onClick={()=>void addToDeck()}>Yes, add cards</Button></DialogActions></Dialog>
   </>
 }
 
