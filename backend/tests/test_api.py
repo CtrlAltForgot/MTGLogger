@@ -1099,6 +1099,18 @@ def test_basic_land_auto_add_requires_decisive_exact_art_evidence():
     assert CardRecognizer.has_decisive_art_match(
         swamp["id"], swamp["id"], True, 92, 21
     )
+    assert not CardRecognizer.has_safe_basic_land_match(
+        swamp["id"], swamp["id"], True, 92, 21, None, "rtr", 0.0, 1.0
+    )
+    assert not CardRecognizer.has_safe_basic_land_match(
+        swamp["id"], swamp["id"], True, 92, 21, "264", None, 1.0, 0.0
+    )
+    assert not CardRecognizer.has_safe_basic_land_match(
+        swamp["id"], "rtr-swamp-261", True, 96, 24, "264", "rtr", 1.0, 1.0
+    )
+    assert CardRecognizer.has_safe_basic_land_match(
+        swamp["id"], swamp["id"], True, 92, 21, "264", "rtr", 1.0, 1.0
+    )
 
 
 def test_catalog_fallback_recovers_canonical_name_with_exact_printing():

@@ -1552,12 +1552,16 @@ class CardRecognizer:
             # Keep these below the automatic-add threshold unless the local
             # exhaustive visual catalogue independently agrees with a clear
             # margin.  They remain first-class suggestions for quick review.
-            if self.is_basic_land(card) and not self.has_decisive_art_match(
+            if self.is_basic_land(card) and not self.has_safe_basic_land_match(
                 card["id"],
                 descriptor_top_id,
                 descriptor_catalog_complete,
                 descriptor_score,
                 descriptor_margin,
+                number,
+                printed_set_code,
+                number_score,
+                set_score,
             ):
                 confidence = min(confidence, 98.4)
             confidence = min(99.5, confidence)
@@ -1833,6 +1837,39 @@ class CardRecognizer:
             and card_id == descriptor_top_id
             and descriptor_score >= 88
             and descriptor_margin >= 18
+        )
+
+    @staticmethod
+    def has_safe_basic_land_match(
+        card_id: str,
+        descriptor_top_id: str | None,
+        catalog_complete: bool,
+        descriptor_score: float,
+        descriptor_margin: float,
+        collector_number: str | None,
+        printed_set_code: str | None,
+        number_score: float,
+        set_score: float,
+    ) -> bool:
+        """Require exact footer OCR and exact artwork to auto-add a basic land.
+
+        Basic lands often share their name, frame, rules area, and even artwork
+        across printings. Descriptor agreement alone can consequently look very
+        strong while selecting the wrong collector number. Requiring the two
+        independent signals to agree favors review over a silent bad addition.
+        """
+        return bool(
+            collector_number
+            and printed_set_code
+            and number_score == 1.0
+            and set_score == 1.0
+            and CardRecognizer.has_decisive_art_match(
+                card_id,
+                descriptor_top_id,
+                catalog_complete,
+                descriptor_score,
+                descriptor_margin,
+            )
         )
 
     @staticmethod
