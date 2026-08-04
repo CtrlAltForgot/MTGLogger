@@ -502,6 +502,25 @@ class CardRecognizer:
         containment = len(left_grams & right_grams) / max(1, min(len(left_grams), len(right_grams)))
         return max(SequenceMatcher(None, left, right).ratio(), containment)
 
+    @staticmethod
+    def oracle_printing_cap(
+        title_score: float,
+        number: str | None,
+        number_score: float,
+        promo_type_hint: str | None,
+        card: dict,
+    ) -> float:
+        """Rank exact-footer variants while always requiring human confirmation."""
+        if title_score < 0.93 or not number or number_score < 1:
+            return 89.0
+        promo_types = set(card.get("promo_types") or [])
+        if promo_type_hint:
+            return 94.0 if promo_type_hint in promo_types else 89.0
+        # When OCR sees no promo marker, put the ordinary set printing before
+        # date-stamped/Game Day variants with the same collector number. The
+        # small distinction improves the review order but remains below auto-add.
+        return 93.5 if promo_types else 94.0
+
     async def _oracle_recovery(self, text: str, language: str) -> tuple[str | None, list[dict]]:
         if language != "en" or not hasattr(self.provider, "oracle_search"):
             return None, []
@@ -1243,7 +1262,16 @@ class CardRecognizer:
                 # Rules text can identify a card, but it cannot prove which set,
                 # collector number, or finish is physically present. Independent
                 # collector/set footer evidence may still prove the printing.
-                confidence = min(89.0, confidence)
+                oracle_cap = self.oracle_printing_cap(
+                    title_score,
+                    number,
+                    number_score,
+                    promo_type,
+                    card,
+                )
+                if oracle_cap > 89:
+                    confidence = max(confidence, oracle_cap)
+                confidence = min(oracle_cap, confidence)
             ranked[card["id"]] = Candidate(
                 scryfall_id=card["id"],
                 name=card["name"],

@@ -680,6 +680,19 @@ def test_structured_printing_evidence_promotes_safe_auto_adds_only():
     assert CardRecognizer.structured_confidence(94, 0.7, 1, 1, 1) == 94
 
 
+def test_oracle_recovery_orders_exact_regular_and_promo_printings_below_auto_add():
+    from mtglogger.services.recognition import CardRecognizer
+
+    regular = {"promo_types": []}
+    game_day = {"promo_types": ["setpromo", "gameday"]}
+
+    assert CardRecognizer.oracle_printing_cap(1, "105", 1, None, regular) == 94
+    assert CardRecognizer.oracle_printing_cap(1, "105", 1, None, game_day) == 93.5
+    assert CardRecognizer.oracle_printing_cap(1, "105", 1, "gameday", game_day) == 94
+    assert CardRecognizer.oracle_printing_cap(1, "105", 1, "gameday", regular) == 89
+    assert CardRecognizer.oracle_printing_cap(1, None, 0.45, None, regular) == 89
+
+
 def test_set_code_score_handles_bounded_footer_glyph_confusion():
     from mtglogger.services.recognition import CardRecognizer
 
