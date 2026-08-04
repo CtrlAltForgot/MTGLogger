@@ -235,7 +235,15 @@ class CardRecognizer:
             # Tiny foil/set/collector text benefits from local contrast and
             # sharpening. Run this extra OCR pass only when the normal footer
             # did not already provide complete printing evidence.
-            enhanced_footer = self.enhance_footer(footer_left)
+            # Collector numbers are the decisive signal for basic-land artwork
+            # and visually similar reprints.  Keep a wider slice than the fast
+            # combined pass and render it substantially larger: on a 720p
+            # camera feed the footer glyphs can otherwise be only 5-7 pixels
+            # tall.  The extra OCR call is paid only when the fast pass did not
+            # already recover complete printing evidence.
+            collector_footer = footer[:, : int(width * 0.78)]
+            collector_footer = self.scale_to_width(collector_footer, 1200)
+            enhanced_footer = self.enhance_footer(collector_footer)
             enhanced_text = self.extract_text(enhanced_footer)
             if enhanced_text.strip():
                 focused = "\n".join((focused, enhanced_text))

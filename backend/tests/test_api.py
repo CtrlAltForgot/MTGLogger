@@ -878,6 +878,29 @@ def test_focused_ocr_reads_only_enlarged_title_and_footer_when_title_is_usable()
     assert calls[0][1] == 840
 
 
+def test_incomplete_footer_gets_wide_high_resolution_collector_pass():
+    import numpy as np
+
+    from mtglogger.services.recognition import CardRecognizer
+
+    recognizer = CardRecognizer.__new__(CardRecognizer)
+    calls = []
+
+    def extract(image):
+        calls.append(image.shape)
+        if len(calls) == 1:
+            return "Basic Land - Swamp\nORI"
+        return "264/272\nORI·EN"
+
+    recognizer.extract_text = extract
+    text = recognizer.extract_identification_text(np.zeros((840, 600, 3), dtype=np.uint8))
+
+    assert "264/272" in text
+    assert len(calls) == 2
+    assert calls[0][1] == 840
+    assert calls[1][1] == 1200
+
+
 def test_catalog_fallback_recovers_canonical_name_with_exact_printing():
     import asyncio
 
