@@ -406,6 +406,30 @@ def test_local_artwork_descriptors_prefer_same_art_under_camera_changes():
     assert same > different + 10
 
 
+def test_exact_print_descriptor_regions_separate_reused_artwork():
+    import numpy as np
+
+    from mtglogger.services.recognition import CardRecognizer
+
+    rng = np.random.default_rng(84)
+    art = rng.integers(0, 256, (64, 32), dtype=np.uint8)
+    footer = rng.integers(0, 256, (48, 32), dtype=np.uint8)
+    symbol = rng.integers(0, 256, (32, 32), dtype=np.uint8)
+    scan = {"art": art, "footer": footer, "symbol": symbol}
+    exact = {"art": art.copy(), "footer": footer.copy(), "symbol": symbol.copy()}
+    reused_art = {
+        "art": art.copy(),
+        "footer": rng.integers(0, 256, (48, 32), dtype=np.uint8),
+        "symbol": rng.integers(0, 256, (32, 32), dtype=np.uint8),
+    }
+
+    exact_score = CardRecognizer._descriptor_bundle_score(scan, exact)
+    reused_score = CardRecognizer._descriptor_bundle_score(scan, reused_art)
+
+    assert exact_score is not None and reused_score is not None
+    assert exact_score > reused_score + 40
+
+
 def test_multi_region_fingerprint_ranks_matching_footer_above_reprint():
     from types import SimpleNamespace
 

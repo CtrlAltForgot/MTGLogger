@@ -1315,7 +1315,14 @@ class CardRecognizer:
             scan.get("symbol"), canonical.get("symbol")
         )
         exact = [(footer, 0.50), (symbol, 0.25)]
-        available = [(value, weight) for value, weight in exact if value is not None]
+        # A v2 canonical profile with zero reliable regional matches is useful
+        # negative evidence, not a reason to fall back to artwork-only scoring.
+        # Legacy/example profiles omit these keys and remain artwork-only.
+        available = [
+            (value or 0.0, weight)
+            for key, (value, weight) in zip(("footer", "symbol"), exact, strict=True)
+            if key in canonical and len(canonical[key]) >= 8
+        ]
         if not available:
             return art
         art_weight = 1.0 - sum(weight for _value, weight in available)
