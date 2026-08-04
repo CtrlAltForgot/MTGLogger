@@ -664,6 +664,28 @@ class CardRecognizer:
         )
 
     @classmethod
+    def has_exact_footer_match(
+        cls,
+        title: str | None,
+        number: str | None,
+        printed_set_code: str | None,
+        cards: list[dict],
+    ) -> bool:
+        """Return true when OCR already identifies one exact physical printing."""
+        if not title or not number or not printed_set_code:
+            return False
+        normalized_title = cls.normalized_name(title)
+        return any(
+            SequenceMatcher(
+                None, normalized_title, cls.normalized_name(card["name"])
+            ).ratio()
+            >= 0.93
+            and cls.collector_score(number, card["collector_number"]) == 1.0
+            and cls.set_code_score(printed_set_code, card["set"]) == 1.0
+            for card in cards
+        )
+
+    @classmethod
     def has_constrained_visual_identity(
         cls, title: str | None, cards: list[dict], identity_names: set[str]
     ) -> bool:
@@ -1100,9 +1122,13 @@ class CardRecognizer:
             identity_is_constrained = self.has_constrained_visual_identity(
                 title, cards, identity_names
             )
+            exact_footer_match = self.has_exact_footer_match(
+                title, number, printed_set_code, cards
+            )
             family_complete = False
             if (
                 identity_is_constrained
+                and not exact_footer_match
                 and hasattr(self.provider, "printing_family")
             ):
                 try:

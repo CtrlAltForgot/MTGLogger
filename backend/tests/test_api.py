@@ -730,6 +730,26 @@ def test_structured_printing_evidence_promotes_safe_auto_adds_only():
     assert CardRecognizer.structured_confidence(94, 0.7, 1, 1, 1) == 94
 
 
+def test_exact_footer_match_skips_printing_family_only_for_complete_evidence():
+    from mtglogger.services.recognition import CardRecognizer
+
+    card = {
+        "name": "Death's Approach",
+        "collector_number": "62",
+        "set": "gtc",
+    }
+
+    assert CardRecognizer.has_exact_footer_match(
+        "Death's Approach", "62", "GTC", [card]
+    )
+    assert not CardRecognizer.has_exact_footer_match(
+        "Death's Approach", "222", "GTC", [card]
+    )
+    assert not CardRecognizer.has_exact_footer_match(
+        "Death's Approach", "62", None, [card]
+    )
+
+
 def test_oracle_recovery_orders_exact_regular_and_promo_printings_below_auto_add():
     from mtglogger.services.recognition import CardRecognizer
 
