@@ -42,6 +42,7 @@ def migrate_schema() -> None:
             "oracle_id": "VARCHAR(36)",
             "language": "VARCHAR(16) DEFAULT 'en'",
             "oracle_text": "TEXT",
+            "artist": "VARCHAR(255)",
             "promo_types": "TEXT",
         }
         for column_name, column_type in additive_reference_columns.items():

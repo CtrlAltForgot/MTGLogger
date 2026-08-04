@@ -513,6 +513,31 @@ class CardRecognizer:
         )
 
     @classmethod
+    def artist_text_score(cls, text: str, artist: str | None) -> float:
+        """Find a printed artist credit without trusting a nearby OCR digit.
+
+        Artist names are exact-art evidence: they can disprove a collector-number
+        OCR error, but reprints can share an artist, so this signal deliberately
+        remains below the automatic-add threshold on its own.
+        """
+        source = cls.normalized_name(text)
+        target = cls.normalized_name(artist or "")
+        if not source or not target:
+            return 0.0
+        if target in source:
+            return 1.0
+        tokens = [
+            cls.normalized_name(token)
+            for token in re.findall(r"[A-Za-zÀ-ÿ'-]+", artist or "")
+            if len(cls.normalized_name(token)) >= 3
+        ]
+        if len(tokens) >= 2 and all(token in source for token in tokens):
+            return 0.95
+        if tokens and len(tokens[-1]) >= 5 and tokens[-1] in source:
+            return 0.78
+        return 0.0
+
+    @classmethod
     def fuzzy_contains(cls, text: str, phrase: str, threshold: float = 0.78) -> bool:
         source, target = cls.normalized_name(text), cls.normalized_name(phrase)
         if target in source:
@@ -1050,6 +1075,7 @@ class CardRecognizer:
             "lang": reference.language or "en",
             "oracle_id": reference.oracle_id,
             "oracle_text": reference.oracle_text or "",
+            "artist": reference.artist,
             "promo_types": json.loads(reference.promo_types or "[]"),
         }
 
@@ -1376,29 +1402,9 @@ class CardRecognizer:
             for reference, _score in local_matches:
                 if reference.scryfall_id in known_card_ids:
                     continue
-                cards.append(
-                    {
-                        "id": reference.scryfall_id,
-                        "name": reference.name,
-                        "set": reference.set_code,
-                        "set_name": reference.set_name,
-                        "collector_number": reference.collector_number,
-                        "released_at": (
-                            reference.released_at.isoformat()
-                            if reference.released_at
-                            else "0000"
-                        ),
-                        "image_uris": {"normal": reference.image_url},
-                        "prices": {
-                            "usd": (
-                                str(reference.market_price)
-                                if reference.market_price is not None
-                                else None
-                            )
-                        },
-                        "lang": language,
-                    }
-                )
+                local_card = self._reference_card(reference)
+                local_card["lang"] = language
+                cards.append(local_card)
                 known_card_ids.add(reference.scryfall_id)
             matching_complete = time.perf_counter()
         visual_scores = {reference.scryfall_id: score for reference, score in visual_matches}
@@ -1431,6 +1437,13 @@ class CardRecognizer:
         for card in cards:
             code = card["set"].casefold()
             exact_set_counts[code] = exact_set_counts.get(code, 0) + 1
+        artist_scores = {
+            card["id"]: self.artist_text_score(text, card.get("artist"))
+            for card in cards
+        }
+        strong_artist_ids = {
+            card_id for card_id, score in artist_scores.items() if score >= 0.9
+        }
         for card in cards:
             title_score = (
                 self.card_name_similarity(title, card["name"])
@@ -1523,6 +1536,14 @@ class CardRecognizer:
                     # printing-specific evidence. Reused art naturally fails
                     # the margin and remains an immediate user decision.
                     confidence = max(confidence, 98.5)
+            artist_score = artist_scores.get(card["id"], 0.0)
+            if artist_score >= 0.9:
+                # Printed artist credit is stronger than one tiny, ambiguous
+                # collector digit. It selects the correct artwork while staying
+                # below auto-add unless other independent evidence agrees.
+                confidence = max(confidence, 97.8 if len(strong_artist_ids) == 1 else 96.0)
+            elif strong_artist_ids and card.get("artist"):
+                confidence = min(confidence, 86.0)
             # A readable title/footer is not enough to distinguish basic-land
             # artwork.  Sets routinely contain several Plains/Island/Swamp/
             # Mountain/Forest printings whose only meaningful difference is

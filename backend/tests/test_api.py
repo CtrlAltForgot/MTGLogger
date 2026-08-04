@@ -816,6 +816,15 @@ def test_structured_printing_evidence_promotes_safe_auto_adds_only():
     assert CardRecognizer.structured_confidence(94, 0.7, 1, 1, 1) == 94
 
 
+def test_printed_artist_credit_is_exact_art_evidence():
+    from mtglogger.services.recognition import CardRecognizer
+
+    footer = "261/274 C RTR EN © 2012 Richard Wright"
+
+    assert CardRecognizer.artist_text_score(footer, "Richard Wright") == 1.0
+    assert CardRecognizer.artist_text_score(footer, "Adam Paquette") == 0.0
+
+
 def test_exact_footer_match_skips_printing_family_only_for_complete_evidence():
     from mtglogger.services.recognition import CardRecognizer
 
