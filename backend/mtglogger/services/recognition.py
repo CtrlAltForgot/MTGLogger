@@ -683,6 +683,13 @@ class CardRecognizer:
         copyright_year: int | None,
         cards: list[dict],
     ) -> bool:
+        # A Scryfall set code and collector number are the canonical identity of
+        # a physical printing. Foil glare frequently hides the title while the
+        # footer remains perfectly readable; once that pair resolves to one
+        # catalog object, another full-frame OCR pass cannot add identity
+        # evidence and only delays the scanner.
+        if cls.unique_exact_footer_card(number, printed_set_code, cards):
+            return True
         if not title or not cards:
             return False
         title_scores = [
@@ -709,6 +716,23 @@ class CardRecognizer:
             ]
             return len(matching_years) == 1
         return False
+
+    @classmethod
+    def unique_exact_footer_card(
+        cls,
+        number: str | None,
+        printed_set_code: str | None,
+        cards: list[dict],
+    ) -> dict | None:
+        if not number or not printed_set_code:
+            return None
+        matches = [
+            card
+            for card in cards
+            if cls.collector_score(number, card["collector_number"]) == 1.0
+            and cls.set_code_score(printed_set_code, card["set"]) == 1.0
+        ]
+        return matches[0] if len(matches) == 1 else None
 
     @classmethod
     def has_strong_card_identity(cls, title: str | None, cards: list[dict]) -> bool:
@@ -1123,6 +1147,14 @@ class CardRecognizer:
                 *([ignored_visual_hashes] if ignored_visual_hashes is not None else []),
             )
             cards = await lookup_task
+            exact_footer_card = self.unique_exact_footer_card(
+                number, printed_set_code, cards
+            )
+            if title is None and exact_footer_card:
+                # Populate the title from the uniquely identified local
+                # printing so downstream scoring follows the same path as a
+                # readable title without paying for broad OCR recovery.
+                title = exact_footer_card["name"]
             descriptor_image = corrected
             if not self.has_strong_lookup_evidence(
                 title, number, printed_set_code, copyright_year, cards

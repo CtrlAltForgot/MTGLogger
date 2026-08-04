@@ -766,6 +766,28 @@ def test_exact_footer_match_skips_printing_family_only_for_complete_evidence():
     )
 
 
+def test_unique_set_and_collector_footer_is_strong_without_a_title():
+    from mtglogger.services.recognition import CardRecognizer
+
+    exact = {
+        "name": "Liliana, Heretical Healer // Liliana, Defiant Necromancer",
+        "collector_number": "106",
+        "set": "ori",
+    }
+    promo = {
+        "name": exact["name"],
+        "collector_number": "106s",
+        "set": "pori",
+    }
+
+    assert CardRecognizer.unique_exact_footer_card("106", "ORI", [exact, promo]) == exact
+    assert CardRecognizer.has_strong_lookup_evidence(
+        None, "106", "ORI", 2015, [exact, promo]
+    )
+    assert CardRecognizer.unique_exact_footer_card("106", None, [exact]) is None
+    assert CardRecognizer.unique_exact_footer_card("106", "ORI", [exact, exact]) is None
+
+
 def test_oracle_recovery_orders_exact_regular_and_promo_printings_below_auto_add():
     from mtglogger.services.recognition import CardRecognizer
 
