@@ -1281,6 +1281,19 @@ def test_ocr_hints_do_not_invent_title_from_type_or_rules_text():
     assert year is None
 
 
+def test_ocr_hints_recovers_basic_land_name_from_type_line():
+    from mtglogger.services.recognition import CardRecognizer
+
+    title, number, set_code, year = CardRecognizer.hints(
+        "Basic Land -Swamp\nORI"
+    )
+
+    assert title == "Swamp"
+    assert number is None
+    assert set_code == "ori"
+    assert year is None
+
+
 def test_printing_descriptors_require_one_ocr_established_card_identity():
     from mtglogger.services.recognition import CardRecognizer
 

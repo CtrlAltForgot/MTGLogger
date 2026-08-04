@@ -423,6 +423,19 @@ class CardRecognizer:
             ),
             None,
         )
+        # A basic land's type line contains its actual card name after the dash.
+        # This is the one safe case where a type line can recover identity when
+        # glare or a dark frame hides the title. Keeping the allow-list narrow
+        # avoids turning ordinary subtype text into a fabricated card name.
+        if title is None and type_line_index is not None:
+            type_line = lines[type_line_index]
+            basic_land = re.match(
+                r"^basic\s+land\s*[-—–:]\s*(plains|island|swamp|mountain|forest|wastes)\b",
+                type_line,
+                re.I,
+            )
+            if basic_land:
+                title = basic_land.group(1).title()
         return title, number, set_code, copyright_year
 
     @staticmethod
