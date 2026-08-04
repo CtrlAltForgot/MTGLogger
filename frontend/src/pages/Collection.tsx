@@ -1,14 +1,15 @@
 import { useEffect, useState } from 'react'
-import { AddToPhotos, CheckBox, CheckBoxOutlineBlank, Close, Delete, Download, Edit, Search, TrendingDown, TrendingUp } from '@mui/icons-material'
+import { Add, AddToPhotos, CheckBox, CheckBoxOutlineBlank, Close, Delete, Download, Edit, Search, TrendingDown, TrendingUp } from '@mui/icons-material'
 import {
   Box, Button, Card, Chip, Dialog, DialogActions, DialogContent, DialogTitle,
-  Alert, Checkbox, Divider, Drawer, IconButton, InputAdornment, List, ListItemButton, ListItemText, MenuItem, Select, Stack,
+  Alert, Checkbox, Divider, Drawer, IconButton, InputAdornment, List, ListItemButton, ListItemText, Menu, MenuItem, Select, Stack,
   TablePagination, TextField, Tooltip, Typography,
 } from '@mui/material'
 import { API, request } from '../api'
 import FoilArtwork from '../components/FoilArtwork'
 import { CardName } from '../components/CardDetails'
 import OverflowMarquee from '../components/OverflowMarquee'
+import ManualAddDialog from '../components/ManualAddDialog'
 import type { Deck, Inventory } from '../types'
 
 const conditions=[['near_mint','Near Mint'],['lightly_played','Lightly Played'],['moderately_played','Moderately Played'],['heavily_played','Heavily Played'],['damaged','Damaged']]
@@ -24,6 +25,7 @@ export default function Collection(){
   const [selectedCopies,setSelectedCopies]=useState<Set<number>>(new Set()),[copyFoil,setCopyFoil]=useState(false),[copyCondition,setCopyCondition]=useState('near_mint')
   const [error,setError]=useState<string>()
   const [deckMode,setDeckMode]=useState(false),[decks,setDecks]=useState<Deck[]>([]),[selected,setSelected]=useState<Set<string>>(new Set()),[targetDeck,setTargetDeck]=useState<Deck|null>(null)
+  const [manualAdd,setManualAdd]=useState(false),[exportAnchor,setExportAnchor]=useState<HTMLElement|null>(null)
 
   useEffect(()=>{void request<{collections:string[];storage_locations:string[]}>('/inventory/facets').then(setFacets)},[reload])
   useEffect(()=>{setPage(0)},[query,sort,location])
@@ -46,7 +48,7 @@ export default function Collection(){
   return <>
     <Stack direction={{xs:'column',sm:'row'}} justifyContent="space-between" gap={2} mb={3}>
       <Box><Typography variant="h4">Collection</Typography><Typography color="text.secondary">{totalCards.toLocaleString()} {totalCards===1?'card':'cards'} · Collection value: <Box component="span" color="primary.main" fontWeight={750}>${collectionValue.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</Box></Typography></Box>
-      <Stack direction="row" spacing={1}><Button startIcon={<AddToPhotos/>} variant={deckMode?'contained':'text'} onClick={()=>deckMode?closeDeckMode():void openDeckMode()}>{deckMode?'Cancel':'Add to Deck'}</Button><Button startIcon={<Download/>} href={`${API}/api/inventory/export/csv`}>CSV</Button><Button startIcon={<Download/>} href={`${API}/api/inventory/export/json`}>JSON</Button></Stack>
+      <Stack direction="row" spacing={1}><Button startIcon={<Add/>} variant="contained" onClick={()=>setManualAdd(true)}>Add</Button><Button startIcon={<AddToPhotos/>} variant={deckMode?'contained':'text'} onClick={()=>deckMode?closeDeckMode():void openDeckMode()}>{deckMode?'Cancel':'Add to Deck'}</Button><Button startIcon={<Download/>} onClick={event=>setExportAnchor(event.currentTarget)}>Export</Button><Menu anchorEl={exportAnchor} open={!!exportAnchor} onClose={()=>setExportAnchor(null)}><MenuItem component="a" href={`${API}/api/inventory/export/csv`} onClick={()=>setExportAnchor(null)}>Download CSV</MenuItem><MenuItem component="a" href={`${API}/api/inventory/export/json`} onClick={()=>setExportAnchor(null)}>Download JSON</MenuItem></Menu></Stack>
     </Stack>
     {error&&<Alert severity="error" onClose={()=>setError(undefined)} sx={{mb:2}}>{error}</Alert>}
     <Stack direction={{xs:'column',sm:'row'}} spacing={2}>
@@ -89,6 +91,7 @@ export default function Collection(){
 
     <Drawer anchor="left" open={deckMode} onClose={()=>closeDeckMode()}><Box sx={{width:{xs:290,sm:350},p:2.5,pt:3}}><Stack direction="row" justifyContent="space-between" alignItems="center"><Typography variant="h5">Add to Deck</Typography><IconButton onClick={()=>closeDeckMode()}><Close/></IconButton></Stack><Typography color="text.secondary" mt={1}>{selectedCards} {selectedCards===1?'card':'cards'} selected from {selectedItems.length} {selectedItems.length===1?'printing':'printings'}.</Typography><Button startIcon={allVisibleSelected?<CheckBox/>:<CheckBoxOutlineBlank/>} disabled={!selectableItems.length||busy} onClick={toggleAllVisible} sx={{mt:1.25}}>{allVisibleSelected?'Clear visible cards':'Select all visible cards'}</Button><Divider sx={{my:2}}/><Typography fontWeight={800} mb={1}>Choose a deck</Typography><List disablePadding>{decks.map(deck=><ListItemButton key={deck.id} disabled={!selectedCards} onClick={()=>setTargetDeck(deck)} sx={{border:'1px solid',borderColor:'divider',borderRadius:2,mb:1}}><ListItemText primary={deck.name} secondary={`${deck.total_cards} cards`}/></ListItemButton>)}</List>{!decks.length&&<Typography color="text.secondary">Create a deck in the Decks tab first.</Typography>}<Typography variant="caption" color="text.secondary" display="block" mt={2}>Checking a printing selects all of its currently unassigned copies.</Typography></Box></Drawer>
     <Dialog open={!!targetDeck} onClose={()=>!busy&&setTargetDeck(null)}><DialogTitle>Add cards to {targetDeck?.name}?</DialogTitle><DialogContent><Typography>Are you sure you want to add <strong>{selectedCards} {selectedCards===1?'card':'cards'}</strong> across {selectedItems.length} {selectedItems.length===1?'printing':'printings'} to <strong>{targetDeck?.name}</strong>?</Typography></DialogContent><DialogActions><Button disabled={busy} onClick={()=>setTargetDeck(null)}>No</Button><Button disabled={busy||!selectedCards} variant="contained" onClick={()=>void addToDeck()}>Yes, add cards</Button></DialogActions></Dialog>
+    <ManualAddDialog open={manualAdd} onClose={()=>setManualAdd(false)} onAdded={()=>setReload(value=>value+1)}/>
   </>
 }
 
