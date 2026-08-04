@@ -1139,13 +1139,6 @@ class CardRecognizer:
                     promo_type,
                 )
             )
-            scan_fingerprints = await asyncio.to_thread(visual_fingerprints, corrected)
-            visual_matches = await asyncio.to_thread(
-                self._visual_matches,
-                scan_fingerprints,
-                printed_set_code or box_set_code,
-                *([ignored_visual_hashes] if ignored_visual_hashes is not None else []),
-            )
             cards = await lookup_task
             exact_footer_card = self.unique_exact_footer_card(
                 number, printed_set_code, cards
@@ -1155,6 +1148,28 @@ class CardRecognizer:
                 # printing so downstream scoring follows the same path as a
                 # readable title without paying for broad OCR recovery.
                 title = exact_footer_card["name"]
+            # A set code plus collector number is the canonical identifier for
+            # a paper printing.  When the local catalog resolves that pair to a
+            # single record, an exhaustive 96k-print visual search cannot alter
+            # the answer; it only adds several seconds of disk and hash work.
+            # Keep the visual path for every ambiguous or incomplete footer.
+            if exact_footer_card:
+                scan_fingerprints = {}
+                visual_matches = []
+            else:
+                scan_fingerprints = await asyncio.to_thread(
+                    visual_fingerprints, corrected
+                )
+                visual_matches = await asyncio.to_thread(
+                    self._visual_matches,
+                    scan_fingerprints,
+                    printed_set_code or box_set_code,
+                    *(
+                        [ignored_visual_hashes]
+                        if ignored_visual_hashes is not None
+                        else []
+                    ),
+                )
             descriptor_image = corrected
             if not self.has_strong_lookup_evidence(
                 title, number, printed_set_code, copyright_year, cards
@@ -1294,7 +1309,7 @@ class CardRecognizer:
                 except (TimeoutError, httpx.HTTPError, RuntimeError, ValueError):
                     # The normal conservative path remains valid while offline.
                     family_complete = False
-            if identity_is_constrained:
+            if identity_is_constrained and not exact_footer_match:
                 descriptor_matches, identity_visual_matches = await asyncio.gather(
                     asyncio.to_thread(
                         self._descriptor_matches,
