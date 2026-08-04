@@ -121,7 +121,7 @@ def visual_descriptor_bundle(image: np.ndarray) -> dict[str, np.ndarray]:
     return {
         "art": artwork_descriptors(image),
         "footer": region_descriptors(image, 0.80, 1.0, 0.01, 0.99, 512),
-        "symbol": region_descriptors(image, 0.50, 0.68, 0.65, 0.99, 384),
+        "symbol": region_descriptors(image, 0.50, 0.68, 0.65, 0.99, 512),
     }
 
 
@@ -146,7 +146,7 @@ def save_visual_descriptor_bundle(
     """Persist versioned, compressed exact-printing features without JPEGs."""
     if not any(len(value) for value in descriptors.values()):
         return None
-    root = get_settings().reference_descriptor_dir / "v2"
+    root = get_settings().reference_descriptor_dir / "v3"
     path = root / scryfall_id[:2] / f"{scryfall_id}.npz"
     if path.exists():
         return path
@@ -196,7 +196,7 @@ def sync_status() -> dict:
             db.scalar(
                 select(func.count())
                 .select_from(CardVisualFingerprint)
-                .where(CardVisualFingerprint.descriptor_path.like("%.npz"))
+                .where(CardVisualFingerprint.descriptor_path.like("%/v3/%"))
             )
             or 0
         )
@@ -369,7 +369,7 @@ async def _index_card(db, provider: ScryfallProvider, card: dict) -> bool:
     descriptor_exists = bool(
         fingerprint
         and fingerprint.descriptor_path
-        and fingerprint.descriptor_path.endswith(".npz")
+        and "/v3/" in fingerprint.descriptor_path
         and Path(fingerprint.descriptor_path).is_file()
     )
     image_unchanged = bool(existing and existing.image_url == image_url)

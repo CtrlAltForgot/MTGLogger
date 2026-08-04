@@ -1516,7 +1516,7 @@ def test_descriptor_catalog_must_cover_every_candidate_before_visual_auto_add():
                 title_hash="0" * 16,
                 footer_hash="0" * 16,
                 frame_hash="0" * 16,
-                descriptor_path="/descriptors/printing-a.npz",
+                descriptor_path="/descriptors/v3/printing-a.npz",
             )
         )
         db.commit()
@@ -1532,7 +1532,7 @@ def test_descriptor_catalog_must_cover_every_candidate_before_visual_auto_add():
                 title_hash="0" * 16,
                 footer_hash="0" * 16,
                 frame_hash="0" * 16,
-                descriptor_path="/descriptors/printing-b.npz",
+                descriptor_path="/descriptors/v3/printing-b.npz",
             )
         )
         db.commit()

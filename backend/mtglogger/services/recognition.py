@@ -1260,7 +1260,7 @@ class CardRecognizer:
                     db.scalars(
                         select(CardVisualFingerprint.scryfall_id).where(
                             CardVisualFingerprint.scryfall_id.in_(scryfall_ids),
-                            CardVisualFingerprint.descriptor_path.like("%.npz"),
+                            CardVisualFingerprint.descriptor_path.like("%/v3/%"),
                         )
                     )
                 )
@@ -1325,8 +1325,14 @@ class CardRecognizer:
         ]
         if not available:
             return art
-        art_weight = 1.0 - sum(weight for _value, weight in available)
-        return art * art_weight + sum(value * weight for value, weight in available)
+        positive = [value for value, _weight in available if value > 0]
+        if not positive:
+            # Reused artwork with no matching printing-specific region must
+            # rank far below a candidate whose set symbol or footer agrees.
+            return art * 0.25
+        positive.sort(reverse=True)
+        supporting = positive[1] * 0.5 if len(positive) > 1 else 0.0
+        return min(99.5, positive[0] + supporting + 25.0)
 
     @staticmethod
     def _get_visual_catalog() -> _VisualCatalog:
