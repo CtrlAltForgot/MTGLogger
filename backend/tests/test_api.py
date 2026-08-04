@@ -1174,6 +1174,22 @@ def test_ocr_hints_do_not_invent_title_from_type_or_rules_text():
     assert year is None
 
 
+def test_printing_descriptors_require_one_ocr_established_card_identity():
+    from mtglogger.services.recognition import CardRecognizer
+
+    languish = {"name": "Languish"}
+    number_only_candidates = [languish, {"name": "Bone Splinters"}]
+
+    assert CardRecognizer.has_constrained_visual_identity(
+        "Languish", [languish], {"Languish"}
+    )
+    assert not CardRecognizer.has_constrained_visual_identity(
+        None,
+        number_only_candidates,
+        {"Languish", "Bone Splinters"},
+    )
+
+
 def test_number_only_local_recovery_keeps_all_matching_printings():
     import asyncio
     from datetime import date

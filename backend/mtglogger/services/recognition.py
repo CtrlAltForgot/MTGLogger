@@ -607,6 +607,17 @@ class CardRecognizer:
             for card in cards
         )
 
+    @classmethod
+    def has_constrained_visual_identity(
+        cls, title: str | None, cards: list[dict], identity_names: set[str]
+    ) -> bool:
+        """Allow printing-level visual reranking only after one name is established."""
+        return bool(
+            len(identity_names) == 1
+            and cards
+            and cls.has_strong_card_identity(title, cards)
+        )
+
     @staticmethod
     def structured_confidence(
         confidence: float,
@@ -999,11 +1010,12 @@ class CardRecognizer:
             identity_names = {
                 card["name"] for card in cards
             } or ({title} if title else set())
+            identity_is_constrained = self.has_constrained_visual_identity(
+                title, cards, identity_names
+            )
             family_complete = False
             if (
-                len(identity_names) == 1
-                and cards
-                and self.has_strong_card_identity(title, cards)
+                identity_is_constrained
                 and hasattr(self.provider, "printing_family")
             ):
                 try:
@@ -1024,24 +1036,35 @@ class CardRecognizer:
                 except (TimeoutError, httpx.HTTPError, ValueError):
                     # The normal conservative path remains valid while offline.
                     family_complete = False
-            descriptor_matches, identity_visual_matches = await asyncio.gather(
-                asyncio.to_thread(
-                    self._descriptor_matches,
-                    descriptor_image,
-                    identity_names,
-                    # A tiny footer can turn M15 into MIS. Never let uncertain OCR
-                    # remove the correct artwork candidate; only explicit Box Mode
-                    # is authoritative enough to constrain descriptor retrieval.
-                    box_set_code,
-                    ignored_example_review_ids,
-                ),
-                asyncio.to_thread(
-                    self._identity_visual_matches,
-                    scan_fingerprints,
-                    identity_names,
-                    box_set_code,
-                ),
-            )
+            if identity_is_constrained:
+                descriptor_matches, identity_visual_matches = await asyncio.gather(
+                    asyncio.to_thread(
+                        self._descriptor_matches,
+                        descriptor_image,
+                        identity_names,
+                        # A tiny footer can turn M15 into MIS. Never let uncertain
+                        # OCR remove the correct artwork candidate; only explicit
+                        # Box Mode is authoritative enough to constrain retrieval.
+                        box_set_code,
+                        ignored_example_review_ids,
+                    ),
+                    asyncio.to_thread(
+                        self._identity_visual_matches,
+                        scan_fingerprints,
+                        identity_names,
+                        box_set_code,
+                    ),
+                )
+            else:
+                # Regional ORB descriptors are excellent for separating known
+                # printings of one established card name, but deliberately broad
+                # pools (for example every printing numbered 105) contain many
+                # unrelated layouts that can saturate the ratio score. Do not let
+                # that identity-scoped reranker manufacture an identity when foil
+                # glare hid the title. The exhaustive global fingerprints remain
+                # available here and can conservatively recover the exact artwork.
+                descriptor_matches = []
+                identity_visual_matches = []
             known_card_ids = {card["id"] for card in cards}
             # The remote title lookup is intentionally bounded and may return
             # only the newest page of a name with hundreds of printings (basic
