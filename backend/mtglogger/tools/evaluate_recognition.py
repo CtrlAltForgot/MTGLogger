@@ -168,6 +168,24 @@ async def evaluate(limit: int | None, manifest: Path | None = None) -> dict:
             )
             for stage in timing_stages
         },
+        "samples": [
+            {
+                "review_id": item["review_id"],
+                "expected": item["expected"],
+                "confidence": item["confidence"],
+                "top1_correct": item["top1_correct"],
+                "auto_add": item["auto_add"],
+                "processing_ms": item["processing_ms"],
+                "timings_ms": item["timings_ms"],
+                "ocr": {
+                    "title": item["ocr"]["title"],
+                    "collector_number": item["ocr"]["collector_number"],
+                    "set_code": item["ocr"]["set_code"],
+                    "copyright_year": item["ocr"]["copyright_year"],
+                },
+            }
+            for item in results
+        ],
         "failures": [item for item in results if not item["top1_correct"]],
         "uncertain": [item for item in results if not item["auto_add"]],
     }
