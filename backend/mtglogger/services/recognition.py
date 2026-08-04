@@ -1509,6 +1509,22 @@ class CardRecognizer:
                     # printing-specific evidence. Reused art naturally fails
                     # the margin and remains an immediate user decision.
                     confidence = max(confidence, 98.5)
+            # A readable title/footer is not enough to distinguish basic-land
+            # artwork.  Sets routinely contain several Plains/Island/Swamp/
+            # Mountain/Forest printings whose only meaningful difference is
+            # the illustration and collector number.  A single OCR digit can
+            # therefore produce a very confident, but wrong, exact printing.
+            # Keep these below the automatic-add threshold unless the local
+            # exhaustive visual catalogue independently agrees with a clear
+            # margin.  They remain first-class suggestions for quick review.
+            if self.is_basic_land(card) and not self.has_decisive_art_match(
+                card["id"],
+                descriptor_top_id,
+                descriptor_catalog_complete,
+                descriptor_score,
+                descriptor_margin,
+            ):
+                confidence = min(confidence, 98.4)
             confidence = min(99.5, confidence)
             if oracle_recovery and not printing_signal:
                 # Rules text can identify a card, but it cannot prove which set,
@@ -1753,6 +1769,36 @@ class CardRecognizer:
                 ranked.append((reference, score))
         ranked.sort(key=lambda item: item[1], reverse=True)
         return ranked[:12]
+
+    @staticmethod
+    def is_basic_land(card: dict) -> bool:
+        type_line = str(card.get("type_line") or "").casefold()
+        if type_line.startswith("basic land"):
+            return True
+        return str(card.get("name") or "").casefold() in {
+            "plains",
+            "island",
+            "swamp",
+            "mountain",
+            "forest",
+            "wastes",
+        }
+
+    @staticmethod
+    def has_decisive_art_match(
+        card_id: str,
+        descriptor_top_id: str | None,
+        catalog_complete: bool,
+        descriptor_score: float,
+        descriptor_margin: float,
+    ) -> bool:
+        """Require independent exact-art evidence before auto-adding a land."""
+        return bool(
+            catalog_complete
+            and card_id == descriptor_top_id
+            and descriptor_score >= 88
+            and descriptor_margin >= 18
+        )
 
     @staticmethod
     def _descriptor_catalog_complete(scryfall_ids: set[str]) -> bool:

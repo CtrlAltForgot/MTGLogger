@@ -1001,7 +1001,25 @@ def test_full_frame_land_title_fuses_with_focused_collector_footer():
 
     assert result.candidates[0].scryfall_id == "ori-swamp-264"
     assert result.candidates[0].collector_number == "264"
-    assert result.confidence >= 98.5
+    # Footer OCR identifies the likely collector number, but basic-land art is
+    # too ambiguous to auto-add without independent exact-art agreement.
+    assert result.confidence == 98.4
+
+
+def test_basic_land_auto_add_requires_decisive_exact_art_evidence():
+    from mtglogger.services.recognition import CardRecognizer
+
+    swamp = {"id": "rtr-swamp-264", "name": "Swamp", "type_line": "Basic Land — Swamp"}
+    assert CardRecognizer.is_basic_land(swamp)
+    assert not CardRecognizer.has_decisive_art_match(
+        swamp["id"], "rtr-swamp-261", True, 96, 24
+    )
+    assert not CardRecognizer.has_decisive_art_match(
+        swamp["id"], swamp["id"], True, 87, 24
+    )
+    assert CardRecognizer.has_decisive_art_match(
+        swamp["id"], swamp["id"], True, 92, 21
+    )
 
 
 def test_catalog_fallback_recovers_canonical_name_with_exact_printing():

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { CameraAlt, RestartAlt, VideocamOff } from '@mui/icons-material'
 import {
-  Alert, Box, Button, Card, CardContent, Chip, Divider, FormControlLabel, Grid,
+  Alert, Box, Button, Card, CardContent, Chip, FormControlLabel, Grid,
   IconButton, LinearProgress, MenuItem, Select, Slider, Snackbar, Stack, Switch, TextField, Tooltip, Typography,
 } from '@mui/material'
 import { request, submitScan } from '../api'
@@ -26,6 +26,7 @@ export default function Scanner(){
   const [decks,setDecks]=useState<Deck[]>([])
   const [decisionBusy,setDecisionBusy]=useState(false)
   const [success,setSuccess]=useState<Inventory|null>(null)
+  const [lastIdentified,setLastIdentified]=useState<{inventory:Inventory;confidence:number}|null>(null)
   const [reviewNotice,setReviewNotice]=useState<ScanResult|null>(null)
   const [resolveImmediately,setResolveImmediately]=useState(true)
   const [stats,setStats]=useState(initialSessionStats)
@@ -41,7 +42,10 @@ export default function Scanner(){
       return next.disposition==='added'?recordSuccessfulAddition(updated,performance.now()):updated
     })
     setResult(next)
-    if(next.disposition==='added'&&next.inventory)setSuccess(next.inventory)
+    if(next.disposition==='added'&&next.inventory){
+      setSuccess(next.inventory)
+      setLastIdentified({inventory:next.inventory,confidence:next.confidence})
+    }
     if(next.disposition!=='added'&&defaults.auto_add&&!resolveImmediately)setReviewNotice(next)
     if(
       next.disposition!=='added'
@@ -67,6 +71,7 @@ export default function Scanner(){
       })
       setResult({...result,disposition:'added',inventory,message:`Added ${inventory.card_name}`})
       setSuccess(inventory)
+      setLastIdentified({inventory,confidence:result.confidence})
       setStats(current=>recordSuccessfulAddition(current,performance.now()))
       finishDecision()
     }catch(error){setDecisionBusy(false);scan.setError(error instanceof Error?error.message:'Could not accept card')}
@@ -120,30 +125,47 @@ export default function Scanner(){
     </Grid>
 
     <Grid size={{xs:12,lg:4}}>
-      <Card><CardContent><Typography variant="h6" gutterBottom>Batch defaults</Typography><Stack spacing={2}>
-        <Select value={defaults.condition} onChange={event=>setDefaults({...defaults,condition:event.target.value})}>
+      <Card sx={{height:'100%',minHeight:420,overflow:'hidden'}}>
+        <CardContent sx={{height:'100%',display:'flex',flexDirection:'column'}}>
+          <Typography variant="overline" color="text.secondary" letterSpacing=".1em">Last identified</Typography>
+          {lastIdentified?<LastIdentified inventory={lastIdentified.inventory} confidence={lastIdentified.confidence}/>:<Box sx={{flex:1,minHeight:340,display:'grid',placeItems:'center',textAlign:'center',px:3}}>
+            <Box><CameraAlt sx={{fontSize:48,color:'text.disabled',mb:1}}/><Typography variant="h6">Waiting for the first card</Typography><Typography color="text.secondary">The last successful match will stay here so you can verify its artwork while continuing to scan.</Typography></Box>
+          </Box>}
+        </CardContent>
+      </Card>
+    </Grid>
+
+    <Grid size={12}>
+      <Card><CardContent>
+        <Typography variant="h6" mb={2}>Scanner settings</Typography>
+        <Grid container spacing={4}>
+          <Grid size={{xs:12,md:7}}><Typography variant="subtitle1" mb={1.5}>Batch defaults</Typography><Grid container spacing={2}>
+        <Grid size={{xs:12,sm:6,md:4}}><Select fullWidth value={defaults.condition} onChange={event=>setDefaults({...defaults,condition:event.target.value})}>
           {[['near_mint','Near Mint'],['lightly_played','Lightly Played'],['moderately_played','Moderately Played'],['heavily_played','Heavily Played'],['damaged','Damaged']].map(([value,label])=><MenuItem value={value} key={value}>{label}</MenuItem>)}
-        </Select>
-        <TextField select label="Language" value={defaults.language} onChange={event=>setDefaults({...defaults,language:event.target.value})}>
+        </Select></Grid>
+        <Grid size={{xs:12,sm:6,md:4}}><TextField fullWidth select label="Language" value={defaults.language} onChange={event=>setDefaults({...defaults,language:event.target.value})}>
           {languages.map(([value,label])=><MenuItem value={value} key={value}>{label}</MenuItem>)}
-        </TextField>
-        <Select displayEmpty value={defaults.deck_id||''} onChange={event=>setDefaults({...defaults,deck_id:event.target.value||null})}><MenuItem value="">Deck · None</MenuItem>{decks.map(deck=><MenuItem value={deck.id} key={deck.id}>Deck · {deck.name}</MenuItem>)}</Select>
-        <TextField label="Storage location" placeholder="e.g. Box 4 / Row B" value={defaults.storage_location} onChange={event=>setDefaults({...defaults,storage_location:event.target.value||'Unsorted'})}/>
-        <TextField label="Box Mode set code" placeholder="e.g. FDN" value={defaults.box_set_code||''} onChange={event=>setDefaults({...defaults,box_set_code:event.target.value.trim()||null})}/>
-        <FormControlLabel control={<Switch checked={defaults.foil} onChange={event=>setDefaults({...defaults,foil:event.target.checked})}/>} label="Foil"/>
-        <FormControlLabel control={<Switch checked={defaults.auto_add} onChange={event=>setDefaults({...defaults,auto_add:event.target.checked})}/>} label="Auto-add near-certain matches (98.5%+)"/>
-        <FormControlLabel control={<Switch checked={resolveImmediately} onChange={event=>setResolveImmediately(event.target.checked)}/>} label="Resolve uncertain cards immediately"/>
-        <Typography variant="caption" color="text.secondary">Turn this off only when you prefer uninterrupted scanning into the Review queue.</Typography>
-      </Stack>
-      <Divider sx={{my:2.5}}/>
-      <Typography variant="h6">Camera calibration</Typography>
-      <Typography variant="body2" color="text.secondary" mb={1.5}>Tune only if cards capture too early or while still moving.</Typography>
-        <Typography variant="caption">Card entry difference: {tuning.entryDifference}</Typography>
-        <Slider min={5} max={35} value={tuning.entryDifference} onChange={(_,value)=>setTuning({...tuning,entryDifference:value as number})}/>
-        <Typography variant="caption">Minimum stable motion: {tuning.stableMotion.toFixed(1)}</Typography>
-        <Slider min={.5} max={8} step={.1} value={tuning.stableMotion} onChange={(_,value)=>setTuning({...tuning,stableMotion:value as number})}/>
-        <Typography variant="caption">Frames to capture: {tuning.stableFrames}</Typography>
-        <Slider min={3} max={12} value={tuning.stableFrames} onChange={(_,value)=>setTuning({...tuning,stableFrames:value as number})}/>
+        </TextField></Grid>
+        <Grid size={{xs:12,sm:6,md:4}}><Select fullWidth displayEmpty value={defaults.deck_id||''} onChange={event=>setDefaults({...defaults,deck_id:event.target.value||null})}><MenuItem value="">Deck · None</MenuItem>{decks.map(deck=><MenuItem value={deck.id} key={deck.id}>Deck · {deck.name}</MenuItem>)}</Select></Grid>
+        <Grid size={{xs:12,sm:6}}><TextField fullWidth label="Storage location" placeholder="e.g. Box 4 / Row B" value={defaults.storage_location} onChange={event=>setDefaults({...defaults,storage_location:event.target.value||'Unsorted'})}/></Grid>
+        <Grid size={{xs:12,sm:6}}><TextField fullWidth label="Box Mode set code" placeholder="e.g. FDN" value={defaults.box_set_code||''} onChange={event=>setDefaults({...defaults,box_set_code:event.target.value.trim()||null})}/></Grid>
+        <Grid size={12}><Stack direction={{xs:'column',sm:'row'}} spacing={{xs:0,sm:2}} flexWrap="wrap">
+          <FormControlLabel control={<Switch checked={defaults.foil} onChange={event=>setDefaults({...defaults,foil:event.target.checked})}/>} label="Foil"/>
+          <FormControlLabel control={<Switch checked={defaults.auto_add} onChange={event=>setDefaults({...defaults,auto_add:event.target.checked})}/>} label="Auto-add near-certain matches (98.5%+)"/>
+          <FormControlLabel control={<Switch checked={resolveImmediately} onChange={event=>setResolveImmediately(event.target.checked)}/>} label="Resolve uncertain cards immediately"/>
+        </Stack></Grid>
+      </Grid></Grid>
+          <Grid size={{xs:12,md:5}} sx={{borderLeft:{md:'1px solid'},borderColor:{md:'divider'},pl:{md:4}}}>
+            <Typography variant="subtitle1">Camera calibration</Typography>
+            <Typography variant="body2" color="text.secondary" mb={1.5}>Tune only if cards capture too early or while still moving.</Typography>
+            <Typography variant="caption">Card entry difference: {tuning.entryDifference}</Typography>
+            <Slider min={5} max={35} value={tuning.entryDifference} onChange={(_,value)=>setTuning({...tuning,entryDifference:value as number})}/>
+            <Typography variant="caption">Minimum stable motion: {tuning.stableMotion.toFixed(1)}</Typography>
+            <Slider min={.5} max={8} step={.1} value={tuning.stableMotion} onChange={(_,value)=>setTuning({...tuning,stableMotion:value as number})}/>
+            <Typography variant="caption">Frames to capture: {tuning.stableFrames}</Typography>
+            <Slider min={3} max={12} value={tuning.stableFrames} onChange={(_,value)=>setTuning({...tuning,stableFrames:value as number})}/>
+          </Grid>
+        </Grid>
       </CardContent></Card>
     </Grid>
     {immediateDecision&&<ScanConfirmation reviewId={result!.review_id!} candidates={result!.candidates} confidence={result!.confidence} foil={defaults.foil} language={defaults.language} onAccept={accept} onSkip={skip} busy={decisionBusy}/>}
@@ -157,6 +179,33 @@ export default function Scanner(){
       <Alert severity="warning" variant="filled" sx={{minWidth:{xs:320,sm:460}}}><Typography fontWeight={900}>SAVED FOR REVIEW · {reviewNotice?.confidence.toFixed(1)}%</Typography><Typography>{reviewNotice?.candidates[0]?.name||'Printing uncertain'} · Keep scanning</Typography></Alert>
     </Snackbar>
   </Grid>
+}
+
+function LastIdentified({inventory,confidence}:{inventory:Inventory;confidence:number}){
+  const price=Number(inventory.market_price||0)
+  return <Stack sx={{flex:1,minHeight:0}} spacing={1.5}>
+    <Box sx={{flex:1,minHeight:260,display:'grid',placeItems:'center',py:1.5}}>
+      {inventory.image_url
+        ?<FoilArtwork
+          src={inventory.image_url}
+          alt={inventory.card_name}
+          foil={inventory.foil}
+          sx={{height:'100%',maxHeight:430,maxWidth:'100%',aspectRatio:'488 / 680',borderRadius:'4.75% / 3.5%',boxShadow:'0 22px 54px rgba(0,0,0,.38)'}}
+          imageSx={{objectFit:'contain'}}
+        />
+        :<Box sx={{width:'70%',aspectRatio:'488 / 680',border:'1px dashed',borderColor:'divider',borderRadius:3,display:'grid',placeItems:'center'}}><Typography color="text.secondary">Artwork unavailable</Typography></Box>}
+    </Box>
+    <Box sx={{borderTop:'1px solid',borderColor:'divider',pt:1.75}}>
+      <Stack direction="row" spacing={1} mb={1} alignItems="center" flexWrap="wrap" useFlexGap>
+        <Chip size="small" color={confidence>=98.5?'success':'warning'} label={`${confidence.toFixed(1)}% confidence`}/>
+        {inventory.foil&&<Chip size="small" color="warning" label="Foil"/>}
+        <Chip size="small" variant="outlined" label={`Quantity ${inventory.quantity}`}/>
+      </Stack>
+      <Typography className="card-title" variant="h5" fontWeight={900} lineHeight={1.05}><CardName scryfallId={inventory.scryfall_id}>{inventory.card_name}</CardName></Typography>
+      <Typography className="card-printing" color="text.secondary" mt={.5}>{inventory.set_name} · {inventory.set_code.toUpperCase()} #{inventory.collector_number}</Typography>
+      <Typography variant="h5" color="primary.main" mt={1}>${price.toFixed(2)}</Typography>
+    </Box>
+  </Stack>
 }
 
 function ScannerGauge({label,value,max,display,unit,tone,helper}:{label:string,value:number|null,max:number,display:string,unit:string,tone:'primary'|'success'|'warning',helper:string}){
