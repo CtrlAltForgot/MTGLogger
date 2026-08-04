@@ -1407,8 +1407,8 @@ def test_confirmed_descriptor_examples_improve_matching_without_leaking_into_hol
     np.save(example_path, np.full((16, 32), 1, dtype=np.uint8))
     monkeypatch.setattr(
         recognition,
-        "artwork_descriptors",
-        lambda _image: np.full((16, 32), 1, dtype=np.uint8),
+        "visual_descriptor_bundle",
+        lambda _image: {"art": np.full((16, 32), 1, dtype=np.uint8)},
     )
     monkeypatch.setattr(
         CardRecognizer,
@@ -1492,7 +1492,7 @@ def test_descriptor_catalog_must_cover_every_candidate_before_visual_auto_add():
                 title_hash="0" * 16,
                 footer_hash="0" * 16,
                 frame_hash="0" * 16,
-                descriptor_path="/descriptors/printing-a.npy",
+                descriptor_path="/descriptors/printing-a.npz",
             )
         )
         db.commit()
@@ -1508,7 +1508,7 @@ def test_descriptor_catalog_must_cover_every_candidate_before_visual_auto_add():
                 title_hash="0" * 16,
                 footer_hash="0" * 16,
                 frame_hash="0" * 16,
-                descriptor_path="/descriptors/printing-b.npy",
+                descriptor_path="/descriptors/printing-b.npz",
             )
         )
         db.commit()

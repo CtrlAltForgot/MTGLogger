@@ -17,7 +17,11 @@ from ..database import SessionLocal
 from ..models import CardReference, CardVisualExample, CardVisualFingerprint
 from ..providers import ScryfallProvider
 from ..schemas import Candidate
-from .references import artwork_descriptors, hash_distance, visual_fingerprints
+from .references import (
+    hash_distance,
+    visual_descriptor_bundle,
+    visual_fingerprints,
+)
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -1136,8 +1140,8 @@ class CardRecognizer:
         names = {name.casefold() for name in identity_names if name}
         if not names:
             return []
-        scan = artwork_descriptors(image)
-        if len(scan) < 12:
+        scan = visual_descriptor_bundle(image)
+        if len(scan["art"]) < 12:
             return []
         with SessionLocal() as db:
             statement = (
@@ -1178,18 +1182,25 @@ class CardRecognizer:
                 if not descriptor_path:
                     continue
                 try:
-                    known = np.load(descriptor_path, allow_pickle=False)
+                    loaded = np.load(descriptor_path, allow_pickle=False)
                 except (OSError, ValueError, TypeError):
                     continue
-                if len(known) < 12:
+                if isinstance(loaded, np.lib.npyio.NpzFile):
+                    known = {key: loaded[key] for key in loaded.files}
+                    loaded.close()
+                else:
+                    # User-confirmed examples and legacy canonical profiles
+                    # contain artwork-only descriptors.
+                    known = {"art": loaded}
+                if len(known.get("art", ())) < 12:
                     continue
-                score = CardRecognizer._descriptor_score(scan, known)
+                score = CardRecognizer._descriptor_bundle_score(scan, known)
                 if score is not None:
                     scores.append(score)
             if not scores:
                 continue
             score = max(scores)
-            if score >= 55:
+            if score >= 45:
                 ranked.append((reference, round(score, 3)))
         ranked.sort(key=lambda item: item[1], reverse=True)
         return ranked[:12]
@@ -1249,7 +1260,7 @@ class CardRecognizer:
                     db.scalars(
                         select(CardVisualFingerprint.scryfall_id).where(
                             CardVisualFingerprint.scryfall_id.in_(scryfall_ids),
-                            CardVisualFingerprint.descriptor_path.is_not(None),
+                            CardVisualFingerprint.descriptor_path.like("%.npz"),
                         )
                     )
                 )
@@ -1270,6 +1281,45 @@ class CardRecognizer:
         # Webcam/canonical benchmarks place exact art around 20-35 and adjacent
         # artwork around 47-65. The margin between candidates is the key signal.
         return min(99.5, max(0.0, 124.0 - mean_distance * 1.25))
+
+    @staticmethod
+    def _ratio_descriptor_score(
+        scan: np.ndarray | None, canonical: np.ndarray | None
+    ) -> float | None:
+        """Score tiny exact-print regions using distinctive ratio-test matches."""
+        if scan is None or canonical is None or len(scan) < 8 or len(canonical) < 8:
+            return None
+        pairs = cv2.BFMatcher(cv2.NORM_HAMMING).knnMatch(scan, canonical, k=2)
+        good = [
+            pair[0]
+            for pair in pairs
+            if len(pair) == 2 and pair[0].distance < 0.75 * pair[1].distance
+        ]
+        if len(good) < 5:
+            return None
+        median_distance = float(np.median([match.distance for match in good]))
+        return min(99.5, max(0.0, len(good) * 5.0 + 85.0 - median_distance))
+
+    @staticmethod
+    def _descriptor_bundle_score(
+        scan: dict[str, np.ndarray], canonical: dict[str, np.ndarray]
+    ) -> float | None:
+        """Fuse artwork identity with footer and set-symbol printing evidence."""
+        art = CardRecognizer._descriptor_score(scan["art"], canonical["art"])
+        if art is None:
+            return None
+        footer = CardRecognizer._ratio_descriptor_score(
+            scan.get("footer"), canonical.get("footer")
+        )
+        symbol = CardRecognizer._ratio_descriptor_score(
+            scan.get("symbol"), canonical.get("symbol")
+        )
+        exact = [(footer, 0.50), (symbol, 0.25)]
+        available = [(value, weight) for value, weight in exact if value is not None]
+        if not available:
+            return art
+        art_weight = 1.0 - sum(weight for _value, weight in available)
+        return art * art_weight + sum(value * weight for value, weight in available)
 
     @staticmethod
     def _get_visual_catalog() -> _VisualCatalog:

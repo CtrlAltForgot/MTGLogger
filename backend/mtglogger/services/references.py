@@ -90,6 +90,41 @@ def artwork_descriptors(image: np.ndarray, feature_count: int = 256) -> np.ndarr
     return descriptors.astype(np.uint8, copy=False)
 
 
+def region_descriptors(
+    image: np.ndarray,
+    top: float,
+    bottom: float,
+    left: float,
+    right: float,
+    feature_count: int,
+) -> np.ndarray:
+    """Return compact features for one exact-printing region."""
+    height, width = image.shape[:2]
+    crop = image[
+        int(height * top) : int(height * bottom),
+        int(width * left) : int(width * right),
+    ]
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    # Give tiny footer glyphs enough pixels for stable webcam-to-canonical
+    # matching. Normalizing both dimensions also absorbs small crop differences.
+    gray = cv2.resize(gray, (600, 300), interpolation=cv2.INTER_CUBIC)
+    gray = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
+    detector = cv2.ORB_create(nfeatures=feature_count, scaleFactor=1.2, nlevels=8)
+    _keypoints, descriptors = detector.detectAndCompute(gray, None)
+    if descriptors is None:
+        return np.empty((0, 32), dtype=np.uint8)
+    return descriptors.astype(np.uint8, copy=False)
+
+
+def visual_descriptor_bundle(image: np.ndarray) -> dict[str, np.ndarray]:
+    """Features for identity artwork and exact-printing-specific regions."""
+    return {
+        "art": artwork_descriptors(image),
+        "footer": region_descriptors(image, 0.80, 1.0, 0.01, 0.99, 512),
+        "symbol": region_descriptors(image, 0.50, 0.68, 0.65, 0.99, 384),
+    }
+
+
 def save_artwork_descriptors(scryfall_id: str, descriptors: np.ndarray) -> Path | None:
     if not len(descriptors):
         return None
@@ -101,6 +136,24 @@ def save_artwork_descriptors(scryfall_id: str, descriptors: np.ndarray) -> Path 
     temporary = path.with_suffix(".tmp")
     with temporary.open("wb") as output:
         np.save(output, descriptors, allow_pickle=False)
+    temporary.replace(path)
+    return path
+
+
+def save_visual_descriptor_bundle(
+    scryfall_id: str, descriptors: dict[str, np.ndarray]
+) -> Path | None:
+    """Persist versioned, compressed exact-printing features without JPEGs."""
+    if not any(len(value) for value in descriptors.values()):
+        return None
+    root = get_settings().reference_descriptor_dir / "v2"
+    path = root / scryfall_id[:2] / f"{scryfall_id}.npz"
+    if path.exists():
+        return path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    with temporary.open("wb") as output:
+        np.savez_compressed(output, **descriptors)
     temporary.replace(path)
     return path
 
@@ -143,7 +196,7 @@ def sync_status() -> dict:
             db.scalar(
                 select(func.count())
                 .select_from(CardVisualFingerprint)
-                .where(CardVisualFingerprint.descriptor_path.is_not(None))
+                .where(CardVisualFingerprint.descriptor_path.like("%.npz"))
             )
             or 0
         )
@@ -316,6 +369,7 @@ async def _index_card(db, provider: ScryfallProvider, card: dict) -> bool:
     descriptor_exists = bool(
         fingerprint
         and fingerprint.descriptor_path
+        and fingerprint.descriptor_path.endswith(".npz")
         and Path(fingerprint.descriptor_path).is_file()
     )
     image_unchanged = bool(existing and existing.image_url == image_url)
@@ -357,7 +411,9 @@ async def _index_card(db, provider: ScryfallProvider, card: dict) -> bool:
         db.add(existing)
         db.flush()
     cache_path = _cache_image(card["id"], raw)
-    descriptor_path = save_artwork_descriptors(card["id"], artwork_descriptors(image))
+    descriptor_path = save_visual_descriptor_bundle(
+        card["id"], visual_descriptor_bundle(image)
+    )
     db.merge(
         CardVisualFingerprint(
             scryfall_id=card["id"],
