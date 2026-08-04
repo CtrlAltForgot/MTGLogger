@@ -1,4 +1,5 @@
 import asyncio
+import json
 import math
 import time
 from dataclasses import asdict, dataclass
@@ -392,6 +393,22 @@ async def _index_card(db, provider: ScryfallProvider, card: dict) -> bool:
     )
     image_unchanged = bool(existing and existing.image_url == image_url)
     cache_satisfied = not get_settings().cache_reference_images or cached_image_exists
+    oracle_text = card.get("oracle_text") or "\n".join(
+        face.get("oracle_text", "") for face in card.get("card_faces", [])
+    )
+    metadata = {
+        "name": card["name"],
+        "set_code": card["set"],
+        "set_name": card["set_name"],
+        "collector_number": card["collector_number"],
+        "oracle_id": card.get("oracle_id"),
+        "language": card.get("lang", "en"),
+        "oracle_text": oracle_text or None,
+        "promo_types": json.dumps(card.get("promo_types") or []),
+        "released_at": _released_at(card),
+        "image_url": image_url,
+        "market_price": provider.market_price(card),
+    }
     if (
         existing
         and fingerprint
@@ -401,13 +418,8 @@ async def _index_card(db, provider: ScryfallProvider, card: dict) -> bool:
         and cache_satisfied
     ):
         # Metadata and prices can change without changing the canonical image.
-        existing.name = card["name"]
-        existing.set_code = card["set"]
-        existing.set_name = card["set_name"]
-        existing.collector_number = card["collector_number"]
-        existing.released_at = _released_at(card)
-        existing.image_url = image_url
-        existing.market_price = provider.market_price(card)
+        for field, value in metadata.items():
+            setattr(existing, field, value)
         db.commit()
         return False
     raw = await provider.download_image(image_url)
@@ -417,17 +429,14 @@ async def _index_card(db, provider: ScryfallProvider, card: dict) -> bool:
     if not existing:
         existing = CardReference(
             scryfall_id=card["id"],
-            name=card["name"],
-            set_code=card["set"],
-            set_name=card["set_name"],
-            collector_number=card["collector_number"],
-            released_at=_released_at(card),
-            image_url=image_url,
+            **metadata,
             art_hash=artwork_hash(image),
-            market_price=provider.market_price(card),
         )
         db.add(existing)
         db.flush()
+    else:
+        for field, value in metadata.items():
+            setattr(existing, field, value)
     cache_path = _cache_image(card["id"], raw)
     descriptor_path = save_visual_descriptor_bundle(
         card["id"], visual_descriptor_bundle(image)

@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import re
 import time
@@ -522,16 +523,18 @@ class CardRecognizer:
         return 93.5 if promo_types else 94.0
 
     async def _oracle_recovery(self, text: str, language: str) -> tuple[str | None, list[dict]]:
-        if language != "en" or not hasattr(self.provider, "oracle_search"):
+        if language != "en":
             return None, []
         terms = self.oracle_terms(text)
         if len(terms) < 2:
             return None, []
-        try:
-            async with asyncio.timeout(2.5):
-                matches = await self.provider.oracle_search(terms)
-        except (TimeoutError, httpx.HTTPError, ValueError):
-            return None, []
+        matches = self._lookup_local_oracle_cards(terms, language)
+        if not matches and hasattr(self.provider, "oracle_search"):
+            try:
+                async with asyncio.timeout(2.5):
+                    matches = await self.provider.oracle_search(terms)
+            except (TimeoutError, httpx.HTTPError, ValueError):
+                return None, []
         ranked = sorted(
             (
                 (card, self.oracle_similarity(text, card.get("oracle_text", "")))
@@ -546,6 +549,29 @@ class CardRecognizer:
             return None, []
         name = ranked[0][0]["name"]
         return name, await self._lookup_cards(name, None, None, None, language)
+
+    @staticmethod
+    def _lookup_local_oracle_cards(terms: list[str], language: str) -> list[dict]:
+        """Find unique oracle cards locally; canonical metadata avoids network latency."""
+        try:
+            with SessionLocal() as db:
+                statement = select(CardReference).where(
+                    CardReference.language == language,
+                    CardReference.oracle_text.is_not(None),
+                )
+                for term in terms[:3]:
+                    statement = statement.where(CardReference.oracle_text.ilike(f"%{term}%"))
+                rows = list(db.scalars(statement.limit(500)))
+        except SQLAlchemyError:
+            return []
+        unique: dict[str, CardReference] = {}
+        for row in rows:
+            key = row.oracle_id or row.name.casefold()
+            unique.setdefault(key, row)
+        return [
+            {"name": row.name, "oracle_text": row.oracle_text or ""}
+            for row in unique.values()
+        ]
 
     @classmethod
     def promo_type_hint(cls, text: str) -> str | None:
@@ -875,7 +901,10 @@ class CardRecognizer:
                         else None
                     )
                 },
-                "lang": "en",
+                "lang": reference.language or "en",
+                "oracle_id": reference.oracle_id,
+                "oracle_text": reference.oracle_text or "",
+                "promo_types": json.loads(reference.promo_types or "[]"),
             }
             for reference in selected[:24]
         ]

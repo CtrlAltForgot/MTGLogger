@@ -669,6 +669,56 @@ def test_oracle_terms_recover_distinctive_rules_text_despite_ocr_damage():
     ]
 
 
+def test_local_oracle_catalog_recovers_one_card_identity_without_network():
+    from mtglogger.database import Base, SessionLocal, engine
+    from mtglogger.models import CardReference
+    from mtglogger.services.recognition import CardRecognizer
+
+    Base.metadata.drop_all(engine)
+    Base.metadata.create_all(engine)
+    with SessionLocal() as db:
+        db.add_all(
+            [
+                CardReference(
+                    scryfall_id="00000000-0000-0000-0000-000000000121",
+                    oracle_id="00000000-0000-0000-0000-000000000122",
+                    name="Languish",
+                    set_code="ori",
+                    set_name="Magic Origins",
+                    collector_number="105",
+                    language="en",
+                    oracle_text="All creatures get -4/-4 until end of turn.",
+                    image_url="https://example.test/languish.jpg",
+                    art_hash="0" * 16,
+                ),
+                CardReference(
+                    scryfall_id="00000000-0000-0000-0000-000000000123",
+                    oracle_id="00000000-0000-0000-0000-000000000124",
+                    name="Other Card",
+                    set_code="tst",
+                    set_name="Test",
+                    collector_number="1",
+                    language="en",
+                    oracle_text="Target creature gets -4/-4 until end of turn.",
+                    image_url="https://example.test/other.jpg",
+                    art_hash="1" * 16,
+                ),
+            ]
+        )
+        db.commit()
+
+    matches = CardRecognizer._lookup_local_oracle_cards(
+        ["all creatures", "-4/-4", "until end of turn"], "en"
+    )
+
+    assert matches == [
+        {
+            "name": "Languish",
+            "oracle_text": "All creatures get -4/-4 until end of turn.",
+        }
+    ]
+
+
 def test_structured_printing_evidence_promotes_safe_auto_adds_only():
     from mtglogger.services.recognition import CardRecognizer
 

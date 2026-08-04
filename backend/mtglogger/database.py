@@ -38,6 +38,36 @@ def migrate_schema() -> None:
                 connection.execute(
                     text("ALTER TABLE card_references ADD COLUMN released_at DATE")
                 )
+        additive_reference_columns = {
+            "oracle_id": "VARCHAR(36)",
+            "language": "VARCHAR(16) DEFAULT 'en'",
+            "oracle_text": "TEXT",
+            "promo_types": "TEXT",
+        }
+        for column_name, column_type in additive_reference_columns.items():
+            if column_name not in reference_columns:
+                with engine.begin() as connection:
+                    connection.execute(
+                        text(
+                            f"ALTER TABLE card_references ADD COLUMN {column_name} {column_type}"
+                        )
+                    )
+        # These indexes make local language and oracle-family lookups cheap.
+        refreshed_columns = {
+            column["name"] for column in inspect(engine).get_columns("card_references")
+        }
+        existing_indexes = {
+            index["name"] for index in inspect(engine).get_indexes("card_references")
+        }
+        for column_name in ("oracle_id", "language"):
+            index_name = f"ix_card_references_{column_name}"
+            if column_name in refreshed_columns and index_name not in existing_indexes:
+                with engine.begin() as connection:
+                    connection.execute(
+                        text(
+                            f"CREATE INDEX {index_name} ON card_references ({column_name})"
+                        )
+                    )
                 connection.execute(
                     text(
                         "CREATE INDEX ix_card_references_released_at "
