@@ -485,6 +485,41 @@ def test_exact_print_descriptor_regions_separate_reused_artwork():
     assert exact_score > reused_score + 40
 
 
+def test_basic_land_art_outvotes_one_wrong_footer_digit():
+    """A shared set symbol and misread footer must not beat the actual artwork."""
+    import numpy as np
+
+    from mtglogger.services.recognition import CardRecognizer
+
+    rng = np.random.default_rng(261264)
+    scanned_art = rng.integers(0, 256, (64, 32), dtype=np.uint8)
+    scanned_footer = rng.integers(0, 256, (48, 32), dtype=np.uint8)
+    shared_symbol = rng.integers(0, 256, (32, 32), dtype=np.uint8)
+    scan = {
+        "art": scanned_art,
+        "footer": scanned_footer,
+        "symbol": shared_symbol,
+    }
+    actual_print = {
+        "art": scanned_art.copy(),
+        "footer": rng.integers(0, 256, (48, 32), dtype=np.uint8),
+        "symbol": shared_symbol.copy(),
+    }
+    ocr_selected_wrong_print = {
+        "art": rng.integers(0, 256, (64, 32), dtype=np.uint8),
+        "footer": scanned_footer.copy(),
+        "symbol": shared_symbol.copy(),
+    }
+
+    actual_score = CardRecognizer._descriptor_bundle_score(scan, actual_print)
+    wrong_score = CardRecognizer._descriptor_bundle_score(
+        scan, ocr_selected_wrong_print
+    )
+
+    assert actual_score is not None and wrong_score is not None
+    assert actual_score > wrong_score + 10
+
+
 def test_multi_region_fingerprint_ranks_matching_footer_above_reprint():
     from types import SimpleNamespace
 

@@ -1161,12 +1161,15 @@ class CardRecognizer:
                 # printing so downstream scoring follows the same path as a
                 # readable title without paying for broad OCR recovery.
                 title = exact_footer_card["name"]
-            # A set code plus collector number is the canonical identifier for
-            # a paper printing.  When the local catalog resolves that pair to a
-            # single record, an exhaustive 96k-print visual search cannot alter
-            # the answer; it only adds several seconds of disk and hash work.
-            # Keep the visual path for every ambiguous or incomplete footer.
-            if exact_footer_card:
+            # A set code plus collector number is normally the canonical
+            # identifier for a paper printing. Basic lands are the exception in
+            # practice: one mistaken footer digit silently selects a different
+            # artwork from the same set. Never let footer OCR bypass independent
+            # artwork verification for those cards.
+            exact_land_needs_art = bool(
+                exact_footer_card and self.is_basic_land(exact_footer_card)
+            )
+            if exact_footer_card and not exact_land_needs_art:
                 scan_fingerprints = {}
                 visual_matches = []
             else:
@@ -1287,10 +1290,13 @@ class CardRecognizer:
             exact_footer_match = self.has_exact_footer_match(
                 title, number, printed_set_code, cards
             )
+            exact_footer_can_skip_art = exact_footer_match and not any(
+                self.is_basic_land(card) for card in cards
+            )
             family_complete = False
             if (
                 identity_is_constrained
-                and not exact_footer_match
+                and not exact_footer_can_skip_art
             ):
                 try:
                     family_name = next(iter(identity_names))
@@ -1322,7 +1328,7 @@ class CardRecognizer:
                 except (TimeoutError, httpx.HTTPError, RuntimeError, ValueError):
                     # The normal conservative path remains valid while offline.
                     family_complete = False
-            if identity_is_constrained and not exact_footer_match:
+            if identity_is_constrained and not exact_footer_can_skip_art:
                 descriptor_matches, identity_visual_matches = await asyncio.gather(
                     asyncio.to_thread(
                         self._descriptor_matches,
@@ -1864,25 +1870,21 @@ class CardRecognizer:
         symbol = CardRecognizer._ratio_descriptor_score(
             scan.get("symbol"), canonical.get("symbol")
         )
-        exact = [(footer, 0.50), (symbol, 0.25)]
-        # A v2 canonical profile with zero reliable regional matches is useful
-        # negative evidence, not a reason to fall back to artwork-only scoring.
-        # Legacy/example profiles omit these keys and remain artwork-only.
-        available = [
-            (value or 0.0, weight)
-            for key, (value, weight) in zip(("footer", "symbol"), exact, strict=True)
-            if key in canonical and len(canonical[key]) >= 8
-        ]
-        if not available:
+        # Artwork must remain the majority signal. Set symbols are identical on
+        # every basic land in a set and a one-digit footer OCR error is precisely
+        # the failure this reranker exists to catch. Regional descriptors support
+        # an artwork match; they may not replace it.
+        weighted_score = art * 0.55
+        available_weight = 0.55
+        if "footer" in canonical and len(canonical["footer"]) >= 8:
+            weighted_score += (footer or 0.0) * 0.30
+            available_weight += 0.30
+        if "symbol" in canonical and len(canonical["symbol"]) >= 8:
+            weighted_score += (symbol or 0.0) * 0.15
+            available_weight += 0.15
+        if available_weight == 0.55:
             return art
-        positive = [value for value, _weight in available if value > 0]
-        if not positive:
-            # Reused artwork with no matching printing-specific region must
-            # rank far below a candidate whose set symbol or footer agrees.
-            return art * 0.25
-        positive.sort(reverse=True)
-        supporting = positive[1] * 0.5 if len(positive) > 1 else 0.0
-        return min(99.5, positive[0] + supporting + 25.0)
+        return min(99.5, weighted_score / available_weight)
 
     @staticmethod
     def _get_visual_catalog() -> _VisualCatalog:
