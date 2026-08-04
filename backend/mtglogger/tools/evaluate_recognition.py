@@ -70,6 +70,7 @@ async def evaluate(limit: int | None, manifest: Path | None = None) -> dict:
         ids = [candidate.scryfall_id for candidate in result.candidates]
         names = [candidate.name.casefold() for candidate in result.candidates]
         expected_name = getattr(expected, "card_name", None) or getattr(expected, "name")
+        ocr_title, ocr_number, ocr_set_code, ocr_year = recognizer.hints(result.ocr_text)
         top_id = ids[0] if ids else None
         expected_rank = ids.index(expected.scryfall_id) + 1 if expected.scryfall_id in ids else None
         auto_add = result.confidence >= 98.5
@@ -104,6 +105,13 @@ async def evaluate(limit: int | None, manifest: Path | None = None) -> dict:
                     for rank, candidate in enumerate(result.candidates, start=1)
                 ],
                 "confidence": result.confidence,
+                "ocr": {
+                    "title": ocr_title,
+                    "collector_number": ocr_number,
+                    "set_code": ocr_set_code,
+                    "copyright_year": ocr_year,
+                    "text": result.ocr_text,
+                },
                 "expected_printing_rank": expected_rank,
                 "card_top1_correct": bool(names and names[0] == expected_name.casefold()),
                 "card_top5_correct": expected_name.casefold() in names,

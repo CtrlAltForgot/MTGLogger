@@ -639,6 +639,22 @@ def test_card_name_catalog_recovers_joined_and_misspelled_titles():
     )
 
 
+def test_card_name_catalog_treats_both_faces_as_exact_identity_aliases():
+    from mtglogger.services.recognition import CardRecognizer
+
+    double_faced = "Liliana, Heretical Healer // Liliana, Defiant Necromancer"
+
+    assert CardRecognizer.card_name_similarity(
+        "Liliana,Defiant Necromancer", double_faced
+    ) == 1
+    assert CardRecognizer.closest_catalog_names(
+        "Liliana,Defiant Necromancer", [double_faced, "Liliana, the Necromancer"], 1
+    )[0][0] == double_faced
+    assert CardRecognizer.has_strong_card_identity(
+        "Liliana,Defiant Necromancer", [{"name": double_faced}]
+    )
+
+
 def test_oracle_terms_recover_distinctive_rules_text_despite_ocr_damage():
     from mtglogger.services.recognition import CardRecognizer
 
@@ -755,9 +771,11 @@ def test_oracle_recovery_orders_exact_regular_and_promo_printings_below_auto_add
 
     regular = {"promo_types": []}
     game_day = {"promo_types": ["setpromo", "gameday"]}
+    promo_set = {"promo_types": [], "set": "pori"}
 
     assert CardRecognizer.oracle_printing_cap(1, "105", 1, None, regular) == 94
     assert CardRecognizer.oracle_printing_cap(1, "105", 1, None, game_day) == 93.5
+    assert CardRecognizer.oracle_printing_cap(1, "105", 1, None, promo_set) == 93.5
     assert CardRecognizer.oracle_printing_cap(1, "105", 1, "gameday", game_day) == 94
     assert CardRecognizer.oracle_printing_cap(1, "105", 1, "gameday", regular) == 89
     assert CardRecognizer.oracle_printing_cap(1, None, 0.45, None, regular) == 89

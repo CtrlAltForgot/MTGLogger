@@ -447,6 +447,18 @@ class CardRecognizer:
         return "".join(character for character in value.casefold() if character.isalnum())
 
     @classmethod
+    def card_name_similarity(cls, observed: str | None, catalog_name: str) -> float:
+        """Compare OCR against either face of a multi-faced card."""
+        source = cls.normalized_name(observed or "")
+        if not source:
+            return 0.0
+        names = [catalog_name, *catalog_name.split(" // ")]
+        return max(
+            SequenceMatcher(None, source, cls.normalized_name(name)).ratio()
+            for name in names
+        )
+
+    @classmethod
     def fuzzy_contains(cls, text: str, phrase: str, threshold: float = 0.78) -> bool:
         source, target = cls.normalized_name(text), cls.normalized_name(phrase)
         if target in source:
@@ -520,7 +532,8 @@ class CardRecognizer:
         # When OCR sees no promo marker, put the ordinary set printing before
         # date-stamped/Game Day variants with the same collector number. The
         # small distinction improves the review order but remains below auto-add.
-        return 93.5 if promo_types else 94.0
+        promo_printing = bool(promo_types) or card.get("set", "").casefold().startswith("p")
+        return 93.5 if promo_printing else 94.0
 
     async def _oracle_recovery(self, text: str, language: str) -> tuple[str | None, list[dict]]:
         if language != "en":
@@ -590,9 +603,13 @@ class CardRecognizer:
             return []
         ranked = sorted(
             (
-                (name, SequenceMatcher(None, query, cls.normalized_name(name)).ratio())
+                (name, cls.card_name_similarity(title, name))
                 for name in names
-                if abs(len(cls.normalized_name(name)) - len(query)) <= max(5, len(query) // 2)
+                if any(
+                    abs(len(cls.normalized_name(face)) - len(query))
+                    <= max(5, len(query) // 2)
+                    for face in [name, *name.split(" // ")]
+                )
             ),
             key=lambda item: item[1],
             reverse=True,
@@ -628,7 +645,7 @@ class CardRecognizer:
         if not title or not cards:
             return False
         title_scores = [
-            SequenceMatcher(None, title.casefold(), card["name"].casefold()).ratio()
+            cls.card_name_similarity(title, card["name"])
             for card in cards
         ]
         best_index = max(range(len(cards)), key=title_scores.__getitem__)
@@ -656,10 +673,8 @@ class CardRecognizer:
     def has_strong_card_identity(cls, title: str | None, cards: list[dict]) -> bool:
         if not title or not cards:
             return False
-        normalized_title = cls.normalized_name(title)
         return any(
-            SequenceMatcher(None, normalized_title, cls.normalized_name(card["name"])).ratio()
-            >= 0.90
+            cls.card_name_similarity(title, card["name"]) >= 0.90
             for card in cards
         )
 
@@ -674,12 +689,8 @@ class CardRecognizer:
         """Return true when OCR already identifies one exact physical printing."""
         if not title or not number or not printed_set_code:
             return False
-        normalized_title = cls.normalized_name(title)
         return any(
-            SequenceMatcher(
-                None, normalized_title, cls.normalized_name(card["name"])
-            ).ratio()
-            >= 0.93
+            cls.card_name_similarity(title, card["name"]) >= 0.93
             and cls.collector_score(number, card["collector_number"]) == 1.0
             and cls.set_code_score(printed_set_code, card["set"]) == 1.0
             for card in cards
@@ -926,7 +937,10 @@ class CardRecognizer:
         exact = [
             reference
             for reference in rows
-            if (not preferred_set or reference.set_code.casefold() == preferred_set.casefold())
+            if (
+                not preferred_set
+                or cls.set_code_score(preferred_set, reference.set_code) == 1.0
+            )
             and (
                 not number
                 or cls.collector_score(number, reference.collector_number) == 1.0
@@ -1246,11 +1260,7 @@ class CardRecognizer:
             exact_set_counts[code] = exact_set_counts.get(code, 0) + 1
         for card in cards:
             title_score = (
-                SequenceMatcher(
-                    None,
-                    self.normalized_name(title or ""),
-                    self.normalized_name(card["name"]),
-                ).ratio()
+                self.card_name_similarity(title, card["name"])
                 if title
                 else 0.55
             )
