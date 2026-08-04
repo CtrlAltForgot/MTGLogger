@@ -104,6 +104,60 @@ def test_inventory_finish_move_splits_foil_and_nonfoil_quantities(monkeypatch):
     }
 
 
+def test_inventory_copy_move_splits_selected_finish_and_condition(monkeypatch):
+    import asyncio
+    from decimal import Decimal
+
+    from mtglogger.api import inventory
+    from mtglogger.database import Base, SessionLocal, engine
+    from mtglogger.models import InventoryItem
+    from mtglogger.schemas import InventoryCopyMove
+
+    async def foil_price(_scryfall_id: str, foil: bool):
+        return Decimal("2.75" if foil else "0.42")
+
+    monkeypatch.setattr(inventory, "finish_price", foil_price)
+    Base.metadata.drop_all(engine)
+    Base.metadata.create_all(engine)
+    with SessionLocal() as db:
+        item = InventoryItem(**CARD, quantity=3)
+        db.add(item)
+        db.commit()
+        target = asyncio.run(
+            inventory.move_inventory_copies(
+                item.id,
+                InventoryCopyMove(quantity=2, foil=True, condition="lightly_played"),
+                db,
+            )
+        )
+        variants = list(db.query(InventoryItem).all())
+
+    assert target.quantity == 2
+    assert target.foil is True
+    assert target.condition == "lightly_played"
+    assert target.market_price == Decimal("2.75")
+    assert {(variant.foil, variant.condition, variant.quantity) for variant in variants} == {
+        (False, "near_mint", 1),
+        (True, "lightly_played", 2),
+    }
+
+
+def test_inventory_copy_move_rejects_copies_assigned_to_deck(client):
+    item = client.post("/api/inventory", json={**CARD, "quantity": 2}).json()
+    deck = client.post("/api/decks", json={"name": "Burn"}).json()
+    client.post(
+        f"/api/decks/{deck['id']}/entries",
+        json={"entries": [{"inventory_id": item["id"], "quantity": 1}]},
+    )
+
+    moved = client.post(
+        f"/api/inventory/{item['id']}/move-copies",
+        json={"quantity": 2, "foil": False, "condition": "lightly_played"},
+    )
+    assert moved.status_code == 409
+    assert moved.json()["detail"] == "Only 1 unassigned copies can be changed"
+
+
 def test_price_changes_retain_previous_value_and_collection_history(client):
     item = client.post("/api/inventory", json=CARD).json()
     first = client.patch(f"/api/inventory/{item['id']}", json={"market_price": "0.84"})

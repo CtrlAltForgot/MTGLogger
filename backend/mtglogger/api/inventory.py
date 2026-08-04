@@ -11,6 +11,7 @@ from ..database import get_db
 from ..models import DeckEntry, InventoryItem, PriceSnapshot, ReviewItem, utc_now
 from ..providers import ScryfallProvider
 from ..schemas import (
+    InventoryCopyMove,
     InventoryCreate,
     InventoryFinishMove,
     InventoryRead,
@@ -193,6 +194,87 @@ async def move_inventory_finish(
             foil=data.foil,
             language=item.language,
             condition=item.condition,
+            purchase_price=item.purchase_price,
+            market_price=price,
+            storage_location=item.storage_location,
+            collection_name=item.collection_name,
+            image_url=item.image_url,
+            notes=item.notes,
+            color_identity=item.color_identity,
+            rarity=item.rarity,
+            type_line=item.type_line,
+            status=item.status,
+            updated_at=activity_time,
+        )
+        db.add(target)
+        db.flush()
+
+    item.quantity -= data.quantity
+    if item.quantity == 0:
+        db.execute(
+            update(ReviewItem)
+            .where(ReviewItem.resolved_inventory_id == item.id)
+            .values(resolved_inventory_id=target.id)
+        )
+        db.delete(item)
+    record_collection_value(db)
+    db.commit()
+    db.refresh(target)
+    return target
+
+
+@router.post("/{item_id}/move-copies", response_model=InventoryRead)
+async def move_inventory_copies(
+    item_id: str, data: InventoryCopyMove, db: Session = Depends(get_db)
+):
+    """Move selected unassigned physical copies into a finish/condition variant."""
+    item = db.get(InventoryItem, item_id)
+    if not item:
+        raise HTTPException(404, "Inventory item not found")
+    if data.foil == item.foil and data.condition == item.condition:
+        raise HTTPException(422, "Selected copies already use those properties")
+    assigned = db.scalar(
+        select(func.coalesce(func.sum(DeckEntry.quantity), 0)).where(
+            DeckEntry.inventory_id == item.id
+        )
+    ) or 0
+    available = item.quantity - assigned
+    if data.quantity > available:
+        raise HTTPException(409, f"Only {available} unassigned copies can be changed")
+
+    target = db.scalar(
+        select(InventoryItem).where(
+            InventoryItem.scryfall_id == item.scryfall_id,
+            InventoryItem.foil == data.foil,
+            InventoryItem.language == item.language,
+            InventoryItem.condition == data.condition,
+            InventoryItem.collection_name == item.collection_name,
+            InventoryItem.storage_location == item.storage_location,
+            InventoryItem.status == item.status,
+        )
+    )
+    price = (
+        await finish_price(item.scryfall_id, data.foil)
+        if data.foil != item.foil
+        else item.market_price
+    )
+    activity_time = utc_now()
+    if target:
+        target.quantity += data.quantity
+        target.market_price = price
+        target.updated_at = activity_time
+    else:
+        target = InventoryItem(
+            card_name=item.card_name,
+            set_code=item.set_code,
+            set_name=item.set_name,
+            collector_number=item.collector_number,
+            scryfall_id=item.scryfall_id,
+            oracle_id=item.oracle_id,
+            quantity=data.quantity,
+            foil=data.foil,
+            language=item.language,
+            condition=data.condition,
             purchase_price=item.purchase_price,
             market_price=price,
             storage_location=item.storage_location,

@@ -47,6 +47,12 @@ class InventoryFinishMove(BaseModel):
     foil: bool
 
 
+class InventoryCopyMove(BaseModel):
+    quantity: int = Field(1, ge=1)
+    foil: bool
+    condition: str
+
+
 class InventoryDeckAssignment(BaseModel):
     deck_id: str
     deck_name: str
