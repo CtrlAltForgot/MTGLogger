@@ -379,10 +379,43 @@ class CardRecognizer:
                 break
             if number:
                 break
+        # The title is physically above the type line. Under foil glare Paddle
+        # may lose the title entirely while reading "Sorcery" or "Creature"
+        # perfectly; treating that type word as a fuzzy card name can anchor the
+        # whole pipeline to an unrelated card (for example Sorcery -> Sorry).
+        # Stop title search at the first recognizable type line so rules text
+        # below it cannot become a fabricated identity either.
+        type_prefixes = (
+            "artifact",
+            "battle",
+            "basic land",
+            "conspiracy",
+            "creature",
+            "enchantment",
+            "instant",
+            "kindred",
+            "land",
+            "phenomenon",
+            "plane",
+            "planeswalker",
+            "scheme",
+            "sorcery",
+            "tribal",
+            "vanguard",
+        )
+        type_line_index = next(
+            (
+                index
+                for index, line in enumerate(lines[:6])
+                if line.casefold().startswith(type_prefixes)
+            ),
+            None,
+        )
+        title_lines = lines[:type_line_index] if type_line_index is not None else lines[:5]
         title = next(
             (
                 line
-                for line in lines[:5]
+                for line in title_lines
                 if not re.search(r"\d{3,}", line)
                 and len(line) <= 60
                 and sum(character.isalpha() for character in line) >= 3
@@ -654,6 +687,16 @@ class CardRecognizer:
             )
             if local_cards:
                 return local_cards
+        if not title and number and not promo_type and language.casefold() == "en":
+            # A readable collector number remains useful when glare destroys the
+            # title. Preserve every matching printing as a conservative pool;
+            # global/descriptor evidence will rank it, but number-only evidence
+            # can never cross the automatic-add threshold by itself.
+            local_cards = await asyncio.to_thread(
+                self._lookup_local_cards_by_number, number, preferred_set
+            )
+            if local_cards:
+                return local_cards
 
         async def search_variants(
             candidate_title: str, *, relaxed: bool = False
@@ -794,6 +837,53 @@ class CardRecognizer:
                 "lang": "en",
             }
             for reference in selected[:24]
+        ]
+
+    @classmethod
+    def _lookup_local_cards_by_number(
+        cls, number: str, preferred_set: str | None
+    ) -> list[dict]:
+        normalized = number.casefold().lstrip("0") or "0"
+        try:
+            with SessionLocal() as db:
+                rows = list(
+                    db.scalars(
+                        select(CardReference).where(
+                            func.lower(func.ltrim(CardReference.collector_number, "0"))
+                            == normalized
+                        )
+                    )
+                )
+        except SQLAlchemyError:
+            return []
+        if preferred_set:
+            preferred = [
+                row
+                for row in rows
+                if row.set_code.casefold() == preferred_set.casefold()
+            ]
+            rows = preferred or rows
+        return [
+            {
+                "id": reference.scryfall_id,
+                "name": reference.name,
+                "set": reference.set_code,
+                "set_name": reference.set_name,
+                "collector_number": reference.collector_number,
+                "released_at": (
+                    reference.released_at.isoformat() if reference.released_at else "0000"
+                ),
+                "image_uris": {"normal": reference.image_url},
+                "prices": {
+                    "usd": (
+                        str(reference.market_price)
+                        if reference.market_price is not None
+                        else None
+                    )
+                },
+                "lang": "en",
+            }
+            for reference in rows
         ]
 
     async def recognize(

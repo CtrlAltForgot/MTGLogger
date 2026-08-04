@@ -1160,6 +1160,66 @@ def test_ocr_hints_skip_mana_cost_noise_above_title():
     assert year == 2015
 
 
+def test_ocr_hints_do_not_invent_title_from_type_or_rules_text():
+    from mtglogger.services.recognition import CardRecognizer
+
+    title, number, set_code, year = CardRecognizer.hints(
+        "2?\nSorcery\nAll creatures get -4/-4 until end of turn.\n"
+        "Life is such a fragile thing.\n105/272 R\nJEFF SIMPSON"
+    )
+
+    assert title is None
+    assert number == "105"
+    assert set_code is None
+    assert year is None
+
+
+def test_number_only_local_recovery_keeps_all_matching_printings():
+    import asyncio
+    from datetime import date
+    from decimal import Decimal
+
+    from mtglogger.database import Base, SessionLocal, engine
+    from mtglogger.models import CardReference
+    from mtglogger.services.recognition import CardRecognizer
+
+    Base.metadata.drop_all(engine)
+    Base.metadata.create_all(engine)
+    with SessionLocal() as db:
+        db.add_all(
+            [
+                CardReference(
+                    scryfall_id="ori-languish",
+                    name="Languish",
+                    set_code="ori",
+                    set_name="Magic Origins",
+                    collector_number="105",
+                    released_at=date(2015, 7, 17),
+                    image_url="https://example.test/languish.jpg",
+                    art_hash="0000000000000000",
+                    market_price=Decimal("0.60"),
+                ),
+                CardReference(
+                    scryfall_id="other-105",
+                    name="Another Card",
+                    set_code="tst",
+                    set_name="Test Set",
+                    collector_number="0105",
+                    released_at=date(2020, 1, 1),
+                    image_url="https://example.test/other.jpg",
+                    art_hash="ffffffffffffffff",
+                ),
+            ]
+        )
+        db.commit()
+
+    recognizer = CardRecognizer.__new__(CardRecognizer)
+    recognizer.provider = object()
+    cards = asyncio.run(recognizer._lookup_cards(None, "105", None, None, "en"))
+
+    assert {card["id"] for card in cards} == {"ori-languish", "other-105"}
+
+
 def test_ocr_hints_read_set_code_when_language_and_artist_are_joined():
     from mtglogger.services.recognition import CardRecognizer
 
