@@ -38,7 +38,7 @@ export default function Database(){
       ])
       setStatus(nextStatus);setSets(nextSets);setError('')
       setSelected(current=>current||(nextSets.some(item=>item.set_code===nextStatus.set_code?.replace('priority:','').toLowerCase())?nextStatus.set_code!.replace('priority:','').toLowerCase():nextSets[0]?.set_code||''))
-    }catch(reason){setError(reason instanceof Error?reason.message:'Could not load Magic Database')}
+    }catch(reason){setError(reason instanceof Error?reason.message:'Could not load MTG Database')}
   },[])
   const refreshCards=useCallback(async()=>{
     if(!selected)return
@@ -56,7 +56,7 @@ export default function Database(){
 
   return <>
     <Stack direction={{xs:'column',md:'row'}} justifyContent="space-between" spacing={2} mb={3}>
-      <Box><Typography variant="h4">Magic Database</Typography><Typography color="text.secondary">Server-side copy of the entire MTG card database to heavily increase performance and speed.</Typography></Box>
+      <Box><Typography variant="h4">MTG Database</Typography><Typography color="text.secondary">Server-side copy of the entire MTG card database to heavily increase performance and speed.</Typography></Box>
       <Stack direction="row" spacing={1} alignItems="center"><Chip color={status?.state==='running'?'primary':status?.state==='failed'?'error':status?.coverage_percent===100?'success':'warning'} label={status?.state==='running'?'Syncing…':status?.state==='failed'?'Update interrupted':status?.coverage_percent===100?'Up to date':'Resuming…'}/><Chip variant="outlined" label="All printings"/></Stack>
     </Stack>
     {(error||status?.state==='failed')&&<Alert severity="error" sx={{mb:2}}>{error||status?.error||'Catalog update was interrupted and will retry automatically.'}</Alert>}
