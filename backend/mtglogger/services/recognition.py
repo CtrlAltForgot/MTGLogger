@@ -282,8 +282,15 @@ class CardRecognizer:
     @staticmethod
     def hints(text: str) -> tuple[str | None, str | None, str | None, int | None]:
         lines = [line.strip() for line in text.splitlines() if len(line.strip()) > 1]
-        year_match = re.search(r"(?<!\d)((?:19|20)\d{2})(?!\d)", text)
-        copyright_year = int(year_match.group(1)) if year_match else None
+        # Copyright footers commonly contain a range (for example
+        # "© 1993-2011 Wizards").  The final/latest year identifies the
+        # physical printing; taking the first year incorrectly labels every
+        # such card as a 1993 printing.
+        years = [
+            int(value)
+            for value in re.findall(r"(?<!\d)((?:19|20)\d{2})(?!\d)", text)
+        ]
+        copyright_year = max(years) if years else None
         if copyright_year is None:
             # Tiny copyright text often loses "20" while retaining a marker
             # and the final two digits (for example ©2013 -> "co13").
@@ -343,14 +350,25 @@ class CardRecognizer:
                 if len(values) >= 2:
                     number = values[-2]
                     break
-        for line in reversed(lines):
+        # A bare digit is weak evidence and is only trustworthy in the footer.
+        # Looking across the whole card lets mana costs such as "3B" become a
+        # bogus collector number when OCR separates the symbols.
+        for line in reversed(lines[-5:]):
             if number:
                 break
             matches = re.findall(r"(?:^|\s)(\d{1,4}[a-z]?)(?:/\d{1,4})?(?=\s|$)", line, re.I)
             for value in matches:
                 numeric = int(re.match(r"\d+", value).group())
                 # Copyright years commonly appear below the collector number.
-                if 1900 <= numeric <= 2100 or "©" in line or "Wizards" in line:
+                # Single-digit bare values are much more likely to be a mana
+                # cost or power/toughness than a collector number. Exact
+                # single-digit collectors still work through the slash form.
+                if (
+                    numeric < 10
+                    or 1900 <= numeric <= 2100
+                    or "©" in line
+                    or "Wizards" in line
+                ):
                     continue
                 number = value
                 break

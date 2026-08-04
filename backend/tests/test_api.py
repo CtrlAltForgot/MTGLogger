@@ -963,6 +963,32 @@ def test_ocr_hints_normalize_printed_collector_number():
     assert year == 2024
 
 
+def test_ocr_hints_use_latest_year_in_copyright_range_and_ignore_mana_cost():
+    from mtglogger.services.recognition import CardRecognizer
+
+    title, number, set_code, year = CardRecognizer.hints(
+        "Abattoir Ghoul\n3\nCreature — Zombie\nDeathtouch\n"
+        "Whenever a creature dies, gain 1 life.\n"
+        "085/264 U\nISD · EN\n© 1993-2011 Wizards of the Coast"
+    )
+
+    assert title == "Abattoir Ghoul"
+    assert number == "085"
+    assert set_code == "isd"
+    assert year == 2011
+
+
+def test_ocr_hints_do_not_treat_sparse_mana_cost_as_collector_number():
+    from mtglogger.services.recognition import CardRecognizer
+
+    _, number, _, year = CardRecognizer.hints(
+        "Abattoir Ghoul\n3\nCreature — Zombie\n© 1903-2011 Wizards"
+    )
+
+    assert number is None
+    assert year == 2011
+
+
 def test_ocr_hints_read_set_code_without_spaces():
     from mtglogger.services.recognition import CardRecognizer
 
