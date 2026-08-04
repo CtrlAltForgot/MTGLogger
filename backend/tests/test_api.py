@@ -1526,6 +1526,17 @@ def test_ocr_hints_accept_plus_or_missing_set_language_separator():
     assert set_code == "ori"
 
 
+def test_ocr_hints_prefer_explicit_footer_over_joined_artist_noise():
+    from mtglogger.services.recognition import CardRecognizer
+
+    _, number, set_code, _ = CardRecognizer.hints(
+        "264/272L\nORI-ENNGPARK\nBasic Land -Swamp\n264/272\nORI-EN\nLNGPAR"
+    )
+
+    assert number == "264"
+    assert set_code == "ori"
+
+
 def test_exact_joined_footer_reaches_near_certain_auto_add_confidence():
     import asyncio
 

@@ -323,14 +323,27 @@ class CardRecognizer:
                     copyright_year = inferred
         set_code = None
         languages = "EN|ES|FR|DE|IT|PT|JA|KO|RU|ZHS|ZHT|HE|LA|GRC|AR|SA|PHY"
+        # Prefer a footer with a visible separator. A permissive joined-footer
+        # match is useful for tiny text, but can hallucinate a language inside
+        # an artist fragment (for example NGPARK -> NGP + AR) and must not
+        # override a clean ``ORI-EN`` elsewhere in the OCR passes.
         for line in reversed(lines):
             match = re.match(
-                rf"^\s*([A-Z][A-Z0-9]{{1,5}}?)[\s·•.+\-:]*(?:{languages})(?=\s|$|[A-Z])",
+                rf"^\s*([A-Z][A-Z0-9]{{1,5}}?)[\s·•.+\-:]+(?:{languages})(?=\s|$|[A-Z])",
                 line,
             )
             if match:
                 set_code = match.group(1).lower()
                 break
+        if not set_code:
+            for line in reversed(lines):
+                match = re.match(
+                    rf"^\s*([A-Z][A-Z0-9]{{1,5}}?)(?:{languages})(?=\s|$|[A-Z])",
+                    line,
+                )
+                if match:
+                    set_code = match.group(1).lower()
+                    break
         if not set_code:
             # Low-resolution footer OCR often separates the set code from the
             # adjacent language ("M15 · EN" -> standalone "MIS"). Only accept
