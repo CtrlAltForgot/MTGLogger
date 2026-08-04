@@ -84,7 +84,7 @@ export default function Scanner(){
   const uncertain=result&&result.disposition!=='added'&&result.disposition!=='empty'
   const immediateDecision=!!(uncertain&&result.review_id&&(resolveImmediately||!defaults.auto_add))
   const tone=result?.disposition==='added'?'success':result?.disposition==='suggestions'||result?.disposition==='confirmation'?'warning':'error'
-  const stateLabel=scan.state==='remove'?'Remove card':scan.state==='processing'?'Identifying…':scan.state==='stabilizing'?'Hold still…':scan.state==='calibrating'?'Keep guide empty…':scan.state==='waiting'?'Ready for card':'Camera stopped'
+  const stateLabel=scan.state==='remove'?'Swap to next card':scan.state==='processing'?'Identifying…':scan.state==='stabilizing'?'Hold still…':scan.state==='calibrating'?'Keep guide empty…':scan.state==='waiting'?'Ready for card':'Camera stopped'
   const sessionCardsPerMinute=cardsPerMinute(stats)
   const sessionReviewPercentage=reviewPercentage(stats)
 
@@ -100,7 +100,7 @@ export default function Scanner(){
         {scan.state==='idle'
           ?<Button size="large" variant="contained" startIcon={<CameraAlt/>} onClick={()=>void scan.start()}>Start scanning</Button>
           :<><Button size="large" variant="outlined" startIcon={<Stop/>} onClick={scan.stop}>Stop</Button><Button startIcon={<RestartAlt/>} onClick={scan.calibrate}>Reset background</Button></>}
-        <Typography color="text.secondary">Keep the scan zone empty during calibration. Cards can be placed anywhere inside it.</Typography>
+        <Typography color="text.secondary">Keep the scan zone empty during calibration. After capture, remove the card or swap directly to the next one.</Typography>
       </Stack>
       {scan.cameras.length>1&&<Select size="small" value={scan.selectedCamera} onChange={event=>void scan.switchCamera(event.target.value)} sx={{mt:1.5,minWidth:280}}>{scan.cameras.map((camera,index)=><MenuItem value={camera.deviceId} key={camera.deviceId}>{camera.label||`Camera ${index+1}`}</MenuItem>)}</Select>}
       <Stack direction="row" spacing={2} mt={1}>
