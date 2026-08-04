@@ -60,6 +60,46 @@ def stress_variants(image: np.ndarray) -> list[tuple[str, np.ndarray]]:
     ]
 
 
+def metric_summary(records: list[dict]) -> dict:
+    """Summarize accuracy, intervention, and latency for a result slice."""
+    total = len(records)
+    latencies = [item["processing_ms"] for item in records]
+    return {
+        "evaluated_records": total,
+        "exact_printing_top1_accuracy": (
+            sum(item["top1_correct"] for item in records) / total if total else None
+        ),
+        "exact_printing_top5_accuracy": (
+            sum(item["top5_correct"] for item in records) / total if total else None
+        ),
+        "exact_card_top1_accuracy": (
+            sum(item["card_top1_correct"] for item in records) / total
+            if total
+            else None
+        ),
+        "exact_card_top5_accuracy": (
+            sum(item["card_top5_correct"] for item in records) / total
+            if total
+            else None
+        ),
+        "auto_add_rate": (
+            sum(item["auto_add"] for item in records) / total if total else None
+        ),
+        "false_auto_add_rate": (
+            sum(item["false_auto_add"] for item in records) / total if total else None
+        ),
+        "uncertainty_rate": (
+            sum(not item["auto_add"] for item in records) / total if total else None
+        ),
+        "latency_ms_p50": statistics.median(latencies) if latencies else None,
+        "latency_ms_p95": (
+            sorted(latencies)[max(0, int(len(latencies) * 0.95) - 1)]
+            if latencies
+            else None
+        ),
+    }
+
+
 async def evaluate(
     limit: int | None,
     manifest: Path | None = None,
@@ -204,8 +244,7 @@ async def evaluate(
                 }
             )
 
-    total = len(results)
-    latencies = [item["processing_ms"] for item in results]
+    totals = metric_summary(results)
     timing_stages = sorted(
         {
             stage
@@ -218,31 +257,14 @@ async def evaluate(
         "available_source_records": available_sources,
         "stress_enabled": stress,
         "variants_per_source": 5 if stress else 1,
-        "evaluated_records": total,
         "missing_images": len(labeled) - available_sources,
-        "exact_printing_top1_accuracy": (
-            sum(item["top1_correct"] for item in results) / total if total else None
-        ),
-        "exact_printing_top5_accuracy": (
-            sum(item["top5_correct"] for item in results) / total if total else None
-        ),
-        "exact_card_top1_accuracy": (
-            sum(item["card_top1_correct"] for item in results) / total if total else None
-        ),
-        "exact_card_top5_accuracy": (
-            sum(item["card_top5_correct"] for item in results) / total if total else None
-        ),
-        "auto_add_rate": sum(item["auto_add"] for item in results) / total if total else None,
-        "false_auto_add_rate": (
-            sum(item["false_auto_add"] for item in results) / total if total else None
-        ),
-        "uncertainty_rate": (
-            sum(not item["auto_add"] for item in results) / total if total else None
-        ),
-        "latency_ms_p50": statistics.median(latencies) if latencies else None,
-        "latency_ms_p95": (
-            sorted(latencies)[max(0, int(len(latencies) * 0.95) - 1)] if latencies else None
-        ),
+        **totals,
+        "by_variant": {
+            variant: metric_summary(
+                [item for item in results if item["variant"] == variant]
+            )
+            for variant in dict.fromkeys(item["variant"] for item in results)
+        },
         "latency_stage_ms_p50": {
             stage: statistics.median(
                 item["timings_ms"][stage]
