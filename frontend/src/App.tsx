@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
-import { AutoStories, CollectionsBookmark, DarkMode, Download, Inventory2, LightMode, MenuBook, Paid, Search, Visibility } from '@mui/icons-material'
+import { AutoStories, Book, CollectionsBookmark, DarkMode, Download, Inventory2, LightMode, Paid, Search, Visibility } from '@mui/icons-material'
 import { AppBar, Box, Button, CircularProgress, CssBaseline, IconButton, Tab, Tabs, ThemeProvider, Toolbar, Tooltip, Typography } from '@mui/material'
 import { appTheme } from './theme'
 import { CardDetailsProvider } from './components/CardDetails'
@@ -13,7 +13,7 @@ const Scanner=lazy(()=>import('./pages/Scanner'))
 const Database=lazy(()=>import('./pages/Database'))
 
 const pages=[
-  {name:'Dashboard',icon:<MenuBook/>,content:<Dashboard/>},
+  {name:'Dashboard',icon:<Book/>,content:<Dashboard/>},
   {name:'Scanner',icon:<Visibility/>,content:<Scanner/>},
   {name:'Collection',icon:<CollectionsBookmark/>,content:<Collection/>},
   {name:'Value',icon:<Paid/>,content:<Value/>},
