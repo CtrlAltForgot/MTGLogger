@@ -299,6 +299,27 @@ async def sync_all() -> None:
         catalog_total = await provider.paper_printing_count()
         with _state_lock:
             _state.catalog_total = catalog_total
+        # The periodic refresh is also our new-printing detector. Once every
+        # known paper printing has a v3 descriptor, avoid walking every
+        # Scryfall page again: the lightweight catalog count is enough to prove
+        # that there is no incremental work. Existing profiles are never
+        # cleared, and a future increase in catalog_total naturally falls
+        # through to the resumable exhaustive pass below.
+        with SessionLocal() as db:
+            ready_profiles = (
+                db.scalar(
+                    select(func.count())
+                    .select_from(CardVisualFingerprint)
+                    .where(CardVisualFingerprint.descriptor_path.like("%/v3/%"))
+                )
+                or 0
+            )
+        if catalog_total and ready_profiles >= catalog_total:
+            with _state_lock:
+                _state.state = "complete"
+                _state.set_code = "all-paper"
+                _state.completed = _state.total = catalog_total
+            return
         with SessionLocal() as db:
             # Make the catalog useful quickly for the user's active collection,
             # then continue exhaustively through every paper printing.
