@@ -48,6 +48,7 @@ class Recognition:
     corrected: np.ndarray
     processing_ms: int
     card_structure: bool
+    timings_ms: dict[str, int] | None = None
 
 
 class CardRecognizer:
@@ -1521,12 +1522,18 @@ class CardRecognizer:
         # the photographed card or discard identifying regions.
         review_image = corrected if final_confidence >= 98.5 else decoded
         return Recognition(
-            final_confidence,
-            text,
-            candidates[:5],
-            review_image,
-            round((finished - started) * 1000),
-            card_structure,
+            confidence=final_confidence,
+            ocr_text=text,
+            candidates=candidates[:5],
+            corrected=review_image,
+            processing_ms=round((finished - started) * 1000),
+            card_structure=card_structure,
+            timings_ms={
+                "prepare": round((prepared - started) * 1000),
+                "ocr": round((ocr_complete - prepared) * 1000),
+                "lookup_visual": round((matching_complete - ocr_complete) * 1000),
+                "rank": round((finished - matching_complete) * 1000),
+            },
         )
 
     @staticmethod

@@ -120,11 +120,19 @@ async def evaluate(limit: int | None, manifest: Path | None = None) -> dict:
                 "auto_add": auto_add,
                 "false_auto_add": auto_add and top_id != expected.scryfall_id,
                 "processing_ms": result.processing_ms,
+                "timings_ms": result.timings_ms,
             }
         )
 
     total = len(results)
     latencies = [item["processing_ms"] for item in results]
+    timing_stages = sorted(
+        {
+            stage
+            for item in results
+            for stage in (item.get("timings_ms") or {})
+        }
+    )
     summary = {
         "labeled_records": len(labeled),
         "evaluated_records": total,
@@ -152,6 +160,14 @@ async def evaluate(limit: int | None, manifest: Path | None = None) -> dict:
         "latency_ms_p95": (
             sorted(latencies)[max(0, int(len(latencies) * 0.95) - 1)] if latencies else None
         ),
+        "latency_stage_ms_p50": {
+            stage: statistics.median(
+                item["timings_ms"][stage]
+                for item in results
+                if item.get("timings_ms") and stage in item["timings_ms"]
+            )
+            for stage in timing_stages
+        },
         "failures": [item for item in results if not item["top1_correct"]],
         "uncertain": [item for item in results if not item["auto_add"]],
     }
