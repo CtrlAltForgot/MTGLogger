@@ -645,6 +645,7 @@ def test_oracle_terms_recover_distinctive_rules_text_despite_ocr_damage():
     shadows = "Each opponent gains 2life. Activate only if there are four or more cards in graveyad"
     touch = "Target creature gainsdeathtouch until end of turn. dealt damage target creature"
     blood = "Enchant creature has lying and Sacrifce two other creatures: Regenerate this creature"
+    languish = "All creatures get -4/-4 until end of turn. Life is such a fragile thing."
 
     assert CardRecognizer.oracle_terms(shadows) == [
         "gain 2 life",
@@ -660,6 +661,11 @@ def test_oracle_terms_recover_distinctive_rules_text_despite_ocr_damage():
         "regenerate",
         "sacrifice",
         "flying",
+    ]
+    assert CardRecognizer.oracle_terms(languish) == [
+        "-4/-4",
+        "all creatures",
+        "until end of turn",
     ]
 
 

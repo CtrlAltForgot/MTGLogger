@@ -462,6 +462,14 @@ class CardRecognizer:
     def oracle_terms(cls, text: str) -> list[str]:
         # Ordered from distinctive phrases to broad vocabulary. Three agreeing
         # terms keep Scryfall results small enough for local OCR similarity ranking.
+        # Printed stat modifiers are especially valuable when glare obscures a
+        # foil card's title: unlike words such as "creature", values such as
+        # -4/-4 sharply constrain the oracle-text search.
+        terms: list[str] = []
+        for match in re.findall(r"[+-]\s*\d+\s*/\s*[+-]\s*\d+", text):
+            normalized = re.sub(r"\s+", "", match)
+            if normalized not in terms:
+                terms.append(normalized)
         vocabulary = [
             ("gain 2 life", 0.82),
             ("loses 2 life", 0.82),
@@ -474,12 +482,15 @@ class CardRecognizer:
             ("enchant creature", 0.78),
             ("target creature", 0.78),
             ("damage", 0.78),
+            ("all creatures", 0.78),
+            ("until end of turn", 0.78),
         ]
-        return [
+        terms.extend(
             phrase
             for phrase, threshold in vocabulary
-            if cls.fuzzy_contains(text, phrase, threshold)
-        ][:3]
+            if phrase not in terms and cls.fuzzy_contains(text, phrase, threshold)
+        )
+        return terms[:3]
 
     @classmethod
     def oracle_similarity(cls, ocr_text: str, oracle_text: str) -> float:
