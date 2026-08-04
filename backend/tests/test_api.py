@@ -901,6 +901,23 @@ def test_incomplete_footer_gets_wide_high_resolution_collector_pass():
     assert calls[1][1] == 1200
 
 
+def test_collector_footer_survives_full_card_title_fallback():
+    import numpy as np
+
+    from mtglogger.services.recognition import CardRecognizer
+
+    recognizer = CardRecognizer.__new__(CardRecognizer)
+    responses = iter(("ORI", "264/272\nORI·EN", "Basic Land - Swamp"))
+    recognizer.extract_text = lambda _image: next(responses)
+
+    text = recognizer.extract_identification_text(np.zeros((840, 600, 3), dtype=np.uint8))
+    title, number, set_code, _ = recognizer.hints(text)
+
+    assert title == "Swamp"
+    assert number == "264"
+    assert set_code == "ori"
+
+
 def test_catalog_fallback_recovers_canonical_name_with_exact_printing():
     import asyncio
 

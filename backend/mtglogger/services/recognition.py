@@ -231,7 +231,7 @@ class CardRecognizer:
         focused_image = np.vstack((title, separator, footer_left))
         focused = self.extract_text(focused_image)
         focused_title, number, set_code, _ = self.hints(focused)
-        if focused_title and (not number or not set_code):
+        if not number or not set_code:
             # Tiny foil/set/collector text benefits from local contrast and
             # sharpening. Run this extra OCR pass only when the normal footer
             # did not already provide complete printing evidence.
@@ -247,12 +247,16 @@ class CardRecognizer:
             enhanced_text = self.extract_text(enhanced_footer)
             if enhanced_text.strip():
                 focused = "\n".join((focused, enhanced_text))
+            focused_title, _, _, _ = self.hints(focused)
         if focused_title:
             return focused
         # Showcase frames and older layouts occasionally place the title outside
         # the normal band. Preserve reliability with a full-card fallback only
         # when the fast title pass produced no usable text.
-        return self.extract_text(image)
+        full_text = self.extract_text(image)
+        # The full-card pass can recover a title from a type line while losing
+        # the tiny collector footer. Preserve both independent observations.
+        return "\n".join(part for part in (focused, full_text) if part.strip())
 
     @staticmethod
     def scale_to_width(image: np.ndarray, target_width: int) -> np.ndarray:
