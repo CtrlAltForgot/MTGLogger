@@ -1,4 +1,5 @@
 import json
+import logging
 from pathlib import Path
 
 import cv2
@@ -19,12 +20,14 @@ from ..schemas import (
     ScanDefaults,
 )
 from ..services.decks import assign_to_deck
+from ..services.evaluation import preserve_confirmed_scan
 from ..services.inventory import upsert_inventory
 from ..services.recognition import CardRecognizer
 from ..services.references import artwork_descriptors, artwork_hash, save_example_descriptors
 
 router = APIRouter(prefix="/reviews", tags=["reviews"])
 provider = ScryfallProvider()
+logger = logging.getLogger(__name__)
 
 
 def serialize(item: ReviewItem) -> ReviewRead:
@@ -185,6 +188,12 @@ def resolve_review(review_id: str, payload: ReviewResolve, db: Session = Depends
                     source_review_id=review.id,
                 )
             )
+    try:
+        preserve_confirmed_scan(Path(review.image_path), review.id, card, defaults.language)
+    except (OSError, ValueError, json.JSONDecodeError):
+        # Inventory confirmation must still succeed if benchmark storage is
+        # temporarily unavailable; surface the failure in server diagnostics.
+        logger.exception("Could not preserve confirmed scan %s", review.id)
     db.commit()
     CardRecognizer.invalidate_visual_catalog()
     # Keep the confirmed camera frame as labeled ground truth. These examples

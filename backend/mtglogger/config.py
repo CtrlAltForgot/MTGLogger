@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:5173"
     scryfall_user_agent: str = "MTGLogger/0.1"
     image_dir: Path = Path("data/scans")
+    evaluation_dir: Path = Path("data/evaluation")
     reference_image_dir: Path = Path("data/references")
     reference_descriptor_dir: Path = Path("data/descriptors")
     reference_image_cache: str = "compact"

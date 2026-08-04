@@ -19,8 +19,10 @@ import pytest  # noqa: E402
 def client():
     api_database = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
     api_database.close()
+    evaluation_dir = tempfile.TemporaryDirectory()
     process_env = os.environ.copy()
     process_env["DATABASE_URL"] = f"sqlite:///{api_database.name}"
+    process_env["EVALUATION_DIR"] = evaluation_dir.name
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
@@ -57,3 +59,4 @@ def client():
         process.terminate()
         process.wait(timeout=5)
         os.unlink(api_database.name)
+        evaluation_dir.cleanup()

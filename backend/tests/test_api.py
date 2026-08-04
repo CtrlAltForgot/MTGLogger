@@ -1267,6 +1267,47 @@ def test_candidate_identifies_only_metadata_proven_foil_printings():
     assert Candidate(**common).is_foil_only() is False
 
 
+def test_confirmed_scan_is_preserved_as_durable_labeled_evidence(tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+
+    from mtglogger.schemas import Candidate
+    from mtglogger.services import evaluation
+
+    source = tmp_path / "capture.jpg"
+    source.write_bytes(b"physical webcam evidence")
+    corpus = tmp_path / "corpus"
+    monkeypatch.setattr(
+        evaluation, "get_settings", lambda: SimpleNamespace(evaluation_dir=corpus)
+    )
+    candidate = Candidate(
+        scryfall_id="00000000-0000-0000-0000-000000000259",
+        name="Swamp",
+        set_code="m15",
+        set_name="Magic 2015",
+        collector_number="259",
+        confidence=99.5,
+    )
+
+    preserved = evaluation.preserve_confirmed_scan(
+        source, "review-259", candidate, "en"
+    )
+
+    assert preserved.read_bytes() == source.read_bytes()
+    manifest = json.loads((corpus / "manifest.json").read_text())
+    assert manifest == [
+        {
+            "review_id": "review-259",
+            "image_path": str(preserved),
+            "scryfall_id": candidate.scryfall_id,
+            "name": "Swamp",
+            "set_code": "m15",
+            "collector_number": "259",
+            "language": "en",
+        }
+    ]
+
+
 def test_inventory_delete_preserves_resolved_review_history():
     from mtglogger.api.inventory import delete_item_preserving_reviews
     from mtglogger.database import Base, SessionLocal, engine

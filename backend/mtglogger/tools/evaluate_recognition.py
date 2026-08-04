@@ -5,6 +5,7 @@ import asyncio
 import json
 import statistics
 from pathlib import Path
+from types import SimpleNamespace
 
 from sqlalchemy import select
 
@@ -20,16 +21,26 @@ async def evaluate(limit: int | None, manifest: Path | None = None) -> dict:
             labels = json.loads(manifest.read_text())
             labeled = []
             for label in labels:
-                review = db.get(ReviewItem, label["review_id"])
-                expected = db.scalar(
-                    select(CardReference).where(
-                        CardReference.name == label["name"],
-                        CardReference.set_code == label["set_code"],
-                        CardReference.collector_number == label["collector_number"],
+                review_id = label.get("review_id")
+                review = db.get(ReviewItem, review_id) if review_id else None
+                if label.get("image_path"):
+                    review = SimpleNamespace(
+                        id=label.get("review_id") or Path(label["image_path"]).stem,
+                        image_path=label["image_path"],
+                    )
+                expected = (
+                    db.get(CardReference, label["scryfall_id"])
+                    if label.get("scryfall_id")
+                    else db.scalar(
+                        select(CardReference).where(
+                            CardReference.name == label["name"],
+                            CardReference.set_code == label["set_code"],
+                            CardReference.collector_number == label["collector_number"],
+                        )
                     )
                 )
                 if review and expected:
-                    labeled.append((review, expected))
+                    labeled.append((review, expected, label.get("language", "en")))
         else:
             statement = (
                 select(ReviewItem, InventoryItem)
@@ -39,11 +50,11 @@ async def evaluate(limit: int | None, manifest: Path | None = None) -> dict:
             )
             if limit:
                 statement = statement.limit(limit)
-            labeled = list(db.execute(statement))
+            labeled = [(*row, "en") for row in db.execute(statement)]
 
     recognizer = CardRecognizer()
     results = []
-    for review, expected in labeled:
+    for review, expected, language in labeled:
         path = Path(review.image_path)
         if not path.is_file():
             continue
@@ -52,7 +63,7 @@ async def evaluate(limit: int | None, manifest: Path | None = None) -> dict:
         held_out_hash = artwork_hash(CardRecognizer.rectify(decoded))
         result = await recognizer.recognize(
             raw,
-            language=getattr(expected, "language", "en"),
+            language=language,
             ignored_visual_hashes={held_out_hash},
             ignored_example_review_ids={review.id},
         )
