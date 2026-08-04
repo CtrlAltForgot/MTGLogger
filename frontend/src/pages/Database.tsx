@@ -57,7 +57,7 @@ export default function Database(){
 
   return <>
     <Stack direction={{xs:'column',md:'row'}} justifyContent="space-between" spacing={2} mb={3}>
-      <Box><Typography variant="h4">MTG Database</Typography><Typography color="text.secondary">Server-side copy of the entire MTG card database to heavily increase recognition accuracy and speed.</Typography></Box>
+      <Box><Typography variant="h4">MTG Database</Typography><Typography color="text.secondary">Server-side copy of the entire MTG card database to heavily increase performance and speed.</Typography></Box>
       <Stack direction="row" spacing={1} alignItems="center"><Chip color={status?.state==='running'?'primary':status?.state==='failed'?'error':status?.coverage_percent===100?'success':'warning'} label={status?.state==='running'?'Syncing…':status?.state==='failed'?'Update interrupted':status?.coverage_percent===100?'Up to date':'Resuming…'}/><Chip variant="outlined" label="All printings"/></Stack>
     </Stack>
     {(error||status?.state==='failed')&&<Alert severity="error" sx={{mb:2}}>{error||status?.error||'Catalog update was interrupted and will retry automatically.'}</Alert>}
