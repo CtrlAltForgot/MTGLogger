@@ -107,13 +107,15 @@ export default function Scanner(){
         <Typography variant="caption">Contrast {scan.metrics.contrast.toFixed(1)}</Typography>
         <Typography variant="caption">Motion {scan.metrics.motion.toFixed(1)}</Typography>
       </Stack>
-      <Stack direction="row" spacing={.75} mt={1.25} flexWrap="wrap" useFlexGap>
-        <Chip size="small" variant="outlined" label={`Session · ${stats.scans} scanned`}/>
-        {scan.pendingCaptures>0&&<Chip size="small" color="info" variant="outlined" label={`Recognition queue · ${scan.pendingCaptures}`}/>}
-        <Chip size="small" color="success" variant="outlined" label={`${stats.added} added`}/>
-        <Chip size="small" color={stats.review?'warning':'default'} variant="outlined" label={`Review · ${sessionReviewPercentage.toFixed(1)}% (${stats.review})`}/>
-        <Chip size="small" color={sessionCardsPerMinute===null?'default':'primary'} variant="outlined" label={sessionCardsPerMinute===null?'Cards/min · measuring':`Cards/min · ${sessionCardsPerMinute.toFixed(1)}`}/>
-        {stats.scans>0&&<><Chip size="small" label={`Last ${(stats.lastMs/1000).toFixed(1)}s`}/><Chip size="small" label={`Recognition ${(stats.serverMs/1000).toFixed(1)}s`}/><Chip size="small" label={`Average ${(stats.totalMs/stats.scans/1000).toFixed(1)}s`}/></>}
+      <Grid container spacing={1.5} mt={.75}>
+        <Grid size={{xs:12,sm:6}}><ScannerGauge label="Scanning pace" value={sessionCardsPerMinute} max={30} display={sessionCardsPerMinute===null?'Measuring':sessionCardsPerMinute.toFixed(1)} unit="cards/min" tone="primary" helper={stats.paceIntervals?`${stats.paceIntervals} recent interval${stats.paceIntervals===1?'':'s'} measured`:'Scan two cards within 30 seconds'}/></Grid>
+        <Grid size={{xs:12,sm:6}}><ScannerGauge label="Review rate" value={sessionReviewPercentage} max={100} display={`${sessionReviewPercentage.toFixed(1)}%`} unit={`${stats.review} of ${stats.scans}`} tone={sessionReviewPercentage>25?'warning':'success'} helper={stats.scans?'Lower is better':'Waiting for the first scan'}/></Grid>
+      </Grid>
+      <Stack direction="row" mt={1.25} px={.5} spacing={2.25} alignItems="center" flexWrap="wrap" useFlexGap color="text.secondary">
+        <Typography variant="caption"><strong>{stats.scans}</strong> scanned</Typography>
+        <Typography variant="caption" color="success.main"><strong>{stats.added}</strong> added</Typography>
+        {scan.pendingCaptures>0&&<Typography variant="caption" color="info.main"><strong>{scan.pendingCaptures}</strong> queued</Typography>}
+        {stats.scans>0&&<><Typography variant="caption">Last <strong>{(stats.lastMs/1000).toFixed(1)}s</strong></Typography><Typography variant="caption">Recognition <strong>{(stats.serverMs/1000).toFixed(1)}s</strong></Typography><Typography variant="caption">Average <strong>{(stats.totalMs/stats.scans/1000).toFixed(1)}s</strong></Typography></>}
       </Stack>
       {scan.error&&<Alert severity="error" sx={{mt:2}} onClose={()=>scan.setError(undefined)}>{scan.error}</Alert>}
       {result&&!immediateDecision&&<Alert severity={tone} variant="filled" sx={{mt:2,fontSize:'1.05rem'}}>
@@ -159,4 +161,18 @@ export default function Scanner(){
       <Alert severity="warning" variant="filled" sx={{minWidth:{xs:320,sm:460}}}><Typography fontWeight={900}>SAVED FOR REVIEW · {reviewNotice?.confidence.toFixed(1)}%</Typography><Typography>{reviewNotice?.candidates[0]?.name||'Printing uncertain'} · Keep scanning</Typography></Alert>
     </Snackbar>
   </Grid>
+}
+
+function ScannerGauge({label,value,max,display,unit,tone,helper}:{label:string,value:number|null,max:number,display:string,unit:string,tone:'primary'|'success'|'warning',helper:string}){
+  const progress=Math.max(0,Math.min(1,(value||0)/max))
+  return <Box sx={{position:'relative',height:128,borderTop:'1px solid',borderBottom:'1px solid',borderColor:'divider',display:'flex',alignItems:'center',px:2,gap:2,overflow:'hidden'}}>
+    <Box sx={{width:118,height:74,position:'relative',flexShrink:0}}>
+      <Box component="svg" viewBox="0 0 120 72" aria-hidden sx={{width:120,height:72,overflow:'visible'}}>
+        <Box component="path" d="M 12 62 A 48 48 0 0 1 108 62" fill="none" stroke="currentColor" sx={{color:'action.hover'}} strokeWidth="10" strokeLinecap="round"/>
+        <Box component="path" d="M 12 62 A 48 48 0 0 1 108 62" fill="none" stroke="currentColor" sx={{color:`${tone}.main`,transition:'stroke-dashoffset 350ms ease'}} strokeWidth="10" strokeLinecap="round" pathLength="100" strokeDasharray="100" strokeDashoffset={100-progress*100}/>
+      </Box>
+      <Box sx={{position:'absolute',inset:'29px 0 0',textAlign:'center'}}><Typography variant="h5" lineHeight={1}>{display}</Typography><Typography variant="caption" color="text.secondary">{unit}</Typography></Box>
+    </Box>
+    <Box minWidth={0}><Typography variant="overline" color="text.secondary" letterSpacing=".08em">{label}</Typography><Typography variant="body2">{helper}</Typography></Box>
+  </Box>
 }
