@@ -45,14 +45,13 @@ export default function App(){
   const changePage=(value:number)=>{setPage(value);history.replaceState(null,'',`?page=${pages[value].name.toLowerCase()}`)}
   const install=async()=>{if(!installPrompt)return;await installPrompt.prompt();await installPrompt.userChoice;setInstallPrompt(undefined)}
   return <ThemeProvider theme={theme}><CssBaseline/><CardDetailsProvider>
-    <AppBar position="sticky"><Toolbar sx={{minHeight:{xs:48,md:52},px:{xs:1.5,md:2}}}>
-      <Box component="img" src="/mtglogger-card-stack.png" alt="" sx={{width:38,height:38,objectFit:'contain',mr:.9,filter:'drop-shadow(0 8px 18px rgba(190,35,54,.3))'}}/>
-      <Box flex={1}><Typography variant="h6" lineHeight={1}>MTGLogger</Typography><Typography variant="caption" color="text.secondary">Log your TCG collection</Typography></Box>
-      {installPrompt&&<Button startIcon={<Download/>} onClick={()=>void install()} sx={{mr:1,display:{xs:'none',sm:'inline-flex'}}}>Install app</Button>}
-      <Tooltip title={dark?'Use light appearance':'Use dark appearance'}><IconButton onClick={toggleTheme} sx={{border:'1px solid',borderColor:'divider',bgcolor:'action.hover'}}>{dark?<LightMode/>:<DarkMode/>}</IconButton></Tooltip>
-    </Toolbar>
-    <Box sx={{px:{xs:1,md:4},display:'flex',justifyContent:{md:'center'}}}><Tabs value={page} onChange={(_,value)=>changePage(value)} variant="scrollable" scrollButtons="auto" allowScrollButtonsMobile sx={{minHeight:46,'& .MuiTab-root':{minHeight:46,fontSize:'.92rem',px:{xs:1.25,md:2}},'& .MuiSvgIcon-root':{fontSize:23}}}>{pages.map(item=><Tab key={item.name} icon={item.icon} iconPosition="start" label={item.name}/>)}</Tabs></Box>
-    </AppBar>
-    <Box component="main" sx={{maxWidth:1580,mx:'auto',px:{xs:2,sm:3,lg:3.5},py:{xs:3,md:3.5},minHeight:'calc(100vh - 108px)'}}><Suspense fallback={<Box minHeight="50vh" display="grid" sx={{placeItems:'center'}}><CircularProgress/></Box>}>{pages[page].content}</Suspense></Box>
+    <AppBar position="sticky"><Toolbar sx={{minHeight:{xs:54,md:64},px:{xs:1.25,md:2},gap:{xs:.75,md:1.5}}}>
+      <Box component="img" src="/mtglogger-card-stack.png" alt="" sx={{width:{xs:34,md:40},height:{xs:34,md:40},objectFit:'contain',flex:'0 0 auto',filter:'drop-shadow(0 8px 18px rgba(190,35,54,.3))'}}/>
+      <Box sx={{flex:'0 0 auto',display:{xs:'none',lg:'block'},minWidth:150}}><Typography variant="h6" lineHeight={1}>MTGLogger</Typography><Typography variant="caption" color="text.secondary">Log your TCG collection</Typography></Box>
+      <Tabs value={page} onChange={(_,value)=>changePage(value)} variant="scrollable" scrollButtons={false} aria-label="Main navigation" sx={{flex:1,minWidth:0,maxWidth:{md:900},mx:'auto','& .MuiTab-root':{minWidth:0,minHeight:{xs:54,md:64},fontSize:{xs:'.78rem',md:'.95rem'},px:{xs:1,md:1.65},gap:{xs:.35,md:.7}},'& .MuiSvgIcon-root':{fontSize:{xs:21,md:25}}}}>{pages.map(item=><Tab key={item.name} icon={item.icon} iconPosition="start" label={item.name}/>)}</Tabs>
+      {installPrompt&&<Button startIcon={<Download/>} onClick={()=>void install()} sx={{display:{xs:'none',xl:'inline-flex'},flex:'0 0 auto'}}>Install</Button>}
+      <Tooltip title={dark?'Use light appearance':'Use dark appearance'}><IconButton aria-label={dark?'Use light appearance':'Use dark appearance'} onClick={toggleTheme} sx={{flex:'0 0 auto',border:'1px solid',borderColor:'divider',bgcolor:'action.hover'}}>{dark?<LightMode/>:<DarkMode/>}</IconButton></Tooltip>
+    </Toolbar></AppBar>
+    <Box component="main" sx={{maxWidth:1580,mx:'auto',px:{xs:2,sm:3,lg:3.5},py:{xs:2.5,md:3},minHeight:'calc(100vh - 64px)'}}><Suspense fallback={<Box minHeight="50vh" display="grid" sx={{placeItems:'center'}}><CircularProgress/></Box>}>{pages[page].content}</Suspense></Box>
   </CardDetailsProvider></ThemeProvider>
 }
