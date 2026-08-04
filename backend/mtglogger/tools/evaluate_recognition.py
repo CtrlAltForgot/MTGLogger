@@ -7,6 +7,8 @@ import statistics
 from pathlib import Path
 from types import SimpleNamespace
 
+import cv2
+import numpy as np
 from sqlalchemy import select
 
 from ..config import get_settings
@@ -16,7 +18,53 @@ from ..services.recognition import CardRecognizer
 from ..services.references import artwork_hash
 
 
-async def evaluate(limit: int | None, manifest: Path | None = None) -> dict:
+def stress_variants(image: np.ndarray) -> list[tuple[str, np.ndarray]]:
+    """Return deterministic, camera-like perturbations of a real capture."""
+    height, width = image.shape[:2]
+    center = (width / 2, height / 2)
+    rotation = cv2.getRotationMatrix2D(center, 2.5, 1.0)
+    rotated = cv2.warpAffine(
+        image,
+        rotation,
+        (width, height),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_REFLECT_101,
+    )
+
+    inset_x = max(2, int(width * 0.025))
+    inset_y = max(2, int(height * 0.02))
+    source = np.float32([[0, 0], [width - 1, 0], [width - 1, height - 1], [0, height - 1]])
+    target = np.float32(
+        [
+            [inset_x, inset_y],
+            [width - 1, 0],
+            [width - 1 - inset_x, height - 1 - inset_y],
+            [0, height - 1],
+        ]
+    )
+    perspective = cv2.warpPerspective(
+        image,
+        cv2.getPerspectiveTransform(source, target),
+        (width, height),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_REFLECT_101,
+    )
+    darker = cv2.convertScaleAbs(image, alpha=0.72, beta=-8)
+    blurred = cv2.GaussianBlur(image, (3, 3), 0.8)
+    return [
+        ("original", image),
+        ("rotation_2_5deg", rotated),
+        ("perspective_mild", perspective),
+        ("exposure_dark", darker),
+        ("blur_mild", blurred),
+    ]
+
+
+async def evaluate(
+    limit: int | None,
+    manifest: Path | None = None,
+    stress: bool = False,
+) -> dict:
     # Confirmations are copied into durable evaluation storage at resolution
     # time. Prefer that manifest so deleting or merging an inventory row later
     # cannot silently remove a real camera capture from the benchmark.
@@ -64,75 +112,97 @@ async def evaluate(limit: int | None, manifest: Path | None = None) -> dict:
 
     recognizer = CardRecognizer()
     results = []
+    available_sources = 0
     for review, expected, language in labeled:
         path = Path(review.image_path)
         if not path.is_file():
             continue
         raw = path.read_bytes()
         decoded = recognizer.decode(raw)
-        held_out_hash = artwork_hash(CardRecognizer.rectify(decoded))
-        result = await recognizer.recognize(
-            raw,
-            language=language,
-            ignored_visual_hashes={held_out_hash},
-            ignored_example_review_ids={review.id},
-        )
-        ids = [candidate.scryfall_id for candidate in result.candidates]
-        names = [candidate.name.casefold() for candidate in result.candidates]
-        expected_name = getattr(expected, "card_name", None) or getattr(expected, "name")
-        ocr_title, ocr_number, ocr_set_code, ocr_year = recognizer.hints(result.ocr_text)
-        top_id = ids[0] if ids else None
-        expected_rank = ids.index(expected.scryfall_id) + 1 if expected.scryfall_id in ids else None
-        auto_add = result.confidence >= 98.5
-        results.append(
-            {
-                "review_id": review.id,
-                "expected": {
-                    "name": getattr(expected, "card_name", None) or getattr(expected, "name"),
-                    "set_code": expected.set_code,
-                    "collector_number": expected.collector_number,
-                    "scryfall_id": expected.scryfall_id,
-                },
-                "predicted": (
-                    {
-                        "name": result.candidates[0].name,
-                        "set_code": result.candidates[0].set_code,
-                        "collector_number": result.candidates[0].collector_number,
-                        "scryfall_id": top_id,
-                    }
-                    if result.candidates
-                    else None
-                ),
-                "candidates": [
-                    {
-                        "rank": rank,
-                        "name": candidate.name,
-                        "set_code": candidate.set_code,
-                        "collector_number": candidate.collector_number,
-                        "scryfall_id": candidate.scryfall_id,
-                        "confidence": candidate.confidence,
-                    }
-                    for rank, candidate in enumerate(result.candidates, start=1)
-                ],
-                "confidence": result.confidence,
-                "ocr": {
-                    "title": ocr_title,
-                    "collector_number": ocr_number,
-                    "set_code": ocr_set_code,
-                    "copyright_year": ocr_year,
-                    "text": result.ocr_text,
-                },
-                "expected_printing_rank": expected_rank,
-                "card_top1_correct": bool(names and names[0] == expected_name.casefold()),
-                "card_top5_correct": expected_name.casefold() in names,
-                "top1_correct": top_id == expected.scryfall_id,
-                "top5_correct": expected.scryfall_id in ids,
-                "auto_add": auto_add,
-                "false_auto_add": auto_add and top_id != expected.scryfall_id,
-                "processing_ms": result.processing_ms,
-                "timings_ms": result.timings_ms,
-            }
-        )
+        available_sources += 1
+        original_hash = artwork_hash(CardRecognizer.rectify(decoded))
+        variants = stress_variants(decoded) if stress else [("original", decoded)]
+        for variant_name, variant_image in variants:
+            encoded, buffer = cv2.imencode(
+                ".jpg", variant_image, [cv2.IMWRITE_JPEG_QUALITY, 92]
+            )
+            if not encoded:
+                continue
+            variant_raw = buffer.tobytes()
+            variant_hash = artwork_hash(CardRecognizer.rectify(variant_image))
+            result = await recognizer.recognize(
+                variant_raw,
+                language=language,
+                ignored_visual_hashes={original_hash, variant_hash},
+                ignored_example_review_ids={review.id},
+            )
+            ids = [candidate.scryfall_id for candidate in result.candidates]
+            names = [candidate.name.casefold() for candidate in result.candidates]
+            expected_name = getattr(expected, "card_name", None) or getattr(
+                expected, "name"
+            )
+            ocr_title, ocr_number, ocr_set_code, ocr_year = recognizer.hints(
+                result.ocr_text
+            )
+            top_id = ids[0] if ids else None
+            expected_rank = (
+                ids.index(expected.scryfall_id) + 1
+                if expected.scryfall_id in ids
+                else None
+            )
+            auto_add = result.confidence >= 98.5
+            results.append(
+                {
+                    "review_id": review.id,
+                    "variant": variant_name,
+                    "expected": {
+                        "name": expected_name,
+                        "set_code": expected.set_code,
+                        "collector_number": expected.collector_number,
+                        "scryfall_id": expected.scryfall_id,
+                    },
+                    "predicted": (
+                        {
+                            "name": result.candidates[0].name,
+                            "set_code": result.candidates[0].set_code,
+                            "collector_number": result.candidates[0].collector_number,
+                            "scryfall_id": top_id,
+                        }
+                        if result.candidates
+                        else None
+                    ),
+                    "candidates": [
+                        {
+                            "rank": rank,
+                            "name": candidate.name,
+                            "set_code": candidate.set_code,
+                            "collector_number": candidate.collector_number,
+                            "scryfall_id": candidate.scryfall_id,
+                            "confidence": candidate.confidence,
+                        }
+                        for rank, candidate in enumerate(result.candidates, start=1)
+                    ],
+                    "confidence": result.confidence,
+                    "ocr": {
+                        "title": ocr_title,
+                        "collector_number": ocr_number,
+                        "set_code": ocr_set_code,
+                        "copyright_year": ocr_year,
+                        "text": result.ocr_text,
+                    },
+                    "expected_printing_rank": expected_rank,
+                    "card_top1_correct": bool(
+                        names and names[0] == expected_name.casefold()
+                    ),
+                    "card_top5_correct": expected_name.casefold() in names,
+                    "top1_correct": top_id == expected.scryfall_id,
+                    "top5_correct": expected.scryfall_id in ids,
+                    "auto_add": auto_add,
+                    "false_auto_add": auto_add and top_id != expected.scryfall_id,
+                    "processing_ms": result.processing_ms,
+                    "timings_ms": result.timings_ms,
+                }
+            )
 
     total = len(results)
     latencies = [item["processing_ms"] for item in results]
@@ -145,8 +215,11 @@ async def evaluate(limit: int | None, manifest: Path | None = None) -> dict:
     )
     summary = {
         "labeled_records": len(labeled),
+        "available_source_records": available_sources,
+        "stress_enabled": stress,
+        "variants_per_source": 5 if stress else 1,
         "evaluated_records": total,
-        "missing_images": len(labeled) - total,
+        "missing_images": len(labeled) - available_sources,
         "exact_printing_top1_accuracy": (
             sum(item["top1_correct"] for item in results) / total if total else None
         ),
@@ -181,6 +254,7 @@ async def evaluate(limit: int | None, manifest: Path | None = None) -> dict:
         "samples": [
             {
                 "review_id": item["review_id"],
+                "variant": item["variant"],
                 "expected": item["expected"],
                 "confidence": item["confidence"],
                 "top1_correct": item["top1_correct"],
@@ -207,11 +281,17 @@ def main() -> None:
     parser.add_argument("--limit", type=int)
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--pretty", action="store_true")
+    parser.add_argument(
+        "--stress",
+        action="store_true",
+        help="Evaluate deterministic camera-like variants of every real capture.",
+    )
     args = parser.parse_args()
     result = asyncio.run(
         evaluate(
             args.limit if not args.limit or args.limit > 0 else None,
             args.manifest,
+            args.stress,
         )
     )
     print(json.dumps(result, indent=2 if args.pretty else None))
