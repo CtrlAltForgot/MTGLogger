@@ -18,6 +18,7 @@ from ..models import CardReference, CardVisualExample, CardVisualFingerprint
 from ..providers import ScryfallProvider
 from ..schemas import Candidate
 from .references import (
+    ensure_reference_profiles,
     hash_distance,
     visual_descriptor_bundle,
     visual_fingerprints,
@@ -834,6 +835,31 @@ class CardRecognizer:
             identity_names = {
                 card["name"] for card in cards
             } or ({title} if title else set())
+            family_complete = False
+            if (
+                len(identity_names) == 1
+                and cards
+                and self.has_strong_card_identity(title, cards)
+                and hasattr(self.provider, "printing_family")
+            ):
+                try:
+                    family_name = next(iter(identity_names))
+                    async with asyncio.timeout(3.0):
+                        family_cards, family_total = await self.provider.printing_family(
+                            family_name, language
+                        )
+                        family_complete = bool(
+                            family_cards and len(family_cards) == family_total
+                        )
+                        known_ids = {card["id"] for card in cards}
+                        cards.extend(
+                            card for card in family_cards if card["id"] not in known_ids
+                        )
+                        if family_complete:
+                            await ensure_reference_profiles(self.provider, family_cards)
+                except (TimeoutError, httpx.HTTPError, ValueError):
+                    # The normal conservative path remains valid while offline.
+                    family_complete = False
             descriptor_matches, identity_visual_matches = await asyncio.gather(
                 asyncio.to_thread(
                     self._descriptor_matches,
@@ -906,7 +932,7 @@ class CardRecognizer:
             if len(descriptor_matches) > 1
             else (descriptor_matches[0][1] if descriptor_matches else 0)
         )
-        descriptor_catalog_complete = self._descriptor_catalog_complete(
+        descriptor_catalog_complete = family_complete and self._descriptor_catalog_complete(
             {card["id"] for card in cards}
         )
         ranked: dict[str, Candidate] = {}

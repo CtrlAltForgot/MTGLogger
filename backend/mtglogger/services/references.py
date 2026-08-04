@@ -428,6 +428,37 @@ async def _index_card(db, provider: ScryfallProvider, card: dict) -> bool:
     return True
 
 
+async def ensure_reference_profiles(provider, cards: list[dict]) -> int:
+    """Build missing exact-print profiles for a small OCR-identified family.
+
+    This fast path lets an active scan become safe as soon as its card identity
+    is known instead of waiting for the exhaustive background catalog order.
+    Canonical JPEGs are discarded after compact descriptors are persisted.
+    """
+    if not cards or not hasattr(provider, "download_image"):
+        return 0
+    ids = [card.get("id") for card in cards if card.get("id")]
+    with SessionLocal() as db:
+        ready = set(
+            db.scalars(
+                select(CardVisualFingerprint.scryfall_id).where(
+                    CardVisualFingerprint.scryfall_id.in_(ids),
+                    CardVisualFingerprint.descriptor_path.like("%/v3/%"),
+                )
+            )
+        )
+        added = 0
+        for card in cards:
+            if card.get("id") in ready:
+                continue
+            try:
+                if await _index_card(db, provider, card):
+                    added += 1
+            except Exception:
+                db.rollback()
+        return added
+
+
 def _released_at(card: dict) -> date | None:
     value = card.get("released_at")
     try:

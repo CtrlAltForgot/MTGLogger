@@ -628,6 +628,39 @@ def test_set_code_score_handles_bounded_footer_glyph_confusion():
     assert CardRecognizer.hints("Swamp\nMIS\nBasic Land-Swamp")[2] == "mis"
 
 
+def test_printing_family_reports_when_a_result_is_truncated(monkeypatch):
+    import asyncio
+
+    from mtglogger.providers import scryfall
+
+    class Response:
+        status_code = 200
+
+        @staticmethod
+        def raise_for_status():
+            return None
+
+        @staticmethod
+        def json():
+            return {
+                "total_cards": 27,
+                "data": [{"id": f"printing-{index}"} for index in range(15)],
+            }
+
+    async def fake_get(_url, **kwargs):
+        assert kwargs["params"]["q"] == '!"Swamp" game:paper lang:en'
+        assert kwargs["params"]["unique"] == "prints"
+        return Response()
+
+    monkeypatch.setattr(scryfall, "scryfall_api_get", fake_get)
+    cards, total = asyncio.run(
+        scryfall.ScryfallProvider().printing_family("Swamp", limit=12)
+    )
+
+    assert len(cards) == 12
+    assert total == 27
+
+
 def test_focused_ocr_reads_only_enlarged_title_and_footer_when_title_is_usable():
     import numpy as np
 

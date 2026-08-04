@@ -139,6 +139,27 @@ class ScryfallProvider:
             url = page.get("next_page") if page.get("has_more") else None
         return cards
 
+    async def printing_family(
+        self, name: str, language: str = "en", limit: int = 12
+    ) -> tuple[list[dict], int]:
+        """Return a bounded printing family and its true paper-printing count.
+
+        Recognition uses the total to distinguish a complete small family from
+        a truncated result such as a basic land with hundreds of printings.
+        """
+        query = f'!"{name}" game:paper'
+        if language:
+            query += f" lang:{language}"
+        response = await scryfall_api_get(
+            f"{self.base_url}/cards/search",
+            params={"q": query, "unique": "prints", "order": "released"},
+        )
+        if response.status_code == 404:
+            return [], 0
+        response.raise_for_status()
+        page = response.json()
+        return page.get("data", [])[:limit], int(page.get("total_cards") or 0)
+
     async def paper_printing_pages(self) -> AsyncIterator[list[dict]]:
         """Stream every paper printing without holding the catalog in memory."""
         url = f"{self.base_url}/cards/search"
