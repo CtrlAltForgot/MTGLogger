@@ -644,6 +644,17 @@ class CardRecognizer:
             return []
         preferred_set = printed_set_code or box_set_code
 
+        # The growing local reference catalog is authoritative enough for card
+        # identity and avoids putting every physical scan behind Scryfall's
+        # network latency. Remote lookup remains the fallback for new/unindexed
+        # cards and supplies printing-family completeness below.
+        if title and not promo_type and language.casefold() == "en":
+            local_cards = await asyncio.to_thread(
+                self._lookup_local_cards, title, number, preferred_set
+            )
+            if local_cards:
+                return local_cards
+
         async def search_variants(
             candidate_title: str, *, relaxed: bool = False
         ) -> list[dict]:
@@ -721,6 +732,69 @@ class CardRecognizer:
         except (TimeoutError, httpx.HTTPError, ValueError) as exc:
             logger.warning("Scryfall lookup unavailable; preserving scan for Review: %s", exc)
             return []
+
+    @classmethod
+    def _lookup_local_cards(
+        cls, title: str, number: str | None, preferred_set: str | None
+    ) -> list[dict]:
+        try:
+            with SessionLocal() as db:
+                rows = list(
+                    db.scalars(
+                        select(CardReference).where(
+                            func.lower(CardReference.name) == title.casefold()
+                        )
+                    )
+                )
+                if not rows:
+                    names = list(db.scalars(select(CardReference.name).distinct()))
+                    closest = cls.closest_catalog_names(title, names, limit=1)
+                    if not closest or closest[0][1] < 0.72:
+                        return []
+                    rows = list(
+                        db.scalars(
+                            select(CardReference).where(
+                                func.lower(CardReference.name)
+                                == closest[0][0].casefold()
+                            )
+                        )
+                    )
+        except SQLAlchemyError:
+            return []
+        if not rows:
+            return []
+        exact = [
+            reference
+            for reference in rows
+            if (not preferred_set or reference.set_code.casefold() == preferred_set.casefold())
+            and (
+                not number
+                or cls.collector_score(number, reference.collector_number) == 1.0
+            )
+        ]
+        selected = exact or rows
+        return [
+            {
+                "id": reference.scryfall_id,
+                "name": reference.name,
+                "set": reference.set_code,
+                "set_name": reference.set_name,
+                "collector_number": reference.collector_number,
+                "released_at": (
+                    reference.released_at.isoformat() if reference.released_at else "0000"
+                ),
+                "image_uris": {"normal": reference.image_url},
+                "prices": {
+                    "usd": (
+                        str(reference.market_price)
+                        if reference.market_price is not None
+                        else None
+                    )
+                },
+                "lang": "en",
+            }
+            for reference in selected[:24]
+        ]
 
     async def recognize(
         self,
