@@ -1025,31 +1025,33 @@ class CardRecognizer:
             )
         ]
         selected = exact or rows
-        return [
-            {
-                "id": reference.scryfall_id,
-                "name": reference.name,
-                "set": reference.set_code,
-                "set_name": reference.set_name,
-                "collector_number": reference.collector_number,
-                "released_at": (
-                    reference.released_at.isoformat() if reference.released_at else "0000"
-                ),
-                "image_uris": {"normal": reference.image_url},
-                "prices": {
-                    "usd": (
-                        str(reference.market_price)
-                        if reference.market_price is not None
-                        else None
-                    )
-                },
-                "lang": reference.language or "en",
-                "oracle_id": reference.oracle_id,
-                "oracle_text": reference.oracle_text or "",
-                "promo_types": json.loads(reference.promo_types or "[]"),
-            }
-            for reference in selected[:24]
-        ]
+        return [cls._reference_card(reference) for reference in selected[:24]]
+
+    @staticmethod
+    def _reference_card(reference: CardReference) -> dict:
+        """Serialize a local reference in the provider-compatible card shape."""
+        return {
+            "id": reference.scryfall_id,
+            "name": reference.name,
+            "set": reference.set_code,
+            "set_name": reference.set_name,
+            "collector_number": reference.collector_number,
+            "released_at": (
+                reference.released_at.isoformat() if reference.released_at else "0000"
+            ),
+            "image_uris": {"normal": reference.image_url},
+            "prices": {
+                "usd": (
+                    str(reference.market_price)
+                    if reference.market_price is not None
+                    else None
+                )
+            },
+            "lang": reference.language or "en",
+            "oracle_id": reference.oracle_id,
+            "oracle_text": reference.oracle_text or "",
+            "promo_types": json.loads(reference.promo_types or "[]"),
+        }
 
     @classmethod
     def _lookup_local_printing_family(
@@ -1058,22 +1060,28 @@ class CardRecognizer:
         """Return a printing family from the completed local catalog.
 
         Exact-print recognition must never wait behind Scryfall once the same
-        canonical printings are present locally. The bounded card list mirrors
-        the provider API while the total preserves the conservative
-        family-completeness check for very large families such as basic lands.
+        canonical printings are present locally. Unlike interactive search,
+        this path deliberately returns the *complete* family: truncating common
+        names such as Swamp to 24 rows can remove the photographed artwork from
+        consideration and turn a wrong footer reading into a false auto-add.
         """
         try:
             with SessionLocal() as db:
-                total = db.scalar(
-                    select(func.count()).select_from(CardReference).where(
-                        func.lower(CardReference.name) == name.casefold(),
-                        CardReference.language == language,
+                rows = list(
+                    db.scalars(
+                        select(CardReference).where(
+                            func.lower(CardReference.name) == name.casefold(),
+                            CardReference.language == language,
+                        ).order_by(
+                            CardReference.released_at.desc(),
+                            CardReference.set_code,
+                            CardReference.collector_number,
+                        )
                     )
-                ) or 0
+                )
         except SQLAlchemyError:
             return [], 0
-        cards = cls._lookup_local_cards(name, None, None)
-        return [card for card in cards if card.get("lang") == language], int(total)
+        return [cls._reference_card(reference) for reference in rows], len(rows)
 
     @classmethod
     def _lookup_local_cards_by_number(

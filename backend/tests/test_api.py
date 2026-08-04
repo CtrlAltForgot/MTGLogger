@@ -770,6 +770,41 @@ def test_local_oracle_catalog_recovers_one_card_identity_without_network():
     ]
 
 
+def test_local_printing_family_is_not_truncated_for_common_card_names():
+    """Every artwork must reach exact-print ranking, including basic lands."""
+    from mtglogger.database import Base, SessionLocal, engine
+    from mtglogger.models import CardReference
+    from mtglogger.services.recognition import CardRecognizer
+
+    Base.metadata.drop_all(engine)
+    Base.metadata.create_all(engine)
+    with SessionLocal() as db:
+        db.add_all(
+            [
+                CardReference(
+                    scryfall_id=f"00000000-0000-0000-0000-{index:012d}",
+                    name="Swamp",
+                    set_code="rtr",
+                    set_name="Return to Ravnica",
+                    collector_number=str(230 + index),
+                    language="en",
+                    image_url=f"https://example.test/swamp-{index}.jpg",
+                    art_hash=f"{index:016x}",
+                )
+                for index in range(1, 31)
+            ]
+        )
+        db.commit()
+
+    family, total = CardRecognizer._lookup_local_printing_family("Swamp", "en")
+
+    assert total == 30
+    assert len(family) == 30
+    assert {card["collector_number"] for card in family} == {
+        str(230 + index) for index in range(1, 31)
+    }
+
+
 def test_structured_printing_evidence_promotes_safe_auto_adds_only():
     from mtglogger.services.recognition import CardRecognizer
 
