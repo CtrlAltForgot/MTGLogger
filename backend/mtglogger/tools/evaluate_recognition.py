@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 from sqlalchemy import select
 
+from ..config import get_settings
 from ..database import SessionLocal
 from ..models import CardReference, InventoryItem, ReviewItem, ReviewStatus
 from ..services.recognition import CardRecognizer
@@ -16,9 +17,18 @@ from ..services.references import artwork_hash
 
 
 async def evaluate(limit: int | None, manifest: Path | None = None) -> dict:
+    # Confirmations are copied into durable evaluation storage at resolution
+    # time. Prefer that manifest so deleting or merging an inventory row later
+    # cannot silently remove a real camera capture from the benchmark.
+    if manifest is None:
+        preserved_manifest = get_settings().evaluation_dir / "manifest.json"
+        if preserved_manifest.is_file():
+            manifest = preserved_manifest
     with SessionLocal() as db:
         if manifest:
             labels = json.loads(manifest.read_text())
+            if limit:
+                labels = labels[-limit:]
             labeled = []
             for label in labels:
                 review_id = label.get("review_id")
