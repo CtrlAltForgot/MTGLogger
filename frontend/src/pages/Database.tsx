@@ -29,7 +29,9 @@ export default function Database(){
   const [search,setSearch]=useState('')
   const [page,setPage]=useState(1)
   const [error,setError]=useState('')
-  const activeCode=status?.set_code?.replace('priority:','').toLowerCase()
+  const databaseComplete=(status?.coverage_percent||0)>=100
+  const databaseSyncing=status?.state==='running'&&!databaseComplete
+  const activeCode=databaseComplete?undefined:status?.set_code?.replace('priority:','').toLowerCase()
   const selectedSet=sets.find(item=>item.set_code===selected)
 
   const refreshOverview=useCallback(async()=>{
@@ -58,13 +60,13 @@ export default function Database(){
   return <>
     <Stack direction={{xs:'column',md:'row'}} justifyContent="space-between" spacing={2} mb={3}>
       <Box><Typography variant="h4">MTG Database</Typography><Typography color="text.secondary">Server-side copy of the entire MTG card database to heavily increase performance and speed.</Typography></Box>
-      <Stack direction="row" spacing={1} alignItems="center"><Chip color={status?.state==='running'?'primary':status?.state==='failed'?'error':status?.coverage_percent===100?'success':'warning'} label={status?.state==='running'?'Syncing…':status?.state==='failed'?'Update interrupted':status?.coverage_percent===100?'Up to date':'Resuming…'}/><Chip variant="outlined" label="All printings"/></Stack>
+      <Stack direction="row" spacing={1} alignItems="center"><Chip color={status?.state==='failed'?'error':databaseComplete?'success':databaseSyncing?'primary':'warning'} label={status?.state==='failed'?'Update interrupted':databaseComplete?'Up to date':databaseSyncing?'Syncing…':'Resuming…'}/><Chip variant="outlined" label="All printings"/></Stack>
     </Stack>
     {(error||status?.state==='failed')&&<Alert severity="error" sx={{mb:2}}>{error||status?.error||'Catalog update was interrupted and will retry automatically.'}</Alert>}
     <Card><CardContent>
       <Grid container spacing={3}><Grid size={{xs:6,md:3}}><Typography variant="h4">{(status?.fingerprinted_cards||0).toLocaleString()}</Typography><Typography color="text.secondary">ready printings</Typography></Grid><Grid size={{xs:6,md:3}}><Typography variant="h4">{status?.catalog_total?.toLocaleString()||'—'}</Typography><Typography color="text.secondary">paper printings needed</Typography></Grid><Grid size={{xs:6,md:3}}><Typography variant="h4">{status?.indexed_sets||0}</Typography><Typography color="text.secondary">sets represented</Typography></Grid><Grid size={{xs:6,md:3}}><Typography variant="h4">{status?.errors||0}</Typography><Typography color="text.secondary">sync errors</Typography></Grid></Grid>
       <LinearProgress variant={status?.catalog_total?'determinate':'indeterminate'} value={coverage} sx={{height:11,borderRadius:99,mt:2.5}}/>
-      <Stack direction={{xs:'column',sm:'row'}} justifyContent="space-between" mt={1} spacing={.5}><Box><Typography fontWeight={800}>{status?.coverage_percent==null?'Discovering catalog size':`${coverage.toFixed(2)}% of the complete queue ready`}</Typography>{status?.catalog_total!=null&&<Typography variant="caption" color="text.secondary">{Math.max(0,status.catalog_total-status.fingerprinted_cards).toLocaleString()} exact-print profiles remaining overall{activeCode?` · currently processing ${activeCode.toUpperCase()}`:''}</Typography>}</Box>{status?.state==='running'&&status.estimated_seconds_remaining!=null?<Typography color="primary.main" fontWeight={800}>ETA · about {duration(status.estimated_seconds_remaining)} · {status.estimated_completion_at&&new Date(status.estimated_completion_at).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})} <Typography component="span" color="text.secondary">({status.indexing_rate_per_second?.toFixed(1)}/sec)</Typography></Typography>:<Typography color="text.secondary">{status?.updated_at?`Updated ${new Date(status.updated_at).toLocaleString()}`:''}</Typography>}</Stack>
+      <Stack direction={{xs:'column',sm:'row'}} justifyContent="space-between" mt={1} spacing={.5}><Box><Typography fontWeight={800}>{status?.coverage_percent==null?'Discovering catalog size':`${coverage.toFixed(2)}% of the complete queue ready`}</Typography>{status?.catalog_total!=null&&<Typography variant="caption" color="text.secondary">{Math.max(0,status.catalog_total-status.fingerprinted_cards).toLocaleString()} exact-print profiles remaining overall{activeCode?` · currently processing ${activeCode.toUpperCase()}`:''}</Typography>}</Box>{databaseSyncing&&status?.estimated_seconds_remaining!=null?<Typography color="primary.main" fontWeight={800}>ETA · about {duration(status.estimated_seconds_remaining)} · {status.estimated_completion_at&&new Date(status.estimated_completion_at).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})} <Typography component="span" color="text.secondary">({status.indexing_rate_per_second?.toFixed(1)}/sec)</Typography></Typography>:<Typography color="text.secondary">{status?.updated_at?`Updated ${new Date(status.updated_at).toLocaleString()}`:''}</Typography>}</Stack>
     </CardContent></Card>
 
     <Grid container spacing={2.5} mt={.5}>
