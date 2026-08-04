@@ -5,7 +5,7 @@
   "start_url": "/?page=scanner",
   "scope": "/",
   "display": "standalone",
-  "background_color": "#080d0c",
+  "background_color": "#0b0809",
   "theme_color": "#c92b3d",
   "icons": [
     {"src": "/mtglogger-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable"},

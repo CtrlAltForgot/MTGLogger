@@ -1,5 +1,5 @@
 const CACHE_NAME = 'mtglogger-shell-v1'
-const APP_SHELL = ['/', '/manifest.webmanifest', '/mtglogger-mark.svg', '/mtglogger-192.png', '/mtglogger-512.png']
+const APP_SHELL = ['/', '/manifest.webmanifest', '/mtglogger-card-stack.png', '/favicon-64.png', '/mtglogger-192.png', '/mtglogger-512.png']
 
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE_NAME).then(cache => cache.addAll(APP_SHELL)))
