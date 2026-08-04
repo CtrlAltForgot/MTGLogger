@@ -22,7 +22,11 @@ def status():
 
 
 @router.get("/sets")
-def indexed_sets(db: Session = Depends(get_db)):
+async def indexed_sets(db: Session = Depends(get_db)):
+    try:
+        set_metadata = await provider.set_metadata()
+    except Exception:
+        set_metadata = {}
     rows = db.execute(
         select(
             CardReference.set_code,
@@ -49,6 +53,7 @@ def indexed_sets(db: Session = Depends(get_db)):
             "ready_printings": ready,
             "released_at": released_at,
             "updated_at": updated_at,
+            "icon_svg_uri": set_metadata.get(code.lower(), {}).get("icon_svg_uri"),
         }
         for code, name, indexed, ready, released_at, updated_at in rows
     ]

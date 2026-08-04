@@ -15,6 +15,9 @@ _api_request_lock = asyncio.Lock()
 _api_last_request_at = 0.0
 _printing_family_cache: dict[tuple[str, str, int], tuple[float, list[dict], int]] = {}
 _printing_family_lock = asyncio.Lock()
+_set_metadata: dict[str, dict] | None = None
+_set_metadata_loaded_at = 0.0
+_set_metadata_lock = asyncio.Lock()
 
 
 async def scryfall_api_get(url: str, **kwargs) -> httpx.Response:
@@ -88,6 +91,24 @@ class ScryfallProvider:
         response = await scryfall_api_get(f"{self.base_url}/cards/{scryfall_id}")
         response.raise_for_status()
         return response.json()
+
+    async def set_metadata(self) -> dict[str, dict]:
+        """Return authoritative set symbols, cached for one day."""
+        global _set_metadata, _set_metadata_loaded_at
+        if _set_metadata is not None and time.monotonic() - _set_metadata_loaded_at < 86_400:
+            return _set_metadata
+        async with _set_metadata_lock:
+            if _set_metadata is not None and time.monotonic() - _set_metadata_loaded_at < 86_400:
+                return _set_metadata
+            response = await scryfall_api_get(f"{self.base_url}/sets")
+            response.raise_for_status()
+            _set_metadata = {
+                item["code"].lower(): item
+                for item in response.json().get("data", [])
+                if item.get("code")
+            }
+            _set_metadata_loaded_at = time.monotonic()
+            return _set_metadata
 
     async def fuzzy_name(self, name: str) -> str | None:
         """Resolve a slightly damaged OCR title without choosing its printing."""
