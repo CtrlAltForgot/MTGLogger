@@ -559,7 +559,7 @@ class CardRecognizer:
             try:
                 async with asyncio.timeout(2.5):
                     matches = await self.provider.oracle_search(terms)
-            except (TimeoutError, httpx.HTTPError, ValueError):
+            except (TimeoutError, httpx.HTTPError, RuntimeError, ValueError):
                 return None, []
         ranked = sorted(
             (
@@ -913,7 +913,7 @@ class CardRecognizer:
                 if not cards and title:
                     cards = await search_variants(title, relaxed=True)
                 return cards
-        except (TimeoutError, httpx.HTTPError, ValueError) as exc:
+        except (TimeoutError, httpx.HTTPError, RuntimeError, ValueError) as exc:
             logger.warning("Scryfall lookup unavailable; preserving scan for Review: %s", exc)
             return []
 
@@ -985,6 +985,30 @@ class CardRecognizer:
             }
             for reference in selected[:24]
         ]
+
+    @classmethod
+    def _lookup_local_printing_family(
+        cls, name: str, language: str
+    ) -> tuple[list[dict], int]:
+        """Return a printing family from the completed local catalog.
+
+        Exact-print recognition must never wait behind Scryfall once the same
+        canonical printings are present locally. The bounded card list mirrors
+        the provider API while the total preserves the conservative
+        family-completeness check for very large families such as basic lands.
+        """
+        try:
+            with SessionLocal() as db:
+                total = db.scalar(
+                    select(func.count()).select_from(CardReference).where(
+                        func.lower(CardReference.name) == name.casefold(),
+                        CardReference.language == language,
+                    )
+                ) or 0
+        except SQLAlchemyError:
+            return [], 0
+        cards = cls._lookup_local_cards(name, None, None)
+        return [card for card in cards if card.get("lang") == language], int(total)
 
     @classmethod
     def _lookup_local_cards_by_number(
@@ -1156,16 +1180,27 @@ class CardRecognizer:
             if (
                 identity_is_constrained
                 and not exact_footer_match
-                and hasattr(self.provider, "printing_family")
             ):
                 try:
                     family_name = next(iter(identity_names))
-                    async with asyncio.timeout(3.0):
-                        family_cards, family_total = await self.provider.printing_family(
-                            family_name, language
-                        )
+                    family_cards, family_total = await asyncio.to_thread(
+                        self._lookup_local_printing_family,
+                        family_name,
+                        language,
+                    )
+                    if (
+                        not family_cards
+                        and hasattr(self.provider, "printing_family")
+                    ):
+                        async with asyncio.timeout(3.0):
+                            family_cards, family_total = (
+                                await self.provider.printing_family(
+                                    family_name, language
+                                )
+                            )
+                    if family_cards:
                         family_complete = bool(
-                            family_cards and len(family_cards) == family_total
+                            len(family_cards) == family_total
                         )
                         known_ids = {card["id"] for card in cards}
                         cards.extend(
@@ -1173,7 +1208,7 @@ class CardRecognizer:
                         )
                         if family_complete:
                             await ensure_reference_profiles(self.provider, family_cards)
-                except (TimeoutError, httpx.HTTPError, ValueError):
+                except (TimeoutError, httpx.HTTPError, RuntimeError, ValueError):
                     # The normal conservative path remains valid while offline.
                     family_complete = False
             if identity_is_constrained:
