@@ -1259,6 +1259,23 @@ def test_printing_descriptors_require_one_ocr_established_card_identity():
     )
 
 
+def test_global_visual_match_can_rescue_a_weak_wrong_ocr_identity():
+    from mtglogger.services.recognition import CardRecognizer
+
+    wrong_ocr_pool = [{"name": "Liliana, the Necromancer"}]
+
+    assert CardRecognizer.should_admit_visual_candidate(
+        "Liliana, Heretical Healer // Liliana, Defiant Necromancer",
+        wrong_ocr_pool,
+        identity_is_constrained=False,
+    )
+    assert not CardRecognizer.should_admit_visual_candidate(
+        "Unrelated Artwork Collision",
+        wrong_ocr_pool,
+        identity_is_constrained=True,
+    )
+
+
 def test_number_only_local_recovery_keeps_all_matching_printings():
     import asyncio
     from datetime import date

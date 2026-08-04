@@ -731,6 +731,34 @@ class CardRecognizer:
         # the top of Review without allowing them to cross the 98.5% auto-add gate.
         return min(94.0, score)
 
+    @classmethod
+    def should_admit_visual_candidate(
+        cls,
+        reference_name: str,
+        cards: list[dict],
+        identity_is_constrained: bool,
+    ) -> bool:
+        """Keep strong OCR identities closed while allowing visual rescue.
+
+        A damaged title can fuzzy-match a real but unrelated card name. In that
+        case the global artwork match must be allowed into Review or the wrong
+        OCR identity becomes impossible to dislodge. Once OCR has established a
+        single strong identity, retain the strict family filter so perceptual
+        hash collisions cannot inject unrelated cards.
+        """
+        if not cards or not identity_is_constrained:
+            return True
+        normalized_reference = cls.normalized_name(reference_name)
+        return any(
+            SequenceMatcher(
+                None,
+                normalized_reference,
+                cls.normalized_name(card["name"]),
+            ).ratio()
+            >= 0.90
+            for card in cards
+        )
+
     async def _lookup_cards(
         self,
         title: str | None,
@@ -1325,14 +1353,8 @@ class CardRecognizer:
             # When OCR already established a card identity, visual evidence may
             # distinguish its printings but must not inject unrelated cards that
             # happen to have a similar low-resolution perceptual hash.
-            if cards and not any(
-                SequenceMatcher(
-                    None,
-                    self.normalized_name(reference.name),
-                    self.normalized_name(card["name"]),
-                ).ratio()
-                >= 0.90
-                for card in cards
+            if not self.should_admit_visual_candidate(
+                reference.name, cards, identity_is_constrained
             ):
                 continue
             ranked[reference.scryfall_id] = Candidate(
