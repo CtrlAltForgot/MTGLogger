@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { CameraAlt, CloudDownload, RestartAlt, Stop } from '@mui/icons-material'
+import { CameraAlt, RestartAlt, Stop } from '@mui/icons-material'
 import {
   Alert, Box, Button, Card, CardContent, Chip, FormControlLabel, Grid,
   LinearProgress, MenuItem, Select, Slider, Snackbar, Stack, Switch, TextField, Typography,
@@ -10,7 +10,7 @@ import FoilArtwork from '../components/FoilArtwork'
 import { CardName } from '../components/CardDetails'
 import { cardsPerMinute, initialSessionStats, recordSuccessfulAddition, reviewPercentage } from '../scanner/sessionStats'
 import { defaultTuning, useAutoScanner, type ScannerTuning } from '../scanner/useAutoScanner'
-import type { Candidate, Deck, Defaults, Inventory, ReferenceStatus, ScanResult } from '../types'
+import type { Candidate, Deck, Defaults, Inventory, ScanResult } from '../types'
 
 const initial:Defaults={condition:'near_mint',foil:false,language:'en',storage_location:'Unsorted',collection_name:'Main',status:'owned',box_set_code:null,auto_add:true,deck_id:null}
 const languages=[
@@ -23,7 +23,6 @@ export default function Scanner(){
   const [defaults,setDefaults]=useState(initial)
   const [result,setResult]=useState<ScanResult|null>(null)
   const [tuning,setTuning]=useState<ScannerTuning>(defaultTuning)
-  const [references,setReferences]=useState<ReferenceStatus>()
   const [decks,setDecks]=useState<Deck[]>([])
   const [decisionBusy,setDecisionBusy]=useState(false)
   const [success,setSuccess]=useState<Inventory|null>(null)
@@ -54,9 +53,8 @@ export default function Scanner(){
   },[defaults,resolveImmediately])
   const scan=useAutoScanner(capture,tuning,resolveImmediately||!defaults.auto_add?1:2)
 
-  const refresh=useCallback(()=>request<ReferenceStatus>('/references/status').then(setReferences),[])
-  useEffect(()=>{void refresh();const timer=setInterval(refresh,2500);return()=>clearInterval(timer)},[refresh])
   useEffect(()=>{void request<Deck[]>('/decks').then(setDecks)},[])
+  useEffect(()=>{void scan.start()},[scan.start])
 
   const finishDecision=()=>{decisionComplete.current?.();decisionComplete.current=null;setDecisionBusy(false)}
   const accept=useCallback(async(candidate:Candidate)=>{
@@ -80,27 +78,28 @@ export default function Scanner(){
     catch(error){setDecisionBusy(false);scan.setError(error instanceof Error?error.message:'Could not skip card')}
   },[result,scan])
 
-  const indexSet=async()=>{if(defaults.box_set_code){await request(`/references/sync/${defaults.box_set_code}`,{method:'POST'});refresh()}}
   const uncertain=result&&result.disposition!=='added'&&result.disposition!=='empty'
   const immediateDecision=!!(uncertain&&result.review_id&&(resolveImmediately||!defaults.auto_add))
   const tone=result?.disposition==='added'?'success':result?.disposition==='suggestions'||result?.disposition==='confirmation'?'warning':'error'
-  const stateLabel=scan.state==='remove'?'Swap to next card':scan.state==='processing'?'Identifying…':scan.state==='stabilizing'?'Hold still…':scan.state==='calibrating'?'Keep guide empty…':scan.state==='waiting'?'Ready for card':'Camera stopped'
+  const stateLabel=scan.state==='remove'?'Swap to next card':scan.state==='processing'?'Identifying…':scan.state==='stabilizing'?'Hold still…':scan.state==='calibrating'?'Calibrating…':scan.state==='waiting'?'Ready for card':''
   const sessionCardsPerMinute=cardsPerMinute(stats)
   const sessionReviewPercentage=reviewPercentage(stats)
 
   return <Grid container spacing={3}>
     <Grid size={{xs:12,lg:8}}>
-      <Card sx={{overflow:'hidden',position:'relative',bgcolor:'#050807'}}>
+      <Box sx={{overflow:'hidden',position:'relative',bgcolor:'#050807',borderRadius:3,minHeight:320}}>
         <Box component="video" ref={scan.video} muted playsInline sx={{width:'100%',aspectRatio:'16/9',display:'block',objectFit:'cover'}}/>
-        <canvas ref={scan.canvas} hidden/><Box className="card-guide"/>
-        <Chip label={stateLabel} color={scan.state==='remove'?'success':scan.state==='processing'?'warning':'default'} sx={{position:'absolute',top:16,left:16,fontWeight:700}}/>
+        <canvas ref={scan.canvas} hidden/>
+        {scan.metrics.bounds&&scan.state!=='calibrating'&&<Box sx={{position:'absolute',left:`${scan.metrics.bounds.left}%`,top:`${scan.metrics.bounds.top}%`,width:`${scan.metrics.bounds.width}%`,height:`${scan.metrics.bounds.height}%`,border:'3px solid',borderColor:'success.main',borderRadius:2,boxShadow:'0 0 0 1px rgba(0,0,0,.4), 0 0 24px rgba(100,217,151,.28)',transition:'all 120ms linear',pointerEvents:'none'}}/>}
+        {stateLabel&&<Chip label={stateLabel} color={scan.state==='remove'?'success':scan.state==='processing'?'warning':'default'} sx={{position:'absolute',top:16,left:16,fontWeight:700,backdropFilter:'blur(12px)'}}/>}
+        {scan.state!=='idle'&&<Button color="inherit" variant="contained" startIcon={<Stop/>} onClick={scan.stop} sx={{position:'absolute',right:16,top:16,bgcolor:'rgba(10,7,8,.62)','&:hover':{bgcolor:'rgba(10,7,8,.82)'}}}>Camera off</Button>}
         {scan.state==='processing'&&<LinearProgress sx={{position:'absolute',bottom:0,left:0,right:0}}/>}
-      </Card>
+      </Box>
       <Stack direction="row" spacing={2} mt={2} alignItems="center">
         {scan.state==='idle'
-          ?<Button size="large" variant="contained" startIcon={<CameraAlt/>} onClick={()=>void scan.start()}>Start scanning</Button>
-          :<><Button size="large" variant="outlined" startIcon={<Stop/>} onClick={scan.stop}>Stop</Button><Button startIcon={<RestartAlt/>} onClick={scan.calibrate}>Reset background</Button></>}
-        <Typography color="text.secondary">Keep the scan zone empty during calibration. After capture, remove the card or swap directly to the next one.</Typography>
+          ?<Button variant="contained" startIcon={<CameraAlt/>} onClick={()=>void scan.start()}>Turn camera on</Button>
+          :<Button startIcon={<RestartAlt/>} onClick={scan.calibrate}>Recalibrate empty table</Button>}
+        <Typography color="text.secondary">Place a card anywhere in view and hold it steady. Swap directly to the next card when identified.</Typography>
       </Stack>
       {scan.cameras.length>1&&<Select size="small" value={scan.selectedCamera} onChange={event=>void scan.switchCamera(event.target.value)} sx={{mt:1.5,minWidth:280}}>{scan.cameras.map((camera,index)=><MenuItem value={camera.deviceId} key={camera.deviceId}>{camera.label||`Camera ${index+1}`}</MenuItem>)}</Select>}
       <Stack direction="row" spacing={2} mt={1}>
@@ -134,10 +133,6 @@ export default function Scanner(){
         <Select displayEmpty value={defaults.deck_id||''} onChange={event=>setDefaults({...defaults,deck_id:event.target.value||null})}><MenuItem value="">Deck · None</MenuItem>{decks.map(deck=><MenuItem value={deck.id} key={deck.id}>Deck · {deck.name}</MenuItem>)}</Select>
         <TextField label="Storage location" placeholder="e.g. Box 4 / Row B" value={defaults.storage_location} onChange={event=>setDefaults({...defaults,storage_location:event.target.value||'Unsorted'})}/>
         <TextField label="Box Mode set code" placeholder="e.g. FDN" value={defaults.box_set_code||''} onChange={event=>setDefaults({...defaults,box_set_code:event.target.value.trim()||null})}/>
-        <Button startIcon={<CloudDownload/>} disabled={!defaults.box_set_code||references?.state==='running'} onClick={indexSet}>
-          {references?.state==='running'?`Indexing ${references.completed}/${references.total}`:`Index set artwork (${references?.indexed_cards||0} cached)`}
-        </Button>
-        {references?.error&&<Alert severity="error">{references.error}</Alert>}
         <FormControlLabel control={<Switch checked={defaults.foil} onChange={event=>setDefaults({...defaults,foil:event.target.checked})}/>} label="Foil"/>
         <FormControlLabel control={<Switch checked={defaults.auto_add} onChange={event=>setDefaults({...defaults,auto_add:event.target.checked})}/>} label="Auto-add near-certain matches (98.5%+)"/>
         <FormControlLabel control={<Switch checked={resolveImmediately} onChange={event=>setResolveImmediately(event.target.checked)}/>} label="Resolve uncertain cards immediately"/>

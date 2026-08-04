@@ -23,6 +23,14 @@ describe('wide scanner presence analysis',()=>{
   it('ignores the narrow preview gutter outside the scan zone',()=>{
     expect(analyze(changedRegion(0,5,0,120),undefined,frame()).sceneDifference).toBe(0)
   })
+
+  it('reports a visible bounding box around the changed card region',()=>{
+    const result=analyze(changedRegion(30,90,18,108),undefined,frame())
+    expect(result.bounds).toBeDefined()
+    expect(result.bounds!.left).toBeGreaterThan(15)
+    expect(result.bounds!.width).toBeGreaterThan(30)
+    expect(result.bounds!.height).toBeGreaterThan(65)
+  })
 })
 
 describe('bounded recognition pipeline',()=>{

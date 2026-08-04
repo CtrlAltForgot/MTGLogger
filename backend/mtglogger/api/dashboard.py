@@ -38,6 +38,21 @@ def summary(db: Session = Depends(get_db)):
             )
         ]
 
+    def group_sets():
+        return [
+            {"label": name or "Unknown", "code": code or "", "count": count}
+            for name, code, count in db.execute(
+                select(
+                    InventoryItem.set_name,
+                    InventoryItem.set_code,
+                    func.sum(InventoryItem.quantity),
+                )
+                .group_by(InventoryItem.set_name, InventoryItem.set_code)
+                .order_by(desc(func.sum(InventoryItem.quantity)))
+                .limit(20)
+            )
+        ]
+
     valuable = list(
         db.scalars(
             select(InventoryItem)
@@ -62,7 +77,7 @@ def summary(db: Session = Depends(get_db)):
         total_cards=total_cards,
         unique_printings=unique,
         review_count=review_count,
-        by_set=group(InventoryItem.set_name),
+        by_set=group_sets(),
         by_color=group(InventoryItem.color_identity),
         by_rarity=group(InventoryItem.rarity),
         by_type=group(InventoryItem.type_line),

@@ -172,9 +172,10 @@ def test_price_changes_retain_previous_value_and_collection_history(client):
     history = client.get("/api/prices/history").json()
     assert history["range"] == "1d"
     assert history["current_value"] == 1.26
-    assert history["previous_value"] == 0.84
-    assert history["change"] == 0.42
-    assert history["change_percentage"] == 50.0
+    assert history["previous_value"] is None
+    assert history["change"] is None
+    assert history["change_percentage"] is None
+    assert history["window_start"] < history["window_end"]
     assert len(history["history"]) == 2
     assert client.get("/api/prices/history", params={"range": "all"}).status_code == 422
 

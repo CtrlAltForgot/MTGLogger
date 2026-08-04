@@ -8,7 +8,7 @@ export function appTheme(dark:boolean){
   return createTheme({
     palette:{mode:dark?'dark':'light',primary:{main:accent},success:{main:dark?'#64D997':'#168A4C'},error:{main:dark?'#FF646C':'#C82737'},warning:{main:dark?'#FFB74D':'#B66B00'},background:{default:background,paper},divider:border,text:{primary:dark?'#FAF5F5':'#281719',secondary:dark?'#AE9FA1':'#746568'}},
     shape:{borderRadius:12},
-    typography:{fontFamily:'-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif',h3:{fontWeight:760,letterSpacing:'-.045em'},h4:{fontWeight:760,letterSpacing:'-.035em'},h5:{fontWeight:720,letterSpacing:'-.025em'},h6:{fontWeight:700,letterSpacing:'-.018em'},button:{fontWeight:680,textTransform:'none',letterSpacing:'-.01em'}},
+    typography:{fontFamily:'Beleren, Georgia, serif',h3:{fontWeight:700,letterSpacing:'-.025em'},h4:{fontWeight:700,letterSpacing:'-.02em'},h5:{fontWeight:700,letterSpacing:'-.015em'},h6:{fontWeight:700,letterSpacing:'-.01em'},button:{fontWeight:700,textTransform:'none',letterSpacing:'.005em'}},
     components:{
       MuiCssBaseline:{styleOverrides:{body:{backgroundImage:dark?'linear-gradient(135deg, rgba(114,30,42,.09), transparent 42%)':'linear-gradient(135deg, rgba(201,43,61,.07), transparent 42%)',backgroundAttachment:'fixed'},'::selection':{background:alpha(accent,.28)}}},
       MuiAppBar:{styleOverrides:{root:{background:alpha(dark?'#0D090A':'#FCF8F8',.9),color:dark?'#FAF5F5':'#281719',borderBottom:`1px solid ${border}`,boxShadow:'none',backdropFilter:'saturate(145%) blur(20px)',WebkitBackdropFilter:'saturate(145%) blur(20px)'}}},

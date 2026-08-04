@@ -363,7 +363,10 @@ async def _retry_full_sync(delay_seconds: int = 60) -> None:
 
 
 async def reference_refresh_loop(interval_hours: int) -> None:
-    await asyncio.sleep(300)
+    # Let migrations and the HTTP server settle, then promptly reconstruct the
+    # in-memory catalog status and resume the durable descriptor queue. A long
+    # startup delay made an API restart look as if saved profiles had vanished.
+    await asyncio.sleep(5)
     while True:
         await sync_all()
         delay = 60 if sync_status()["state"] == "failed" else max(1, interval_hours) * 3600

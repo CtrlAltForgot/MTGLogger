@@ -26,7 +26,8 @@ def history(
     window: str = Query("1d", alias="range", pattern="^(1d|1w|1m|6m|1y)$"),
     db: Session = Depends(get_db),
 ):
-    cutoff = datetime.now(UTC) - WINDOWS[window]
+    window_end = datetime.now(UTC)
+    cutoff = window_end - WINDOWS[window]
     snapshots = list(
         db.scalars(
             select(CollectionValueSnapshot)
@@ -42,23 +43,31 @@ def history(
         for item in snapshots
     ]
     if not points:
-        baseline = CollectionValueSnapshot(total_value=current)
-        db.add(baseline)
+        # Record the first genuine observation once. It appears at its actual
+        # timestamp; the chart still leaves the earlier part of the range blank.
+        observed = CollectionValueSnapshot(total_value=current, recorded_at=window_end)
+        db.add(observed)
         db.commit()
-        db.refresh(baseline)
-        points = [{"recorded_at": baseline.recorded_at, "total_value": current}]
+        db.refresh(observed)
+        points = [{"recorded_at": observed.recorded_at, "total_value": current}]
+    baseline = db.scalar(
+        select(CollectionValueSnapshot)
+        .where(CollectionValueSnapshot.recorded_at <= cutoff)
+        .order_by(CollectionValueSnapshot.recorded_at.desc())
+        .limit(1)
+    )
     # Inventory additions and edits change the live total between scheduled
     # market refreshes. Include that observed value in the response so the chart
     # and headline always describe the same collection state.
     latest = points[-1]["total_value"] if points else None
     if latest != current:
-        points.append({"recorded_at": datetime.now(UTC), "total_value": current})
+        points.append({"recorded_at": window_end, "total_value": current})
     # Keep long ranges responsive while retaining the real first/last points.
     if len(points) > 500:
         step = (len(points) - 1) / 499
         indexes = sorted({round(index * step) for index in range(500)})
         points = [points[index] for index in indexes]
-    previous = points[0]["total_value"] if len(points) > 1 else None
+    previous = baseline.total_value if baseline is not None else None
     change = current - previous if previous is not None else None
     percentage = (
         change / previous * 100 if change is not None and previous not in (None, 0) else None
@@ -69,6 +78,8 @@ def history(
         "change": change,
         "change_percentage": percentage,
         "range": window,
+        "window_start": cutoff,
+        "window_end": window_end,
         "history": points,
     }
 
