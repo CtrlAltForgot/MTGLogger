@@ -918,6 +918,70 @@ def test_collector_footer_survives_full_card_title_fallback():
     assert set_code == "ori"
 
 
+def test_footer_artist_line_is_not_invented_as_a_card_title():
+    from mtglogger.services.recognition import CardRecognizer
+
+    title, number, set_code, _ = CardRecognizer.hints(
+        "264/272L\nORI·EN IUNGPARK"
+    )
+
+    assert title is None
+    assert number == "264"
+    assert set_code == "ori"
+
+
+def test_full_frame_land_title_fuses_with_focused_collector_footer():
+    import asyncio
+
+    import numpy as np
+
+    from mtglogger.services.recognition import CardRecognizer
+
+    exact = {
+        "id": "ori-swamp-264",
+        "name": "Swamp",
+        "set": "ori",
+        "set_name": "Magic Origins",
+        "collector_number": "264",
+        "released_at": "2015-07-17",
+    }
+
+    class Provider:
+        async def search(self, query, set_code=None, language=None):
+            if query == '!"Swamp" cn:264' and set_code == "ori":
+                return [exact]
+            if "Swamp" in query:
+                return [
+                    exact,
+                    {**exact, "id": "ori-swamp-262", "collector_number": "262"},
+                ]
+            return []
+
+        @staticmethod
+        def image_url(_card):
+            return None
+
+        @staticmethod
+        def market_price(_card, foil=False):
+            return None
+
+    recognizer = CardRecognizer.__new__(CardRecognizer)
+    recognizer.provider = Provider()
+    recognizer._recognition_lock = asyncio.Lock()
+    image = np.zeros((840, 600, 3), dtype=np.uint8)
+    recognizer.decode = lambda _raw: image
+    recognizer.rectify = lambda decoded: decoded
+    recognizer.extract_identification_text = lambda _image: "264/272L\nORI·EN IUNGPARK"
+    recognizer.extract_text = lambda _image: "Basic Land - Swamp\nORI"
+    recognizer._visual_matches = lambda *_args: []
+
+    result = asyncio.run(recognizer.recognize(b"camera-frame"))
+
+    assert result.candidates[0].scryfall_id == "ori-swamp-264"
+    assert result.candidates[0].collector_number == "264"
+    assert result.confidence >= 98.5
+
+
 def test_catalog_fallback_recovers_canonical_name_with_exact_printing():
     import asyncio
 

@@ -425,13 +425,28 @@ class CardRecognizer:
             None,
         )
         title_lines = lines[:type_line_index] if type_line_index is not None else lines[:5]
+
+        def plausible_title(line: str) -> bool:
+            # A footer-only pass can be exceptionally clear while the title is
+            # lost to glare.  Do not reinterpret "ORI · EN DANFRAZIER" as a
+            # card name; keep its set/collector evidence available for fusion
+            # with the full-frame title pass below.
+            if re.match(
+                rf"^\s*[A-Z][A-Z0-9]{{1,5}}?[\s·•.+\-:]*(?:{languages})(?=\s|$|[A-Z])",
+                line,
+            ):
+                return False
+            return (
+                not re.search(r"\d{3,}", line)
+                and len(line) <= 60
+                and sum(character.isalpha() for character in line) >= 3
+            )
+
         title = next(
             (
                 line
                 for line in title_lines
-                if not re.search(r"\d{3,}", line)
-                and len(line) <= 60
-                and sum(character.isalpha() for character in line) >= 3
+                if plausible_title(line)
             ),
             None,
         )
@@ -1153,9 +1168,32 @@ class CardRecognizer:
                     if recovery_text.strip():
                         text = "\n".join((text, recovery_text))
                 elif recovery_cards:
-                    text = recovery_text
-                    title, number, printed_set_code, copyright_year = recovery_hints
-                    cards = recovery_cards
+                    # The focused crop is best at the tiny collector footer,
+                    # while the noisier full-frame pass is often the only one
+                    # that can read the title.  Fuse those complementary facts
+                    # before accepting the broader recovery pool.  This is
+                    # essential for basic lands whose names and set are shared
+                    # by several distinct, potentially valuable artworks.
+                    recovered_title, recovered_number, recovered_set, recovered_year = (
+                        recovery_hints
+                    )
+                    fused_number = number or recovered_number
+                    fused_set = printed_set_code or recovered_set
+                    fused_year = copyright_year or recovered_year
+                    fused_cards = await self._lookup_cards(
+                        recovered_title,
+                        fused_number,
+                        fused_set,
+                        box_set_code,
+                        language,
+                        recovery_promo,
+                    )
+                    text = "\n".join(part for part in (text, recovery_text) if part.strip())
+                    title = recovered_title
+                    number = fused_number
+                    printed_set_code = fused_set
+                    copyright_year = fused_year
+                    cards = fused_cards or recovery_cards
                 elif recovery_text.strip():
                     text = recovery_text
                 if (
