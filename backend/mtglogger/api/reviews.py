@@ -42,6 +42,14 @@ def serialize(item: ReviewItem) -> ReviewRead:
     defaults = ScanDefaults.model_validate(
         stored.get("defaults", {}) if isinstance(stored, dict) else {}
     )
+    return ReviewRead(
+        **{
+            key: getattr(item, key)
+            for key in ("id", "image_path", "confidence", "ocr_text", "status", "created_at")
+        },
+        candidates=candidates,
+        defaults=defaults,
+    )
 
 
 def schedule_training_if_queue_drained(
@@ -57,14 +65,6 @@ def schedule_training_if_queue_drained(
     )
     if pending_reviews == 0:
         background_tasks.add_task(train_metric_adapter_if_new_corrections)
-    return ReviewRead(
-        **{
-            key: getattr(item, key)
-            for key in ("id", "image_path", "confidence", "ocr_text", "status", "created_at")
-        },
-        candidates=candidates,
-        defaults=defaults,
-    )
 
 
 @router.get("", response_model=list[ReviewRead])
