@@ -185,12 +185,14 @@ class DeckCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     format: str | None = Field(None, max_length=64)
     description: str | None = None
+    image_url: str | None = None
 
 
 class DeckUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=255)
     format: str | None = Field(None, max_length=64)
     description: str | None = None
+    image_url: str | None = None
 
 
 class DeckAllocation(BaseModel):

@@ -42,6 +42,7 @@ def serialize(deck: Deck) -> DeckRead:
         name=deck.name,
         format=deck.format,
         description=deck.description,
+        image_url=deck.image_url,
         created_at=deck.created_at,
         updated_at=deck.updated_at,
         total_cards=sum(entry.quantity for entry in deck.entries),

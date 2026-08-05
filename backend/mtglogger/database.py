@@ -29,6 +29,11 @@ def migrate_schema() -> None:
     """Apply small additive migrations for installations predating Alembic."""
     inspector = inspect(engine)
     tables = inspector.get_table_names()
+    if "decks" in tables:
+        deck_columns = {column["name"] for column in inspector.get_columns("decks")}
+        if "image_url" not in deck_columns:
+            with engine.begin() as connection:
+                connection.execute(text("ALTER TABLE decks ADD COLUMN image_url TEXT"))
     if "card_references" in tables:
         reference_columns = {
             column["name"] for column in inspector.get_columns("card_references")

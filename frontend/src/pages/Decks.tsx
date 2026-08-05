@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Add, ArrowBack, Delete, Remove, Search } from "@mui/icons-material";
+import { Add, ArrowBack, Delete, Edit, Remove, Search } from "@mui/icons-material";
 import {
   Alert,
   Box,
@@ -33,6 +33,7 @@ export default function Decks() {
     [chosen, setChosen] = useState<Set<string>>(new Set()),
     [query, setQuery] = useState(""),
     [open, setOpen] = useState(false),
+    [editing, setEditing] = useState(false),
     [deleting, setDeleting] = useState(false),
     [error, setError] = useState<string>(),
     [busy, setBusy] = useState(false);
@@ -40,7 +41,7 @@ export default function Decks() {
   const [availableTotal, setAvailableTotal] = useState(0),
     [availablePage, setAvailablePage] = useState(0),
     [availablePageSize, setAvailablePageSize] = useState(50);
-  const [form, setForm] = useState({ name: "", format: "", description: "" });
+  const [form, setForm] = useState({ name: "", format: "", description: "", image_url: "" });
   const selected = useMemo(
     () => decks.find((deck) => deck.id === selectedId),
     [decks, selectedId],
@@ -108,15 +109,30 @@ export default function Decks() {
           name: form.name,
           format: form.format || null,
           description: form.description || null,
+          image_url: form.image_url || null,
         }),
       });
       setDecks((current) => [deck, ...current]);
       setSelectedId(deck.id);
       setOpen(false);
-      setForm({ name: "", format: "", description: "" });
+      setForm({ name: "", format: "", description: "", image_url: "" });
     } finally {
       setBusy(false);
     }
+  };
+  const openEditor = () => {
+    if (!selected) return;
+    setForm({name:selected.name,format:selected.format||"",description:selected.description||"",image_url:selected.image_url||""});
+    setEditing(true);
+  };
+  const saveDeck = async () => {
+    if (!selected) return;
+    setBusy(true);
+    try {
+      replaceDeck(await request<Deck>(`/decks/${selected.id}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:form.name,format:form.format||null,description:form.description||null,image_url:form.image_url||null})}));
+      setEditing(false);
+    } catch (e) { setError(e instanceof Error?e.message:"Could not update deck"); }
+    finally { setBusy(false); }
   };
   const addSelected = async () => {
     if (!selected || !chosen.size) return;
@@ -240,6 +256,7 @@ export default function Decks() {
                 sx={{
                   cursor: "pointer",
                   height: "100%",
+                  position: "relative",
                   "&:hover": {
                     borderColor: "primary.main",
                     transform: "translateY(-2px)",
@@ -248,6 +265,7 @@ export default function Decks() {
                 }}
                 variant="outlined"
               >
+                <DeckArtwork deck={deck}/>
                 <CardContent>
                   <Stack direction="row" justifyContent="space-between">
                     <Typography variant="h6" fontWeight={800}>
@@ -266,6 +284,7 @@ export default function Decks() {
                       {deck.description}
                     </Typography>
                   )}
+                  <Tooltip title="Edit deck"><IconButton aria-label={`Edit ${deck.name}`} onClick={event=>{event.stopPropagation();setSelectedId(deck.id);setForm({name:deck.name,format:deck.format||"",description:deck.description||"",image_url:deck.image_url||""});setEditing(true)}} sx={{position:"absolute",right:8,bottom:8}}><Edit/></IconButton></Tooltip>
                 </CardContent>
               </Card>
             </Grid>
@@ -307,13 +326,7 @@ export default function Decks() {
             </Typography>
           </Box>
         </Stack>
-        <Button
-          color="error"
-          startIcon={<Delete />}
-          onClick={() => setDeleting(true)}
-        >
-          Delete deck
-        </Button>
+        <Stack direction="row"><Button startIcon={<Edit/>} onClick={openEditor}>Edit deck</Button><Button color="error" startIcon={<Delete />} onClick={() => setDeleting(true)}>Delete deck</Button></Stack>
       </Stack>
       {error && (
         <Alert
@@ -577,8 +590,18 @@ export default function Decks() {
           </Button>
         </DialogActions>
       </Dialog>
+      <DeckDialog open={editing} title="Edit deck" form={form} setForm={setForm} busy={busy} close={()=>setEditing(false)} submit={saveDeck} submitLabel="Save changes"/>
     </>
   );
+}
+
+type DeckForm={name:string;format:string;description:string;image_url:string}
+
+function DeckArtwork({deck}:{deck:Deck}){
+  const colors=[...new Set(deck.entries.flatMap(entry=>entry.inventory.color_identity.split('')).filter(Boolean))]
+  const palette:Record<string,string>={W:'#eee4bf',U:'#4ea7d8',B:'#44384f',R:'#d85845',G:'#4f8a59'}
+  const background=colors.length?`linear-gradient(135deg,${colors.map(color=>palette[color]||'#6c6265').join(',')})`:'linear-gradient(135deg,#322428,#130d0f)'
+  return <Box sx={{height:120,background,position:'relative',overflow:'hidden'}}>{deck.image_url&&<Box component="img" src={deck.image_url} alt="" sx={{width:'100%',height:'100%',objectFit:'cover'}}/>}<Box sx={{position:'absolute',inset:0,background:'linear-gradient(0deg,rgba(10,6,7,.66),transparent 70%)'}}/></Box>
 }
 
 function CreateDialog({
@@ -590,21 +613,28 @@ function CreateDialog({
   create,
 }: {
   open: boolean;
-  form: { name: string; format: string; description: string };
-  setForm: (form: {
-    name: string;
-    format: string;
-    description: string;
-  }) => void;
+  form: DeckForm;
+  setForm: (form: DeckForm) => void;
   busy: boolean;
   close: () => void;
   create: () => void;
 }) {
+  return <DeckDialog open={open} title="Create a deck" form={form} setForm={setForm} busy={busy} close={close} submit={create} submitLabel="Create deck"/>
+}
+
+function DeckDialog({open,title,form,setForm,busy,close,submit,submitLabel}:{open:boolean;title:string;form:DeckForm;setForm:(form:DeckForm)=>void;busy:boolean;close:()=>void;submit:()=>void;submitLabel:string}){
   return (
     <Dialog open={open} onClose={close} fullWidth maxWidth="sm">
-      <DialogTitle>Create a deck</DialogTitle>
+      <DialogTitle>{title}</DialogTitle>
       <DialogContent>
         <Stack spacing={2} mt={1}>
+          <TextField
+            label="Custom image URL"
+            placeholder="https://…"
+            value={form.image_url}
+            onChange={(e) => setForm({ ...form, image_url: e.target.value })}
+            helperText="Leave blank to use a color-identity banner generated from the deck."
+          />
           <TextField
             autoFocus
             label="Deck name"
@@ -631,9 +661,9 @@ function CreateDialog({
         <Button
           variant="contained"
           disabled={!form.name.trim() || busy}
-          onClick={create}
+          onClick={submit}
         >
-          Create deck
+          {submitLabel}
         </Button>
       </DialogActions>
     </Dialog>

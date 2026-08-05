@@ -1116,6 +1116,16 @@ def test_basic_land_auto_add_requires_decisive_exact_art_evidence():
     assert CardRecognizer.has_safe_basic_land_match(
         swamp["id"], swamp["id"], True, 92, 21, "261", "rtr", 0.0, 1.0
     )
+    # Older cards may not print a readable set code. A decisive set-symbol
+    # region plus the decisive artwork match provides the same independent proof.
+    assert CardRecognizer.has_safe_basic_land_match(
+        swamp["id"], swamp["id"], True, 92, 21, None, None, 0.0, 0.0,
+        swamp["id"], 91, 18,
+    )
+    assert not CardRecognizer.has_safe_basic_land_match(
+        swamp["id"], swamp["id"], True, 92, 21, None, None, 0.0, 0.0,
+        "rtr-swamp-261", 94, 20,
+    )
 
 
 def test_catalog_fallback_recovers_canonical_name_with_exact_printing():
