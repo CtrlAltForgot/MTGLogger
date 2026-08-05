@@ -345,7 +345,9 @@ class CardRecognizer:
             # marker so ordinary rules text cannot manufacture a release year.
             footer = "\n".join(lines[-8:])
             for raw_line in footer.splitlines():
-                if not re.search(r"(?:illus|wizard|coast|©|rights?)", raw_line, re.I):
+                if not re.search(
+                    r"(?:illus|wizard|w[ui]ards|coa[st]|©|rights?)", raw_line, re.I
+                ):
                     continue
                 compact = re.sub(r"[^A-Za-z0-9]", "", raw_line)
                 normalized = compact.translate(str.maketrans({"O": "0", "o": "0", "l": "1", "I": "1", "g": "9"}))
