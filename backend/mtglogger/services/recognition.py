@@ -678,7 +678,10 @@ class CardRecognizer:
             source,
             source.translate(str.maketrans({"i": "1", "l": "1", "s": "5", "o": "0"})),
         }
-        if target in variants:
+        # Codes are tiny: ORI often reads ORL and M15 reads MIS. Normalize
+        # visually indistinguishable glyphs on both sides before fuzzy scoring.
+        visual_key = str.maketrans({"1": "i", "l": "i", "5": "s", "0": "o"})
+        if target in variants or source.translate(visual_key) == target.translate(visual_key):
             return 1.0
         return min(
             0.85,
@@ -1922,7 +1925,7 @@ class CardRecognizer:
                     and set_score == 1.0
                 and (
                     (descriptor_score >= 92 and descriptor_margin >= 10)
-                    or artist_score >= 0.9
+                    or artist_score >= 0.78
                 )
                 )
                 or (

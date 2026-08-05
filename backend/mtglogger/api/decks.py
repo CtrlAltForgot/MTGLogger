@@ -190,7 +190,22 @@ async def format_suggestions(deck_id: str, db: Session = Depends(get_db)):
             structure_ok = structure_ok and bool(commander_candidates)
         elif key == "oathbreaker":
             structure_ok = structure_ok and bool(oathbreaker_candidates)
-        reasons = [f"All {len(cards)} unique cards are currently {label}-legal."]
+        reasons = [
+            f"Analyzed {total} total cards across {len(cards)} unique printings; "
+            f"all are currently {label}-legal."
+        ]
+        if key in {"commander", "duel", "paupercommander", "brawl"} and commander_candidates:
+            reasons.append(
+                "Possible leader: "
+                + ", ".join(card["name"] for card in commander_candidates[:3])
+                + "."
+            )
+        elif key == "oathbreaker" and oathbreaker_candidates:
+            reasons.append(
+                "Possible Oathbreaker: "
+                + ", ".join(card["name"] for card in oathbreaker_candidates[:3])
+                + "."
+            )
         if structure_ok:
             reasons.append("Stored card count and copy limits match the format.")
             confidence = "high"

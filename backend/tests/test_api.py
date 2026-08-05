@@ -374,6 +374,7 @@ def test_deck_format_suggestions_require_legality_and_structure(monkeypatch):
     assert result.complete_deck is True
     assert result.suggestions[0].format == "Standard"
     assert result.suggestions[0].confidence == "high"
+    assert "60 total cards" in result.suggestions[0].reasons[0]
     assert result.suggestions[-1].format == "Casual / Kitchen Table"
 
 
@@ -1109,6 +1110,8 @@ def test_basic_land_auto_add_requires_decisive_exact_art_evidence():
     assert not CardRecognizer.has_decisive_art_match(swamp["id"], swamp["id"], True, 87, 24)
     assert CardRecognizer.has_decisive_art_match(swamp["id"], swamp["id"], True, 92, 21)
     assert CardRecognizer.has_decisive_symbol_match(swamp["id"], swamp["id"], 91, 18)
+    assert CardRecognizer.set_code_score("ORL", "ori") == 1.0
+    assert CardRecognizer.set_code_score("MIS", "m15") == 1.0
     assert not CardRecognizer.has_decisive_symbol_match(swamp["id"], "rtr-swamp-261", 94, 20)
     # A decisive illustration match within an exact set remains safe even when
     # the tiny collector-number footer is unreadable or misread.
