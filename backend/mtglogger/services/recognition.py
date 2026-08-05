@@ -2142,9 +2142,21 @@ class CardRecognizer:
         """
         card_set = str(card.get("set") or "")
         collector = re.sub(r"\D", "", str(card.get("collector_number") or ""))
-        if not printed_set_code or len(collector) < 2:
+        if len(collector) < 2:
             return False
-        if CardRecognizer.set_code_score(printed_set_code, card_set) < 0.78:
+        raw_set_match = bool(
+            card_set
+            and re.search(
+                rf"(?<![a-z0-9]){re.escape(card_set)}(?![a-z0-9])",
+                text or "",
+                re.I,
+            )
+        )
+        parsed_set_match = bool(
+            printed_set_code
+            and CardRecognizer.set_code_score(printed_set_code, card_set) >= 0.78
+        )
+        if not (raw_set_match or parsed_set_match):
             return False
 
         numerators = re.findall(r"(?<!\d)(\d{1,4})\s*[/|\\]\s*\d{1,4}", text or "")
@@ -2171,11 +2183,15 @@ class CardRecognizer:
             matching_ids = {
                 str(candidate.get("id") or "")
                 for candidate in candidates
-                if CardRecognizer.set_code_score(
-                    printed_set_code,
-                    str(candidate.get("set") or ""),
+                if (
+                    str(candidate.get("set") or "").casefold() == card_set.casefold()
+                    if raw_set_match
+                    else CardRecognizer.set_code_score(
+                        printed_set_code,
+                        str(candidate.get("set") or ""),
+                    )
+                    >= 0.78
                 )
-                >= 0.78
                 and re.sub(
                     r"\D",
                     "",
