@@ -891,6 +891,43 @@ class CardRecognizer:
             return max(confidence, 98.5)
         return confidence
 
+    @staticmethod
+    def has_exact_printing_identity(
+        title_score: float,
+        number: str | None,
+        printed_set_code: str | None,
+        number_score: float,
+        set_score: float,
+    ) -> bool:
+        """Require recognizable identity plus the globally unique footer pair."""
+        return bool(
+            title_score >= 0.72
+            and number_score == 1.0
+            and set_score == 1.0
+            and number
+            and printed_set_code
+        )
+
+    @staticmethod
+    def neural_printing_is_safe(
+        *,
+        shadow_mode: bool,
+        candidate_id: str,
+        neural_top_id: str | None,
+        neural_top_score: float,
+        neural_margin: float,
+        independently_corroborated: bool,
+    ) -> bool:
+        """Keep artwork similarity from certifying a reused-art printing alone."""
+        return bool(
+            not shadow_mode
+            and neural_top_id
+            and candidate_id == neural_top_id
+            and neural_top_score >= 0.70
+            and neural_margin >= 0.06
+            and independently_corroborated
+        )
+
     @classmethod
     def has_unique_printing_signal(
         cls,
@@ -1601,12 +1638,16 @@ class CardRecognizer:
             confidence = self.structured_confidence(
                 confidence, title_score, number_score, set_score, year_score
             )
-            exact_printed_identity = bool(
-                title_score >= 0.93
-                and number_score == 1.0
-                and set_score == 1.0
-                and number
-                and printed_set_code
+            exact_printed_identity = self.has_exact_printing_identity(
+                # Exact set code + collector number is globally printing
+                # specific. Permit a partial but recognizable title (for
+                # example OCR reading only "Whirler" from Whirler Rogue), while
+                # still rejecting unrelated footer noise.
+                title_score,
+                number,
+                printed_set_code,
+                number_score,
+                set_score,
             )
             # An exact title with one known printing is an exact-printing match.
             # A unique matching copyright year can distinguish reused artwork.
@@ -1614,6 +1655,7 @@ class CardRecognizer:
             unique_release_year = bool(
                 copyright_year and year_score == 1.0 and release_years.count(copyright_year) == 1
             )
+            copyright_art_printing_proof = False
             if title_score >= 0.93 and (only_printing or unique_release_year):
                 confidence = max(confidence, 98.5)
                 if number_score == 1.0 and unique_release_year:
@@ -1707,11 +1749,21 @@ class CardRecognizer:
             elif strong_artist_ids and card.get("artist"):
                 confidence = min(confidence, 86.0)
             neural_score = neural_scores.get(card["id"], 0.0)
-            neural_is_safe = bool(
-                not get_settings().neural_shadow_mode
-                and card["id"] == neural_top_id
-                and neural_top_score >= 0.70
-                and neural_margin >= 0.06
+            neural_is_safe = self.neural_printing_is_safe(
+                shadow_mode=get_settings().neural_shadow_mode,
+                candidate_id=card["id"],
+                neural_top_id=neural_top_id,
+                neural_top_score=neural_top_score,
+                neural_margin=neural_margin,
+                # Embeddings identify artwork very well, but reprints can reuse
+                # that artwork. Exact-printing auto-add therefore also requires
+                # independent footer or exhaustive descriptor corroboration.
+                independently_corroborated=bool(
+                    exact_printed_identity
+                    or printing_signal
+                    or visual_printing_proof
+                    or copyright_art_printing_proof
+                ),
             )
             neural_is_decisive_rerank = bool(
                 identity_is_constrained

@@ -868,6 +868,32 @@ def test_structured_printing_evidence_promotes_safe_auto_adds_only():
     assert CardRecognizer.structured_confidence(94, 0.7, 1, 1, 1) == 94
 
 
+def test_partial_title_with_exact_set_and_number_is_strong_printing_evidence():
+    from mtglogger.services.recognition import CardRecognizer
+
+    assert CardRecognizer.has_exact_printing_identity(0.72, "083", "ORI", 1.0, 1.0)
+    assert not CardRecognizer.has_exact_printing_identity(0.71, "083", "ORI", 1.0, 1.0)
+    assert not CardRecognizer.has_exact_printing_identity(0.9, "083", "ORI", 0.8, 1.0)
+
+
+def test_neural_artwork_match_cannot_certify_a_reused_art_printing_alone():
+    from mtglogger.services.recognition import CardRecognizer
+
+    evidence = {
+        "shadow_mode": False,
+        "candidate_id": "printing-a",
+        "neural_top_id": "printing-a",
+        "neural_top_score": 0.99,
+        "neural_margin": 0.5,
+    }
+    assert not CardRecognizer.neural_printing_is_safe(
+        **evidence, independently_corroborated=False
+    )
+    assert CardRecognizer.neural_printing_is_safe(
+        **evidence, independently_corroborated=True
+    )
+
+
 def test_printed_artist_credit_is_exact_art_evidence():
     from mtglogger.services.recognition import CardRecognizer
 
@@ -2204,6 +2230,43 @@ def test_every_queued_scan_is_archived_before_review_deletion(tmp_path, monkeypa
     assert preserved.read_bytes() == source.read_bytes()
     assert json.loads((corpus / "raw" / "manifest.json").read_text()) == [
         {"review_id": "review-raw", "image_path": str(preserved)}
+    ]
+
+
+def test_auto_added_scan_is_auditable_but_not_labeled_for_training(tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+
+    from mtglogger.schemas import Candidate
+    from mtglogger.services import evaluation
+
+    source = tmp_path / "capture.jpg"
+    source.write_bytes(b"automatic scanner prediction")
+    corpus = tmp_path / "corpus"
+    monkeypatch.setattr(evaluation, "get_settings", lambda: SimpleNamespace(evaluation_dir=corpus))
+    candidate = Candidate(
+        scryfall_id="00000000-0000-0000-0000-000000000107",
+        name="Syr Konrad, the Grim",
+        set_code="eld",
+        set_name="Throne of Eldraine",
+        collector_number="107",
+        confidence=99.5,
+    )
+
+    preserved = evaluation.preserve_auto_added_scan(source, "scan-107", candidate, "en")
+
+    assert preserved.read_bytes() == source.read_bytes()
+    assert not (corpus / "manifest.json").exists()
+    assert json.loads((corpus / "auto_added" / "manifest.json").read_text()) == [
+        {
+            "scan_id": "scan-107",
+            "image_path": str(preserved),
+            "predicted_scryfall_id": candidate.scryfall_id,
+            "predicted_name": candidate.name,
+            "predicted_set_code": "eld",
+            "predicted_collector_number": "107",
+            "language": "en",
+        }
     ]
 
 

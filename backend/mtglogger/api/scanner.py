@@ -11,7 +11,7 @@ from ..database import get_db
 from ..models import Deck, ReviewItem
 from ..schemas import InventoryCreate, InventoryRead, ScanDefaults, ScanResult
 from ..services.decks import assign_to_deck
-from ..services.evaluation import preserve_review_scan
+from ..services.evaluation import preserve_auto_added_scan, preserve_review_scan
 from ..services.inventory import upsert_inventory
 from ..services.recognition import CardRecognizer, save_scan
 
@@ -120,6 +120,16 @@ async def recognize_card(
         )
         if defaults.deck_id:
             assign_to_deck(db, defaults.deck_id, item)
+        # A wrong automatic printing used to leave no camera evidence at all,
+        # making the rare false add impossible to reproduce or correct safely.
+        # Archive the prediction separately from confirmed training examples.
+        timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S-%f")
+        audit_path = get_settings().image_dir / f"auto-{timestamp}.jpg"
+        try:
+            save_scan(result.corrected, audit_path)
+            preserve_auto_added_scan(audit_path, timestamp, top, defaults.language)
+        except (OSError, ValueError, json.JSONDecodeError):
+            logger.exception("Could not archive automatic scan %s", timestamp)
         return ScanResult(
             disposition="added",
             confidence=result.confidence,
