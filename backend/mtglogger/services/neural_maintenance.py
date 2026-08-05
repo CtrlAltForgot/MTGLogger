@@ -18,7 +18,7 @@ from sqlalchemy import func, select
 from ..config import get_settings
 from ..database import SessionLocal
 from ..models import CardNeuralEmbedding, CardReference
-from .neural import NeuralEmbedder, NeuralRetriever, store_embedding
+from .neural import NeuralEmbedder, NeuralRetriever, decode_vector, store_embedding
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +98,64 @@ def run_neural_maintenance() -> dict[str, int]:
     NeuralRetriever.invalidate()
     write_maintenance_state(result)
     return result
+
+
+def benchmark_confirmed_embeddings() -> dict[str, object]:
+    """Evaluate camera corrections against all other indexed visual evidence."""
+    settings = get_settings()
+    with SessionLocal() as db:
+        rows = list(
+            db.scalars(
+                select(CardNeuralEmbedding).where(
+                    CardNeuralEmbedding.model_version == settings.neural_model_version
+                )
+            )
+        )
+        names = dict(db.execute(select(CardReference.scryfall_id, CardReference.name)).all())
+    if not rows:
+        return {"queries": 0}
+    matrix = np.stack([decode_vector(row.vector, row.dimensions) for row in rows])
+    corrections = [index for index, row in enumerate(rows) if row.source_kind == "correction"]
+    exact_top1 = exact_top5 = name_top1 = 0
+    observations: list[tuple[float, float, bool]] = []
+    for query_index in corrections:
+        scores = matrix @ matrix[query_index]
+        scores[query_index] = -1
+        order = np.argsort(scores)[::-1]
+        target = rows[query_index].scryfall_id
+        top = rows[int(order[0])]
+        correct = top.scryfall_id == target
+        exact_top1 += int(correct)
+        exact_top5 += int(any(rows[int(index)].scryfall_id == target for index in order[:5]))
+        name_top1 += int(names.get(top.scryfall_id) == names.get(target))
+        observations.append((float(scores[order[0]]), float(scores[order[0]] - scores[order[1]]), correct))
+    query_count = len(corrections)
+    policies: list[dict[str, float | int]] = []
+    for threshold in np.arange(0.70, 0.991, 0.01):
+        for margin in np.arange(0.0, 0.201, 0.02):
+            accepted = [item for item in observations if item[0] >= threshold and item[1] >= margin]
+            if not accepted:
+                continue
+            correct_count = sum(item[2] for item in accepted)
+            policies.append(
+                {
+                    "threshold": round(float(threshold), 2),
+                    "margin": round(float(margin), 2),
+                    "accepted": len(accepted),
+                    "precision": round(correct_count / len(accepted), 4),
+                    "coverage": round(len(accepted) / max(1, query_count), 4),
+                }
+            )
+    safe = [policy for policy in policies if policy["precision"] >= 0.995]
+    safe.sort(key=lambda item: (item["coverage"], item["accepted"]), reverse=True)
+    return {
+        "queries": query_count,
+        "gallery": len(rows) - query_count,
+        "exact_top1": round(exact_top1 / max(1, query_count), 4),
+        "exact_top5": round(exact_top5 / max(1, query_count), 4),
+        "name_top1": round(name_top1 / max(1, query_count), 4),
+        "best_zero_error_policy": safe[0] if safe else None,
+    }
 
 
 async def backfill_reference_embeddings(
