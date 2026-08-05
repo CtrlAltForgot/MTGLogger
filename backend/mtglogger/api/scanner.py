@@ -65,11 +65,7 @@ async def recognize_card(
     # regardless of that weak contour signal. Artwork-only cards are retained
     # when the visual Art Series matcher supplies a candidate.
     meaningful_ocr = re.findall(r"[A-Za-z0-9]{2,}", result.ocr_text)
-    if (
-        not result.candidates
-        and not result.card_structure
-        and sum(map(len, meaningful_ocr)) < 4
-    ):
+    if not result.candidates and not result.card_structure and sum(map(len, meaningful_ocr)) < 4:
         return ScanResult(
             disposition="empty",
             confidence=0,
@@ -80,7 +76,12 @@ async def recognize_card(
 
     # Automatic inventory writes require near-certain agreement. Scores below
     # this remain one-key confirmations, even when automatic mode is enabled.
-    if result.confidence >= 98.5 and result.candidates and defaults.auto_add:
+    if (
+        result.confidence >= 98.5
+        and result.auto_add_safe
+        and result.candidates
+        and defaults.auto_add
+    ):
         top = result.candidates[0]
         foil = defaults.foil or top.is_foil_only()
         item = upsert_inventory(
@@ -96,9 +97,7 @@ async def recognize_card(
                 language=defaults.language,
                 condition=defaults.condition,
                 market_price=(
-                    (top.foil_market_price or top.market_price)
-                    if foil
-                    else top.market_price
+                    (top.foil_market_price or top.market_price) if foil else top.market_price
                 ),
                 storage_location=defaults.storage_location,
                 collection_name=defaults.collection_name,

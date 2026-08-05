@@ -14,6 +14,7 @@ import numpy as np
 from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 
+from ..config import get_settings
 from ..database import SessionLocal
 from ..models import CardReference, CardVisualExample, CardVisualFingerprint
 from ..providers import ScryfallProvider
@@ -51,6 +52,7 @@ class Recognition:
     card_structure: bool
     timings_ms: dict[str, int] | None = None
     neural_candidates: list[dict[str, str | float]] | None = None
+    auto_add_safe: bool = False
 
 
 class CardRecognizer:
@@ -1380,6 +1382,14 @@ class CardRecognizer:
                 else []
             )
             if neural_matches:
+                neural_match_margin = (
+                    neural_matches[0].similarity - neural_matches[1].similarity
+                    if len(neural_matches) > 1
+                    else neural_matches[0].similarity
+                )
+                neural_match_is_safe = bool(
+                    neural_matches[0].similarity >= 0.70 and neural_match_margin >= 0.06
+                )
                 logger.info(
                     "Neural shadow top=%s similarity=%.4f source=%s candidates=%d",
                     neural_matches[0].reference.scryfall_id,
@@ -1387,6 +1397,17 @@ class CardRecognizer:
                     neural_matches[0].source_kind,
                     len(neural_matches),
                 )
+                if identity_is_constrained or neural_match_is_safe:
+                    admitted_matches = (
+                        neural_matches if identity_is_constrained else neural_matches[:1]
+                    )
+                    for match in admitted_matches:
+                        if match.reference.scryfall_id in known_card_ids:
+                            continue
+                        local_card = self._reference_card(match.reference)
+                        local_card["lang"] = language
+                        cards.append(local_card)
+                        known_card_ids.add(match.reference.scryfall_id)
             matching_complete = time.perf_counter()
         visual_scores = {reference.scryfall_id: score for reference, score in visual_matches}
         for reference, score in identity_visual_matches:
@@ -1445,7 +1466,16 @@ class CardRecognizer:
         descriptor_catalog_complete = family_complete and self._descriptor_catalog_complete(
             {card["id"] for card in cards}
         )
+        neural_scores = {match.reference.scryfall_id: match.similarity for match in neural_matches}
+        neural_top_id = neural_matches[0].reference.scryfall_id if neural_matches else None
+        neural_top_score = neural_matches[0].similarity if neural_matches else 0.0
+        neural_margin = (
+            neural_matches[0].similarity - neural_matches[1].similarity
+            if len(neural_matches) > 1
+            else neural_top_score
+        )
         ranked: dict[str, Candidate] = {}
+        safe_candidate_ids: set[str] = set()
         release_years = [int(card.get("released_at", "0000")[:4]) for card in cards]
         number_scores = [self.collector_score(number, card["collector_number"]) for card in cards]
         exact_set_counts: dict[str, int] = {}
@@ -1502,6 +1532,13 @@ class CardRecognizer:
             confidence = self.structured_confidence(
                 confidence, title_score, number_score, set_score, year_score
             )
+            exact_printed_identity = bool(
+                title_score >= 0.93
+                and number_score == 1.0
+                and set_score == 1.0
+                and number
+                and printed_set_code
+            )
             # An exact title with one known printing is an exact-printing match.
             # A unique matching copyright year can distinguish reused artwork.
             only_printing = len(cards) == 1
@@ -1510,6 +1547,8 @@ class CardRecognizer:
             )
             if title_score >= 0.93 and (only_printing or unique_release_year):
                 confidence = max(confidence, 98.5)
+                if number_score == 1.0 and unique_release_year:
+                    safe_candidate_ids.add(card["id"])
             # Footer OCR sometimes loses a leading digit (123/272 -> 23/272)
             # while retaining enough evidence to distinguish every printing of
             # an exactly-read card name. Accept it only when one candidate has a
@@ -1530,6 +1569,7 @@ class CardRecognizer:
             )
             if printing_signal:
                 confidence = max(confidence, 98.5)
+                safe_candidate_ids.add(card["id"])
             descriptor_score = descriptor_scores.get(card["id"], 0)
             descriptor_symbol_score = descriptor_symbol_scores.get(card["id"], 0)
             visual_printing_proof = bool(
@@ -1544,6 +1584,7 @@ class CardRecognizer:
                 # symbol regions. A large exhaustive-family margin proves the
                 # physical printing even when rules-text recovery found its name.
                 confidence = max(confidence, 98.5)
+                safe_candidate_ids.add(card["id"])
             if self.has_decisive_symbol_match(
                 card["id"],
                 descriptor_symbol_top_id,
@@ -1583,6 +1624,36 @@ class CardRecognizer:
                 confidence = max(confidence, 97.8 if len(strong_artist_ids) == 1 else 96.0)
             elif strong_artist_ids and card.get("artist"):
                 confidence = min(confidence, 86.0)
+            neural_score = neural_scores.get(card["id"], 0.0)
+            neural_is_safe = bool(
+                not get_settings().neural_shadow_mode
+                and card["id"] == neural_top_id
+                and neural_top_score >= 0.70
+                and neural_margin >= 0.06
+            )
+            neural_is_decisive_rerank = bool(
+                identity_is_constrained
+                and card["id"] == neural_top_id
+                and neural_score >= 0.45
+                and neural_margin >= 0.05
+            )
+            if card["id"] == neural_top_id and (neural_score >= 0.62 or neural_is_decisive_rerank):
+                # Neural evidence is first used as an identity-scoped reranker.
+                # It cannot auto-add unless it also clears the independently
+                # benchmarked zero-error threshold below.
+                confidence = max(confidence, 98.4 if neural_is_decisive_rerank else 97.8)
+            if neural_is_safe:
+                confidence = 99.5
+                safe_candidate_ids.add(card["id"])
+            elif (
+                not get_settings().neural_shadow_mode
+                and neural_top_score >= 0.70
+                and neural_margin >= 0.06
+            ):
+                # A benchmark-safe exact match must also win the candidate
+                # ordering. OCR can still display its conflicting interpretation
+                # in Review, but cannot outrank the verified image match.
+                confidence = min(confidence, 98.4)
             # A readable title/footer is not enough to distinguish basic-land
             # artwork.  Sets routinely contain several Plains/Island/Swamp/
             # Mountain/Forest printings whose only meaningful difference is
@@ -1627,13 +1698,16 @@ class CardRecognizer:
                     set_art_margin,
                     artist_score,
                 )
-                if safe_land_match or repeated_footer_number:
+                if safe_land_match or repeated_footer_number or neural_is_safe:
                     # Exact set plus a decisive illustration match is safer
                     # than a tiny collector-number crop. This specifically
                     # prevents a misread 264 as 261 from selecting the wrong art.
                     confidence = max(confidence, 98.5)
+                    safe_candidate_ids.add(card["id"])
                 else:
                     confidence = min(confidence, 98.4)
+            elif exact_printed_identity:
+                safe_candidate_ids.add(card["id"])
             confidence = min(99.5, confidence)
             if oracle_recovery and not printing_signal and not visual_printing_proof:
                 # Rules text can identify a card, but it cannot prove which set,
@@ -1702,6 +1776,7 @@ class CardRecognizer:
             (finished - started) * 1000,
         )
         final_confidence = candidates[0].confidence if candidates else 0
+        auto_add_safe = bool(candidates and candidates[0].scryfall_id in safe_candidate_ids)
         # Review is an audit trail. Always retain the untouched camera frame for
         # uncertain scans so a bad perspective contour can never masquerade as
         # the photographed card or discard identifying regions.
@@ -1728,6 +1803,7 @@ class CardRecognizer:
                 }
                 for match in neural_matches
             ],
+            auto_add_safe=auto_add_safe,
         )
 
     @staticmethod
