@@ -388,6 +388,10 @@ async def _retry_full_sync(delay_seconds: int = 60) -> None:
 async def _sync_art_series(provider: ScryfallProvider) -> None:
     """Resumably add artwork-only cards without changing paper queue totals."""
     art_total = await provider.art_series_count()
+    with _state_lock:
+        # The visual catalog now includes ordinary paper printings and Art
+        # Series cards, so the public denominator must describe both.
+        _state.catalog_total = (_state.catalog_total or 0) + art_total
     with SessionLocal() as db:
         ready = (
             db.scalar(

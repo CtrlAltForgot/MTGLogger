@@ -7,6 +7,14 @@ export type DetectionBounds={left:number;top:number;width:number;height:number}
 export type ScannerMetrics={brightness:number;contrast:number;motion:number;sceneDifference:number;bounds?:DetectionBounds}
 export const defaultTuning:ScannerTuning={entryDifference:12,stableMotion:4,stableFrames:5}
 export const pipelineHasCapacity=(inFlight:number,maxInFlight:number)=>inFlight<Math.max(1,maxInFlight)
+export function paddedCaptureBounds(bounds:DetectionBounds,videoWidth:number,videoHeight:number){
+  const padding=3
+  const left=Math.max(0,bounds.left-padding),top=Math.max(0,bounds.top-padding)
+  const right=Math.min(100,bounds.left+bounds.width+padding),bottom=Math.min(100,bounds.top+bounds.height+padding)
+  const width=right-left,height=bottom-top,aspect=(width*videoWidth)/(height*videoHeight)
+  if(aspect<.48||aspect>.92)return undefined
+  return {x:Math.round(left/100*videoWidth),y:Math.round(top/100*videoHeight),width:Math.round(width/100*videoWidth),height:Math.round(height/100*videoHeight)}
+}
 
 const FRAME_WIDTH=160,FRAME_HEIGHT=120,CALIBRATION_FRAMES=12
 
@@ -122,7 +130,15 @@ export function useAutoScanner(
       if(stable.current<tuning.stableFrames)return
       capturing.current=true;setState('capturing')
       capturedFrame.current=new Uint8ClampedArray(pixels)
-      const full=document.createElement('canvas');full.width=element.videoWidth;full.height=element.videoHeight;full.getContext('2d')!.drawImage(element,0,0)
+      const full=document.createElement('canvas'),crop=next.bounds?paddedCaptureBounds(next.bounds,element.videoWidth,element.videoHeight):undefined
+      if(crop){
+        full.width=crop.width;full.height=crop.height
+      }else{
+        full.width=element.videoWidth;full.height=element.videoHeight
+      }
+      const fullContext=full.getContext('2d')!
+      if(crop)fullContext.drawImage(element,crop.x,crop.y,crop.width,crop.height,0,0,crop.width,crop.height)
+      else fullContext.drawImage(element,0,0)
       full.toBlob(blob=>{
         capturing.current=false;stable.current=0
         if(!blob){setState('waiting');return}

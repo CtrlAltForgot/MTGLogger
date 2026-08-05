@@ -1,5 +1,5 @@
 import {describe,expect,it} from 'vitest'
-import {analyze,pipelineHasCapacity} from './useAutoScanner'
+import {analyze,paddedCaptureBounds,pipelineHasCapacity} from './useAutoScanner'
 
 const width=160,height=120
 const frame=(value=20)=>new Uint8ClampedArray(width*height*4).map((_,index)=>index%4===3?255:value)
@@ -46,6 +46,18 @@ describe('wide scanner presence analysis',()=>{
 })
 
 describe('bounded recognition pipeline',()=>{
+  it('crops a detected portrait card with a small margin',()=>{
+    const crop=paddedCaptureBounds({left:18,top:8,width:34,height:82},1280,720)
+    expect(crop).toBeDefined()
+    expect(crop!.width).toBeLessThan(1280)
+    expect(crop!.height).toBeLessThan(720)
+    expect(crop!.x).toBeGreaterThan(0)
+  })
+
+  it('does not crop a wide table-region false positive',()=>{
+    expect(paddedCaptureBounds({left:5,top:30,width:85,height:30},1280,720)).toBeUndefined()
+  })
+
   it('allows one queued automatic capture but keeps manual confirmation single-file',()=>{
     expect(pipelineHasCapacity(0,2)).toBe(true)
     expect(pipelineHasCapacity(1,2)).toBe(true)

@@ -274,7 +274,7 @@ class CardRecognizer:
 
     @staticmethod
     def has_card_structure(image: np.ndarray) -> bool:
-        """Detect long horizontal frame/text-box edges absent from an empty table."""
+        """Detect a portrait card frame, not merely horizontal table boundaries."""
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         edges = cv2.Canny(gray, 50, 140)
         lines = cv2.HoughLinesP(
@@ -288,13 +288,15 @@ class CardRecognizer:
         if lines is None:
             return False
         horizontal = 0
+        vertical = 0
         for [[x1, y1, x2, y2]] in lines:
             width = abs(x2 - x1)
+            height = abs(y2 - y1)
             if abs(y2 - y1) <= max(4, width * 0.08):
                 horizontal += 1
-                if horizontal >= 3:
-                    return True
-        return False
+            if abs(x2 - x1) <= max(4, height * 0.08) and height >= image.shape[0] * 0.28:
+                vertical += 1
+        return horizontal >= 3 and vertical >= 2
 
     @staticmethod
     def hints(text: str) -> tuple[str | None, str | None, str | None, int | None]:
