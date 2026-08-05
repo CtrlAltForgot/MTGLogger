@@ -19,7 +19,10 @@ function timeline(points:Point[],range:Window,end:number){
   const firstInWindow=observations.findIndex(point=>point.timestamp>=start)
   const earlier=observations.filter(point=>point.timestamp<start).at(-1)
   const visible=firstInWindow<0?[]:observations.slice(firstInWindow)
-  let value=earlier?.value
+  // If the database has no observation before this window, extend the first
+  // known value back to the left boundary. A carried-value chart should fill
+  // its entire time domain rather than appearing to begin partway across it.
+  let value=earlier?.value??visible[0]?.value
   let cursor=0
   const interval=intervalMilliseconds[range]
   const result:{value:number;timestamp:number}[]=[]

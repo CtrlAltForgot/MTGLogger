@@ -353,7 +353,7 @@ class CardRecognizer:
                 normalized = compact.translate(str.maketrans({"O": "0", "o": "0", "l": "1", "I": "1", "g": "9"}))
                 fuzzy_years = [
                     int(value)
-                    for value in re.findall(r"(?<!\d)((?:19|20)\d{2})(?!\d)", normalized)
+                    for value in re.findall(r"(?<!\d)0?((?:19|20)\d{2})(?!\d)", normalized)
                 ]
                 if fuzzy_years:
                     copyright_year = max(fuzzy_years)
