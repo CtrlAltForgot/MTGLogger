@@ -10,8 +10,8 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..models import CardReference, CardVisualFingerprint
 from ..providers import ScryfallProvider
-from ..services.references import sync_all, sync_set, sync_status
 from ..services.prices import _eur_usd_rate
+from ..services.references import sync_all, sync_set, sync_status
 
 router = APIRouter(prefix="/references", tags=["recognition references"])
 provider = ScryfallProvider()

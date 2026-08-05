@@ -20,7 +20,6 @@ from ..config import get_settings
 from ..database import SessionLocal
 from ..models import CardNeuralEmbedding, CardReference
 from .neural import (
-    MetricAdapter,
     NeuralEmbedder,
     NeuralRetriever,
     decode_vector,

@@ -10,9 +10,9 @@ from .api import dashboard, decks, inventory, prices, references, reviews, scann
 from .config import get_settings
 from .database import Base, SessionLocal, engine, migrate_schema
 from .providers import close_scryfall_client
-from .services.prices import price_refresh_loop
 from .services.neural import NeuralRetriever
 from .services.neural_maintenance import neural_maintenance_loop
+from .services.prices import price_refresh_loop
 from .services.references import reference_refresh_loop
 
 

@@ -4,12 +4,12 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
-    LargeBinary,
     Date,
     DateTime,
     Enum,
     ForeignKey,
     Index,
+    LargeBinary,
     Numeric,
     String,
     Text,

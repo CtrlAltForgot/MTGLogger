@@ -1,7 +1,7 @@
 """Replay pending review captures without mutating the review queue."""
 
-import asyncio
 import argparse
+import asyncio
 import json
 from pathlib import Path
 
