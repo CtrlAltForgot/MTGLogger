@@ -2254,13 +2254,21 @@ class CardRecognizer:
         )
         if not (raw_set_match or parsed_set_match):
             return False
-        matching_ids = {
-            str(candidate.get("id") or "")
+        matching_printings = {
+            (
+                str(candidate.get("set") or "").casefold(),
+                str(candidate.get("collector_number") or "").casefold(),
+            )
             for candidate in candidates
             if str(candidate.get("set") or "").casefold() == card_set.casefold()
             and CardRecognizer.artist_text_score(text, candidate.get("artist")) >= 0.9
         }
-        return matching_ids == {str(card.get("id") or "")}
+        return matching_printings == {
+            (
+                card_set.casefold(),
+                str(card.get("collector_number") or "").casefold(),
+            )
+        }
 
     @staticmethod
     def has_safe_basic_land_match(
