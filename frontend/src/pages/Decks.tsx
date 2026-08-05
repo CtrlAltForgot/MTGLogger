@@ -16,6 +16,7 @@ import {
   Grid,
   IconButton,
   InputAdornment,
+  MenuItem,
   Stack,
   TablePagination,
   TextField,
@@ -605,14 +606,20 @@ export default function Decks() {
 }
 
 type DeckForm={name:string;format:string;description:string;image_url:string}
+const deckFormats=['Standard','Pioneer','Modern','Pauper','Legacy','Vintage','Commander','Brawl','Oathbreaker','Duel Commander','Pauper Commander','Casual / Kitchen Table']
 
 function DeckArtwork({deck}:{deck:Deck}){
   const pool=deck.entries.filter(entry=>entry.inventory.image_url)
   const seed=[...deck.id].reduce((value,character)=>value+character.charCodeAt(0),0)
   const spreadCount=Math.min(7,pool.length)
-  const cards=pool.length<=spreadCount?pool:Array.from({length:spreadCount},(_,index)=>pool[(seed+index*997)%pool.length])
+  const sampled=pool.length<=spreadCount?[...pool]:Array.from({length:spreadCount},(_,index)=>pool[(seed+index*997)%pool.length])
+  const leaderPattern=/commander|brawl/i.test(deck.format||'')?/Legendary.*Creature|Creature.*Legendary/i:/oathbreaker/i.test(deck.format||'')?/Planeswalker/i:null
+  const signature=leaderPattern&&pool.find(entry=>leaderPattern.test(entry.inventory.type_line||''))
+  const cards=signature?[...sampled.filter(entry=>entry.id!==signature.id)]:sampled
+  if(signature)cards.splice(Math.floor(cards.length/2),0,signature)
+  if(cards.length>spreadCount)cards.pop()
   const custom=deck.image_url?.startsWith('/api/')?`${API}${deck.image_url}`:deck.image_url
-  return <Box sx={{height:140,position:'relative',overflow:'hidden',background:'transparent'}}>{custom?<Box component="img" src={custom} alt="" sx={{width:'100%',height:'100%',objectFit:'cover'}}/>:<Box sx={{position:'absolute',inset:0,display:'flex',justifyContent:'center',alignItems:'center'}}>{cards.map((entry,index)=>{const midpoint=(cards.length-1)/2;const offset=index-midpoint;return <Box key={entry.id} component="img" src={entry.inventory.image_url!} alt="" sx={{position:'absolute',width:82,borderRadius:1,boxShadow:'0 8px 22px rgba(0,0,0,.6)',transform:`translate(${offset*42}px, ${Math.abs(offset)*4-5}px) rotate(${offset*5.5}deg)`,transformOrigin:'50% 85%',zIndex:index}}/>})}</Box>}{custom&&<Box sx={{position:'absolute',inset:0,background:'linear-gradient(0deg,rgba(10,6,7,.6),transparent 72%)'}}/>}</Box>
+  return <Box sx={{height:140,position:'relative',overflow:'hidden',background:'transparent'}}>{custom?<Box component="img" src={custom} alt="" sx={{width:'100%',height:'100%',objectFit:'cover'}}/>:<Box sx={{position:'absolute',inset:0,display:'flex',justifyContent:'center',alignItems:'center'}}>{cards.map((entry,index)=>{const midpoint=(cards.length-1)/2;const offset=index-midpoint;const isSignature=entry.id===signature?.id;return <Box key={entry.id} component="img" src={entry.inventory.image_url!} alt="" sx={{position:'absolute',width:isSignature?88:82,borderRadius:1,boxShadow:isSignature?'0 11px 28px rgba(0,0,0,.78)':'0 8px 22px rgba(0,0,0,.6)',transform:`translate(${offset*42}px, ${Math.abs(offset)*4-(isSignature?15:5)}px) rotate(${isSignature?0:offset*5.5}deg)`,transformOrigin:'50% 85%',zIndex:isSignature?20:index}}/>})}</Box>}{custom&&<Box sx={{position:'absolute',inset:0,background:'linear-gradient(0deg,rgba(10,6,7,.6),transparent 72%)'}}/>}</Box>
 }
 
 function CreateDialog({
@@ -654,7 +661,7 @@ function DeckDialog({open,title,form,setForm,busy,close,submit,submitLabel,cover
             value={form.name}
             onChange={(e) => setForm({ ...form, name: e.target.value })}
           />
-          <Stack direction={{xs:'column',sm:'row'}} spacing={1} alignItems="stretch"><TextField sx={{flex:1}} label="Format" placeholder="Commander, Modern, Casual…" value={form.format} onChange={(e) => setForm({ ...form, format: e.target.value })}/>{detectFormat&&<Button sx={{minWidth:190}} variant="outlined" startIcon={<AutoAwesome/>} disabled={detectingFormat} onClick={detectFormat}>{detectingFormat?'Analyzing…':'Identify format'}</Button>}</Stack>
+          <Stack direction={{xs:'column',sm:'row'}} spacing={1} alignItems="stretch"><TextField select sx={{flex:1}} label="Format" value={form.format} onChange={(e) => setForm({ ...form, format: e.target.value })}><MenuItem value=""><em>Not selected</em></MenuItem>{deckFormats.map(format=><MenuItem key={format} value={format}>{format}</MenuItem>)}</TextField>{detectFormat&&<Button sx={{minWidth:190}} variant="outlined" startIcon={<AutoAwesome/>} disabled={detectingFormat} onClick={detectFormat}>{detectingFormat?'Analyzing…':'Identify format'}</Button>}</Stack>
           {suggestions&&<Box><Typography variant="body2" color="text.secondary" mb={1}>{suggestions.complete_deck?'These formats match both legality and deck structure.':`This ${suggestions.card_count}-card deck may be incomplete, so these are possibilities.`}</Typography><Stack direction="row" gap={1} flexWrap="wrap">{suggestions.suggestions.slice(0,6).map(item=><Tooltip key={item.format} title={item.reasons.join(' ')}><Chip clickable color={item.confidence==='high'?'success':'default'} label={`${item.format}${item.confidence==='possible'?' · possible':''}`} onClick={()=>setForm({...form,format:item.format})}/></Tooltip>)}</Stack>{!suggestions.suggestions.length&&<Typography color="warning.main">No supported current format fits every stored card.</Typography>}</Box>}
           <TextField
             label="Description"
