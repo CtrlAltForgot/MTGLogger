@@ -83,6 +83,9 @@ async def refresh_prices() -> None:
                     )
                 )
                 for item in items:
+                    item.color_identity = "".join(card.get("color_identity") or [])
+                    item.rarity = card.get("rarity")
+                    item.type_line = card.get("type_line")
                     # Some catalog entries (notably The List variants) only
                     # exist in foil. Older local reference rows did not retain
                     # finishes, so those copies could be stored as nonfoil and

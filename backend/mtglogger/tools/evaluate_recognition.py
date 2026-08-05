@@ -190,7 +190,10 @@ async def evaluate(
                 if expected.scryfall_id in ids
                 else None
             )
-            auto_add = result.confidence >= 98.5
+            # Mirror the production gate. Confidence alone is intentionally
+            # insufficient: an automatic add also needs independent exact-
+            # printing proof from the recognizer.
+            auto_add = result.confidence >= 98.5 and result.auto_add_safe
             results.append(
                 {
                     "review_id": review.id,
@@ -238,6 +241,7 @@ async def evaluate(
                     "top1_correct": top_id == expected.scryfall_id,
                     "top5_correct": expected.scryfall_id in ids,
                     "auto_add": auto_add,
+                    "auto_add_safe": result.auto_add_safe,
                     "false_auto_add": auto_add and top_id != expected.scryfall_id,
                     "processing_ms": result.processing_ms,
                     "timings_ms": result.timings_ms,
