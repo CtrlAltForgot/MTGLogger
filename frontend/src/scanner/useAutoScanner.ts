@@ -8,6 +8,18 @@ export type ScanArea=DetectionBounds
 export type ScannerMetrics={brightness:number;contrast:number;motion:number;sceneDifference:number;bounds?:DetectionBounds}
 export type CameraRotation=0|90|180|270
 export const defaultTuning:ScannerTuning={entryDifference:12,stableMotion:4,stableFrames:5,slingerMode:false}
+const CAMERA_ROTATION_STORAGE_KEY='mtglogger-scanner-camera-rotation'
+export const parseCameraRotation=(value:string|null):CameraRotation=>{
+  const rotation=Number(value)
+  return rotation===90||rotation===180||rotation===270?rotation:0
+}
+const savedCameraRotation=():CameraRotation=>{
+  try{return parseCameraRotation(globalThis.localStorage?.getItem(CAMERA_ROTATION_STORAGE_KEY)??null)}
+  catch{return 0}
+}
+const saveCameraRotation=(rotation:CameraRotation)=>{
+  try{globalThis.localStorage?.setItem(CAMERA_ROTATION_STORAGE_KEY,String(rotation))}catch{/* Storage may be disabled. */}
+}
 export const pipelineHasCapacity=(inFlight:number,maxInFlight:number)=>inFlight<Math.max(1,maxInFlight)
 export function paddedCaptureBounds(bounds:DetectionBounds,videoWidth:number,videoHeight:number){
   const padding=1
@@ -150,10 +162,14 @@ export function useAutoScanner(
   const [state,setState]=useState<State>('idle'),[error,setError]=useState<string>(),[metrics,setMetrics]=useState<ScannerMetrics>({brightness:0,contrast:0,motion:0,sceneDifference:0})
   const [pendingCaptures,setPendingCaptures]=useState(0)
   const [cameras,setCameras]=useState<MediaDeviceInfo[]>([]),[selectedCamera,setSelectedCamera]=useState('')
-  const [rotation,setRotationState]=useState<CameraRotation>(0)
+  const [rotation,setRotationState]=useState<CameraRotation>(savedCameraRotation)
   const [scanArea,setScanAreaState]=useState<ScanArea>({left:0,top:0,width:100,height:100})
   const setScanArea=useCallback((area:ScanArea)=>setScanAreaState({left:Math.max(0,Math.min(100,area.left)),top:Math.max(0,Math.min(100,area.top)),width:Math.max(1,Math.min(100-area.left,area.width)),height:Math.max(1,Math.min(100-area.top,area.height))}),[])
-  const rotateCamera=useCallback(()=>{setRotationState(current=>((current+90)%360) as CameraRotation);calibrationCount.current=0;baseline.current=undefined;previous.current=undefined;setState('calibrating')},[])
+  const rotateCamera=useCallback(()=>{setRotationState(current=>{
+    const next=((current+90)%360) as CameraRotation
+    saveCameraRotation(next)
+    return next
+  });calibrationCount.current=0;baseline.current=undefined;previous.current=undefined;setState('calibrating')},[])
 
   const calibrate=useCallback(()=>{baseline.current=undefined;previous.current=undefined;capturedFrame.current=undefined;calibrationCount.current=0;noiseMotion.current=0;stable.current=0;removalGate.current=initialRemovalGate();setState('calibrating')},[])
   const start=useCallback(async(deviceId?:string)=>{try{

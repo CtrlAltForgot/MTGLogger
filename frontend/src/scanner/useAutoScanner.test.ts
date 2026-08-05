@@ -1,5 +1,5 @@
 import {describe,expect,it} from 'vitest'
-import {analyze,paddedCaptureBounds,pipelineHasCapacity,sourceAreaForRotation} from './useAutoScanner'
+import {analyze,paddedCaptureBounds,parseCameraRotation,pipelineHasCapacity,sourceAreaForRotation} from './useAutoScanner'
 
 const width=160,height=120
 const frame=(value=20)=>new Uint8ClampedArray(width*height*4).map((_,index)=>index%4===3?255:value)
@@ -99,5 +99,14 @@ describe('camera orientation mapping',()=>{
     expect(sourceAreaForRotation(area,90)).toMatchObject({left:.2,top:expect.closeTo(.6),width:.4,height:.3})
     expect(sourceAreaForRotation(area,180)).toMatchObject({left:expect.closeTo(.6),top:expect.closeTo(.4),width:.3,height:.4})
     expect(sourceAreaForRotation(area,270)).toMatchObject({left:expect.closeTo(.4),top:.1,width:.4,height:.3})
+  })
+
+  it('restores only supported saved camera rotations',()=>{
+    expect(parseCameraRotation('90')).toBe(90)
+    expect(parseCameraRotation('180')).toBe(180)
+    expect(parseCameraRotation('270')).toBe(270)
+    expect(parseCameraRotation('360')).toBe(0)
+    expect(parseCameraRotation('sideways')).toBe(0)
+    expect(parseCameraRotation(null)).toBe(0)
   })
 })
