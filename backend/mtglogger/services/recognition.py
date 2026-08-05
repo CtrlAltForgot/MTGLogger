@@ -5,6 +5,7 @@ import re
 import time
 from dataclasses import dataclass
 from difflib import SequenceMatcher
+from functools import lru_cache
 from pathlib import Path
 from threading import Lock
 
@@ -40,6 +41,31 @@ class _VisualCatalog:
 _visual_catalog: _VisualCatalog | None = None
 _visual_catalog_lock = Lock()
 _VISUAL_CATALOG_TTL_SECONDS = 60
+
+
+@lru_cache(maxsize=512)
+def _load_descriptor_bundle(
+    descriptor_path: str, modified_ns: int, size: int
+) -> dict[str, np.ndarray] | None:
+    """Load one immutable profile once per process and file revision."""
+    del modified_ns, size  # These values deliberately participate in the cache key.
+    try:
+        loaded = np.load(descriptor_path, allow_pickle=False)
+    except (OSError, ValueError, TypeError):
+        return None
+    if isinstance(loaded, np.lib.npyio.NpzFile):
+        known = {key: loaded[key] for key in loaded.files}
+        loaded.close()
+        return known
+    return {"art": loaded}
+
+
+def _descriptor_bundle(descriptor_path: str) -> dict[str, np.ndarray] | None:
+    try:
+        stat = Path(descriptor_path).stat()
+    except OSError:
+        return None
+    return _load_descriptor_bundle(descriptor_path, stat.st_mtime_ns, stat.st_size)
 
 
 @dataclass
@@ -1944,17 +1970,9 @@ class CardRecognizer:
             for descriptor_path in descriptor_paths:
                 if not descriptor_path:
                     continue
-                try:
-                    loaded = np.load(descriptor_path, allow_pickle=False)
-                except (OSError, ValueError, TypeError):
+                known = _descriptor_bundle(descriptor_path)
+                if known is None:
                     continue
-                if isinstance(loaded, np.lib.npyio.NpzFile):
-                    known = {key: loaded[key] for key in loaded.files}
-                    loaded.close()
-                else:
-                    # User-confirmed examples and legacy canonical profiles
-                    # contain artwork-only descriptors.
-                    known = {"art": loaded}
                 if len(known.get("art", ())) < 12:
                     continue
                 score = CardRecognizer._descriptor_bundle_score(scan, known)
