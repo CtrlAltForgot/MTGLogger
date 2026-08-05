@@ -691,6 +691,10 @@ class CardRecognizer:
             return 0.45
         source = ocr_set.casefold()
         target = printed_set.casefold()
+        # Core-set logos omit the tiny "1" visually; Paddle commonly reads
+        # M13 as M3 even from an otherwise clean type-line pass.
+        if source == "m3" and target == "m13":
+            return 1.0
         variants = {
             source,
             source.translate(str.maketrans({"i": "1", "l": "1", "s": "5", "o": "0"})),
@@ -813,8 +817,9 @@ class CardRecognizer:
             return max(confidence, 98.5)
         return confidence
 
-    @staticmethod
+    @classmethod
     def has_unique_printing_signal(
+        cls,
         title_score: float,
         number: str | None,
         number_score: float,
@@ -830,10 +835,10 @@ class CardRecognizer:
         )
         unique_set = bool(
             printed_set_code
-            and printed_set_code.casefold() == candidate_set_code.casefold()
+            and cls.set_code_score(printed_set_code, candidate_set_code) == 1.0
             and candidates_in_set == 1
         )
-        return title_score >= 0.95 and (unique_number or unique_set)
+        return title_score >= (0.93 if unique_set else 0.95) and (unique_number or unique_set)
 
     @staticmethod
     def visual_only_score(score: float) -> float:

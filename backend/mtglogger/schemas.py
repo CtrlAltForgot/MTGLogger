@@ -65,6 +65,7 @@ class InventoryRead(InventoryCreate):
     date_added: datetime
     updated_at: datetime
     previous_market_price: Decimal | None = None
+    previous_price_recorded_at: datetime | None = None
     deck_assignments: list[InventoryDeckAssignment] = []
 
 

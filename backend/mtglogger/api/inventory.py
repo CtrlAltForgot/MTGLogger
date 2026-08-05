@@ -86,15 +86,22 @@ def list_inventory(
     previous: dict[str, object] = {}
     if items:
         snapshots = db.execute(
-            select(PriceSnapshot.inventory_id, PriceSnapshot.market_price)
+            select(
+                PriceSnapshot.inventory_id,
+                PriceSnapshot.market_price,
+                PriceSnapshot.recorded_at,
+            )
             .where(PriceSnapshot.inventory_id.in_([item.id for item in items]))
             .order_by(PriceSnapshot.inventory_id, PriceSnapshot.recorded_at.desc())
         )
-        for inventory_id, market_price in snapshots:
-            previous.setdefault(inventory_id, market_price)
+        for inventory_id, market_price, recorded_at in snapshots:
+            previous.setdefault(inventory_id, (market_price, recorded_at))
     serialized = [
         InventoryRead.model_validate(item).model_copy(
-            update={"previous_market_price": previous.get(item.id)}
+            update={
+                "previous_market_price": previous.get(item.id, (None, None))[0],
+                "previous_price_recorded_at": previous.get(item.id, (None, None))[1],
+            }
         )
         for item in items
     ]

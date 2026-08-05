@@ -126,8 +126,17 @@ function PriceMovement({item}:{item:Inventory}){
   if(current==null)return <Typography className="card-price" variant="body2" color="text.secondary" fontWeight={800}>Price unavailable</Typography>
   const change=previous&&current!==previous?(current-previous)/previous*100:null
   const up=change!=null&&change>0
+  const age=item.previous_price_recorded_at?compactAge(Date.now()-new Date(item.previous_price_recorded_at).getTime()):null
   return <Stack direction="row" alignItems="center" spacing={.75}>
     <Typography className="card-price" variant="h6" color={change==null?'primary.main':up?'success.main':'error.main'}>${current.toFixed(2)}</Typography>
-    {change!=null&&<Stack direction="row" alignItems="center" color={up?'success.main':'error.main'}>{up?<TrendingUp fontSize="small"/>:<TrendingDown fontSize="small"/>}<Typography variant="caption" fontWeight={800}>{up?'+':''}{change.toFixed(1)}%</Typography></Stack>}
+    {change!=null&&<Stack direction="row" alignItems="center" color={up?'success.main':'error.main'}>{up?<TrendingUp fontSize="small"/>:<TrendingDown fontSize="small"/>}<Typography variant="caption" fontWeight={800}>{up?'+':''}{change.toFixed(1)}%{age?` · ${age}`:''}</Typography></Stack>}
   </Stack>
+}
+
+function compactAge(milliseconds:number){
+  const minutes=Math.max(1,Math.round(milliseconds/60_000))
+  if(minutes<60)return `${minutes}m`
+  const hours=Math.round(minutes/60)
+  if(hours<48)return `${hours}h`
+  return `${Math.round(hours/24)}d`
 }

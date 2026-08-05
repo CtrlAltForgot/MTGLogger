@@ -23,6 +23,16 @@ def test_eur_price_is_used_only_when_native_usd_is_missing():
     assert _price(card, True, Decimal("1.15")) == Decimal("0.19")
 
 
+def test_core_set_and_confusable_set_codes_are_exact_matches():
+    from mtglogger.services.recognition import CardRecognizer
+
+    assert CardRecognizer.set_code_score("M3", "m13") == 1.0
+    assert CardRecognizer.set_code_score("MIS", "m15") == 1.0
+    assert CardRecognizer.has_unique_printing_signal(
+        0.94, None, 0.45, [], "MIS", "m15", 1
+    )
+
+
 def test_health(client):
     assert client.get("/api/health").json()["status"] == "ok"
 
