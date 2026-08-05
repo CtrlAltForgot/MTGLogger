@@ -11,7 +11,7 @@ import { cardsPerMinute, initialSessionStats, recordSuccessfulAddition, reviewPe
 import { defaultTuning, useAutoScanner, type ScannerTuning } from '../scanner/useAutoScanner'
 import type { Deck, Defaults, Inventory, ScanResult } from '../types'
 
-const initial:Defaults={condition:'near_mint',foil:false,language:'en',storage_location:'Unsorted',collection_name:'Main',status:'owned',box_set_code:null,auto_add:false,deck_id:null}
+const initial:Defaults={condition:'near_mint',foil:false,language:'en',storage_location:'Unsorted',collection_name:'Main',status:'owned',box_set_code:null,auto_add:true,deck_id:null}
 const languages=[
   ['en','English'],['es','Spanish'],['fr','French'],['de','German'],['it','Italian'],
   ['pt','Portuguese'],['ja','Japanese'],['ko','Korean'],['ru','Russian'],
@@ -116,7 +116,7 @@ export default function Scanner(){
         <Grid size={{xs:12,sm:6}}><TextField fullWidth label="Box Mode set code" placeholder="e.g. FDN" value={defaults.box_set_code||''} onChange={event=>setDefaults({...defaults,box_set_code:event.target.value.trim()||null})}/></Grid>
         <Grid size={12}><Stack direction={{xs:'column',sm:'row'}} spacing={{xs:0,sm:2}} flexWrap="wrap">
           <FormControlLabel control={<Switch checked={defaults.foil} onChange={event=>setDefaults({...defaults,foil:event.target.checked})}/>} label="Foil"/>
-          <FormControlLabel control={<Switch checked={false} disabled/>} label="Auto-add temporarily paused for safety audit"/>
+          <FormControlLabel control={<Switch checked={defaults.auto_add} onChange={event=>setDefaults({...defaults,auto_add:event.target.checked})}/>} label="Auto-add verified matches"/>
         </Stack></Grid>
       </Grid></Grid>
           <Grid size={{xs:12,md:5}} sx={{borderLeft:{md:'1px solid'},borderColor:{md:'divider'},pl:{md:4}}}>

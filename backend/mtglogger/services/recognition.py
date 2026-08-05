@@ -48,6 +48,7 @@ class Recognition:
     corrected: np.ndarray
     processing_ms: int
     card_structure: bool
+    auto_add_safe: bool = False
     timings_ms: dict[str, int] | None = None
 
 
@@ -330,6 +331,8 @@ class CardRecognizer:
                 break
         if not set_code:
             for line in reversed(lines):
+                if len(line) > 28:
+                    continue
                 match = re.match(
                     rf"^\s*([A-Z][A-Z0-9]{{1,5}}?)(?:{languages})(?=\s|$|[A-Z])",
                     line,
@@ -418,12 +421,12 @@ class CardRecognizer:
         type_line_index = next(
             (
                 index
-                for index, line in enumerate(lines[:6])
+                for index, line in enumerate(lines[:12])
                 if line.casefold().startswith(type_prefixes)
             ),
             None,
         )
-        title_lines = lines[:type_line_index] if type_line_index is not None else lines[:5]
+        title_lines = lines[:type_line_index] if type_line_index is not None else lines[:8]
 
         def plausible_title(line: str) -> bool:
             # A footer-only pass can be exceptionally clear while the title is
@@ -436,15 +439,31 @@ class CardRecognizer:
             ):
                 return False
             return (
-                not re.search(r"\d{3,}", line)
+                not re.search(r"\d", line)
                 and len(line) <= 60
-                and sum(character.isalpha() for character in line) >= 3
+                and sum(character.isalpha() for character in line) >= 4
+                and line[0].isupper()
+                and not (line.isupper() and len(line) > 8)
             )
 
-        title = next(
-            (line for line in title_lines if plausible_title(line)),
-            None,
-        )
+        title_candidates: list[str] = []
+        for index, line in enumerate(title_lines):
+            if not plausible_title(line):
+                continue
+            title_candidates.append(line)
+            # Showcase titles can be emitted as adjacent OCR boxes.
+            if index + 1 < len(title_lines) and plausible_title(title_lines[index + 1]):
+                title_candidates.append(f"{line} {title_lines[index + 1]}")
+        title = max(title_candidates, key=len, default=None)
+
+        # OCR frequently removes the spaces and dash from a planeswalker type
+        # line. The character name remains reliable identity evidence.
+        for line in lines[:8]:
+            compact = re.sub(r"[^A-Za-z]", "", line)
+            match = re.match(r"(?:Legendary)?Planeswalker([A-Z][A-Za-z]+)$", compact)
+            if match:
+                title = match.group(1)
+                break
         # A basic land's type line contains its actual card name after the dash.
         # This is the one safe case where a type line can recover identity when
         # glare or a dark frame hides the title. Keeping the allow-list narrow
@@ -1127,18 +1146,17 @@ class CardRecognizer:
             # practice: one mistaken footer digit silently selects a different
             # artwork from the same set. Never let footer OCR bypass independent
             # artwork verification for those cards.
-            exact_land_needs_art = bool(exact_footer_card and self.is_basic_land(exact_footer_card))
-            if exact_footer_card and not exact_land_needs_art:
-                scan_fingerprints = {}
-                visual_matches = []
-            else:
-                scan_fingerprints = await asyncio.to_thread(visual_fingerprints, corrected)
-                visual_matches = await asyncio.to_thread(
-                    self._visual_matches,
-                    scan_fingerprints,
-                    printed_set_code or box_set_code,
-                    *([ignored_visual_hashes] if ignored_visual_hashes is not None else []),
-                )
+            # Even perfect-looking footer OCR is not sufficient for an
+            # automatic inventory write. A stale frame or false contour can
+            # still produce a convincing set/collector pair. Always retain an
+            # independent artwork signal for the safety gate.
+            scan_fingerprints = await asyncio.to_thread(visual_fingerprints, corrected)
+            visual_matches = await asyncio.to_thread(
+                self._visual_matches,
+                scan_fingerprints,
+                printed_set_code or box_set_code,
+                *([ignored_visual_hashes] if ignored_visual_hashes is not None else []),
+            )
             descriptor_image = corrected
             if not self.has_strong_lookup_evidence(
                 title, number, printed_set_code, copyright_year, cards
@@ -1238,10 +1256,7 @@ class CardRecognizer:
             identity_is_constrained = self.has_constrained_visual_identity(
                 title, cards, identity_names
             )
-            exact_footer_match = self.has_exact_footer_match(title, number, printed_set_code, cards)
-            exact_footer_can_skip_art = exact_footer_match and not any(
-                self.is_basic_land(card) for card in cards
-            )
+            exact_footer_can_skip_art = False
             family_complete = False
             if identity_is_constrained and not exact_footer_can_skip_art:
                 try:
@@ -1380,6 +1395,7 @@ class CardRecognizer:
             {card["id"] for card in cards}
         )
         ranked: dict[str, Candidate] = {}
+        safe_candidate_ids: set[str] = set()
         release_years = [int(card.get("released_at", "0000")[:4]) for card in cards]
         number_scores = [self.collector_score(number, card["collector_number"]) for card in cards]
         exact_set_counts: dict[str, int] = {}
@@ -1555,8 +1571,20 @@ class CardRecognizer:
                     # than a tiny collector-number crop. This specifically
                     # prevents a misread 264 as 261 from selecting the wrong art.
                     confidence = max(confidence, 98.5)
+                    safe_candidate_ids.add(card["id"])
                 else:
                     confidence = min(confidence, 98.4)
+            elif (
+                title_score >= 0.93
+                and number_score == 1.0
+                and set_score >= 0.78
+                and descriptor_art_top_id == card["id"]
+                and descriptor_art_scores.get(card["id"], 0) >= 80
+            ):
+                # Exact textual printing identity plus independent agreement
+                # from the photographed artwork. Neither signal alone may
+                # mutate inventory; together they are suitable for auto-add.
+                safe_candidate_ids.add(card["id"])
             confidence = min(99.5, confidence)
             if oracle_recovery and not printing_signal and not visual_printing_proof:
                 # Rules text can identify a card, but it cannot prove which set,
@@ -1636,6 +1664,7 @@ class CardRecognizer:
             corrected=review_image,
             processing_ms=round((finished - started) * 1000),
             card_structure=card_structure,
+            auto_add_safe=bool(candidates and candidates[0].scryfall_id in safe_candidate_ids),
             timings_ms={
                 "prepare": round((prepared - started) * 1000),
                 "ocr": round((ocr_complete - prepared) * 1000),

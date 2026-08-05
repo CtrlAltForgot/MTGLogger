@@ -1604,6 +1604,29 @@ def test_ocr_hints_recovers_basic_land_name_from_type_line():
     assert year is None
 
 
+def test_ocr_hints_reject_rules_fragments_and_join_split_showcase_title():
+    from mtglogger.services.recognition import CardRecognizer
+
+    title, _, _, _ = CardRecognizer.hints(
+        "the\nC\nar\nCTERLEVELS17-20\nDungeon Module R12\n"
+        "Den of the\nBugbear\nANADVENTUREFORCHARACTERLEVELS 17-20\nLand"
+    )
+
+    assert title == "Den of the Bugbear"
+
+
+def test_ocr_hints_recover_name_from_glued_planeswalker_type_line():
+    from mtglogger.services.recognition import CardRecognizer
+
+    title, number, set_code, _ = CardRecognizer.hints(
+        "LegendaryPlaneswalkerZariel\n2/281\n72/281M\nAFR·EN HIONHWA CHO"
+    )
+
+    assert title == "Zariel"
+    assert number == "72"
+    assert set_code == "afr"
+
+
 def test_printing_descriptors_require_one_ocr_established_card_identity():
     from mtglogger.services.recognition import CardRecognizer
 

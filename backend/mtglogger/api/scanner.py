@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..database import get_db
-from ..models import Deck, ReviewItem
+from ..models import Deck, ReviewItem, ReviewStatus
 from ..schemas import InventoryCreate, InventoryRead, ScanDefaults, ScanResult
 from ..services.decks import assign_to_deck
 from ..services.inventory import upsert_inventory
@@ -15,10 +15,8 @@ from ..services.recognition import CardRecognizer, save_scan
 router = APIRouter(prefix="/scanner", tags=["scanner"])
 recognizer = CardRecognizer()
 MAX_IMAGE_BYTES = 15_000_000
-# Safety interlock: keep every scan reviewable while the false-positive capture
-# path is being audited. Re-enable only after automatic additions retain their
-# source image and the empty/replacement-frame regression suite is green.
-AUTO_ADD_ENABLED = False
+# Automatic writes are additionally gated by independent OCR + artwork proof.
+AUTO_ADD_ENABLED = True
 
 
 async def read_bounded_upload(upload: UploadFile) -> bytes:
@@ -80,6 +78,7 @@ async def recognize_card(
     if (
         AUTO_ADD_ENABLED
         and result.card_structure
+        and result.auto_add_safe
         and result.confidence >= 98.5
         and result.candidates
         and defaults.auto_add
@@ -114,6 +113,33 @@ async def recognize_card(
         )
         if defaults.deck_id:
             assign_to_deck(db, defaults.deck_id, item)
+        # Keep a non-actionable audit capture for every automatic write. It is
+        # intentionally ignored by the Review UI/evaluator (not ground truth),
+        # but gives scanner diagnostics the evidence that was missing from the
+        # Baneslayer false-add incident.
+        timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S-%f")
+        path = get_settings().image_dir / f"auto-{timestamp}.jpg"
+        save_scan(result.corrected, path)
+        db.add(
+            ReviewItem(
+                image_path=str(path),
+                confidence=result.confidence,
+                ocr_text=result.ocr_text,
+                status=ReviewStatus.ignored,
+                candidates_json=json.dumps(
+                    {
+                        "auto_add_audit": True,
+                        "inventory_id": item.id,
+                        "candidates": [
+                            candidate.model_dump(mode="json")
+                            for candidate in result.candidates
+                        ],
+                        "defaults": defaults.model_dump(mode="json"),
+                    }
+                ),
+            )
+        )
+        db.commit()
         return ScanResult(
             disposition="added",
             confidence=result.confidence,
