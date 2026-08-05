@@ -16,7 +16,12 @@ from sqlalchemy import func, select
 
 from ..config import get_settings
 from ..database import SessionLocal
-from ..models import CardReference, CardVisualExample, CardVisualFingerprint
+from ..models import (
+    CardNeuralEmbedding,
+    CardReference,
+    CardVisualExample,
+    CardVisualFingerprint,
+)
 from ..providers import ScryfallProvider
 from .neural import embed_and_store
 
@@ -550,9 +555,17 @@ async def _index_art_series_variants(db, provider: ScryfallProvider, card: dict)
         if not image_url or image_url == canonical_url:
             continue
         variant_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{card['id']}:{face_index}:{image_url}"))
-        if db.scalar(
-            select(CardVisualExample.id).where(CardVisualExample.source_review_id == variant_id)
-        ):
+        existing_example = db.scalar(
+            select(CardVisualExample).where(CardVisualExample.source_review_id == variant_id)
+        )
+        existing_neural = db.scalar(
+            select(CardNeuralEmbedding.id).where(
+                CardNeuralEmbedding.model_version == get_settings().neural_model_version,
+                CardNeuralEmbedding.source_kind == "alternate",
+                CardNeuralEmbedding.source_id == variant_id,
+            )
+        )
+        if existing_example and existing_neural:
             continue
         raw = await provider.download_image(image_url)
         image = cv2.imdecode(np.frombuffer(raw, dtype="uint8"), cv2.IMREAD_COLOR)
@@ -560,15 +573,16 @@ async def _index_art_series_variants(db, provider: ScryfallProvider, card: dict)
             continue
         descriptors = visual_descriptor_bundle(image).get("art", np.empty((0, 32), np.uint8))
         descriptor_path = save_example_descriptors(card["id"], variant_id, descriptors)
-        db.add(
-            CardVisualExample(
-                id=variant_id,
-                scryfall_id=card["id"],
-                art_hash=artwork_hash(image),
-                descriptor_path=str(descriptor_path) if descriptor_path else None,
-                source_review_id=variant_id,
+        if not existing_example:
+            db.add(
+                CardVisualExample(
+                    id=variant_id,
+                    scryfall_id=card["id"],
+                    art_hash=artwork_hash(image),
+                    descriptor_path=str(descriptor_path) if descriptor_path else None,
+                    source_review_id=variant_id,
+                )
             )
-        )
         embed_and_store(
             db,
             image,

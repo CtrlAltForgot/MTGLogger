@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import tarfile
 import threading
@@ -166,14 +167,17 @@ class NeuralIndex:
         self.references = [row[1] for row in rows]
         self.source_kinds = [row[0].source_kind for row in rows]
         self.source_ids = [row[0].source_id for row in rows]
-        vectors = [decode_vector(row[0].vector, row[0].dimensions) for row in rows]
+        self.adapter = MetricAdapter.load_active()
+        vectors = [
+            self.adapter.apply(decode_vector(row[0].vector, row[0].dimensions)) for row in rows
+        ]
         self.matrix = np.stack(vectors) if vectors else np.empty((0, 0), dtype=np.float32)
 
     def search(self, query: np.ndarray, limit: int = 10) -> list[NeuralMatch]:
         vector = np.asarray(query, dtype=np.float32).reshape(-1)
         if not len(self.references) or self.matrix.shape[1] != vector.shape[0]:
             return []
-        vector /= max(float(np.linalg.norm(vector)), 1e-12)
+        vector = self.adapter.apply(vector)
         scores = self.matrix @ vector
         count = min(max(limit, 0), len(scores))
         if count == 0:
@@ -184,6 +188,36 @@ class NeuralIndex:
             NeuralMatch(self.references[index], float(scores[index]), self.source_kinds[index])
             for index in indices
         ]
+
+
+@dataclass(frozen=True)
+class MetricAdapter:
+    """Tiny learned diagonal metric; adds effectively zero scanner latency."""
+
+    scale: np.ndarray | None = None
+    version: str = "identity"
+
+    def apply(self, vector: np.ndarray) -> np.ndarray:
+        value = np.asarray(vector, dtype=np.float32).reshape(-1)
+        if self.scale is not None and self.scale.shape == value.shape:
+            value = value * self.scale
+        norm = float(np.linalg.norm(value))
+        return value / max(norm, 1e-12)
+
+    @classmethod
+    def load_active(cls) -> "MetricAdapter":
+        root = get_settings().neural_index_dir
+        manifest = root / "active-adapter.json"
+        if not manifest.is_file():
+            return cls()
+        try:
+            metadata = json.loads(manifest.read_text())
+            weights = root / metadata["weights"]
+            scale = np.load(weights, allow_pickle=False)["scale"].astype(np.float32)
+            return cls(scale=scale, version=str(metadata["version"]))
+        except (OSError, KeyError, ValueError, json.JSONDecodeError):
+            logger.exception("Could not load active neural metric adapter; using identity")
+            return cls()
 
 
 class NeuralRetriever:
