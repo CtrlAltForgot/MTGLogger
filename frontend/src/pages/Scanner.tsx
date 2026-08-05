@@ -33,11 +33,14 @@ export default function Scanner(){
 
   const capture=useCallback(async(blob:Blob)=>{
     const started=performance.now()
+    setResult(null)
+    setSuccess(null)
+    setReviewNotice(null)
     const next=await submitScan(blob,defaults) as ScanResult
     const elapsed=performance.now()-started
     // An empty frame is consumed, not a request to replace the camera
     // baseline. Calibration is exclusively controlled by the explicit button.
-    if(next.disposition==='empty'){setResult(null);return true}
+    if(next.disposition==='empty'){return false}
     setStats(current=>{
       const updated={...current,scans:current.scans+1,review:current.review+(next.disposition==='added'?0:1),totalMs:current.totalMs+elapsed,lastMs:elapsed,serverMs:next.processing_ms}
       return next.disposition==='added'?recordSuccessfulAddition(updated,performance.now()):updated
@@ -50,13 +53,22 @@ export default function Scanner(){
     if(next.disposition!=='added')setReviewNotice(next)
     return true
   },[defaults])
-  const scan=useAutoScanner(capture,tuning,2)
+  const scan=useAutoScanner(capture,tuning)
 
   useEffect(()=>{void request<Deck[]>('/decks').then(setDecks)},[])
   useEffect(()=>{void scan.start()},[scan.start])
 
   const tone=result?.disposition==='added'?'success':result?.disposition==='suggestions'||result?.disposition==='confirmation'?'warning':'error'
-  const stateLabel=scan.state==='remove'?(tuning.slingerMode?'Slide next card':'Swap to next card'):scan.state==='processing'?'Identifying…':scan.state==='stabilizing'?'Hold still…':scan.state==='calibrating'?'Calibrating…':scan.state==='waiting'?'Ready for card':''
+  const stateLabel=scan.state==='remove'
+    ?result?.disposition==='added'?(tuning.slingerMode?'Added — slide next card':'Added — move card'):'Review — set card aside'
+    :scan.state==='processing'?'Identifying — keep card still':scan.state==='stabilizing'?'Hold still…':scan.state==='calibrating'?'Calibrating…':scan.state==='waiting'?'Ready for card':''
+  const scannerInstruction=scan.state==='processing'
+    ?'Keep this card in place until identification finishes.'
+    :scan.state==='remove'&&result?.disposition!=='added'
+      ?'Set this card aside for Review, then place the next card. The saved scan does not need to be rescanned.'
+      :scan.state==='remove'
+        ?(tuning.slingerMode?'Slide the next physical card into view.':'Move this card to the completed stack, then place the next card.')
+        :(tuning.slingerMode?'Align the scan area with the slinger window. Each physical slide rearms the next capture—even for identical copies.':'Place a card anywhere in view and hold it steady.')
   const sessionCardsPerMinute=cardsPerMinute(stats)
   const sessionReviewPercentage=reviewPercentage(stats)
   const visibleScanArea=draftArea||scan.scanArea
@@ -80,7 +92,7 @@ export default function Scanner(){
         {scan.state==='idle'
           ?<Button variant="contained" startIcon={<CameraAlt/>} onClick={()=>void scan.start()}>Turn camera on</Button>
           :<><Button startIcon={<RestartAlt/>} onClick={scan.calibrate}>Recalibrate empty table</Button><Button startIcon={<Rotate90DegreesCw/>} onClick={scan.rotateCamera}>Rotate camera</Button><Button startIcon={<CropFree/>} color={settingScanArea?'primary':'inherit'} onClick={()=>{setCropStart(null);setDraftArea(scan.scanArea);setSettingScanArea(current=>!current)}}>Set scan area</Button>{(scan.scanArea.left>0||scan.scanArea.top>0||scan.scanArea.width<100||scan.scanArea.height<100)&&<Button onClick={()=>{scan.setScanArea({left:0,top:0,width:100,height:100});scan.calibrate()}}>Use full feed</Button>}</>}
-        <Typography color="text.secondary">{tuning.slingerMode?'Align the scan area with the slinger window. Each physical slide rearms the next capture—even for identical copies.':'Place a card anywhere in view and hold it steady. Swap directly to the next card when identified.'}</Typography>
+        <Typography color="text.secondary">{scannerInstruction}</Typography>
       </Stack>
       {scan.cameras.length>1&&<Select size="small" value={scan.selectedCamera} onChange={event=>void scan.switchCamera(event.target.value)} sx={{mt:1.5,minWidth:280}}>{scan.cameras.map((camera,index)=><MenuItem value={camera.deviceId} key={camera.deviceId}>{camera.label||`Camera ${index+1}`}</MenuItem>)}</Select>}
       <Grid container spacing={1.5} mt={.75}>
@@ -90,7 +102,6 @@ export default function Scanner(){
       <Stack direction="row" mt={1.25} px={.5} spacing={2.25} alignItems="center" flexWrap="wrap" useFlexGap color="text.secondary">
         <Typography variant="caption"><strong>{stats.scans}</strong> scanned</Typography>
         <Typography variant="caption" color="success.main"><strong>{stats.added}</strong> added</Typography>
-        {scan.pendingCaptures>0&&<Typography variant="caption" color="info.main"><strong>{scan.pendingCaptures}</strong> queued</Typography>}
         {stats.scans>0&&<><Typography variant="caption">Last <strong>{(stats.lastMs/1000).toFixed(1)}s</strong></Typography><Typography variant="caption">Recognition <strong>{(stats.serverMs/1000).toFixed(1)}s</strong></Typography><Typography variant="caption">Average <strong>{(stats.totalMs/stats.scans/1000).toFixed(1)}s</strong></Typography></>}
       </Stack>
       {scan.error&&<Alert severity="error" sx={{mt:2}} onClose={()=>scan.setError(undefined)}>{scan.error}</Alert>}
@@ -152,7 +163,7 @@ export default function Scanner(){
       </Card>
     </Snackbar>
     <Snackbar key={reviewNotice?.review_id||'no-review'} open={!!reviewNotice} autoHideDuration={1800} onClose={()=>setReviewNotice(null)} anchorOrigin={{vertical:'bottom',horizontal:'center'}}>
-      <Alert severity="warning" variant="filled" sx={{minWidth:{xs:320,sm:460}}}><Typography fontWeight={900}>CARD REQUIRES REVIEW</Typography><Typography>{reviewNotice?.candidates[0]?.name||'Printing uncertain'} · Saved to Review · Keep scanning</Typography></Alert>
+      <Alert severity="warning" variant="filled" sx={{minWidth:{xs:320,sm:460}}}><Typography fontWeight={900}>CARD REQUIRES REVIEW</Typography><Typography>{reviewNotice?.candidates[0]?.name||'Printing uncertain'} · Saved scan · Set this card aside</Typography></Alert>
     </Snackbar>
   </Grid>
 }
