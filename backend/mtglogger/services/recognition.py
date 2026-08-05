@@ -1815,6 +1815,9 @@ class CardRecognizer:
                 and descriptor_art_scores.get(top.scryfall_id, 0) >= 78
                 and descriptor_art_margin >= 8
             )
+            unique_artist_agrees = bool(
+                top.scryfall_id in strong_artist_ids and len(strong_artist_ids) == 1
+            )
             # Foil glare frequently costs the final tenth of a point even when
             # every useful signal agrees. Promote only a clearly separated
             # visual winner with an exactly read identity and a complete local
@@ -1823,7 +1826,7 @@ class CardRecognizer:
                 top.confidence,
                 runner_up_confidence,
                 self.card_name_similarity(title, top.name),
-                descriptor_agrees or artwork_agrees,
+                descriptor_agrees or artwork_agrees or unique_artist_agrees,
             ):
                 top.confidence = max(top.confidence, 98.5)
                 safe_candidate_ids.add(top.scryfall_id)
