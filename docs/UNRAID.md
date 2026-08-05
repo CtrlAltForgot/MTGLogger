@@ -56,6 +56,37 @@ The HTTP UI is then available at `http://UNRAID-IP:5173` for browsing. Webcam sc
 
 The API validates pooled database connections before using them, so it reconnects after a PostgreSQL container restart without requiring the API container to be manually restarted.
 
+### Optional precompiled recognition catalog
+
+The normal Database updater is resumable and remains the default. A versioned
+reference bundle may also be attached to a GitHub Release so a new installation
+can seed the canonical card metadata and visual descriptors without rebuilding
+every profile. Download every asset from the same reference-data release into
+one empty directory, then run this before adding cards or starting a database sync:
+
+```bash
+cd /mnt/user/appdata/mtglogger-src
+chmod +x scripts/import-reference-bundle.sh
+./scripts/import-reference-bundle.sh /mnt/user/appdata/mtglogger/reference-bundle
+```
+
+The importer verifies every checksum and refuses to overwrite an existing
+reference catalog or a non-empty descriptor directory. It never imports the
+publisher's inventory, decks, scans, learned examples, or other personal data.
+If no compatible release is available, skip this step and use Database normally.
+
+Maintainers create the release assets from a fully synced installation with:
+
+```bash
+mkdir -p /mnt/user/appdata/mtglogger/reference-export
+chmod +x scripts/export-reference-bundle.sh
+./scripts/export-reference-bundle.sh /mnt/user/appdata/mtglogger/reference-export
+```
+
+The generated descriptor archive is split into sub-2 GB parts for GitHub Release
+assets. Keep `MANIFEST`, `SHA256SUMS`, the PostgreSQL dump, and every archive part
+together and publish them outside Git history.
+
 ## HTTPS and webcam access
 
 Proxy HTTPS to `http://UNRAID-IP:5173`; do not proxy port `8000`, because nginx already sends `/api` traffic to FastAPI over Docker's private network.

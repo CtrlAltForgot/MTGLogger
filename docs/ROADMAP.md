@@ -20,7 +20,11 @@ This is a long-term project item, not part of the active recognition milestone.
 
 ### Optional reference-data snapshot
 
-Evaluate publishing a versioned, compressed recognition-profile snapshot as a release asset. It must be optional, verifiable, resumable, compliant with upstream data/image policies, and never replace the normal incremental updater. Large generated reference data should not be committed directly to the Git repository.
+Export/import tooling now creates a versioned, checksummed recognition-profile
+snapshot split for GitHub Release assets. Publishing the first snapshot remains
+pending an upstream-data policy review; generated reference data must never be
+committed directly to Git history. The snapshot stays optional and never replaces
+the normal resumable updater.
 
 ## Later ideas—not currently scheduled
 
