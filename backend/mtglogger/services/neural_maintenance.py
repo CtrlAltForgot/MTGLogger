@@ -189,6 +189,11 @@ def run_neural_maintenance() -> dict[str, object]:
     return result
 
 
+def _new_correction_count(correction_count: int, previous_count: int) -> int:
+    """Return only corrections added since the last recorded training run."""
+    return max(0, correction_count - max(0, previous_count))
+
+
 def train_metric_adapter_if_new_corrections(*, force: bool = False) -> dict[str, object]:
     """Train once per completed correction batch without overlapping maintenance."""
     settings = get_settings()
@@ -212,14 +217,20 @@ def train_metric_adapter_if_new_corrections(*, force: bool = False) -> dict[str,
         except (OSError, ValueError, json.JSONDecodeError):
             logger.exception("Could not read neural adapter training state")
     if not force and correction_count <= previous_count:
-        return {"state": "unchanged", "corrections": correction_count}
+        return {"state": "unchanged", "corrections": correction_count, "batch_correction_count": 0}
+    batch_correction_count = _new_correction_count(correction_count, previous_count)
     if not _adapter_training_lock.acquire(blocking=False):
-        return {"state": "already-running", "corrections": correction_count}
+        return {
+            "state": "already-running",
+            "corrections": correction_count,
+            "batch_correction_count": batch_correction_count,
+        }
     try:
         started = datetime.now(ZoneInfo(settings.neural_maintenance_timezone))
         base_state: dict[str, object] = {
             "model_version": settings.neural_model_version,
             "correction_count": correction_count,
+            "batch_correction_count": batch_correction_count,
             "started_at": started.isoformat(),
         }
 

@@ -7,7 +7,7 @@ import { CardName } from '../components/CardDetails'
 
 type Review={id:string;confidence:number;ocr_text:string|null;created_at:string;candidates:Candidate[];defaults:Defaults}
 type Metrics={top1:number;top5:number;mean_margin:number}
-type TrainingStatus={state:string;phase:string;progress:number;correction_count?:number;corrections?:number;labels?:number;epoch?:number;epochs?:number;started_at?:string;completed_at?:string;duration_seconds?:number;result?:{state:string;training_examples?:number;validation_examples?:number;baseline?:Metrics;candidate?:Metrics}}
+type TrainingStatus={state:string;phase:string;progress:number;correction_count?:number;batch_correction_count?:number;corrections?:number;labels?:number;epoch?:number;epochs?:number;started_at?:string;completed_at?:string;duration_seconds?:number;result?:{state:string;training_examples?:number;validation_examples?:number;baseline?:Metrics;candidate?:Metrics}}
 const foilOnly=(candidate:Candidate)=>!candidate.finishes.includes('nonfoil')&&candidate.finishes.some(finish=>finish==='foil'||finish==='etched')
 const displayPrice=(candidate:Candidate,foil:boolean)=>Number(((foil||foilOnly(candidate))?(candidate.foil_market_price||candidate.market_price):candidate.market_price)||0).toFixed(2)
 
@@ -35,6 +35,9 @@ export default function ReviewQueue(){
 
 function TrainingPanel({status}:{status?:TrainingStatus}){
   const running=status?.state==='running', result=status?.result, promoted=result?.state==='promoted'
+  const hasBatchCount=status?.batch_correction_count!==undefined
+  const batchCount=status?.batch_correction_count??0
+  const retainedCount=status?.correction_count??status?.corrections??0
   const phase=({preparing:'Preparing confirmed scans',training:'Training camera-aware adapter',validating:'Validating against held-out cards',refining:'Refining with every correction',finalizing:'Saving validated model',completed:'Training complete'} as Record<string,string>)[status?.phase||'']||'Neural training ready'
   const percent=Math.round((status?.progress||0)*100)
   return <Stack alignItems="center" mt={8} spacing={2}>
@@ -43,7 +46,8 @@ function TrainingPanel({status}:{status?:TrainingStatus}){
       <Stack direction="row" spacing={1.25} alignItems="center" mb={1}><AutoAwesome color="primary"/><Box flex={1}><Typography fontWeight={900}>Neural learning</Typography><Typography variant="body2" color="text.secondary">{phase}</Typography></Box><Chip size="small" color={running?'warning':promoted?'success':'default'} label={running?`${percent}%`:promoted?'Promoted':result?.state==='rejected'?'Safely rejected':'Ready'}/></Stack>
       <LinearProgress variant="determinate" value={percent} color={running?'primary':promoted?'success':'primary'} sx={{height:10,borderRadius:99,my:1.5}}/>
       <Stack direction={{xs:'column',sm:'row'}} spacing={{xs:.5,sm:3}}>
-        <Typography variant="body2"><b>{(status?.correction_count||status?.corrections||0).toLocaleString()}</b> confirmed corrections</Typography>
+        <Typography variant="body2"><b>{(hasBatchCount?batchCount:retainedCount).toLocaleString()}</b> {hasBatchCount?'confirmed corrections from this batch':'retained corrections used'}</Typography>
+        {hasBatchCount&&retainedCount!==batchCount&&<Typography variant="body2" color="text.secondary"><b>{retainedCount.toLocaleString()}</b> retained total</Typography>}
         {status?.epoch!==undefined&&status?.epochs&&<Typography variant="body2">Epoch <b>{status.epoch}</b> / {status.epochs}</Typography>}
         {status?.duration_seconds!==undefined&&<Typography variant="body2">Finished in <b>{status.duration_seconds.toFixed(1)}s</b></Typography>}
       </Stack>

@@ -1,6 +1,14 @@
 import numpy as np
 
 
+def test_new_correction_count_reports_only_the_latest_batch():
+    from mtglogger.services.neural_maintenance import _new_correction_count
+
+    assert _new_correction_count(119, 109) == 10
+    assert _new_correction_count(109, 109) == 0
+    assert _new_correction_count(10, -1) == 10
+
+
 def test_neural_preprocess_matches_model_contract():
     from mtglogger.services.neural import NeuralEmbedder
 
