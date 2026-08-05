@@ -1160,10 +1160,14 @@ class CardRecognizer:
             )
             cards = await lookup_task
             exact_footer_card = self.unique_exact_footer_card(number, printed_set_code, cards)
-            if title is None and exact_footer_card:
-                # Populate the title from the uniquely identified local
-                # printing so downstream scoring follows the same path as a
-                # readable title without paying for broad OCR recovery.
+            if exact_footer_card and (
+                title is None
+                or self.card_name_similarity(title, exact_footer_card["name"]) < 0.72
+            ):
+                # The title crop occasionally lands on the type line and reads
+                # values such as "Creature — Dragon". A unique canonical
+                # set/collector footer is stronger than that unrelated text, so
+                # restore the catalog name and follow the exact-print fast path.
                 title = exact_footer_card["name"]
             # A complete title + set + collector tuple already identifies one
             # physical printing. Avoid scanning the 96k-entry visual catalogue
