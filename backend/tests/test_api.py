@@ -2302,6 +2302,58 @@ def test_reference_metadata_enrichment_reuses_finished_visual_profile(tmp_path, 
     assert enriched.released_at == date(2026, 8, 4)
 
 
+def test_reference_metadata_refresh_does_not_download_images():
+    """A precompiled visual catalog can receive searchable metadata in bulk."""
+    from mtglogger.database import Base, SessionLocal, engine
+    from mtglogger.models import CardReference
+    from mtglogger.services import references
+
+    class Provider:
+        @staticmethod
+        def image_url(_card):
+            return "https://example.test/card.jpg"
+
+        @staticmethod
+        def market_price(_card):
+            return "1.23"
+
+    Base.metadata.drop_all(engine)
+    Base.metadata.create_all(engine)
+    with SessionLocal() as db:
+        db.add(
+            CardReference(
+                scryfall_id="printing",
+                name="Swamp",
+                set_code="m21",
+                set_name="Core Set 2021",
+                collector_number="266",
+                image_url="https://example.test/card.jpg",
+                art_hash="0" * 16,
+            )
+        )
+        db.commit()
+        refreshed = references._refresh_reference_metadata(
+            db,
+            Provider(),
+            [
+                {
+                    "id": "printing",
+                    "name": "Swamp",
+                    "set": "m21",
+                    "set_name": "Core Set 2021",
+                    "collector_number": "266",
+                    "artist": "Christine Choi",
+                    "released_at": "2020-07-03",
+                }
+            ],
+        )
+        enriched = db.get(CardReference, "printing")
+
+    assert refreshed == 1
+    assert enriched.artist == "Christine Choi"
+    assert enriched.released_at == date(2020, 7, 3)
+
+
 def test_confirmed_descriptor_examples_improve_matching_without_leaking_into_holdout(
     monkeypatch, tmp_path
 ):

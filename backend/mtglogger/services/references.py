@@ -314,28 +314,10 @@ async def sync_all() -> None:
         catalog_total = await provider.paper_printing_count()
         with _state_lock:
             _state.catalog_total = catalog_total
-        # The periodic refresh is also our new-printing detector. Once every
-        # known paper printing has a v3 descriptor, avoid walking every
-        # Scryfall page again: the lightweight catalog count is enough to prove
-        # that there is no incremental work. Existing profiles are never
-        # cleared, and a future increase in catalog_total naturally falls
-        # through to the resumable exhaustive pass below.
-        with SessionLocal() as db:
-            ready_profiles = (
-                db.scalar(
-                    select(func.count())
-                    .select_from(CardVisualFingerprint)
-                    .where(CardVisualFingerprint.descriptor_path.like("%/v3/%"))
-                )
-                or 0
-            )
-        if catalog_total and ready_profiles >= catalog_total:
-            await _sync_art_series(provider)
-            with _state_lock:
-                _state.state = "complete"
-                _state.set_code = "all-paper"
-                _state.completed = _state.total = catalog_total
-            return
+        # Visual profiles and catalog metadata have independent lifecycles.
+        # Older/precompiled databases can have complete fingerprints but sparse
+        # text metadata, so never let visual readiness skip the inexpensive
+        # page-sized metadata refresh below.
         with SessionLocal() as db:
             # Make the catalog useful quickly for the user's active collection,
             # then continue exhaustively through every paper printing.
@@ -362,7 +344,21 @@ async def sync_all() -> None:
             async for cards in provider.paper_printing_pages():
                 with _state_lock:
                     _state.total += len(cards)
+                _refresh_reference_metadata(db, provider, cards)
+                ids = [card.get("id") for card in cards if card.get("id")]
+                ready = set(
+                    db.scalars(
+                        select(CardVisualFingerprint.scryfall_id).where(
+                            CardVisualFingerprint.scryfall_id.in_(ids),
+                            CardVisualFingerprint.descriptor_path.like("%/v3/%"),
+                        )
+                    )
+                )
                 for card in cards:
+                    if card.get("id") in ready:
+                        with _state_lock:
+                            _state.completed += 1
+                        continue
                     downloaded = False
                     try:
                         downloaded = await _index_card(db, provider, card)
@@ -468,27 +464,7 @@ async def _index_card(db, provider: ScryfallProvider, card: dict) -> bool:
     )
     image_unchanged = bool(existing and existing.image_url == image_url)
     cache_satisfied = not get_settings().cache_reference_images or cached_image_exists
-    oracle_text = card.get("oracle_text") or "\n".join(
-        face.get("oracle_text", "") for face in card.get("card_faces", [])
-    )
-    metadata = {
-        "name": card["name"],
-        "set_code": card["set"],
-        "set_name": card["set_name"],
-        "collector_number": card["collector_number"],
-        "oracle_id": card.get("oracle_id"),
-        "language": card.get("lang", "en"),
-        "oracle_text": oracle_text or None,
-        "artist": card.get("artist"),
-        "promo_types": json.dumps(card.get("promo_types") or []),
-        "finishes": json.dumps(card.get("finishes") or []),
-        "color_identity": "".join(card.get("color_identity") or []),
-        "rarity": card.get("rarity"),
-        "type_line": card.get("type_line"),
-        "released_at": _released_at(card),
-        "image_url": image_url,
-        "market_price": provider.market_price(card),
-    }
+    metadata = _reference_metadata(provider, card, image_url)
     if (
         existing
         and fingerprint
@@ -544,6 +520,49 @@ async def _index_card(db, provider: ScryfallProvider, card: dict) -> bool:
         await _index_art_series_variants(db, provider, card)
     db.commit()
     return True
+
+
+def _reference_metadata(provider, card: dict, image_url: str | None = None) -> dict:
+    """Map one provider record to locally searchable catalog metadata."""
+    oracle_text = card.get("oracle_text") or "\n".join(
+        face.get("oracle_text", "") for face in card.get("card_faces", [])
+    )
+    return {
+        "name": card["name"],
+        "set_code": card["set"],
+        "set_name": card["set_name"],
+        "collector_number": card["collector_number"],
+        "oracle_id": card.get("oracle_id"),
+        "language": card.get("lang", "en"),
+        "oracle_text": oracle_text or None,
+        "artist": card.get("artist"),
+        "promo_types": json.dumps(card.get("promo_types") or []),
+        "finishes": json.dumps(card.get("finishes") or []),
+        "color_identity": "".join(card.get("color_identity") or []),
+        "rarity": card.get("rarity"),
+        "type_line": card.get("type_line"),
+        "released_at": _released_at(card),
+        "image_url": image_url or provider.image_url(card),
+        "market_price": provider.market_price(card),
+    }
+
+
+def _refresh_reference_metadata(db, provider, cards: list[dict]) -> int:
+    """Refresh existing references in one query/commit without image work."""
+    by_id = {card["id"]: card for card in cards if card.get("id")}
+    if not by_id:
+        return 0
+    references = list(
+        db.scalars(select(CardReference).where(CardReference.scryfall_id.in_(by_id)))
+    )
+    for reference in references:
+        card = by_id[reference.scryfall_id]
+        for field, value in _reference_metadata(provider, card).items():
+            setattr(reference, field, value)
+    db.commit()
+    # Keep a full-catalog refresh bounded to one provider page of ORM state.
+    db.expunge_all()
+    return len(references)
 
 
 async def _index_art_series_variants(db, provider: ScryfallProvider, card: dict) -> None:
