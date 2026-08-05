@@ -152,7 +152,7 @@ async def card_details(scryfall_id: str, db: Session = Depends(get_db)):
     try:
         # Card details are an enhancement over data already stored locally.
         # Never leave the dialog spinning behind a slow provider request.
-        async with asyncio.timeout(5):
+        async with asyncio.timeout(1.5):
             remote_card = await provider.get_card(scryfall_id)
         details = serialize_card_details(remote_card)
         prices = details.get("prices") or {}
