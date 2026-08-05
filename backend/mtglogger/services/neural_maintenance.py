@@ -29,7 +29,64 @@ from .neural import (
 logger = logging.getLogger(__name__)
 
 
-def backfill_confirmed_embeddings() -> dict[str, int]:
+def _reference_guided_crop(
+    capture: np.ndarray, reference_image: np.ndarray | None
+) -> np.ndarray | None:
+    """Locate a known printing in a legacy full frame using feature homography."""
+    if reference_image is None or reference_image.size == 0:
+        return None
+    detector = cv2.SIFT_create(nfeatures=2400)
+    reference_gray = cv2.cvtColor(reference_image, cv2.COLOR_BGR2GRAY)
+    capture_gray = cv2.cvtColor(capture, cv2.COLOR_BGR2GRAY)
+    reference_points, reference_features = detector.detectAndCompute(reference_gray, None)
+    capture_points, capture_features = detector.detectAndCompute(capture_gray, None)
+    if reference_features is None or capture_features is None:
+        return None
+    pairs = cv2.BFMatcher(cv2.NORM_L2).knnMatch(reference_features, capture_features, k=2)
+    matches = [first for first, second in pairs if first.distance < 0.74 * second.distance]
+    if len(matches) < 10:
+        return None
+    source = np.float32([reference_points[item.queryIdx].pt for item in matches]).reshape(-1, 1, 2)
+    destination = np.float32([capture_points[item.trainIdx].pt for item in matches]).reshape(
+        -1, 1, 2
+    )
+    homography, inliers = cv2.findHomography(source, destination, cv2.RANSAC, 4.0)
+    if homography is None or inliers is None or int(inliers.sum()) < 8:
+        return None
+    height, width = reference_image.shape[:2]
+    corners = np.float32([[[0, 0]], [[width - 1, 0]], [[width - 1, height - 1]], [[0, height - 1]]])
+    projected = cv2.perspectiveTransform(corners, homography).reshape(4, 2)
+    area = abs(float(cv2.contourArea(projected)))
+    frame_area = capture.shape[0] * capture.shape[1]
+    if area < frame_area * 0.025 or area > frame_area * 0.9:
+        return None
+    target = np.float32([[0, 0], [599, 0], [599, 839], [0, 839]])
+    return cv2.warpPerspective(
+        capture,
+        cv2.getPerspectiveTransform(projected.astype(np.float32), target),
+        (600, 840),
+    )
+
+
+def _prepare_confirmed_capture(
+    image: np.ndarray, reference_image: np.ndarray | None = None
+) -> np.ndarray:
+    """Return the physical-card pixels represented by a retained camera frame."""
+    from .recognition import CardRecognizer
+
+    height, width = image.shape[:2]
+    aspect = width / max(1, height)
+    # New scanner clients submit the detector crop itself. Do not run an
+    # already normalized portrait card through contour detection a second time.
+    if 0.62 <= aspect <= 0.78 and CardRecognizer.has_card_structure(image):
+        return cv2.resize(image, (600, 840), interpolation=cv2.INTER_AREA)
+    guided = _reference_guided_crop(image, reference_image)
+    if guided is not None:
+        return guided
+    return CardRecognizer.rectify(image)
+
+
+def backfill_confirmed_embeddings(*, force: bool = False) -> dict[str, int]:
     """Embed every retained, labeled camera correction not already indexed."""
     settings = get_settings()
     manifest_path = settings.evaluation_dir / "manifest.json"
@@ -40,7 +97,13 @@ def backfill_confirmed_embeddings() -> dict[str, int]:
     if not embedder.available:
         raise RuntimeError("Cannot index corrections until the neural model is installed")
     result = {"labeled": len(records), "indexed": 0, "missing": 0, "failed": 0}
-    with SessionLocal() as db:
+    timeout = httpx.Timeout(20.0, connect=8.0)
+    headers = {"User-Agent": settings.scryfall_user_agent}
+    reference_cache: dict[str, np.ndarray | None] = {}
+    with (
+        SessionLocal() as db,
+        httpx.Client(timeout=timeout, headers=headers, follow_redirects=True) as client,
+    ):
         for record in records:
             review_id = record.get("review_id")
             card_id = record.get("scryfall_id")
@@ -48,7 +111,8 @@ def backfill_confirmed_embeddings() -> dict[str, int]:
             if not review_id or not card_id or not image_path.is_file():
                 result["missing"] += 1
                 continue
-            if not db.get(CardReference, card_id):
+            reference = db.get(CardReference, card_id)
+            if not reference:
                 result["missing"] += 1
                 continue
             exists = db.scalar(
@@ -60,10 +124,22 @@ def backfill_confirmed_embeddings() -> dict[str, int]:
                     CardNeuralEmbedding.source_id == review_id,
                 )
             )
-            if exists:
+            if exists and not force:
                 continue
             try:
-                vector = embedder.embed_path(image_path)
+                image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
+                if image is None:
+                    raise ValueError(f"Could not decode retained correction {image_path}")
+                reference_image = None
+                if reference.image_url and not (0.62 <= image.shape[1] / image.shape[0] <= 0.78):
+                    if card_id not in reference_cache:
+                        response = client.get(reference.image_url)
+                        response.raise_for_status()
+                        reference_cache[card_id] = cv2.imdecode(
+                            np.frombuffer(response.content, dtype=np.uint8), cv2.IMREAD_COLOR
+                        )
+                    reference_image = reference_cache[card_id]
+                vector = embedder.embed(_prepare_confirmed_capture(image, reference_image))
                 store_embedding(
                     db,
                     scryfall_id=card_id,
@@ -123,20 +199,44 @@ def benchmark_confirmed_embeddings() -> dict[str, object]:
         names = dict(db.execute(select(CardReference.scryfall_id, CardReference.name)).all())
     if not rows:
         return {"queries": 0}
-    matrix = np.stack([decode_vector(row.vector, row.dimensions) for row in rows])
     corrections = [index for index, row in enumerate(rows) if row.source_kind == "correction"]
+    gallery_indices = [index for index, row in enumerate(rows) if row.source_kind != "correction"]
+    if not corrections or not gallery_indices:
+        return {"queries": len(corrections), "gallery": len(gallery_indices)}
+    matrix = np.stack([decode_vector(row.vector, row.dimensions) for row in rows])
+    gallery = matrix[gallery_indices]
     exact_top1 = exact_top5 = name_top1 = 0
+    identity_top1 = identity_top5 = identity_queries = 0
     observations: list[tuple[float, float, bool]] = []
     for query_index in corrections:
-        scores = matrix @ matrix[query_index]
-        scores[query_index] = -1
+        scores = gallery @ matrix[query_index]
         order = np.argsort(scores)[::-1]
         target = rows[query_index].scryfall_id
-        top = rows[int(order[0])]
+        top = rows[gallery_indices[int(order[0])]]
         correct = top.scryfall_id == target
         exact_top1 += int(correct)
-        exact_top5 += int(any(rows[int(index)].scryfall_id == target for index in order[:5]))
+        exact_top5 += int(
+            any(rows[gallery_indices[int(index)]].scryfall_id == target for index in order[:5])
+        )
         name_top1 += int(names.get(top.scryfall_id) == names.get(target))
+        identity_gallery = [
+            index
+            for index in gallery_indices
+            if names.get(rows[index].scryfall_id) == names.get(target)
+        ]
+        if identity_gallery:
+            identity_scores = matrix[identity_gallery] @ matrix[query_index]
+            identity_order = np.argsort(identity_scores)[::-1]
+            identity_top1 += int(
+                rows[identity_gallery[int(identity_order[0])]].scryfall_id == target
+            )
+            identity_top5 += int(
+                any(
+                    rows[identity_gallery[int(index)]].scryfall_id == target
+                    for index in identity_order[:5]
+                )
+            )
+            identity_queries += 1
         observations.append(
             (float(scores[order[0]]), float(scores[order[0]] - scores[order[1]]), correct)
         )
@@ -161,10 +261,13 @@ def benchmark_confirmed_embeddings() -> dict[str, object]:
     safe.sort(key=lambda item: (item["coverage"], item["accepted"]), reverse=True)
     return {
         "queries": query_count,
-        "gallery": len(rows) - query_count,
+        "gallery": len(gallery_indices),
         "exact_top1": round(exact_top1 / max(1, query_count), 4),
         "exact_top5": round(exact_top5 / max(1, query_count), 4),
         "name_top1": round(name_top1 / max(1, query_count), 4),
+        "identity_exact_top1": round(identity_top1 / max(1, identity_queries), 4),
+        "identity_exact_top5": round(identity_top5 / max(1, identity_queries), 4),
+        "identity_queries": identity_queries,
         "best_zero_error_policy": safe[0] if safe else None,
     }
 
@@ -192,8 +295,7 @@ def _retrieval_metrics(
         ]
     )
     margins = (
-        scores[np.arange(len(scores)), order[:, 0]]
-        - scores[np.arange(len(scores)), order[:, 1]]
+        scores[np.arange(len(scores)), order[:, 0]] - scores[np.arange(len(scores)), order[:, 1]]
     )
     return {
         "top1": float(correct.mean()),
@@ -215,9 +317,7 @@ def train_metric_adapter(epochs: int = 120) -> dict[str, object]:
         )
     canonical = {row.scryfall_id: row for row in rows if row.source_kind == "canonical"}
     corrections = [
-        row
-        for row in rows
-        if row.source_kind == "correction" and row.scryfall_id in canonical
+        row for row in rows if row.source_kind == "correction" and row.scryfall_id in canonical
     ]
     labels = sorted({row.scryfall_id for row in corrections})
     if len(corrections) < 24 or len(labels) < 8:
@@ -244,9 +344,7 @@ def train_metric_adapter(epochs: int = 120) -> dict[str, object]:
     probe_scores = train_query @ evaluation_gallery.T
     hard_count = min(2048, len(evaluation_gallery_rows))
     hard_indices = set(np.argsort(np.max(probe_scores, axis=0))[-hard_count:].tolist())
-    hard_indices.update(
-        evaluation_gallery_labels.index(row.scryfall_id) for row in corrections
-    )
+    hard_indices.update(evaluation_gallery_labels.index(row.scryfall_id) for row in corrections)
     selected = sorted(hard_indices)
     gallery_rows = [evaluation_gallery_rows[index] for index in selected]
     gallery = evaluation_gallery[selected]

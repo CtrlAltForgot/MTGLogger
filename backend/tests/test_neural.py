@@ -64,3 +64,60 @@ def test_neural_model_download_is_pinned():
 
     assert MODEL_URL.startswith("https://paddle-model-ecology.bj.bcebos.com/")
     assert len(MODEL_SHA256) == 64
+
+
+def test_confirmed_capture_preparation_preserves_detector_crop(monkeypatch):
+    import cv2
+
+    from mtglogger.services.neural_maintenance import _prepare_confirmed_capture
+    from mtglogger.services.recognition import CardRecognizer
+
+    card = np.zeros((840, 600, 3), dtype=np.uint8)
+    cv2.rectangle(card, (20, 20), (580, 820), (255, 255, 255), 4)
+    for y in (90, 300, 610, 760):
+        cv2.line(card, (30, y), (570, y), (255, 255, 255), 4)
+    monkeypatch.setattr(
+        CardRecognizer,
+        "rectify",
+        staticmethod(lambda _image: (_ for _ in ()).throw(AssertionError("double crop"))),
+    )
+
+    prepared = _prepare_confirmed_capture(card)
+
+    assert prepared.shape == (840, 600, 3)
+
+
+def test_confirmed_capture_preparation_localizes_legacy_full_frame(monkeypatch):
+    from mtglogger.services.neural_maintenance import _prepare_confirmed_capture
+    from mtglogger.services.recognition import CardRecognizer
+
+    frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+    localized = np.full((840, 600, 3), 37, dtype=np.uint8)
+    monkeypatch.setattr(CardRecognizer, "rectify", staticmethod(lambda _image: localized))
+
+    assert _prepare_confirmed_capture(frame) is localized
+
+
+def test_reference_guided_crop_recovers_card_from_legacy_frame():
+    import cv2
+
+    from mtglogger.services.neural_maintenance import _reference_guided_crop
+
+    random = np.random.default_rng(20260805)
+    reference = random.integers(0, 256, (420, 300, 3), dtype=np.uint8)
+    cv2.rectangle(reference, (3, 3), (296, 416), (255, 255, 255), 6)
+    source = np.float32([[0, 0], [299, 0], [299, 419], [0, 419]])
+    destination = np.float32([[170, 70], [480, 105], [455, 600], [130, 570]])
+    transform = cv2.getPerspectiveTransform(source, destination)
+    frame = np.zeros((680, 900, 3), dtype=np.uint8)
+    warped = cv2.warpPerspective(reference, transform, (900, 680))
+    mask = cv2.warpPerspective(np.full(reference.shape[:2], 255, np.uint8), transform, (900, 680))
+    frame[mask > 0] = warped[mask > 0]
+
+    crop = _reference_guided_crop(frame, reference)
+
+    assert crop is not None
+    assert crop.shape == (840, 600, 3)
+    normalized_reference = cv2.resize(reference, (600, 840))
+    correlation = np.corrcoef(crop.reshape(-1), normalized_reference.reshape(-1))[0, 1]
+    assert correlation > 0.7
