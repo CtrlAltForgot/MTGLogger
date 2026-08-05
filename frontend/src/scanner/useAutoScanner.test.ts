@@ -31,6 +31,18 @@ describe('wide scanner presence analysis',()=>{
     expect(result.bounds!.width).toBeGreaterThan(30)
     expect(result.bounds!.height).toBeGreaterThan(65)
   })
+
+  it('keeps a distant lighting change out of the card outline',()=>{
+    const pixels=changedRegion(12,58,15,108)
+    for(let y=40;y<82;y++)for(let x=92;x<154;x++){
+      const index=(y*width+x)*4
+      pixels[index]=pixels[index+1]=pixels[index+2]=70
+    }
+    const bounds=analyze(pixels,undefined,frame()).bounds
+    expect(bounds).toBeDefined()
+    expect(bounds!.left).toBeLessThan(15)
+    expect(bounds!.width).toBeLessThan(40)
+  })
 })
 
 describe('bounded recognition pipeline',()=>{
