@@ -1099,7 +1099,9 @@ def test_basic_land_auto_add_requires_decisive_exact_art_evidence():
     assert CardRecognizer.has_decisive_art_match(
         swamp["id"], swamp["id"], True, 92, 21
     )
-    assert not CardRecognizer.has_safe_basic_land_match(
+    # A decisive illustration match within an exact set remains safe even when
+    # the tiny collector-number footer is unreadable or misread.
+    assert CardRecognizer.has_safe_basic_land_match(
         swamp["id"], swamp["id"], True, 92, 21, None, "rtr", 0.0, 1.0
     )
     assert not CardRecognizer.has_safe_basic_land_match(
@@ -1110,6 +1112,9 @@ def test_basic_land_auto_add_requires_decisive_exact_art_evidence():
     )
     assert CardRecognizer.has_safe_basic_land_match(
         swamp["id"], swamp["id"], True, 92, 21, "264", "rtr", 1.0, 1.0
+    )
+    assert CardRecognizer.has_safe_basic_land_match(
+        swamp["id"], swamp["id"], True, 92, 21, "261", "rtr", 0.0, 1.0
     )
 
 

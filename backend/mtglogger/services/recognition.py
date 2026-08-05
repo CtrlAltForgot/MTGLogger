@@ -1363,9 +1363,9 @@ class CardRecognizer:
                     # The normal conservative path remains valid while offline.
                     family_complete = False
             if identity_is_constrained and not exact_footer_can_skip_art:
-                descriptor_matches, identity_visual_matches = await asyncio.gather(
+                descriptor_evidence, identity_visual_matches = await asyncio.gather(
                     asyncio.to_thread(
-                        self._descriptor_matches,
+                        self._descriptor_matches_with_art,
                         descriptor_image,
                         identity_names,
                         # A tiny footer can turn M15 into MIS. Never let uncertain
@@ -1381,6 +1381,7 @@ class CardRecognizer:
                         box_set_code,
                     ),
                 )
+                descriptor_matches, descriptor_art_matches = descriptor_evidence
             else:
                 # Regional ORB descriptors are excellent for separating known
                 # printings of one established card name, but deliberately broad
@@ -1390,6 +1391,7 @@ class CardRecognizer:
                 # glare hid the title. The exhaustive global fingerprints remain
                 # available here and can conservatively recover the exact artwork.
                 descriptor_matches = []
+                descriptor_art_matches = []
                 identity_visual_matches = []
             known_card_ids = {card["id"] for card in cards}
             # The remote title lookup is intentionally bounded and may return
@@ -1398,7 +1400,11 @@ class CardRecognizer:
             # find an older exact artwork/footer, so promote those references
             # into the ranking pool instead of merely attaching a score to a
             # card the pool does not contain.
-            local_matches = [*descriptor_matches, *identity_visual_matches]
+            local_matches = [
+                *descriptor_matches,
+                *descriptor_art_matches,
+                *identity_visual_matches,
+            ]
             for reference, _score in local_matches:
                 if reference.scryfall_id in known_card_ids:
                     continue
@@ -1419,6 +1425,17 @@ class CardRecognizer:
         descriptor_scores = {
             reference.scryfall_id: score for reference, score in descriptor_matches
         }
+        descriptor_art_scores = {
+            reference.scryfall_id: score for reference, score in descriptor_art_matches
+        }
+        descriptor_art_top_id = (
+            descriptor_art_matches[0][0].scryfall_id if descriptor_art_matches else None
+        )
+        descriptor_art_margin = (
+            descriptor_art_matches[0][1] - descriptor_art_matches[1][1]
+            if len(descriptor_art_matches) > 1
+            else (descriptor_art_matches[0][1] if descriptor_art_matches else 0)
+        )
         descriptor_top_id = descriptor_matches[0][0].scryfall_id if descriptor_matches else None
         descriptor_margin = (
             descriptor_matches[0][1] - descriptor_matches[1][1]
@@ -1552,18 +1569,25 @@ class CardRecognizer:
             # Keep these below the automatic-add threshold unless the local
             # exhaustive visual catalogue independently agrees with a clear
             # margin.  They remain first-class suggestions for quick review.
-            if self.is_basic_land(card) and not self.has_safe_basic_land_match(
-                card["id"],
-                descriptor_top_id,
-                descriptor_catalog_complete,
-                descriptor_score,
-                descriptor_margin,
-                number,
-                printed_set_code,
-                number_score,
-                set_score,
-            ):
-                confidence = min(confidence, 98.4)
+            if self.is_basic_land(card):
+                safe_land_match = self.has_safe_basic_land_match(
+                    card["id"],
+                    descriptor_art_top_id,
+                    descriptor_catalog_complete,
+                    descriptor_art_scores.get(card["id"], 0),
+                    descriptor_art_margin,
+                    number,
+                    printed_set_code,
+                    number_score,
+                    set_score,
+                )
+                if safe_land_match:
+                    # Exact set plus a decisive illustration match is safer
+                    # than a tiny collector-number crop. This specifically
+                    # prevents a misread 264 as 261 from selecting the wrong art.
+                    confidence = max(confidence, 98.5)
+                else:
+                    confidence = min(confidence, 98.4)
             confidence = min(99.5, confidence)
             if oracle_recovery and not printing_signal:
                 # Rules text can identify a card, but it cannot prove which set,
@@ -1696,12 +1720,37 @@ class CardRecognizer:
         ignored_example_review_ids: set[str] | None = None,
     ) -> list[tuple[CardReference, float]]:
         """Rerank printings of an OCR-established card using local artwork details."""
+        ranked, _art_ranked = CardRecognizer._descriptor_matches_with_art(
+            image,
+            identity_names,
+            box_set_code,
+            ignored_example_review_ids,
+        )
+        return ranked
+
+    @staticmethod
+    def _descriptor_matches_with_art(
+        image: np.ndarray,
+        identity_names: set[str],
+        box_set_code: str | None = None,
+        ignored_example_review_ids: set[str] | None = None,
+    ) -> tuple[
+        list[tuple[CardReference, float]],
+        list[tuple[CardReference, float]],
+    ]:
+        """Return full-region and artwork-only rankings from one profile pass.
+
+        Footer and frame descriptors are useful for most printings, but a noisy
+        collector digit must never outweigh the illustration on a basic land.
+        Keeping an independent artwork ranking lets land safety use genuinely
+        independent evidence without loading every profile twice.
+        """
         names = {name.casefold() for name in identity_names if name}
         if not names:
-            return []
+            return [], []
         scan = visual_descriptor_bundle(image)
         if len(scan["art"]) < 12:
-            return []
+            return [], []
         with SessionLocal() as db:
             statement = (
                 select(CardReference, CardVisualFingerprint)
@@ -1731,12 +1780,14 @@ class CardRecognizer:
                 continue
             examples.setdefault(example.scryfall_id, []).append(example.descriptor_path)
         ranked: list[tuple[CardReference, float]] = []
+        art_ranked: list[tuple[CardReference, float]] = []
         for reference, fingerprint in rows:
             descriptor_paths = [
                 fingerprint.descriptor_path,
                 *examples.get(reference.scryfall_id, []),
             ]
             scores: list[float] = []
+            art_scores: list[float] = []
             for descriptor_path in descriptor_paths:
                 if not descriptor_path:
                     continue
@@ -1756,13 +1807,21 @@ class CardRecognizer:
                 score = CardRecognizer._descriptor_bundle_score(scan, known)
                 if score is not None:
                     scores.append(score)
+                art_score = CardRecognizer._descriptor_score(scan["art"], known["art"])
+                if art_score is not None:
+                    art_scores.append(art_score)
             if not scores:
                 continue
             score = max(scores)
             if score >= 45:
                 ranked.append((reference, round(score, 3)))
+            if art_scores:
+                art_score = max(art_scores)
+                if art_score >= 45:
+                    art_ranked.append((reference, round(art_score, 3)))
         ranked.sort(key=lambda item: item[1], reverse=True)
-        return ranked[:12]
+        art_ranked.sort(key=lambda item: item[1], reverse=True)
+        return ranked[:12], art_ranked[:12]
 
     @staticmethod
     def _identity_visual_matches(
@@ -1851,17 +1910,16 @@ class CardRecognizer:
         number_score: float,
         set_score: float,
     ) -> bool:
-        """Require exact footer OCR and exact artwork to auto-add a basic land.
+        """Require exact set OCR and decisive artwork to auto-add a basic land.
 
         Basic lands often share their name, frame, rules area, and even artwork
-        across printings. Descriptor agreement alone can consequently look very
-        strong while selecting the wrong collector number. Requiring the two
-        independent signals to agree favors review over a silent bad addition.
+        across printings. The collector number is deliberately not required:
+        those tiny digits are the least reliable webcam signal and previously
+        overruled visibly correct artwork. Exact set evidence narrows the family;
+        artwork-only descriptors then select the illustration within that set.
         """
         return bool(
-            collector_number
-            and printed_set_code
-            and number_score == 1.0
+            printed_set_code
             and set_score == 1.0
             and CardRecognizer.has_decisive_art_match(
                 card_id,
