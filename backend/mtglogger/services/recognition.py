@@ -2204,7 +2204,16 @@ class CardRecognizer:
                 set_art_margin,
             )
         )
-        return bool(global_evidence or set_scoped_evidence)
+        footer_set_scoped_evidence = (
+            catalog_complete
+            and bool(collector_number and printed_set_code)
+            and number_score >= 0.78
+            and set_score >= 0.78
+            and card_id == set_art_top_id
+            and set_art_score >= 85
+            and set_art_margin >= 8
+        )
+        return bool(global_evidence or set_scoped_evidence or footer_set_scoped_evidence)
 
     @staticmethod
     def has_decisive_symbol_set_match(

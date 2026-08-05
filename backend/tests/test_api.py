@@ -1219,6 +1219,38 @@ def test_basic_land_auto_add_requires_decisive_exact_art_evidence():
         set_art_score=94,
         set_art_margin=20,
     )
+    # Foil glare can make reused artwork win globally. A near-exact footer may
+    # still narrow to one set, where the correct illustration wins decisively.
+    assert CardRecognizer.has_safe_basic_land_match(
+        swamp["id"],
+        "same-art-reprint",
+        True,
+        90,
+        2,
+        "64",
+        "ORL",
+        0.8,
+        0.8,
+        card_set="ori",
+        set_art_top_id=swamp["id"],
+        set_art_score=91,
+        set_art_margin=10,
+    )
+    assert not CardRecognizer.has_safe_basic_land_match(
+        swamp["id"],
+        "same-art-reprint",
+        True,
+        90,
+        2,
+        "64",
+        "ORL",
+        0.8,
+        0.8,
+        card_set="ori",
+        set_art_top_id=swamp["id"],
+        set_art_score=91,
+        set_art_margin=4,
+    )
     assert not CardRecognizer.has_safe_basic_land_match(
         swamp["id"],
         "same-art-reprint",
