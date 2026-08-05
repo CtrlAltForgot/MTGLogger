@@ -1500,9 +1500,10 @@ class CardRecognizer:
             if len(descriptor_matches) > 1
             else (descriptor_matches[0][1] if descriptor_matches else 0)
         )
-        descriptor_catalog_complete = family_complete and self._descriptor_catalog_complete(
+        candidate_descriptor_catalog_complete = self._descriptor_catalog_complete(
             {card["id"] for card in cards}
         )
+        descriptor_catalog_complete = family_complete and candidate_descriptor_catalog_complete
         neural_scores = {match.reference.scryfall_id: match.similarity for match in neural_matches}
         neural_top_id = neural_matches[0].reference.scryfall_id if neural_matches else None
         neural_top_score = neural_matches[0].similarity if neural_matches else 0.0
@@ -1735,6 +1736,7 @@ class CardRecognizer:
                     set_art_score,
                     set_art_margin,
                     artist_score,
+                    candidate_descriptor_catalog_complete,
                 )
                 if safe_land_match or repeated_footer_number or neural_is_safe:
                     # Exact set plus a decisive illustration match is safer
@@ -2151,6 +2153,7 @@ class CardRecognizer:
         set_art_score: float = 0,
         set_art_margin: float = 0,
         artist_score: float = 0,
+        set_art_catalog_complete: bool = False,
     ) -> bool:
         """Require decisive artwork plus exact set text or symbol evidence.
 
@@ -2205,7 +2208,7 @@ class CardRecognizer:
             )
         )
         footer_set_scoped_evidence = (
-            catalog_complete
+            set_art_catalog_complete
             and bool(collector_number and printed_set_code)
             and number_score >= 0.78
             and set_score >= 0.78

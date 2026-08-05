@@ -1235,6 +1235,7 @@ def test_basic_land_auto_add_requires_decisive_exact_art_evidence():
         set_art_top_id=swamp["id"],
         set_art_score=91,
         set_art_margin=10,
+        set_art_catalog_complete=True,
     )
     assert not CardRecognizer.has_safe_basic_land_match(
         swamp["id"],
@@ -1250,6 +1251,7 @@ def test_basic_land_auto_add_requires_decisive_exact_art_evidence():
         set_art_top_id=swamp["id"],
         set_art_score=91,
         set_art_margin=4,
+        set_art_catalog_complete=True,
     )
     assert not CardRecognizer.has_safe_basic_land_match(
         swamp["id"],
