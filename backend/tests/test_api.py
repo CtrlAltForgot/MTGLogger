@@ -1096,9 +1096,10 @@ def test_full_frame_land_title_fuses_with_focused_collector_footer():
 
     assert result.candidates[0].scryfall_id == "ori-swamp-264"
     assert result.candidates[0].collector_number == "264"
-    # Footer OCR identifies the likely collector number, but basic-land art is
-    # too ambiguous to auto-add without independent exact-art agreement.
-    assert result.confidence == 98.4
+    # Title + canonical set + exact collector number form a complete printing
+    # identity; the API still requires stable card structure before auto-add.
+    assert result.confidence >= 98.5
+    assert result.auto_add_safe
 
 
 def test_basic_land_auto_add_requires_decisive_exact_art_evidence():

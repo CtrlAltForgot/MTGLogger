@@ -1506,6 +1506,11 @@ class CardRecognizer:
             )
             if printing_signal:
                 confidence = max(confidence, 98.5)
+            exact_textual_printing = bool(
+                title_score >= 0.93
+                and number_score == 1.0
+                and set_score == 1.0
+            )
             descriptor_score = descriptor_scores.get(card["id"], 0)
             descriptor_symbol_score = descriptor_symbol_scores.get(card["id"], 0)
             visual_printing_proof = bool(
@@ -1590,15 +1595,18 @@ class CardRecognizer:
                     set_art_margin,
                     artist_score,
                 )
-                if safe_land_match:
+                if safe_land_match or exact_textual_printing:
                     # Exact set plus a decisive illustration match is safer
-                    # than a tiny collector-number crop. This specifically
-                    # prevents a misread 264 as 261 from selecting the wrong art.
+                    # than a tiny collector-number crop. An independently read
+                    # title + canonical set + collector-number tuple is also a
+                    # complete physical-printing identity. The API's temporal
+                    # stability and card-structure gates still have to agree
+                    # before this can mutate inventory.
                     confidence = max(confidence, 98.5)
                     safe_candidate_ids.add(card["id"])
                 else:
                     confidence = min(confidence, 98.4)
-            elif (
+            elif exact_textual_printing or (
                 title_score >= 0.93
                 and number_score == 1.0
                 and set_score >= 0.78
