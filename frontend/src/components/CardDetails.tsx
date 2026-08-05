@@ -1,5 +1,5 @@
 import { createContext, type ReactNode, useContext, useEffect, useState } from 'react'
-import { Close, OpenInNew, Security, SportsMma } from '@mui/icons-material'
+import { Close, OpenInNew, Security } from '@mui/icons-material'
 import {
   Box, Button, ButtonBase, Chip, CircularProgress, Dialog, DialogContent,
   DialogTitle, Divider, Grid, IconButton, Stack, Typography,
@@ -8,6 +8,7 @@ import { request } from '../api'
 
 type Details={scryfall_id:string;oracle_id?:string;name:string;set_code:string;set_name:string;collector_number:string;image_url?:string;mana_cost?:string;type_line?:string;oracle_text?:string;flavor_text?:string;power?:string;toughness?:string;loyalty?:string;rarity?:string;artist?:string;language?:string;released_at?:string;finishes?:string[];prices?:Record<string,string|null>;legalities?:Record<string,string>;scryfall_uri?:string}
 const Context=createContext<(id:string)=>void>(()=>undefined)
+const SportsMma=(_: {fontSize?:string;color?:string})=><Typography component="span" color="primary.main" fontSize="1.25rem" lineHeight={1} aria-hidden>⚔</Typography>
 
 export function CardDetailsProvider({children}:{children:ReactNode}){
   const [id,setId]=useState<string>(),[details,setDetails]=useState<Details>(),[error,setError]=useState('')
