@@ -1613,24 +1613,32 @@ class CardRecognizer:
         release_years = [int(card.get("released_at", "0000")[:4]) for card in cards]
         number_scores = [self.collector_score(number, card["collector_number"]) for card in cards]
         exact_set_counts: dict[str, int] = {}
+        set_art_evidence: dict[str, tuple[str | None, float, float]] = {}
         for card in cards:
+            code = card["set"].casefold()
+            if code in set_art_evidence:
+                exact_set_counts[code] = exact_set_counts.get(code, 0) + 1
+                continue
             same_set_art = [
                 (reference.scryfall_id, score)
                 for reference, score in descriptor_art_matches
-                if reference.set_code.casefold() == card["set"].casefold()
+                if reference.set_code.casefold() == code
             ]
             set_art_top_id = same_set_art[0][0] if same_set_art else None
             set_art_score = same_set_art[0][1] if same_set_art else 0
             set_art_margin = (
                 same_set_art[0][1] - same_set_art[1][1] if len(same_set_art) > 1 else set_art_score
             )
-            code = card["set"].casefold()
+            set_art_evidence[code] = (set_art_top_id, set_art_score, set_art_margin)
             exact_set_counts[code] = exact_set_counts.get(code, 0) + 1
         artist_scores = {
             card["id"]: self.artist_text_score(text, card.get("artist")) for card in cards
         }
         strong_artist_ids = {card_id for card_id, score in artist_scores.items() if score >= 0.9}
         for card in cards:
+            set_art_top_id, set_art_score, set_art_margin = set_art_evidence.get(
+                card["set"].casefold(), (None, 0.0, 0.0)
+            )
             title_score = self.card_name_similarity(title, card["name"]) if title else 0.55
             number_score = self.collector_score(number, card["collector_number"])
             set_score = self.set_code_score(printed_set_code, card["set"])
@@ -1741,6 +1749,24 @@ class CardRecognizer:
                 # The full-card descriptor contains artwork plus footer and set
                 # symbol regions. A large exhaustive-family margin proves the
                 # physical printing even when rules-text recovery found its name.
+                confidence = max(confidence, 98.5)
+                safe_candidate_ids.add(card["id"])
+            title_art_symbol_proof = self.has_safe_title_art_symbol_match(
+                card["id"],
+                title_score,
+                candidate_descriptor_catalog_complete,
+                card["set"],
+                descriptor_symbol_top_set,
+                descriptor_symbol_set_score,
+                descriptor_symbol_set_margin,
+                set_art_top_id,
+                set_art_score,
+                set_art_margin,
+            )
+            if title_art_symbol_proof:
+                # When the footer is outside the camera crop, an exact title,
+                # a decisive set-symbol vote, and a unique artwork win within
+                # that set are independent proof of the physical printing.
                 confidence = max(confidence, 98.5)
                 safe_candidate_ids.add(card["id"])
             if self.has_decisive_symbol_match(
@@ -1886,7 +1912,12 @@ class CardRecognizer:
                 confidence = min(confidence, 90.0)
                 safe_candidate_ids.discard(card["id"])
             confidence = min(99.5, confidence)
-            if oracle_recovery and not printing_signal and not visual_printing_proof:
+            if (
+                oracle_recovery
+                and not printing_signal
+                and not visual_printing_proof
+                and not title_art_symbol_proof
+            ):
                 # Rules text can identify a card, but it cannot prove which set,
                 # collector number, or finish is physically present. Independent
                 # collector/set footer evidence may still prove the printing.
@@ -2525,6 +2556,40 @@ class CardRecognizer:
             and set_art_margin >= 8
         )
         return bool(global_evidence or set_scoped_evidence or footer_set_scoped_evidence)
+
+    @staticmethod
+    def has_safe_title_art_symbol_match(
+        card_id: str,
+        title_score: float,
+        catalog_complete: bool,
+        card_set: str | None,
+        symbol_top_set: str | None,
+        symbol_set_score: float,
+        symbol_set_margin: float,
+        set_art_top_id: str | None,
+        set_art_score: float,
+        set_art_margin: float,
+    ) -> bool:
+        """Prove an exact printing without relying on a visible footer.
+
+        A title identifies the card family, the symbol identifies its set, and
+        a decisive artwork margin within that complete set family identifies
+        the printing. Reused artwork naturally produces a small margin and is
+        kept in Review.
+        """
+        return bool(
+            title_score >= 0.93
+            and catalog_complete
+            and CardRecognizer.has_decisive_symbol_set_match(
+                card_set,
+                symbol_top_set,
+                symbol_set_score,
+                symbol_set_margin,
+            )
+            and card_id == set_art_top_id
+            and set_art_score >= 88
+            and set_art_margin >= 18
+        )
 
     @staticmethod
     def has_decisive_symbol_set_match(

@@ -2675,6 +2675,23 @@ def test_identity_visual_matching_tolerates_missing_scan_fingerprints():
     assert CardRecognizer._identity_visual_matches({}, {"Known Card Name"}) == []
 
 
+def test_title_art_and_set_symbol_can_prove_printing_without_footer():
+    from mtglogger.services.recognition import CardRecognizer
+
+    assert CardRecognizer.has_safe_title_art_symbol_match(
+        "printing-a", 1.0, True, "m21", "m21", 92, 20, "printing-a", 94, 22
+    )
+    assert not CardRecognizer.has_safe_title_art_symbol_match(
+        "printing-a", 1.0, True, "m21", "m21", 92, 20, "printing-a", 94, 4
+    )
+    assert not CardRecognizer.has_safe_title_art_symbol_match(
+        "printing-a", 1.0, True, "m21", "znr", 92, 20, "printing-a", 94, 22
+    )
+    assert not CardRecognizer.has_safe_title_art_symbol_match(
+        "printing-a", 1.0, False, "m21", "m21", 92, 20, "printing-a", 94, 22
+    )
+
+
 def test_visual_catalog_is_reused_until_explicitly_invalidated():
     from mtglogger.services.recognition import CardRecognizer
 
