@@ -58,12 +58,16 @@ async def recognize_card(
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
-    if not result.card_structure and not result.ocr_text.strip() and not result.candidates:
+    # Empty-table frames occasionally produce one or two garbage OCR glyphs
+    # (for example a digit or a CJK character from wood grain).  Geometry is
+    # the authoritative gate here: without a card-shaped region or any actual
+    # candidate there is nothing useful to review.
+    if not result.card_structure and not result.candidates:
         return ScanResult(
             disposition="empty",
             confidence=0,
             candidates=[],
-            message="Empty guide recalibrated",
+            message="No card detected",
             processing_ms=result.processing_ms,
         )
 

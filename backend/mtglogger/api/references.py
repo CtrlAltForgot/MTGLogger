@@ -1,6 +1,7 @@
 import asyncio
 import re
 import time
+from decimal import Decimal, InvalidOperation
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, or_, select
@@ -10,6 +11,7 @@ from ..database import get_db
 from ..models import CardReference, CardVisualFingerprint
 from ..providers import ScryfallProvider
 from ..services.references import sync_all, sync_set, sync_status
+from ..services.prices import _eur_usd_rate
 
 router = APIRouter(prefix="/references", tags=["recognition references"])
 provider = ScryfallProvider()
@@ -149,6 +151,20 @@ async def card_details(scryfall_id: str, db: Session = Depends(get_db)):
         return cached[1]
     try:
         details = serialize_card_details(await provider.get_card(scryfall_id))
+        prices = details.get("prices") or {}
+        if (not prices.get("usd") and prices.get("eur")) or (
+            not prices.get("usd_foil") and prices.get("eur_foil")
+        ):
+            rate = await _eur_usd_rate()
+            if rate is not None:
+                for usd_key, eur_key in (("usd", "eur"), ("usd_foil", "eur_foil")):
+                    if not prices.get(usd_key) and prices.get(eur_key):
+                        try:
+                            prices[usd_key] = str(
+                                (Decimal(prices[eur_key]) * rate).quantize(Decimal("0.01"))
+                            )
+                        except (InvalidOperation, TypeError):
+                            pass
     except Exception as exc:
         reference = db.get(CardReference, scryfall_id)
         if not reference:

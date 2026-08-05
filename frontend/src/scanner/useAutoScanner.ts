@@ -125,22 +125,20 @@ export function useAutoScanner(
       const full=document.createElement('canvas');full.width=element.videoWidth;full.height=element.videoHeight;full.getContext('2d')!.drawImage(element,0,0)
       full.toBlob(blob=>{
         capturing.current=false;stable.current=0
-        if(!blob){calibrate();return}
+        if(!blob){setState('waiting');return}
         // Latch before network work begins. The video loop can observe removal
         // and prepare another physical card while this request is identifying.
         removalGate.current={latched:true,emptyFrames:0,replacementFrames:0};setState('remove')
         const generation=sessionGeneration.current
         inFlight.current++;setPendingCaptures(inFlight.current)
-        void onCapture(blob).then(cardCaptured=>{
-          if(generation===sessionGeneration.current&&!cardCaptured)calibrate()
-        }).catch(e=>{if(generation===sessionGeneration.current)setError(e instanceof Error?e.message:'Scan failed')}).finally(()=>{
+        void onCapture(blob).catch(e=>{if(generation===sessionGeneration.current)setError(e instanceof Error?e.message:'Scan failed')}).finally(()=>{
           if(generation!==sessionGeneration.current)return
           inFlight.current=Math.max(0,inFlight.current-1);setPendingCaptures(inFlight.current)
         })
       },'image/jpeg',.9)
     },180)
     return()=>clearInterval(timer)
-  },[state,error,maxInFlight,onCapture,tuning,calibrate])
+  },[state,error,maxInFlight,onCapture,tuning])
   useEffect(()=>stop,[stop])
   return {video,canvas,state,error,metrics,cameras,selectedCamera,pendingCaptures,start,stop,switchCamera,calibrate,setError}
 }
