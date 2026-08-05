@@ -1131,8 +1131,11 @@ class CardRecognizer:
             oracle_recovery = False
             decoded = self.decode(raw)
             corrected = await asyncio.to_thread(lambda: self.rectify(decoded))
-            neural_task = asyncio.create_task(
-                asyncio.to_thread(self._neural.search, corrected, 10)
+            neural = getattr(self, "_neural", None)
+            neural_task = (
+                asyncio.create_task(asyncio.to_thread(neural.search, corrected, 10))
+                if neural is not None
+                else None
             )
             prepared = time.perf_counter()
             card_structure = await asyncio.to_thread(self.has_card_structure, corrected)
@@ -1356,7 +1359,7 @@ class CardRecognizer:
                 local_card["lang"] = language
                 cards.append(local_card)
                 known_card_ids.add(reference.scryfall_id)
-            neural_matches = await neural_task
+            neural_matches = await neural_task if neural_task is not None else []
             if neural_matches:
                 logger.info(
                     "Neural shadow top=%s similarity=%.4f source=%s candidates=%d",
