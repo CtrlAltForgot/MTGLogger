@@ -2304,6 +2304,16 @@ class CardRecognizer:
         """
         global_art_matches = card_id == descriptor_top_id and catalog_complete
         global_evidence = global_art_matches and (
+            # Foil glare can shave a few points from the illustration margin.
+            # A very strong exhaustive-catalog art win plus the independently
+            # read printed artist credit is still printing-specific evidence.
+            # Reused-art lands naturally fail the art margin.
+            (
+                artist_score >= 0.9
+                and descriptor_score >= 94
+                and descriptor_margin >= 15
+            )
+            or
             (
                 collector_number
                 and printed_set_code

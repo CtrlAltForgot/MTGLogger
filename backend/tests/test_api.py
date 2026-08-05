@@ -1136,6 +1136,47 @@ def test_basic_land_auto_add_requires_decisive_exact_art_evidence():
     assert not CardRecognizer.has_decisive_art_match(swamp["id"], "rtr-swamp-261", True, 96, 24)
     assert not CardRecognizer.has_decisive_art_match(swamp["id"], swamp["id"], True, 87, 24)
     assert CardRecognizer.has_decisive_art_match(swamp["id"], swamp["id"], True, 92, 21)
+
+
+def test_land_art_and_printed_artist_can_recover_a_glare_reduced_margin():
+    from mtglogger.services.recognition import CardRecognizer
+
+    assert CardRecognizer.has_safe_basic_land_match(
+        "ths-mountain-244",
+        "ths-mountain-244",
+        True,
+        95.49,
+        16.2,
+        None,
+        None,
+        0,
+        0,
+        artist_score=1.0,
+    )
+    assert not CardRecognizer.has_safe_basic_land_match(
+        "ths-mountain-244",
+        "ths-mountain-244",
+        True,
+        95.49,
+        14.9,
+        None,
+        None,
+        0,
+        0,
+        artist_score=1.0,
+    )
+    assert not CardRecognizer.has_safe_basic_land_match(
+        "ths-mountain-244",
+        "ths-mountain-244",
+        True,
+        95.49,
+        16.2,
+        None,
+        None,
+        0,
+        0,
+        artist_score=0.5,
+    )
     assert CardRecognizer.has_decisive_symbol_match(swamp["id"], swamp["id"], 91, 18)
     assert CardRecognizer.set_code_score("ORL", "ori") == 1.0
     assert CardRecognizer.set_code_score("MIS", "m15") == 1.0
