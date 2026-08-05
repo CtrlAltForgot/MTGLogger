@@ -1,4 +1,5 @@
 import json
+import logging
 import re
 from datetime import UTC, datetime
 
@@ -10,10 +11,12 @@ from ..database import get_db
 from ..models import Deck, ReviewItem
 from ..schemas import InventoryCreate, InventoryRead, ScanDefaults, ScanResult
 from ..services.decks import assign_to_deck
+from ..services.evaluation import preserve_review_scan
 from ..services.inventory import upsert_inventory
 from ..services.recognition import CardRecognizer, save_scan
 
 router = APIRouter(prefix="/scanner", tags=["scanner"])
+logger = logging.getLogger(__name__)
 recognizer = CardRecognizer()
 MAX_IMAGE_BYTES = 15_000_000
 
@@ -138,6 +141,10 @@ async def recognize_card(
     db.add(review)
     db.commit()
     db.refresh(review)
+    try:
+        preserve_review_scan(path, review.id)
+    except (OSError, ValueError, json.JSONDecodeError):
+        logger.exception("Could not archive queued review %s", review.id)
     disposition = (
         "confirmation"
         if result.confidence > 95

@@ -722,6 +722,16 @@ class CardRecognizer:
             max(SequenceMatcher(None, variant, target).ratio() for variant in variants),
         )
 
+    @staticmethod
+    def exact_set_code_match(ocr_set: str | None, printed_set: str) -> bool:
+        """Match glyph-confusable codes without inventing a missing character."""
+        if not ocr_set:
+            return False
+        visual_key = str.maketrans({"1": "i", "l": "i", "5": "s", "0": "o", "2": "z"})
+        source = ocr_set.casefold().translate(visual_key)
+        target = printed_set.casefold().translate(visual_key)
+        return len(source) == len(target) and source == target
+
     @classmethod
     def has_strong_lookup_evidence(
         cls,
@@ -773,7 +783,7 @@ class CardRecognizer:
             card
             for card in cards
             if cls.collector_score(number, card["collector_number"]) == 1.0
-            and cls.set_code_score(printed_set_code, card["set"]) == 1.0
+            and cls.exact_set_code_match(printed_set_code, card["set"])
         ]
         return matches[0] if len(matches) == 1 else None
 
@@ -1637,7 +1647,7 @@ class CardRecognizer:
                 identity_is_constrained
                 and card["id"] == neural_top_id
                 and neural_score >= 0.45
-                and neural_margin >= 0.05
+                and neural_margin >= 0.04
             )
             if card["id"] == neural_top_id and (neural_score >= 0.62 or neural_is_decisive_rerank):
                 # Neural evidence is first used as an identity-scoped reranker.

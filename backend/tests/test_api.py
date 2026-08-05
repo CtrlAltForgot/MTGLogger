@@ -28,6 +28,8 @@ def test_core_set_and_confusable_set_codes_are_exact_matches():
 
     assert CardRecognizer.set_code_score("M3", "m13") == 1.0
     assert CardRecognizer.set_code_score("MIS", "m15") == 1.0
+    assert not CardRecognizer.exact_set_code_match("M3", "m13")
+    assert CardRecognizer.exact_set_code_match("MIS", "m15")
     assert CardRecognizer.has_unique_printing_signal(
         0.94, None, 0.45, [], "MIS", "m15", 1
     )
@@ -2042,6 +2044,25 @@ def test_confirmed_scan_is_preserved_as_durable_labeled_evidence(tmp_path, monke
             "collector_number": "259",
             "language": "en",
         }
+    ]
+
+
+def test_every_queued_scan_is_archived_before_review_deletion(tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+
+    from mtglogger.services import evaluation
+
+    source = tmp_path / "capture.jpg"
+    source.write_bytes(b"unlabeled webcam evidence")
+    corpus = tmp_path / "corpus"
+    monkeypatch.setattr(evaluation, "get_settings", lambda: SimpleNamespace(evaluation_dir=corpus))
+
+    preserved = evaluation.preserve_review_scan(source, "review-raw")
+
+    assert preserved.read_bytes() == source.read_bytes()
+    assert json.loads((corpus / "raw" / "manifest.json").read_text()) == [
+        {"review_id": "review-raw", "image_path": str(preserved)}
     ]
 
 

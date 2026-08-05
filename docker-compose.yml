@@ -22,6 +22,7 @@ services:
       SCRYFALL_USER_AGENT: ${SCRYFALL_USER_AGENT:-MTGLogger/0.1}
       PRICE_REFRESH_HOURS: ${PRICE_REFRESH_HOURS:-1}
       REFERENCE_DESCRIPTOR_DIR: ${REFERENCE_DESCRIPTOR_DIR:-/app/descriptors}
+      NEURAL_SHADOW_MODE: ${NEURAL_SHADOW_MODE:-false}
     volumes:
       - card_images:/app/data
       - ocr_models:/root/.paddlex
