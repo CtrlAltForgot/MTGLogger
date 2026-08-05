@@ -1165,22 +1165,24 @@ class CardRecognizer:
                 # printing so downstream scoring follows the same path as a
                 # readable title without paying for broad OCR recovery.
                 title = exact_footer_card["name"]
-            # A set code plus collector number is normally the canonical
-            # identifier for a paper printing. Basic lands are the exception in
-            # practice: one mistaken footer digit silently selects a different
-            # artwork from the same set. Never let footer OCR bypass independent
-            # artwork verification for those cards.
-            # Even perfect-looking footer OCR is not sufficient for an
-            # automatic inventory write. A stale frame or false contour can
-            # still produce a convincing set/collector pair. Always retain an
-            # independent artwork signal for the safety gate.
-            scan_fingerprints = await asyncio.to_thread(visual_fingerprints, corrected)
-            visual_matches = await asyncio.to_thread(
-                self._visual_matches,
-                scan_fingerprints,
-                printed_set_code or box_set_code,
-                *([ignored_visual_hashes] if ignored_visual_hashes is not None else []),
+            # A complete title + set + collector tuple already identifies one
+            # physical printing. Avoid scanning the 96k-entry visual catalogue
+            # in that common case; temporal stability and card-structure checks
+            # remain enforced by the API before inventory is changed.
+            exact_footer_can_skip_art = self.has_exact_footer_match(
+                title, number, printed_set_code, cards
             )
+            if exact_footer_can_skip_art:
+                scan_fingerprints: dict[str, str] = {}
+                visual_matches = []
+            else:
+                scan_fingerprints = await asyncio.to_thread(visual_fingerprints, corrected)
+                visual_matches = await asyncio.to_thread(
+                    self._visual_matches,
+                    scan_fingerprints,
+                    printed_set_code or box_set_code,
+                    *([ignored_visual_hashes] if ignored_visual_hashes is not None else []),
+                )
             descriptor_image = corrected
             if not self.has_strong_lookup_evidence(
                 title, number, printed_set_code, copyright_year, cards
@@ -1280,7 +1282,6 @@ class CardRecognizer:
             identity_is_constrained = self.has_constrained_visual_identity(
                 title, cards, identity_names
             )
-            exact_footer_can_skip_art = False
             family_complete = False
             if identity_is_constrained and not exact_footer_can_skip_art:
                 try:
