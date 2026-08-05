@@ -20,8 +20,8 @@ describe('wide scanner presence analysis',()=>{
     expect(analyze(changedRegion(110,150,20,105),undefined,baseline).sceneDifference).toBeGreaterThan(12)
   })
 
-  it('ignores the narrow preview gutter outside the scan zone',()=>{
-    expect(analyze(changedRegion(0,5,0,120),undefined,frame()).sceneDifference).toBe(0)
+  it('detects cards touching the edge of the visible scan zone',()=>{
+    expect(analyze(changedRegion(0,45,4,116),undefined,frame()).sceneDifference).toBeGreaterThan(12)
   })
 
   it('reports a visible bounding box around the changed card region',()=>{
@@ -41,7 +41,7 @@ describe('wide scanner presence analysis',()=>{
     const bounds=analyze(pixels,undefined,frame()).bounds
     expect(bounds).toBeDefined()
     expect(bounds!.left).toBeLessThan(15)
-    expect(bounds!.width).toBeLessThan(40)
+    expect(bounds!.width).toBeLessThan(45)
   })
 })
 
@@ -52,6 +52,14 @@ describe('bounded recognition pipeline',()=>{
     expect(crop!.width).toBeLessThan(1280)
     expect(crop!.height).toBeLessThan(720)
     expect(crop!.x).toBeGreaterThan(0)
+  })
+
+  it('uses the fitted card rectangle for an edge-touching capture',()=>{
+    const result=analyze(changedRegion(0,52,5,115),undefined,frame())
+    const crop=paddedCaptureBounds(result.bounds!,1280,720)
+    expect(crop).toBeDefined()
+    expect(crop!.x).toBe(0)
+    expect(crop!.width/crop!.height).toBeCloseTo(63/88,1)
   })
 
   it('does not crop a wide table-region false positive',()=>{

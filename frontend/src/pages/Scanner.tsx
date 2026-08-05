@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { CameraAlt, RestartAlt, VideocamOff } from '@mui/icons-material'
+import { CameraAlt, CropFree, RestartAlt, VideocamOff } from '@mui/icons-material'
 import {
   Alert, Box, Button, Card, CardContent, Chip, FormControlLabel, Grid,
   IconButton, LinearProgress, MenuItem, Select, Slider, Snackbar, Stack, Switch, TextField, Tooltip, Typography,
@@ -8,7 +8,7 @@ import { request, submitScan } from '../api'
 import FoilArtwork from '../components/FoilArtwork'
 import { CardName } from '../components/CardDetails'
 import { cardsPerMinute, initialSessionStats, recordSuccessfulAddition, reviewPercentage } from '../scanner/sessionStats'
-import { defaultTuning, useAutoScanner, type ScannerTuning } from '../scanner/useAutoScanner'
+import { defaultTuning, useAutoScanner, type ScanArea, type ScannerTuning } from '../scanner/useAutoScanner'
 import type { Deck, Defaults, Inventory, ScanResult } from '../types'
 
 const initial:Defaults={condition:'near_mint',foil:false,language:'en',storage_location:'Unsorted',collection_name:'Main',status:'owned',box_set_code:null,auto_add:true,deck_id:null}
@@ -27,6 +27,9 @@ export default function Scanner(){
   const [lastIdentified,setLastIdentified]=useState<{inventory:Inventory;confidence:number}|null>(null)
   const [reviewNotice,setReviewNotice]=useState<ScanResult|null>(null)
   const [stats,setStats]=useState(initialSessionStats)
+  const [settingScanArea,setSettingScanArea]=useState(false)
+  const [cropStart,setCropStart]=useState<{x:number;y:number}|null>(null)
+  const [draftArea,setDraftArea]=useState<ScanArea|null>(null)
 
   const capture=useCallback(async(blob:Blob)=>{
     const started=performance.now()
@@ -56,12 +59,18 @@ export default function Scanner(){
   const stateLabel=scan.state==='remove'?'Swap to next card':scan.state==='processing'?'Identifying…':scan.state==='stabilizing'?'Hold still…':scan.state==='calibrating'?'Calibrating…':scan.state==='waiting'?'Ready for card':''
   const sessionCardsPerMinute=cardsPerMinute(stats)
   const sessionReviewPercentage=reviewPercentage(stats)
+  const visibleScanArea=draftArea||scan.scanArea
+  const areaPoint=(event:React.PointerEvent<HTMLElement>)=>{const rect=event.currentTarget.getBoundingClientRect();return{x:Math.max(0,Math.min(100,(event.clientX-rect.left)/rect.width*100)),y:Math.max(0,Math.min(100,(event.clientY-rect.top)/rect.height*100))}}
+  const beginScanArea=(event:React.PointerEvent<HTMLElement>)=>{if(!settingScanArea)return;event.currentTarget.setPointerCapture(event.pointerId);const point=areaPoint(event);setCropStart(point);setDraftArea({left:point.x,top:point.y,width:0,height:0})}
+  const moveScanArea=(event:React.PointerEvent<HTMLElement>)=>{if(!settingScanArea||!cropStart)return;const point=areaPoint(event);setDraftArea({left:Math.min(cropStart.x,point.x),top:Math.min(cropStart.y,point.y),width:Math.abs(point.x-cropStart.x),height:Math.abs(point.y-cropStart.y)})}
+  const finishScanArea=()=>{if(draftArea&&draftArea.width>=5&&draftArea.height>=5){scan.setScanArea(draftArea);scan.calibrate()}setCropStart(null);setDraftArea(null);setSettingScanArea(false)}
 
   return <Grid container spacing={3}>
     <Grid size={{xs:12,lg:8}}>
-      <Box sx={{overflow:'hidden',position:'relative',bgcolor:'#050807',borderRadius:3,minHeight:320}}>
+      <Box onPointerDown={beginScanArea} onPointerMove={moveScanArea} onPointerUp={finishScanArea} sx={{overflow:'hidden',position:'relative',bgcolor:'#050807',borderRadius:3,minHeight:320,cursor:settingScanArea?'crosshair':'default',touchAction:settingScanArea?'none':'auto'}}>
         <Box component="video" ref={scan.video} muted playsInline disablePictureInPicture controlsList="nodownload noplaybackrate noremoteplayback" sx={{width:'100%',aspectRatio:'16/9',display:'block',objectFit:'cover'}}/>
         <canvas ref={scan.canvas} hidden/>
+        {(settingScanArea||(scan.scanArea.left>0||scan.scanArea.top>0||scan.scanArea.width<100||scan.scanArea.height<100))&&<><Box sx={{position:'absolute',left:0,right:0,top:0,height:`${visibleScanArea.top}%`,bgcolor:'rgba(0,0,0,.56)',pointerEvents:'none'}}/><Box sx={{position:'absolute',left:0,right:0,top:`${visibleScanArea.top+visibleScanArea.height}%`,bottom:0,bgcolor:'rgba(0,0,0,.56)',pointerEvents:'none'}}/><Box sx={{position:'absolute',left:0,top:`${visibleScanArea.top}%`,width:`${visibleScanArea.left}%`,height:`${visibleScanArea.height}%`,bgcolor:'rgba(0,0,0,.56)',pointerEvents:'none'}}/><Box sx={{position:'absolute',left:`${visibleScanArea.left+visibleScanArea.width}%`,right:0,top:`${visibleScanArea.top}%`,height:`${visibleScanArea.height}%`,bgcolor:'rgba(0,0,0,.56)',pointerEvents:'none'}}/><Box sx={{position:'absolute',left:`${visibleScanArea.left}%`,top:`${visibleScanArea.top}%`,width:`${visibleScanArea.width}%`,height:`${visibleScanArea.height}%`,outline:'2px dashed rgba(255,255,255,.9)',pointerEvents:'none'}}>{settingScanArea&&<Typography sx={{position:'absolute',top:8,left:10,color:'common.white',textShadow:'0 1px 4px #000',fontWeight:800}}>Drag around the area to scan</Typography>}</Box></>}
         {scan.metrics.bounds&&scan.state!=='calibrating'&&<Box sx={{position:'absolute',left:`${scan.metrics.bounds.left}%`,top:`${scan.metrics.bounds.top}%`,width:`${scan.metrics.bounds.width}%`,height:`${scan.metrics.bounds.height}%`,border:'3px solid',borderColor:'success.main',borderRadius:2,boxShadow:'0 0 0 1px rgba(0,0,0,.4), 0 0 24px rgba(100,217,151,.28)',transition:'all 120ms linear',pointerEvents:'none'}}/>}
         {stateLabel&&<Chip label={stateLabel} color={scan.state==='remove'?'success':scan.state==='processing'?'warning':'default'} sx={{position:'absolute',top:16,left:16,fontWeight:700,backdropFilter:'blur(12px)'}}/>}
         {scan.state!=='idle'&&<Tooltip title="Turn camera off"><IconButton aria-label="Turn camera off" onClick={scan.stop} sx={{position:'absolute',right:16,top:16,color:'common.white',bgcolor:'rgba(10,7,8,.55)',backdropFilter:'blur(12px)','&:hover':{bgcolor:'rgba(10,7,8,.78)'}}}><VideocamOff/></IconButton></Tooltip>}
@@ -70,7 +79,7 @@ export default function Scanner(){
       <Stack direction="row" spacing={2} mt={2} alignItems="center">
         {scan.state==='idle'
           ?<Button variant="contained" startIcon={<CameraAlt/>} onClick={()=>void scan.start()}>Turn camera on</Button>
-          :<Button startIcon={<RestartAlt/>} onClick={scan.calibrate}>Recalibrate empty table</Button>}
+          :<><Button startIcon={<RestartAlt/>} onClick={scan.calibrate}>Recalibrate empty table</Button><Button startIcon={<CropFree/>} color={settingScanArea?'primary':'inherit'} onClick={()=>{setCropStart(null);setDraftArea(scan.scanArea);setSettingScanArea(current=>!current)}}>Set scan area</Button>{(scan.scanArea.left>0||scan.scanArea.top>0||scan.scanArea.width<100||scan.scanArea.height<100)&&<Button onClick={()=>{scan.setScanArea({left:0,top:0,width:100,height:100});scan.calibrate()}}>Use full feed</Button>}</>}
         <Typography color="text.secondary">Place a card anywhere in view and hold it steady. Swap directly to the next card when identified.</Typography>
       </Stack>
       {scan.cameras.length>1&&<Select size="small" value={scan.selectedCamera} onChange={event=>void scan.switchCamera(event.target.value)} sx={{mt:1.5,minWidth:280}}>{scan.cameras.map((camera,index)=><MenuItem value={camera.deviceId} key={camera.deviceId}>{camera.label||`Camera ${index+1}`}</MenuItem>)}</Select>}

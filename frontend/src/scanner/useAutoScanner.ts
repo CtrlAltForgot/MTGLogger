@@ -4,11 +4,12 @@ import {advanceRemovalGate,type RemovalGate} from './removalGate'
 type State='idle'|'calibrating'|'waiting'|'stabilizing'|'capturing'|'processing'|'remove'
 export type ScannerTuning={entryDifference:number;stableMotion:number;stableFrames:number}
 export type DetectionBounds={left:number;top:number;width:number;height:number}
+export type ScanArea=DetectionBounds
 export type ScannerMetrics={brightness:number;contrast:number;motion:number;sceneDifference:number;bounds?:DetectionBounds}
 export const defaultTuning:ScannerTuning={entryDifference:12,stableMotion:4,stableFrames:5}
 export const pipelineHasCapacity=(inFlight:number,maxInFlight:number)=>inFlight<Math.max(1,maxInFlight)
 export function paddedCaptureBounds(bounds:DetectionBounds,videoWidth:number,videoHeight:number){
-  const padding=3
+  const padding=1
   const left=Math.max(0,bounds.left-padding),top=Math.max(0,bounds.top-padding)
   const right=Math.min(100,bounds.left+bounds.width+padding),bottom=Math.min(100,bounds.top+bounds.height+padding)
   const width=right-left,height=bottom-top,aspect=(width*videoWidth)/(height*videoHeight)
@@ -43,7 +44,20 @@ export function cardShapedBounds(changed:Uint8Array){
     const score=Math.sqrt(count)*shapeFit*(height/FRAME_HEIGHT)
     if(score<=bestScore)continue
     bestScore=score
-    best={left:minColumn*2/FRAME_WIDTH*100,top:minRow*2/FRAME_HEIGHT*100,width:width/FRAME_WIDTH*100,height:height/FRAME_HEIGHT*100}
+    // Fit the changed silhouette to a physical card rectangle. Reflections and
+    // pale borders often leave holes in the motion mask, so its raw component
+    // is not itself a trustworthy rectangle. This fitted rectangle is shared
+    // by the visible outline and the submitted recognition crop.
+    // The lightweight analysis canvas is 4:3 while the camera feed is normally
+    // 16:9, so a physical 63:88 card occupies a ~0.537-wide analysis box.
+    const targetAspect=(63/88)*(FRAME_WIDTH/FRAME_HEIGHT)/(16/9)
+    let fittedWidth=width,fittedHeight=height
+    if(width/height<targetAspect)fittedWidth=height*targetAspect
+    else fittedHeight=width/targetAspect
+    const centerColumn=(minColumn+maxColumn+1)/2*2,centerRow=(minRow+maxRow+1)/2*2
+    const fittedLeft=Math.max(0,Math.min(FRAME_WIDTH-fittedWidth,centerColumn-fittedWidth/2))
+    const fittedTop=Math.max(0,Math.min(FRAME_HEIGHT-fittedHeight,centerRow-fittedHeight/2))
+    best={left:fittedLeft/FRAME_WIDTH*100,top:fittedTop/FRAME_HEIGHT*100,width:fittedWidth/FRAME_WIDTH*100,height:fittedHeight/FRAME_HEIGHT*100}
   }
   return best
 }
@@ -51,9 +65,9 @@ export function cardShapedBounds(changed:Uint8Array){
 export function analyze(pixels:Uint8ClampedArray,previous?:Uint8ClampedArray,baseline?:Uint8ClampedArray){
   let brightness=0,variance=0,motion=0,sceneDifference=0,samples=0
   const sceneChanges:number[]=[],changed=new Uint8Array(FRAME_WIDTH/2*FRAME_HEIGHT/2)
-  // Monitor nearly the full scan zone so the card does not need meticulous
-  // centering. A narrow outer gutter ignores preview borders and OBS overlays.
-  for(let y=4;y<116;y+=2)for(let x=6;x<154;x+=2){
+  // Every visible pixel is a valid scan position. Cards may touch an edge when
+  // fed by a Card Slinger, so there are deliberately no invisible gutters.
+  for(let y=0;y<FRAME_HEIGHT;y+=2)for(let x=0;x<FRAME_WIDTH;x+=2){
     const index=(y*FRAME_WIDTH+x)*4,luminance=(pixels[index]+pixels[index+1]+pixels[index+2])/3
     brightness+=luminance;variance+=luminance*luminance;samples++
     if(previous)motion+=Math.abs(luminance-(previous[index]+previous[index+1]+previous[index+2])/3)
@@ -77,6 +91,8 @@ export function useAutoScanner(
   const [state,setState]=useState<State>('idle'),[error,setError]=useState<string>(),[metrics,setMetrics]=useState<ScannerMetrics>({brightness:0,contrast:0,motion:0,sceneDifference:0})
   const [pendingCaptures,setPendingCaptures]=useState(0)
   const [cameras,setCameras]=useState<MediaDeviceInfo[]>([]),[selectedCamera,setSelectedCamera]=useState('')
+  const [scanArea,setScanAreaState]=useState<ScanArea>({left:0,top:0,width:100,height:100})
+  const setScanArea=useCallback((area:ScanArea)=>setScanAreaState({left:Math.max(0,Math.min(100,area.left)),top:Math.max(0,Math.min(100,area.top)),width:Math.max(1,Math.min(100-area.left,area.width)),height:Math.max(1,Math.min(100-area.top,area.height))}),[])
 
   const calibrate=useCallback(()=>{baseline.current=undefined;previous.current=undefined;capturedFrame.current=undefined;calibrationCount.current=0;noiseMotion.current=0;stable.current=0;removalGate.current={latched:false,emptyFrames:0,replacementFrames:0};setState('calibrating')},[])
   const start=useCallback(async(deviceId?:string)=>{try{
@@ -94,7 +110,9 @@ export function useAutoScanner(
       const element=video.current,preview=canvas.current
       if(!element||!preview||element.readyState<2||capturing.current)return
       const context=preview.getContext('2d',{willReadFrequently:true});if(!context)return
-      preview.width=FRAME_WIDTH;preview.height=FRAME_HEIGHT;context.drawImage(element,0,0,FRAME_WIDTH,FRAME_HEIGHT)
+      const areaX=scanArea.left/100*element.videoWidth,areaY=scanArea.top/100*element.videoHeight
+      const areaWidth=scanArea.width/100*element.videoWidth,areaHeight=scanArea.height/100*element.videoHeight
+      preview.width=FRAME_WIDTH;preview.height=FRAME_HEIGHT;context.drawImage(element,areaX,areaY,areaWidth,areaHeight,0,0,FRAME_WIDTH,FRAME_HEIGHT)
       const pixels=context.getImageData(0,0,FRAME_WIDTH,FRAME_HEIGHT).data
       if(!baseline.current){
         if(!previous.current){previous.current=new Uint8ClampedArray(pixels);return}
@@ -106,7 +124,8 @@ export function useAutoScanner(
         if(calibrationCount.current>=CALIBRATION_FRAMES){baseline.current=new Uint8ClampedArray(pixels);setState('waiting')}
         return
       }
-      const next=analyze(pixels,previous.current,baseline.current);previous.current=new Uint8ClampedArray(pixels);setMetrics(next)
+      const next=analyze(pixels,previous.current,baseline.current);previous.current=new Uint8ClampedArray(pixels)
+      setMetrics({...next,bounds:next.bounds?{left:scanArea.left+next.bounds.left*scanArea.width/100,top:scanArea.top+next.bounds.top*scanArea.height/100,width:next.bounds.width*scanArea.width/100,height:next.bounds.height*scanArea.height/100}:undefined})
       const cardPresent=next.sceneDifference>=tuning.entryDifference
       if(removalGate.current.latched){
         const replacementDifference=capturedFrame.current?analyze(pixels,undefined,capturedFrame.current).sceneDifference:0
@@ -130,15 +149,11 @@ export function useAutoScanner(
       if(stable.current<tuning.stableFrames)return
       capturing.current=true;setState('capturing')
       capturedFrame.current=new Uint8ClampedArray(pixels)
-      const full=document.createElement('canvas'),crop=next.bounds?paddedCaptureBounds(next.bounds,element.videoWidth,element.videoHeight):undefined
-      if(crop){
-        full.width=crop.width;full.height=crop.height
-      }else{
-        full.width=element.videoWidth;full.height=element.videoHeight
-      }
+      const full=document.createElement('canvas'),localCrop=next.bounds?paddedCaptureBounds(next.bounds,areaWidth,areaHeight):undefined
+      const crop=localCrop?{x:Math.round(areaX+localCrop.x),y:Math.round(areaY+localCrop.y),width:localCrop.width,height:localCrop.height}:{x:Math.round(areaX),y:Math.round(areaY),width:Math.round(areaWidth),height:Math.round(areaHeight)}
+      full.width=crop.width;full.height=crop.height
       const fullContext=full.getContext('2d')!
-      if(crop)fullContext.drawImage(element,crop.x,crop.y,crop.width,crop.height,0,0,crop.width,crop.height)
-      else fullContext.drawImage(element,0,0)
+      fullContext.drawImage(element,crop.x,crop.y,crop.width,crop.height,0,0,crop.width,crop.height)
       full.toBlob(blob=>{
         capturing.current=false;stable.current=0
         if(!blob){setState('waiting');return}
@@ -154,7 +169,7 @@ export function useAutoScanner(
       },'image/jpeg',.9)
     },180)
     return()=>clearInterval(timer)
-  },[state,error,maxInFlight,onCapture,tuning])
+  },[state,error,maxInFlight,onCapture,scanArea,tuning])
   useEffect(()=>stop,[stop])
-  return {video,canvas,state,error,metrics,cameras,selectedCamera,pendingCaptures,start,stop,switchCamera,calibrate,setError}
+  return {video,canvas,state,error,metrics,cameras,selectedCamera,pendingCaptures,scanArea,setScanArea,start,stop,switchCamera,calibrate,setError}
 }

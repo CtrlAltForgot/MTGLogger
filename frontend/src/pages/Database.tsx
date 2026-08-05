@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { CheckCircle, Search } from '@mui/icons-material'
 import {
   Alert, Box, Card, CardContent, Chip, Grid, InputAdornment,
@@ -53,7 +53,12 @@ export default function Database(){
   useEffect(()=>{void refreshOverview();const timer=setInterval(refreshOverview,2500);return()=>clearInterval(timer)},[refreshOverview])
   useEffect(()=>{setCards(undefined);void refreshCards();const timer=setInterval(refreshCards,5000);return()=>clearInterval(timer)},[refreshCards])
   const pages=Math.max(1,Math.ceil((cards?.total||0)/40))
-  const coverage=useMemo(()=>status?.coverage_percent||0,[status?.coverage_percent])
+  const indexedProfiles=status?.fingerprinted_cards||0
+  const updateTotal=status?.total||0
+  const updateCompleted=Math.min(updateTotal,status?.completed||0)
+  const updateRemaining=Math.max(0,updateTotal-updateCompleted)
+  const displayedProfileTotal=databaseComplete?indexedProfiles:indexedProfiles+updateRemaining
+  const databaseProgress=databaseComplete?100:updateTotal?updateCompleted/updateTotal*100:0
 
   return <>
     <Stack direction={{xs:'column',md:'row'}} justifyContent="space-between" spacing={2} mb={3}>
@@ -62,9 +67,9 @@ export default function Database(){
     </Stack>
     {(error||status?.state==='failed')&&<Alert severity="error" sx={{mb:2}}>{error||status?.error||'Catalog update was interrupted and will retry automatically.'}</Alert>}
     <Card><CardContent>
-      <Grid container spacing={3}><Grid size={{xs:6,md:3}}><Typography variant="h4">{(status?.fingerprinted_cards||0).toLocaleString()}</Typography><Typography color="text.secondary">ready printings</Typography></Grid><Grid size={{xs:6,md:3}}><Typography variant="h4">{status?.catalog_total?.toLocaleString()||'—'}</Typography><Typography color="text.secondary">public visual printings</Typography></Grid><Grid size={{xs:6,md:3}}><Typography variant="h4">{status?.indexed_sets||0}</Typography><Typography color="text.secondary">sets represented</Typography></Grid><Grid size={{xs:6,md:3}}><Typography variant="h4">{status?.errors||0}</Typography><Typography color="text.secondary">sync errors</Typography></Grid></Grid>
-      <LinearProgress variant={status?.catalog_total?'determinate':'indeterminate'} value={coverage} sx={{height:11,borderRadius:99,mt:2.5}}/>
-      <Stack direction={{xs:'column',sm:'row'}} justifyContent="space-between" mt={1} spacing={.5}><Box><Typography fontWeight={800}>{status?.coverage_percent==null?'Discovering catalog size':`${coverage.toFixed(2)}% of the complete queue ready`}</Typography>{status?.catalog_total!=null&&<Typography variant="caption" color="text.secondary">{Math.max(0,status.catalog_total-status.fingerprinted_cards).toLocaleString()} {databaseComplete?'public profiles unavailable for indexing':'exact-print profiles remaining overall'}{activeCode?` · currently processing ${activeCode.toUpperCase()}`:''}</Typography>}</Box>{databaseSyncing&&status?.estimated_seconds_remaining!=null?<Typography color="primary.main" fontWeight={800}>ETA · about {duration(status.estimated_seconds_remaining)} · {status.estimated_completion_at&&new Date(status.estimated_completion_at).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})} <Typography component="span" color="text.secondary">({status.indexing_rate_per_second?.toFixed(1)}/sec)</Typography></Typography>:<Typography color="text.secondary">{status?.updated_at?`Updated ${new Date(status.updated_at).toLocaleString()}`:''}</Typography>}</Stack>
+      <Grid container spacing={3}><Grid size={{xs:6,md:3}}><Typography variant="h4">{indexedProfiles.toLocaleString()}</Typography><Typography color="text.secondary">ready printings</Typography></Grid><Grid size={{xs:6,md:3}}><Typography variant="h4">{displayedProfileTotal.toLocaleString()}</Typography><Typography color="text.secondary">available visual printings</Typography></Grid><Grid size={{xs:6,md:3}}><Typography variant="h4">{status?.indexed_sets||0}</Typography><Typography color="text.secondary">sets represented</Typography></Grid><Grid size={{xs:6,md:3}}><Typography variant="h4">{status?.errors||0}</Typography><Typography color="text.secondary">sync errors</Typography></Grid></Grid>
+      <LinearProgress variant={status?'determinate':'indeterminate'} value={databaseProgress} sx={{height:11,borderRadius:99,mt:2.5}}/>
+      <Stack direction={{xs:'column',sm:'row'}} justifyContent="space-between" mt={1} spacing={.5}><Box><Typography fontWeight={800}>{databaseComplete?'100.00% of available visual printings indexed':updateTotal?`${updateCompleted.toLocaleString()} / ${updateTotal.toLocaleString()} profiles processed in this update`:'Discovering update size'}</Typography>{databaseSyncing&&<Typography variant="caption" color="text.secondary">{updateRemaining.toLocaleString()} profiles remaining in this update{activeCode?` · currently processing ${activeCode.toUpperCase()}`:''}</Typography>}</Box>{databaseSyncing&&status?.estimated_seconds_remaining!=null?<Typography color="primary.main" fontWeight={800}>ETA · about {duration(status.estimated_seconds_remaining)} · {status.estimated_completion_at&&new Date(status.estimated_completion_at).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})} <Typography component="span" color="text.secondary">({status.indexing_rate_per_second?.toFixed(1)}/sec)</Typography></Typography>:<Typography color="text.secondary">{status?.updated_at?`Updated ${new Date(status.updated_at).toLocaleString()}`:''}</Typography>}</Stack>
     </CardContent></Card>
 
     <Grid container spacing={2.5} mt={.5}>
