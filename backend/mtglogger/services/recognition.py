@@ -2166,6 +2166,33 @@ class CardRecognizer:
             if collector.endswith(normalized[-min(2, len(normalized)) :]):
                 observed_numbers.append(normalized)
 
+        def candidate_is_in_set(candidate: dict) -> bool:
+            candidate_set = str(candidate.get("set") or "")
+            if raw_set_match:
+                return candidate_set.casefold() == card_set.casefold()
+            return bool(
+                printed_set_code
+                and CardRecognizer.set_code_score(printed_set_code, candidate_set) >= 0.78
+            )
+
+        # A complete three-or-more-digit collector number plus independently
+        # recognized set text uniquely proves these modern basic-land printings.
+        # Unlike the suffix path below, this does not need a duplicate OCR pass.
+        if len(collector) >= 3 and collector in observed_numbers:
+            exact_ids = {
+                str(candidate.get("id") or "")
+                for candidate in candidates
+                if candidate_is_in_set(candidate)
+                and re.sub(
+                    r"\D",
+                    "",
+                    str(candidate.get("collector_number") or ""),
+                )
+                == collector
+            }
+            if exact_ids == {str(card.get("id") or "")}:
+                return True
+
         for observed in observed_numbers:
             if len(observed) < 2:
                 continue
@@ -2183,15 +2210,7 @@ class CardRecognizer:
             matching_ids = {
                 str(candidate.get("id") or "")
                 for candidate in candidates
-                if (
-                    str(candidate.get("set") or "").casefold() == card_set.casefold()
-                    if raw_set_match
-                    else CardRecognizer.set_code_score(
-                        printed_set_code,
-                        str(candidate.get("set") or ""),
-                    )
-                    >= 0.78
-                )
+                if candidate_is_in_set(candidate)
                 and re.sub(
                     r"\D",
                     "",
