@@ -36,19 +36,25 @@ export function useAutoScanner(
   maxInFlight=2,
 ){
   const video=useRef<HTMLVideoElement>(null),canvas=useRef<HTMLCanvasElement>(null)
-  const previous=useRef<Uint8ClampedArray|undefined>(undefined),baseline=useRef<Uint8ClampedArray|undefined>(undefined),capturedFrame=useRef<Uint8ClampedArray|undefined>(undefined),calibrationCount=useRef(0),noiseMotion=useRef(0),stable=useRef(0),removalGate=useRef<RemovalGate>({latched:false,emptyFrames:0,replacementFrames:0}),capturing=useRef(false),inFlight=useRef(0),sessionGeneration=useRef(0)
+  const previous=useRef<Uint8ClampedArray|undefined>(undefined),baseline=useRef<Uint8ClampedArray|undefined>(undefined),capturedFrame=useRef<Uint8ClampedArray|undefined>(undefined),calibrationCount=useRef(0),noiseMotion=useRef(0),stable=useRef(0),removalGate=useRef<RemovalGate>({latched:false,emptyFrames:0,replacementFrames:0}),capturing=useRef(false),inFlight=useRef(0),sessionGeneration=useRef(0),starting=useRef(false)
   const [state,setState]=useState<State>('idle'),[error,setError]=useState<string>(),[metrics,setMetrics]=useState<ScannerMetrics>({brightness:0,contrast:0,motion:0,sceneDifference:0})
   const [pendingCaptures,setPendingCaptures]=useState(0)
   const [cameras,setCameras]=useState<MediaDeviceInfo[]>([]),[selectedCamera,setSelectedCamera]=useState('')
 
   const calibrate=useCallback(()=>{baseline.current=undefined;previous.current=undefined;capturedFrame.current=undefined;calibrationCount.current=0;noiseMotion.current=0;stable.current=0;removalGate.current={latched:false,emptyFrames:0,replacementFrames:0};setState('calibrating')},[])
-  const start=useCallback(async(deviceId?:string)=>{try{
+  const start=useCallback(async(deviceId?:string)=>{
+    const activeStream=video.current?.srcObject as MediaStream|null
+    if(starting.current||activeStream?.getVideoTracks().some(track=>track.readyState==='live'))return
+    starting.current=true
+    const generation=sessionGeneration.current
+    try{
     if(!window.isSecureContext||!navigator.mediaDevices?.getUserMedia)throw new Error('Camera access requires HTTPS or localhost. Use an HTTPS reverse proxy when opening MTGLogger from another computer.')
     setError(undefined)
     const stream=await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280},height:{ideal:720},...(deviceId?{deviceId:{exact:deviceId}}:{facingMode:'environment'})},audio:false})
+    if(generation!==sessionGeneration.current){stream.getTracks().forEach(track=>track.stop());return}
     if(video.current){video.current.srcObject=stream;await video.current.play();const active=stream.getVideoTracks()[0]?.getSettings().deviceId||deviceId||'';setSelectedCamera(active);setCameras((await navigator.mediaDevices.enumerateDevices()).filter(device=>device.kind==='videoinput'));calibrate()}
-  }catch(e){setError(e instanceof Error?e.message:'Camera unavailable')}},[calibrate])
-  const stop=useCallback(()=>{sessionGeneration.current++;(video.current?.srcObject as MediaStream|null)?.getTracks().forEach(track=>track.stop());baseline.current=undefined;previous.current=undefined;capturing.current=false;inFlight.current=0;setPendingCaptures(0);setState('idle')},[])
+  }catch(e){if(generation===sessionGeneration.current)setError(e instanceof Error?e.message:'Camera unavailable')}finally{if(generation===sessionGeneration.current)starting.current=false}},[calibrate])
+  const stop=useCallback(()=>{sessionGeneration.current++;starting.current=false;(video.current?.srcObject as MediaStream|null)?.getTracks().forEach(track=>track.stop());if(video.current)video.current.srcObject=null;baseline.current=undefined;previous.current=undefined;capturing.current=false;inFlight.current=0;setPendingCaptures(0);setState('idle')},[])
   const switchCamera=useCallback(async(deviceId:string)=>{stop();setSelectedCamera(deviceId);await start(deviceId)},[start,stop])
 
   useEffect(()=>{
