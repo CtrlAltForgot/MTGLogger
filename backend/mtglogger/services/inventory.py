@@ -23,6 +23,7 @@ def upsert_inventory(db: Session, data: InventoryCreate) -> InventoryItem:
         match.quantity += data.quantity
         # Adding another physical copy is a new collection activity even though
         # it intentionally reuses the same inventory row.
+        match.date_added = utc_now()
         match.updated_at = utc_now()
         if data.market_price is not None:
             match.market_price = data.market_price

@@ -15,6 +15,10 @@ from ..services.recognition import CardRecognizer, save_scan
 router = APIRouter(prefix="/scanner", tags=["scanner"])
 recognizer = CardRecognizer()
 MAX_IMAGE_BYTES = 15_000_000
+# Safety interlock: keep every scan reviewable while the false-positive capture
+# path is being audited. Re-enable only after automatic additions retain their
+# source image and the empty/replacement-frame regression suite is green.
+AUTO_ADD_ENABLED = False
 
 
 async def read_bounded_upload(upload: UploadFile) -> bytes:
@@ -30,7 +34,11 @@ async def read_bounded_upload(upload: UploadFile) -> bytes:
 
 @router.get("/capabilities")
 def capabilities():
-    return {"ocr": recognizer.ocr_available, "artwork_matching": True}
+    return {
+        "ocr": recognizer.ocr_available,
+        "artwork_matching": True,
+        "auto_add_enabled": AUTO_ADD_ENABLED,
+    }
 
 
 @router.post("/upload-check")
@@ -69,7 +77,13 @@ async def recognize_card(
 
     # Automatic inventory writes require near-certain agreement. Scores below
     # this remain one-key confirmations, even when automatic mode is enabled.
-    if result.confidence >= 98.5 and result.candidates and defaults.auto_add:
+    if (
+        AUTO_ADD_ENABLED
+        and result.card_structure
+        and result.confidence >= 98.5
+        and result.candidates
+        and defaults.auto_add
+    ):
         top = result.candidates[0]
         foil = defaults.foil or top.is_foil_only()
         item = upsert_inventory(
