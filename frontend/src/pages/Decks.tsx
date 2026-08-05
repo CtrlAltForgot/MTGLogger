@@ -275,17 +275,17 @@ export default function Decks() {
                 variant="outlined"
               >
                 <DeckArtwork deck={deck}/>
-                <CardContent>
+                <CardContent sx={{pb:2,"&:last-child":{pb:2}}}>
                   <Stack direction="row" justifyContent="space-between">
                     <Typography variant="h6" fontWeight={800}>
                       {deck.name}
                     </Typography>
                     {deck.format && <Chip size="small" label={deck.format} />}
                   </Stack>
-                  <Typography color="text.secondary" mt={1}>
+                  <Typography color="text.secondary" mt={0.5}>
                     {deck.total_cards} cards · {deck.unique_cards} unique
                   </Typography>
-                  <Typography variant="h5" color="primary.main" mt={3}>
+                  <Typography variant="h5" color="primary.main" mt={1.25}>
                     ${Number(deck.total_value).toFixed(2)}
                   </Typography>
                   {deck.description && (
@@ -293,7 +293,7 @@ export default function Decks() {
                       {deck.description}
                     </Typography>
                   )}
-                  <Tooltip title="Edit deck"><IconButton aria-label={`Edit ${deck.name}`} onClick={event=>{event.stopPropagation();setSelectedId(deck.id);setForm({name:deck.name,format:deck.format||"",description:deck.description||"",image_url:deck.image_url||""});setCoverFile(undefined);setFormatSuggestions(undefined);setEditing(true)}} sx={{position:"absolute",left:8,bottom:8}}><Edit/></IconButton></Tooltip>
+                  <Tooltip title="Edit deck"><IconButton aria-label={`Edit ${deck.name}`} onClick={event=>{event.stopPropagation();setSelectedId(deck.id);setForm({name:deck.name,format:deck.format||"",description:deck.description||"",image_url:deck.image_url||""});setCoverFile(undefined);setFormatSuggestions(undefined);setEditing(true)}} sx={{position:"absolute",right:8,bottom:6}}><Edit/></IconButton></Tooltip>
                 </CardContent>
               </Card>
             </Grid>
