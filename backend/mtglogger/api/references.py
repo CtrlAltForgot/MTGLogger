@@ -150,7 +150,11 @@ async def card_details(scryfall_id: str, db: Session = Depends(get_db)):
     if cached and time.monotonic() - cached[0] < 86_400:
         return cached[1]
     try:
-        details = serialize_card_details(await provider.get_card(scryfall_id))
+        # Card details are an enhancement over data already stored locally.
+        # Never leave the dialog spinning behind a slow provider request.
+        async with asyncio.timeout(5):
+            remote_card = await provider.get_card(scryfall_id)
+        details = serialize_card_details(remote_card)
         prices = details.get("prices") or {}
         if (not prices.get("usd") and prices.get("eur")) or (
             not prices.get("usd_foil") and prices.get("eur_foil")
@@ -171,11 +175,27 @@ async def card_details(scryfall_id: str, db: Session = Depends(get_db)):
             raise HTTPException(404, "Card printing not found") from exc
         details = {
             "scryfall_id": reference.scryfall_id,
+            "oracle_id": reference.oracle_id,
             "name": reference.name,
             "set_code": reference.set_code,
             "set_name": reference.set_name,
             "collector_number": reference.collector_number,
             "image_url": reference.image_url,
+            "type_line": reference.type_line,
+            "oracle_text": reference.oracle_text,
+            "rarity": reference.rarity,
+            "artist": reference.artist,
+            "language": reference.language,
+            "released_at": reference.released_at,
+            "finishes": [
+                value.strip()
+                for value in (reference.finishes or "")
+                .replace("[", "")
+                .replace("]", "")
+                .replace('"', "")
+                .split(",")
+                if value.strip()
+            ],
             "prices": {"usd": str(reference.market_price) if reference.market_price else None},
         }
     if len(_detail_cache) >= 512:
