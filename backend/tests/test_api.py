@@ -2669,6 +2669,12 @@ def test_identity_visual_matching_bypasses_global_artwork_prefilter():
     assert matches[0][1] > 55
 
 
+def test_identity_visual_matching_tolerates_missing_scan_fingerprints():
+    from mtglogger.services.recognition import CardRecognizer
+
+    assert CardRecognizer._identity_visual_matches({}, {"Known Card Name"}) == []
+
+
 def test_visual_catalog_is_reused_until_explicitly_invalidated():
     from mtglogger.services.recognition import CardRecognizer
 

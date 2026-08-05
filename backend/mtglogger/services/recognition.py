@@ -2199,7 +2199,7 @@ class CardRecognizer:
         footer, title, and set-symbol regions without that lossy prefilter.
         """
         names = {name.casefold() for name in identity_names if name}
-        if not names:
+        if not names or not scan_fingerprints:
             return []
         try:
             with SessionLocal() as db:
@@ -2216,10 +2216,19 @@ class CardRecognizer:
                 rows = list(db.execute(statement))
         except SQLAlchemyError:
             return []
-        scan_art = int(scan_fingerprints["art_hash"], 16)
+        scan_art_hash = scan_fingerprints.get("art_hash")
+        try:
+            scan_art = int(scan_art_hash, 16) if scan_art_hash else None
+        except ValueError:
+            scan_art = None
         ranked = []
         for reference, fingerprint in rows:
-            art_distance = (scan_art ^ int(fingerprint.art_hash, 16)).bit_count()
+            art_distance = None
+            if scan_art is not None:
+                try:
+                    art_distance = (scan_art ^ int(fingerprint.art_hash, 16)).bit_count()
+                except (TypeError, ValueError):
+                    art_distance = None
             score = CardRecognizer._fingerprint_score(scan_fingerprints, fingerprint, art_distance)
             if score >= 55:
                 ranked.append((reference, score))
@@ -2662,10 +2671,12 @@ class CardRecognizer:
     def _fingerprint_score(
         scan: dict[str, str],
         canonical: CardVisualFingerprint | None,
-        art_distance: int,
+        art_distance: int | None,
     ) -> float:
-        art_score = max(0.0, 99.5 - art_distance * 1.35)
-        if canonical is None or len(scan) == 1:
+        art_score = max(0.0, 99.5 - art_distance * 1.35) if art_distance is not None else 0.0
+        if canonical is None:
+            return art_score
+        if len(scan) == 1 and art_distance is not None:
             return art_score
         weights = {
             "full_hash": 0.13,
@@ -2674,8 +2685,8 @@ class CardRecognizer:
             "symbol_hash": 0.10,
             "frame_hash": 0.05,
         }
-        score = art_score * 0.50
-        total_weight = 0.50
+        score = art_score * 0.50 if art_distance is not None else 0.0
+        total_weight = 0.50 if art_distance is not None else 0.0
         for field, weight in weights.items():
             canonical_hash = getattr(canonical, field, None)
             if not canonical_hash or field not in scan:
@@ -2683,7 +2694,7 @@ class CardRecognizer:
             distance = hash_distance(scan[field], canonical_hash)
             score += max(0.0, 99.5 - distance * 1.55) * weight
             total_weight += weight
-        return min(99.5, round(score / total_weight, 3))
+        return min(99.5, round(score / total_weight, 3)) if total_weight else 0.0
 
 
 def save_scan(image: np.ndarray, path: Path) -> None:
