@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
@@ -58,11 +59,15 @@ async def recognize_card(
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
-    # Empty-table frames occasionally produce one or two garbage OCR glyphs
-    # (for example a digit or a CJK character from wood grain).  Geometry is
-    # the authoritative gate here: without a card-shaped region or any actual
-    # candidate there is nothing useful to review.
-    if not result.card_structure and not result.candidates:
+    # Wood/cloth boundaries can themselves resemble a card contour, and the
+    # empty table occasionally produces one or two garbage OCR glyphs. A frame
+    # with no candidate and no meaningful text is not actionable review data,
+    # regardless of that weak contour signal. Artwork-only cards are retained
+    # when the visual Art Series matcher supplies a candidate.
+    meaningful_ocr = re.findall(r"[A-Za-z0-9]{2,}", result.ocr_text)
+    if not result.candidates and (
+        not result.card_structure or sum(map(len, meaningful_ocr)) < 4
+    ):
         return ScanResult(
             disposition="empty",
             confidence=0,
