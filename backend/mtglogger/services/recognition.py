@@ -50,6 +50,7 @@ class Recognition:
     processing_ms: int
     card_structure: bool
     timings_ms: dict[str, int] | None = None
+    neural_candidates: list[dict[str, str | float]] | None = None
 
 
 class CardRecognizer:
@@ -1698,6 +1699,15 @@ class CardRecognizer:
                 "lookup_visual": round((matching_complete - ocr_complete) * 1000),
                 "rank": round((finished - matching_complete) * 1000),
             },
+            neural_candidates=[
+                {
+                    "scryfall_id": match.reference.scryfall_id,
+                    "name": match.reference.name,
+                    "similarity": round(match.similarity, 6),
+                    "source_kind": match.source_kind,
+                }
+                for match in neural_matches
+            ],
         )
 
     @staticmethod

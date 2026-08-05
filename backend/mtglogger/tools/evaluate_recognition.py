@@ -245,6 +245,19 @@ async def evaluate(
                     "false_auto_add": auto_add and top_id != expected.scryfall_id,
                     "processing_ms": result.processing_ms,
                     "timings_ms": result.timings_ms,
+                    "neural": {
+                        "top1_correct": bool(
+                            result.neural_candidates
+                            and result.neural_candidates[0]["scryfall_id"]
+                            == expected.scryfall_id
+                        ),
+                        "top5_correct": expected.scryfall_id
+                        in {
+                            item["scryfall_id"]
+                            for item in (result.neural_candidates or [])[:5]
+                        },
+                        "candidates": result.neural_candidates or [],
+                    },
                 }
             )
 
@@ -277,6 +290,16 @@ async def evaluate(
             )
             for stage in timing_stages
         },
+        "neural_exact_printing_top1_accuracy": (
+            sum(item["neural"]["top1_correct"] for item in results) / len(results)
+            if results
+            else None
+        ),
+        "neural_exact_printing_top5_accuracy": (
+            sum(item["neural"]["top5_correct"] for item in results) / len(results)
+            if results
+            else None
+        ),
         "samples": [
             {
                 "review_id": item["review_id"],
