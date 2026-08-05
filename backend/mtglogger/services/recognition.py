@@ -1708,6 +1708,13 @@ class CardRecognizer:
                     cards,
                     printed_set_code,
                 )
+                unique_set_artist = self.has_unique_set_artist_evidence(
+                    text,
+                    card,
+                    cards,
+                    printed_set_code,
+                    artist_score,
+                )
                 safe_land_match = self.has_safe_basic_land_match(
                     card["id"],
                     descriptor_art_top_id,
@@ -1731,7 +1738,7 @@ class CardRecognizer:
                     artist_score,
                     candidate_descriptor_catalog_complete,
                 )
-                if safe_land_match or repeated_footer_number or neural_is_safe:
+                if safe_land_match or repeated_footer_number or unique_set_artist or neural_is_safe:
                     # Exact set plus a decisive illustration match is safer
                     # than a tiny collector-number crop. This specifically
                     # prevents a misread 264 as 261 from selecting the wrong art.
@@ -2220,6 +2227,40 @@ class CardRecognizer:
             if matching_ids == {str(card.get("id") or "")}:
                 return True
         return False
+
+    @staticmethod
+    def has_unique_set_artist_evidence(
+        text: str,
+        card: dict,
+        candidates: list[dict],
+        printed_set_code: str | None,
+        artist_score: float,
+    ) -> bool:
+        """Use a uniquely matching printed artist only inside a proven set."""
+        artist = str(card.get("artist") or "").strip()
+        card_set = str(card.get("set") or "")
+        if artist_score < 0.9 or len(artist.split()) < 2 or not card_set:
+            return False
+        raw_set_match = bool(
+            re.search(
+                rf"(?<![a-z0-9]){re.escape(card_set)}(?![a-z0-9])",
+                text or "",
+                re.I,
+            )
+        )
+        parsed_set_match = bool(
+            printed_set_code
+            and CardRecognizer.set_code_score(printed_set_code, card_set) >= 0.78
+        )
+        if not (raw_set_match or parsed_set_match):
+            return False
+        matching_ids = {
+            str(candidate.get("id") or "")
+            for candidate in candidates
+            if str(candidate.get("set") or "").casefold() == card_set.casefold()
+            and CardRecognizer.artist_text_score(text, candidate.get("artist")) >= 0.9
+        }
+        return matching_ids == {str(card.get("id") or "")}
 
     @staticmethod
     def has_safe_basic_land_match(

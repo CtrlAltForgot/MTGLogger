@@ -1147,10 +1147,10 @@ def test_basic_land_auto_add_requires_decisive_exact_art_evidence():
     assert not CardRecognizer.has_decisive_candidate_lead(98.4, 80.8, 1.0, False)
     assert not CardRecognizer.has_decisive_symbol_match(swamp["id"], "rtr-swamp-261", 94, 20)
     m21_lands = [
-        {"id": "m21-plains-260", "set": "m21", "collector_number": "260"},
-        {"id": "m21-plains-261", "set": "m21", "collector_number": "261"},
-        {"id": "m21-plains-262", "set": "m21", "collector_number": "262"},
-        {"id": "m21-mountain-269", "set": "m21", "collector_number": "269"},
+        {"id": "m21-plains-260", "set": "m21", "collector_number": "260", "artist": "John Avon"},
+        {"id": "m21-plains-261", "set": "m21", "collector_number": "261", "artist": "Nils Hamm"},
+        {"id": "m21-plains-262", "set": "m21", "collector_number": "262", "artist": "Andreas Rocha"},
+        {"id": "m21-mountain-269", "set": "m21", "collector_number": "269", "artist": "Cliff Childs"},
     ]
     assert CardRecognizer.has_repeated_footer_printing_evidence(
         "Plains\n61/274L\nM21\n61/274L\nM21",
@@ -1181,6 +1181,24 @@ def test_basic_land_auto_add_requires_decisive_exact_art_evidence():
         m21_lands[0],
         m21_lands,
         "M21",
+    )
+    m21_swamps = [
+        {"id": "m21-swamp-266", "set": "m21", "collector_number": "266", "artist": "Christine Choi"},
+        {"id": "m21-swamp-267", "set": "m21", "collector_number": "267", "artist": "Jonas De Ro"},
+    ]
+    assert CardRecognizer.has_unique_set_artist_evidence(
+        "Swamp\nM21\nCHRISTINE CHOI\nCHRISTINE CHOI",
+        m21_swamps[0],
+        m21_swamps,
+        "M2I",
+        1.0,
+    )
+    assert not CardRecognizer.has_unique_set_artist_evidence(
+        "Swamp\nCHRISTINE CHOI",
+        m21_swamps[0],
+        m21_swamps,
+        None,
+        1.0,
     )
     # A decisive illustration match within an exact set remains safe even when
     # the tiny collector-number footer is unreadable or misread.
