@@ -49,12 +49,26 @@ def test_neural_vector_storage_and_exact_cosine_search():
             vector=np.array([0.0, 1.0, 0.0], dtype=np.float32),
             model_version="test-model",
         )
+        store_embedding(
+            db,
+            scryfall_id="card-a",
+            source_kind="correction",
+            source_id="review-a",
+            vector=np.array([0.8, 0.2, 0.0], dtype=np.float32),
+            model_version="test-model",
+        )
         db.commit()
         index = NeuralIndex(db, "test-model")
         matches = index.search(np.array([0.1, 0.9, 0.0], dtype=np.float32), limit=2)
+        constrained = index.search(
+            np.array([0.1, 0.9, 0.0], dtype=np.float32),
+            limit=2,
+            allowed_names={"Alpha"},
+        )
 
     assert [match.reference.scryfall_id for match in matches] == ["card-b", "card-a"]
     assert matches[0].source_kind == "correction"
+    assert [match.reference.scryfall_id for match in constrained] == ["card-a"]
     packed = encode_vector(np.array([0.6, 0.8], dtype=np.float32))
     np.testing.assert_allclose(decode_vector(packed, 2), [0.6, 0.8], atol=5e-4)
 

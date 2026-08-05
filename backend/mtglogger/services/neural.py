@@ -173,21 +173,45 @@ class NeuralIndex:
         ]
         self.matrix = np.stack(vectors) if vectors else np.empty((0, 0), dtype=np.float32)
 
-    def search(self, query: np.ndarray, limit: int = 10) -> list[NeuralMatch]:
+    def search(
+        self,
+        query: np.ndarray,
+        limit: int = 10,
+        *,
+        allowed_ids: set[str] | None = None,
+        allowed_names: set[str] | None = None,
+    ) -> list[NeuralMatch]:
         vector = np.asarray(query, dtype=np.float32).reshape(-1)
         if not len(self.references) or self.matrix.shape[1] != vector.shape[0]:
             return []
         vector = self.adapter.apply(vector)
         scores = self.matrix @ vector
-        count = min(max(limit, 0), len(scores))
+        eligible = np.array(
+            [
+                (not allowed_ids or reference.scryfall_id in allowed_ids)
+                and (not allowed_names or reference.name in allowed_names)
+                for reference in self.references
+            ],
+            dtype=bool,
+        )
+        eligible_indices = np.flatnonzero(eligible)
+        count = min(max(limit * 4, 0), len(eligible_indices))
         if count == 0:
             return []
-        indices = np.argpartition(scores, -count)[-count:]
+        eligible_scores = scores[eligible_indices]
+        indices = eligible_indices[np.argpartition(eligible_scores, -count)[-count:]]
         indices = indices[np.argsort(scores[indices])[::-1]]
-        return [
-            NeuralMatch(self.references[index], float(scores[index]), self.source_kinds[index])
-            for index in indices
-        ]
+        matches: list[NeuralMatch] = []
+        seen: set[str] = set()
+        for index in indices:
+            reference = self.references[index]
+            if reference.scryfall_id in seen:
+                continue
+            matches.append(NeuralMatch(reference, float(scores[index]), self.source_kinds[index]))
+            seen.add(reference.scryfall_id)
+            if len(matches) >= limit:
+                break
+        return matches
 
 
 @dataclass(frozen=True)
@@ -278,14 +302,38 @@ class NeuralRetriever:
     def available(self) -> bool:
         return get_settings().neural_enabled and self.embedder.available
 
-    def search(self, image: np.ndarray, limit: int = 10) -> list[NeuralMatch]:
+    def embed(self, image: np.ndarray) -> np.ndarray | None:
         if not self.available:
+            return None
+        try:
+            return self.embedder.embed(image)
+        except Exception:
+            logger.exception("Neural embedding failed; continuing with hybrid recognition")
+            return None
+
+    def search_vector(
+        self,
+        vector: np.ndarray | None,
+        limit: int = 10,
+        *,
+        allowed_ids: set[str] | None = None,
+        allowed_names: set[str] | None = None,
+    ) -> list[NeuralMatch]:
+        if vector is None:
             return []
         try:
-            return self._get_index().search(self.embedder.embed(image), limit=limit)
+            return self._get_index().search(
+                vector,
+                limit=limit,
+                allowed_ids=allowed_ids,
+                allowed_names=allowed_names,
+            )
         except Exception:
-            logger.exception("Neural shadow retrieval failed; continuing with hybrid recognition")
+            logger.exception("Neural retrieval failed; continuing with hybrid recognition")
             return []
+
+    def search(self, image: np.ndarray, limit: int = 10) -> list[NeuralMatch]:
+        return self.search_vector(self.embed(image), limit=limit)
 
 
 def store_embedding(

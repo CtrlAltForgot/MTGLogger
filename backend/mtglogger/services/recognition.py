@@ -1138,7 +1138,7 @@ class CardRecognizer:
             corrected = await asyncio.to_thread(lambda: self.rectify(decoded))
             neural = getattr(self, "_neural", None)
             neural_task = (
-                asyncio.create_task(asyncio.to_thread(neural.search, corrected, 10))
+                asyncio.create_task(asyncio.to_thread(neural.embed, corrected))
                 if neural is not None
                 else None
             )
@@ -1368,7 +1368,17 @@ class CardRecognizer:
                 local_card["lang"] = language
                 cards.append(local_card)
                 known_card_ids.add(reference.scryfall_id)
-            neural_matches = await neural_task if neural_task is not None else []
+            neural_vector = await neural_task if neural_task is not None else None
+            neural_matches = (
+                await asyncio.to_thread(
+                    neural.search_vector,
+                    neural_vector,
+                    10,
+                    allowed_names=identity_names if identity_is_constrained else None,
+                )
+                if neural is not None
+                else []
+            )
             if neural_matches:
                 logger.info(
                     "Neural shadow top=%s similarity=%.4f source=%s candidates=%d",
@@ -1448,9 +1458,7 @@ class CardRecognizer:
             set_art_top_id = same_set_art[0][0] if same_set_art else None
             set_art_score = same_set_art[0][1] if same_set_art else 0
             set_art_margin = (
-                same_set_art[0][1] - same_set_art[1][1]
-                if len(same_set_art) > 1
-                else set_art_score
+                same_set_art[0][1] - same_set_art[1][1] if len(same_set_art) > 1 else set_art_score
             )
             code = card["set"].casefold()
             exact_set_counts[code] = exact_set_counts.get(code, 0) + 1
@@ -2003,35 +2011,32 @@ class CardRecognizer:
         """
         global_art_matches = card_id == descriptor_top_id and catalog_complete
         global_evidence = global_art_matches and (
+            (
+                collector_number
+                and printed_set_code
+                and number_score == 1.0
+                and set_score == 1.0
+                and ((descriptor_score >= 92 and descriptor_margin >= 10) or artist_score >= 0.78)
+            )
+            or (
                 (
-                    collector_number
-                    and printed_set_code
-                    and number_score == 1.0
-                    and set_score == 1.0
-                and (
-                    (descriptor_score >= 92 and descriptor_margin >= 10)
-                    or artist_score >= 0.78
-                )
-                )
-                or (
-                    (
-                        (printed_set_code and set_score == 1.0)
-                        or CardRecognizer.has_decisive_symbol_match(
-                            card_id,
-                            symbol_top_id,
-                            symbol_score,
-                            symbol_margin,
-                        )
-                    )
-                    and CardRecognizer.has_decisive_art_match(
+                    (printed_set_code and set_score == 1.0)
+                    or CardRecognizer.has_decisive_symbol_match(
                         card_id,
-                        descriptor_top_id,
-                        catalog_complete,
-                        descriptor_score,
-                        descriptor_margin,
+                        symbol_top_id,
+                        symbol_score,
+                        symbol_margin,
                     )
+                )
+                and CardRecognizer.has_decisive_art_match(
+                    card_id,
+                    descriptor_top_id,
+                    catalog_complete,
+                    descriptor_score,
+                    descriptor_margin,
                 )
             )
+        )
         set_scoped_evidence = (
             catalog_complete
             and CardRecognizer.has_decisive_symbol_set_match(
