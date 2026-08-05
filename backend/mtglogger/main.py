@@ -13,6 +13,7 @@ from .providers import close_scryfall_client
 from .services.neural import NeuralRetriever
 from .services.neural_maintenance import neural_maintenance_loop
 from .services.prices import price_refresh_loop
+from .services.recognition import CardRecognizer
 from .services.references import reference_refresh_loop
 
 
@@ -27,6 +28,10 @@ async def lifespan(_: FastAPI):
         # Pay the one-time gallery load during API startup, never on the first
         # physical card of a scanning session.
         await asyncio.to_thread(NeuralRetriever.warm)
+    # The global artwork fallback contains roughly 100k references. Hydrate it
+    # before health checks admit scanner traffic so the first physical card in
+    # a batch never pays the multi-second catalog construction cost.
+    await asyncio.to_thread(CardRecognizer._get_visual_catalog)
     price_task = asyncio.create_task(price_refresh_loop(get_settings().price_refresh_hours))
     reference_task = (
         asyncio.create_task(reference_refresh_loop(get_settings().reference_refresh_hours))

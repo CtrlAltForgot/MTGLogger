@@ -8,6 +8,7 @@ export type ScanArea=DetectionBounds
 export type ScannerMetrics={brightness:number;contrast:number;motion:number;sceneDifference:number;bounds?:DetectionBounds}
 export type CameraRotation=0|90|180|270
 export const defaultTuning:ScannerTuning={entryDifference:12,stableMotion:4,stableFrames:5,slingerMode:false}
+export const pipelineHasCapacity=(inFlight:number,maxInFlight:number)=>inFlight<Math.max(1,maxInFlight)
 export function paddedCaptureBounds(bounds:DetectionBounds,videoWidth:number,videoHeight:number){
   const padding=1
   const left=Math.max(0,bounds.left-padding),top=Math.max(0,bounds.top-padding)
@@ -142,10 +143,12 @@ export function analyze(pixels:Uint8ClampedArray,previous?:Uint8ClampedArray,bas
 export function useAutoScanner(
   onCapture:(blob:Blob)=>Promise<boolean>,
   tuning:ScannerTuning=defaultTuning,
+  maxInFlight=2,
 ){
   const video=useRef<HTMLVideoElement>(null),canvas=useRef<HTMLCanvasElement>(null)
   const previous=useRef<Uint8ClampedArray|undefined>(undefined),baseline=useRef<Uint8ClampedArray|undefined>(undefined),capturedFrame=useRef<Uint8ClampedArray|undefined>(undefined),calibrationCount=useRef(0),noiseMotion=useRef(0),stable=useRef(0),removalGate=useRef<RemovalGate>(initialRemovalGate()),capturing=useRef(false),inFlight=useRef(0),sessionGeneration=useRef(0)
   const [state,setState]=useState<State>('idle'),[error,setError]=useState<string>(),[metrics,setMetrics]=useState<ScannerMetrics>({brightness:0,contrast:0,motion:0,sceneDifference:0})
+  const [pendingCaptures,setPendingCaptures]=useState(0)
   const [cameras,setCameras]=useState<MediaDeviceInfo[]>([]),[selectedCamera,setSelectedCamera]=useState('')
   const [rotation,setRotationState]=useState<CameraRotation>(0)
   const [scanArea,setScanAreaState]=useState<ScanArea>({left:0,top:0,width:100,height:100})
@@ -159,14 +162,14 @@ export function useAutoScanner(
     const stream=await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280},height:{ideal:720},...(deviceId?{deviceId:{exact:deviceId}}:{facingMode:'environment'})},audio:false})
     if(video.current){video.current.srcObject=stream;await video.current.play();const active=stream.getVideoTracks()[0]?.getSettings().deviceId||deviceId||'';setSelectedCamera(active);setCameras((await navigator.mediaDevices.enumerateDevices()).filter(device=>device.kind==='videoinput'));calibrate()}
   }catch(e){setError(e instanceof Error?e.message:'Camera unavailable')}},[calibrate])
-  const stop=useCallback(()=>{sessionGeneration.current++;(video.current?.srcObject as MediaStream|null)?.getTracks().forEach(track=>track.stop());baseline.current=undefined;previous.current=undefined;capturing.current=false;inFlight.current=0;setState('idle')},[])
+  const stop=useCallback(()=>{sessionGeneration.current++;(video.current?.srcObject as MediaStream|null)?.getTracks().forEach(track=>track.stop());baseline.current=undefined;previous.current=undefined;capturing.current=false;inFlight.current=0;setPendingCaptures(0);setState('idle')},[])
   const switchCamera=useCallback(async(deviceId:string)=>{stop();setSelectedCamera(deviceId);await start(deviceId)},[start,stop])
 
   useEffect(()=>{
     if(state==='idle'||error)return
     const timer=setInterval(()=>{
       const element=video.current,preview=canvas.current
-      if(!element||!preview||element.readyState<2||capturing.current||state==='processing')return
+      if(!element||!preview||element.readyState<2||capturing.current)return
       const context=preview.getContext('2d',{willReadFrequently:true});if(!context)return
       const sourceArea=sourceAreaForRotation(scanArea,rotation)
       const areaX=sourceArea.left*element.videoWidth,areaY=sourceArea.top*element.videoHeight
@@ -207,7 +210,9 @@ export function useAutoScanner(
         return
       }
       if(!cardPresent){setState('waiting');stable.current=0;return}
-      if(inFlight.current>0)return
+      if(!pipelineHasCapacity(inFlight.current,maxInFlight)){
+        stable.current=0;setState('processing');return
+      }
       setState('stabilizing')
       if(next.motion<stableLimit)stable.current++;else stable.current=0
       if(stable.current<tuning.stableFrames)return
@@ -224,28 +229,19 @@ export function useAutoScanner(
       full.toBlob(blob=>{
         capturing.current=false;stable.current=0
         if(!blob){setState('waiting');return}
-        // Recognition is deliberately single-flight. Keep the current card in
-        // place until its outcome is known so the operator always knows whether
-        // it belongs in the completed stack or should be set aside for review.
-        setState('processing')
+        // Latch before network work begins. The video loop can observe removal
+        // and prepare another physical card while this request is identifying.
+        removalGate.current={...initialRemovalGate(),latched:true};setState('remove')
         const generation=sessionGeneration.current
-        inFlight.current++
-        void onCapture(blob).then(accepted=>{
+        inFlight.current++;setPendingCaptures(inFlight.current)
+        void onCapture(blob).catch(e=>{if(generation===sessionGeneration.current)setError(e instanceof Error?e.message:'Scan failed')}).finally(()=>{
           if(generation!==sessionGeneration.current)return
-          if(accepted){removalGate.current={...initialRemovalGate(),latched:true};setState('remove')}
-          else{capturedFrame.current=undefined;setState('waiting')}
-        }).catch(e=>{
-          if(generation!==sessionGeneration.current)return
-          setError(e instanceof Error?e.message:'Scan failed')
-          removalGate.current={...initialRemovalGate(),latched:true};setState('remove')
-        }).finally(()=>{
-          if(generation!==sessionGeneration.current)return
-          inFlight.current=Math.max(0,inFlight.current-1)
+          inFlight.current=Math.max(0,inFlight.current-1);setPendingCaptures(inFlight.current)
         })
       },'image/jpeg',.9)
     },tuning.slingerMode?100:180)
     return()=>clearInterval(timer)
-  },[state,error,onCapture,rotation,scanArea,tuning])
+  },[state,error,maxInFlight,onCapture,rotation,scanArea,tuning])
   useEffect(()=>stop,[stop])
-  return {video,canvas,state,error,metrics,cameras,selectedCamera,rotation,rotateCamera,scanArea,setScanArea,start,stop,switchCamera,calibrate,setError}
+  return {video,canvas,state,error,metrics,cameras,selectedCamera,pendingCaptures,rotation,rotateCamera,scanArea,setScanArea,start,stop,switchCamera,calibrate,setError}
 }

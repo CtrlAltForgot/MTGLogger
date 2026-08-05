@@ -35,12 +35,18 @@ logger = logging.getLogger("uvicorn.error")
 class _VisualCatalog:
     loaded_at: float
     rows: tuple[tuple[CardReference, CardVisualFingerprint | None], ...]
+    rows_by_set: dict[
+        str, tuple[tuple[CardReference, CardVisualFingerprint | None], ...]
+    ]
     examples: dict[str, tuple[str, ...]]
 
 
 _visual_catalog: _VisualCatalog | None = None
 _visual_catalog_lock = Lock()
-_VISUAL_CATALOG_TTL_SECONDS = 60
+# Reference writes explicitly invalidate this cache. Reloading nearly 100,000
+# ORM rows every minute created a multi-second scan spike without making the
+# immutable catalog any fresher, especially during a long Card Slinger batch.
+_VISUAL_CATALOG_TTL_SECONDS = 60 * 60
 
 
 @lru_cache(maxsize=512)
@@ -266,10 +272,10 @@ class CardRecognizer:
             # sharpening. Run this extra OCR pass only when the normal footer
             # did not already provide complete printing evidence.
             # Collector numbers are the decisive signal for basic-land artwork
-            # and visually similar reprints.  Keep a wider slice than the fast
+            # and visually similar reprints. Keep a wider slice than the fast
             # combined pass and render it substantially larger: on a 720p
             # camera feed the footer glyphs can otherwise be only 5-7 pixels
-            # tall.  The extra OCR call is paid only when the fast pass did not
+            # tall. The extra OCR call is paid only when the fast pass did not
             # already recover complete printing evidence.
             collector_footer = footer[:, : int(width * 0.78)]
             collector_footer = self.scale_to_width(collector_footer, 1200)
@@ -1240,6 +1246,7 @@ class CardRecognizer:
                     printed_set_code or box_set_code,
                     *([ignored_visual_hashes] if ignored_visual_hashes is not None else []),
                 )
+            initial_match_complete = time.perf_counter()
             descriptor_image = corrected
             if not self.has_strong_lookup_evidence(
                 title, number, printed_set_code, copyright_year, cards
@@ -1339,6 +1346,7 @@ class CardRecognizer:
                 # Keep visual candidates from the best localized crop. Visual
                 # evidence is capped below auto-add, so it can rescue a damaged
                 # OCR title without silently accepting a bad contour.
+            recovery_complete = time.perf_counter()
             identity_names = {card["name"] for card in cards} or ({title} if title else set())
             identity_is_constrained = self.has_constrained_visual_identity(
                 title, cards, identity_names
@@ -1370,6 +1378,7 @@ class CardRecognizer:
                 except (TimeoutError, httpx.HTTPError, RuntimeError, ValueError):
                     # The normal conservative path remains valid while offline.
                     family_complete = False
+            family_complete_at = time.perf_counter()
             if identity_is_constrained and not exact_footer_can_skip_art:
                 descriptor_evidence, identity_visual_matches = await asyncio.gather(
                     asyncio.to_thread(
@@ -1406,6 +1415,7 @@ class CardRecognizer:
                 descriptor_art_matches = []
                 descriptor_symbol_matches = []
                 identity_visual_matches = []
+            descriptor_complete = time.perf_counter()
             known_card_ids = {card["id"] for card in cards}
             # The remote title lookup is intentionally bounded and may return
             # only the newest page of a name with hundreds of printings (basic
@@ -1438,6 +1448,7 @@ class CardRecognizer:
                 if neural is not None
                 else []
             )
+            neural_complete = time.perf_counter()
             if neural_matches:
                 neural_match_margin = (
                     neural_matches[0].similarity - neural_matches[1].similarity
@@ -1895,6 +1906,20 @@ class CardRecognizer:
             timings_ms={
                 "prepare": round((prepared - started) * 1000),
                 "ocr": round((ocr_complete - prepared) * 1000),
+                "initial_lookup_visual": round(
+                    (initial_match_complete - ocr_complete) * 1000
+                ),
+                "recovery": round((recovery_complete - initial_match_complete) * 1000),
+                "printing_family": round(
+                    (family_complete_at - recovery_complete) * 1000
+                ),
+                "descriptors": round(
+                    (descriptor_complete - family_complete_at) * 1000
+                ),
+                "neural_search": round((neural_complete - descriptor_complete) * 1000),
+                "candidate_merge": round(
+                    (matching_complete - neural_complete) * 1000
+                ),
                 "lookup_visual": round((matching_complete - ocr_complete) * 1000),
                 "rank": round((finished - matching_complete) * 1000),
             },
@@ -1922,9 +1947,8 @@ class CardRecognizer:
         set_code = box_set_code.lower() if box_set_code else None
         scan_art = int(scan_fingerprints["art_hash"], 16)
         matches = []
-        for reference, fingerprint in catalog.rows:
-            if set_code and reference.set_code != set_code:
-                continue
+        rows = catalog.rows_by_set.get(set_code, ()) if set_code else catalog.rows
+        for reference, fingerprint in rows:
             candidate_hashes = (reference.art_hash,) + tuple(
                 example_hash
                 for example_hash in catalog.examples.get(reference.scryfall_id, ())
@@ -2514,6 +2538,13 @@ class CardRecognizer:
                         )
                     )
                 )
+                rows_by_set_lists: dict[
+                    str, list[tuple[CardReference, CardVisualFingerprint | None]]
+                ] = {}
+                for reference, fingerprint in rows:
+                    rows_by_set_lists.setdefault(reference.set_code, []).append(
+                        (reference, fingerprint)
+                    )
                 examples: dict[str, list[str]] = {}
                 for scryfall_id, example_hash in db.execute(
                     select(CardVisualExample.scryfall_id, CardVisualExample.art_hash)
@@ -2522,6 +2553,9 @@ class CardRecognizer:
             _visual_catalog = _VisualCatalog(
                 loaded_at=now,
                 rows=rows,
+                rows_by_set={
+                    key: tuple(value) for key, value in rows_by_set_lists.items()
+                },
                 examples={key: tuple(value) for key, value in examples.items()},
             )
             return _visual_catalog

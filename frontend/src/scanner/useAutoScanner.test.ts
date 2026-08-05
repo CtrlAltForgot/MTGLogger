@@ -1,5 +1,5 @@
 import {describe,expect,it} from 'vitest'
-import {analyze,paddedCaptureBounds,sourceAreaForRotation} from './useAutoScanner'
+import {analyze,paddedCaptureBounds,pipelineHasCapacity,sourceAreaForRotation} from './useAutoScanner'
 
 const width=160,height=120
 const frame=(value=20)=>new Uint8ClampedArray(width*height*4).map((_,index)=>index%4===3?255:value)
@@ -80,6 +80,12 @@ describe('bounded recognition pipeline',()=>{
     expect(paddedCaptureBounds({left:5,top:30,width:85,height:30},1280,720)).toBeUndefined()
   })
 
+  it('allows one queued automatic capture but caps pipeline backpressure',()=>{
+    expect(pipelineHasCapacity(0,2)).toBe(true)
+    expect(pipelineHasCapacity(1,2)).toBe(true)
+    expect(pipelineHasCapacity(2,2)).toBe(false)
+    expect(pipelineHasCapacity(1,1)).toBe(false)
+  })
 })
 
 describe('camera orientation mapping',()=>{
