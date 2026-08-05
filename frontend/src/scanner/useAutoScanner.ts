@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import {advanceRemovalGate,type RemovalGate} from './removalGate'
+import {advanceRemovalGate,initialRemovalGate,type RemovalGate} from './removalGate'
 
 type State='idle'|'calibrating'|'waiting'|'stabilizing'|'capturing'|'processing'|'remove'
-export type ScannerTuning={entryDifference:number;stableMotion:number;stableFrames:number}
+export type ScannerTuning={entryDifference:number;stableMotion:number;stableFrames:number;slingerMode:boolean}
 export type DetectionBounds={left:number;top:number;width:number;height:number}
 export type ScanArea=DetectionBounds
 export type ScannerMetrics={brightness:number;contrast:number;motion:number;sceneDifference:number;bounds?:DetectionBounds}
-export const defaultTuning:ScannerTuning={entryDifference:12,stableMotion:4,stableFrames:5}
+export const defaultTuning:ScannerTuning={entryDifference:12,stableMotion:4,stableFrames:5,slingerMode:false}
 export const pipelineHasCapacity=(inFlight:number,maxInFlight:number)=>inFlight<Math.max(1,maxInFlight)
 export function paddedCaptureBounds(bounds:DetectionBounds,videoWidth:number,videoHeight:number){
   const padding=1
@@ -87,14 +87,14 @@ export function useAutoScanner(
   maxInFlight=2,
 ){
   const video=useRef<HTMLVideoElement>(null),canvas=useRef<HTMLCanvasElement>(null)
-  const previous=useRef<Uint8ClampedArray|undefined>(undefined),baseline=useRef<Uint8ClampedArray|undefined>(undefined),capturedFrame=useRef<Uint8ClampedArray|undefined>(undefined),calibrationCount=useRef(0),noiseMotion=useRef(0),stable=useRef(0),removalGate=useRef<RemovalGate>({latched:false,emptyFrames:0,replacementFrames:0}),capturing=useRef(false),inFlight=useRef(0),sessionGeneration=useRef(0)
+  const previous=useRef<Uint8ClampedArray|undefined>(undefined),baseline=useRef<Uint8ClampedArray|undefined>(undefined),capturedFrame=useRef<Uint8ClampedArray|undefined>(undefined),calibrationCount=useRef(0),noiseMotion=useRef(0),stable=useRef(0),removalGate=useRef<RemovalGate>(initialRemovalGate()),capturing=useRef(false),inFlight=useRef(0),sessionGeneration=useRef(0)
   const [state,setState]=useState<State>('idle'),[error,setError]=useState<string>(),[metrics,setMetrics]=useState<ScannerMetrics>({brightness:0,contrast:0,motion:0,sceneDifference:0})
   const [pendingCaptures,setPendingCaptures]=useState(0)
   const [cameras,setCameras]=useState<MediaDeviceInfo[]>([]),[selectedCamera,setSelectedCamera]=useState('')
   const [scanArea,setScanAreaState]=useState<ScanArea>({left:0,top:0,width:100,height:100})
   const setScanArea=useCallback((area:ScanArea)=>setScanAreaState({left:Math.max(0,Math.min(100,area.left)),top:Math.max(0,Math.min(100,area.top)),width:Math.max(1,Math.min(100-area.left,area.width)),height:Math.max(1,Math.min(100-area.top,area.height))}),[])
 
-  const calibrate=useCallback(()=>{baseline.current=undefined;previous.current=undefined;capturedFrame.current=undefined;calibrationCount.current=0;noiseMotion.current=0;stable.current=0;removalGate.current={latched:false,emptyFrames:0,replacementFrames:0};setState('calibrating')},[])
+  const calibrate=useCallback(()=>{baseline.current=undefined;previous.current=undefined;capturedFrame.current=undefined;calibrationCount.current=0;noiseMotion.current=0;stable.current=0;removalGate.current=initialRemovalGate();setState('calibrating')},[])
   const start=useCallback(async(deviceId?:string)=>{try{
     if(!window.isSecureContext||!navigator.mediaDevices?.getUserMedia)throw new Error('Camera access requires HTTPS or localhost. Use an HTTPS reverse proxy when opening MTGLogger from another computer.')
     setError(undefined)
@@ -126,14 +126,23 @@ export function useAutoScanner(
       }
       const next=analyze(pixels,previous.current,baseline.current);previous.current=new Uint8ClampedArray(pixels)
       setMetrics({...next,bounds:next.bounds?{left:scanArea.left+next.bounds.left*scanArea.width/100,top:scanArea.top+next.bounds.top*scanArea.height/100,width:next.bounds.width*scanArea.width/100,height:next.bounds.height*scanArea.height/100}:undefined})
-      const cardPresent=next.sceneDifference>=tuning.entryDifference
+      const calibratedNoise=noiseMotion.current/Math.max(1,calibrationCount.current)
+      const stableLimit=Math.max(tuning.stableMotion,calibratedNoise*1.6)
+      // A loaded Card Slinger never exposes an empty background. In that mode
+      // the user-defined scan area itself is the card slot, so a detailed,
+      // stable image is a valid first card even if calibration saw the stack.
+      const cardPresent=next.sceneDifference>=tuning.entryDifference||(tuning.slingerMode&&next.contrast>=10)
       if(removalGate.current.latched){
         const replacementDifference=capturedFrame.current?analyze(pixels,undefined,capturedFrame.current).sceneDifference:0
         // A direct swap produces consecutive frames that differ substantially
         // from the captured card (usually a hand, then the replacement). Minor
         // exposure drift or an unmoved card remains latched.
         const substantiallyChanged=replacementDifference>=Math.max(24,tuning.entryDifference*1.75)
-        const update=advanceRemovalGate(removalGate.current,cardPresent,substantiallyChanged)
+        // Identical copies have the same final pixels. The physical slide is
+        // therefore the proof of replacement: observe multiple motion frames,
+        // then require the newly exposed card to settle before rearming.
+        const transitionMotion=next.motion>=Math.max(8,stableLimit*2.25)
+        const update=advanceRemovalGate(removalGate.current,cardPresent,substantiallyChanged,transitionMotion,next.motion<stableLimit)
         removalGate.current=update.gate
         if(update.rearmed){stable.current=0;setState('waiting')}
         return
@@ -142,8 +151,6 @@ export function useAutoScanner(
       if(!pipelineHasCapacity(inFlight.current,maxInFlight)){
         stable.current=0;setState('processing');return
       }
-      const calibratedNoise=noiseMotion.current/Math.max(1,calibrationCount.current)
-      const stableLimit=Math.max(tuning.stableMotion,calibratedNoise*1.6)
       setState('stabilizing')
       if(next.motion<stableLimit)stable.current++;else stable.current=0
       if(stable.current<tuning.stableFrames)return
@@ -159,7 +166,7 @@ export function useAutoScanner(
         if(!blob){setState('waiting');return}
         // Latch before network work begins. The video loop can observe removal
         // and prepare another physical card while this request is identifying.
-        removalGate.current={latched:true,emptyFrames:0,replacementFrames:0};setState('remove')
+        removalGate.current={...initialRemovalGate(),latched:true};setState('remove')
         const generation=sessionGeneration.current
         inFlight.current++;setPendingCaptures(inFlight.current)
         void onCapture(blob).catch(e=>{if(generation===sessionGeneration.current)setError(e instanceof Error?e.message:'Scan failed')}).finally(()=>{
@@ -167,7 +174,7 @@ export function useAutoScanner(
           inFlight.current=Math.max(0,inFlight.current-1);setPendingCaptures(inFlight.current)
         })
       },'image/jpeg',.9)
-    },180)
+    },tuning.slingerMode?100:180)
     return()=>clearInterval(timer)
   },[state,error,maxInFlight,onCapture,scanArea,tuning])
   useEffect(()=>stop,[stop])

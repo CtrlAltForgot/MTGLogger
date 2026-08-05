@@ -56,7 +56,7 @@ export default function Scanner(){
   useEffect(()=>{void scan.start()},[scan.start])
 
   const tone=result?.disposition==='added'?'success':result?.disposition==='suggestions'||result?.disposition==='confirmation'?'warning':'error'
-  const stateLabel=scan.state==='remove'?'Swap to next card':scan.state==='processing'?'Identifying…':scan.state==='stabilizing'?'Hold still…':scan.state==='calibrating'?'Calibrating…':scan.state==='waiting'?'Ready for card':''
+  const stateLabel=scan.state==='remove'?(tuning.slingerMode?'Slide next card':'Swap to next card'):scan.state==='processing'?'Identifying…':scan.state==='stabilizing'?'Hold still…':scan.state==='calibrating'?'Calibrating…':scan.state==='waiting'?'Ready for card':''
   const sessionCardsPerMinute=cardsPerMinute(stats)
   const sessionReviewPercentage=reviewPercentage(stats)
   const visibleScanArea=draftArea||scan.scanArea
@@ -72,6 +72,7 @@ export default function Scanner(){
         <canvas ref={scan.canvas} hidden/>
         {(settingScanArea||(scan.scanArea.left>0||scan.scanArea.top>0||scan.scanArea.width<100||scan.scanArea.height<100))&&<><Box sx={{position:'absolute',left:0,right:0,top:0,height:`${visibleScanArea.top}%`,bgcolor:'rgba(0,0,0,.56)',pointerEvents:'none'}}/><Box sx={{position:'absolute',left:0,right:0,top:`${visibleScanArea.top+visibleScanArea.height}%`,bottom:0,bgcolor:'rgba(0,0,0,.56)',pointerEvents:'none'}}/><Box sx={{position:'absolute',left:0,top:`${visibleScanArea.top}%`,width:`${visibleScanArea.left}%`,height:`${visibleScanArea.height}%`,bgcolor:'rgba(0,0,0,.56)',pointerEvents:'none'}}/><Box sx={{position:'absolute',left:`${visibleScanArea.left+visibleScanArea.width}%`,right:0,top:`${visibleScanArea.top}%`,height:`${visibleScanArea.height}%`,bgcolor:'rgba(0,0,0,.56)',pointerEvents:'none'}}/><Box sx={{position:'absolute',left:`${visibleScanArea.left}%`,top:`${visibleScanArea.top}%`,width:`${visibleScanArea.width}%`,height:`${visibleScanArea.height}%`,outline:'2px dashed rgba(255,255,255,.9)',pointerEvents:'none'}}>{settingScanArea&&<Typography sx={{position:'absolute',top:8,left:10,color:'common.white',textShadow:'0 1px 4px #000',fontWeight:800}}>Drag around the area to scan</Typography>}</Box></>}
         {scan.metrics.bounds&&scan.state!=='calibrating'&&<Box sx={{position:'absolute',left:`${scan.metrics.bounds.left}%`,top:`${scan.metrics.bounds.top}%`,width:`${scan.metrics.bounds.width}%`,height:`${scan.metrics.bounds.height}%`,border:'3px solid',borderColor:'success.main',borderRadius:2,boxShadow:'0 0 0 1px rgba(0,0,0,.4), 0 0 24px rgba(100,217,151,.28)',transition:'all 120ms linear',pointerEvents:'none'}}/>}
+        {tuning.slingerMode&&!scan.metrics.bounds&&scan.state!=='calibrating'&&<Box sx={{position:'absolute',left:`${scan.scanArea.left}%`,top:`${scan.scanArea.top}%`,width:`${scan.scanArea.width}%`,height:`${scan.scanArea.height}%`,border:'3px solid',borderColor:'success.main',borderRadius:2,boxShadow:'0 0 24px rgba(100,217,151,.28)',pointerEvents:'none'}}/>}
         {stateLabel&&<Chip label={stateLabel} color={scan.state==='remove'?'success':scan.state==='processing'?'warning':'default'} sx={{position:'absolute',top:16,left:16,fontWeight:700,backdropFilter:'blur(12px)'}}/>}
         {scan.state!=='idle'&&<Tooltip title="Turn camera off"><IconButton aria-label="Turn camera off" onClick={scan.stop} sx={{position:'absolute',right:16,top:16,color:'common.white',bgcolor:'rgba(10,7,8,.55)',backdropFilter:'blur(12px)','&:hover':{bgcolor:'rgba(10,7,8,.78)'}}}><VideocamOff/></IconButton></Tooltip>}
         {scan.state==='processing'&&<LinearProgress sx={{position:'absolute',bottom:0,left:0,right:0}}/>}
@@ -80,7 +81,7 @@ export default function Scanner(){
         {scan.state==='idle'
           ?<Button variant="contained" startIcon={<CameraAlt/>} onClick={()=>void scan.start()}>Turn camera on</Button>
           :<><Button startIcon={<RestartAlt/>} onClick={scan.calibrate}>Recalibrate empty table</Button><Button startIcon={<CropFree/>} color={settingScanArea?'primary':'inherit'} onClick={()=>{setCropStart(null);setDraftArea(scan.scanArea);setSettingScanArea(current=>!current)}}>Set scan area</Button>{(scan.scanArea.left>0||scan.scanArea.top>0||scan.scanArea.width<100||scan.scanArea.height<100)&&<Button onClick={()=>{scan.setScanArea({left:0,top:0,width:100,height:100});scan.calibrate()}}>Use full feed</Button>}</>}
-        <Typography color="text.secondary">Place a card anywhere in view and hold it steady. Swap directly to the next card when identified.</Typography>
+        <Typography color="text.secondary">{tuning.slingerMode?'Align the scan area with the slinger window. Each physical slide rearms the next capture—even for identical copies.':'Place a card anywhere in view and hold it steady. Swap directly to the next card when identified.'}</Typography>
       </Stack>
       {scan.cameras.length>1&&<Select size="small" value={scan.selectedCamera} onChange={event=>void scan.switchCamera(event.target.value)} sx={{mt:1.5,minWidth:280}}>{scan.cameras.map((camera,index)=><MenuItem value={camera.deviceId} key={camera.deviceId}>{camera.label||`Camera ${index+1}`}</MenuItem>)}</Select>}
       <Grid container spacing={1.5} mt={.75}>
@@ -133,6 +134,8 @@ export default function Scanner(){
           <Grid size={{xs:12,md:5}} sx={{borderLeft:{md:'1px solid'},borderColor:{md:'divider'},pl:{md:4}}}>
             <Typography variant="subtitle1">Camera calibration</Typography>
             <Typography variant="body2" color="text.secondary" mb={1.5}>Tune only if cards capture too early or while still moving.</Typography>
+            <FormControlLabel sx={{mb:1}} control={<Switch checked={tuning.slingerMode} onChange={event=>{setTuning({...tuning,slingerMode:event.target.checked});window.setTimeout(scan.calibrate,0)}}/>} label="Card Slinger mode"/>
+            {tuning.slingerMode&&<Alert severity="info" sx={{mb:1.5}}>Use “Set scan area” around the slinger window. A card is counted only after slide motion followed by a stable image.</Alert>}
             <Typography variant="caption">Card entry difference: {tuning.entryDifference}</Typography>
             <Slider min={5} max={35} value={tuning.entryDifference} onChange={(_,value)=>setTuning({...tuning,entryDifference:value as number})}/>
             <Typography variant="caption">Minimum stable motion: {tuning.stableMotion.toFixed(1)}</Typography>
