@@ -235,6 +235,11 @@ class NeuralRetriever:
             cls._index = None
 
     @classmethod
+    def warm(cls) -> int:
+        index = cls._get_index()
+        return len(index.references)
+
+    @classmethod
     def _get_index(cls) -> NeuralIndex:
         with cls._index_lock:
             if cls._index is None:

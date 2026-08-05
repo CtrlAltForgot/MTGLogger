@@ -11,6 +11,7 @@ from .config import get_settings
 from .database import Base, SessionLocal, engine, migrate_schema
 from .providers import close_scryfall_client
 from .services.prices import price_refresh_loop
+from .services.neural import NeuralRetriever
 from .services.neural_maintenance import neural_maintenance_loop
 from .services.references import reference_refresh_loop
 
@@ -22,6 +23,10 @@ async def lifespan(_: FastAPI):
     get_settings().image_dir.mkdir(parents=True, exist_ok=True)
     get_settings().deck_image_dir.mkdir(parents=True, exist_ok=True)
     get_settings().reference_image_dir.mkdir(parents=True, exist_ok=True)
+    if get_settings().neural_enabled and NeuralRetriever().available:
+        # Pay the one-time gallery load during API startup, never on the first
+        # physical card of a scanning session.
+        await asyncio.to_thread(NeuralRetriever.warm)
     price_task = asyncio.create_task(price_refresh_loop(get_settings().price_refresh_hours))
     reference_task = (
         asyncio.create_task(reference_refresh_loop(get_settings().reference_refresh_hours))
