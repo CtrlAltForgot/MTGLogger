@@ -36,25 +36,19 @@ export function useAutoScanner(
   maxInFlight=2,
 ){
   const video=useRef<HTMLVideoElement>(null),canvas=useRef<HTMLCanvasElement>(null)
-  const previous=useRef<Uint8ClampedArray|undefined>(undefined),baseline=useRef<Uint8ClampedArray|undefined>(undefined),capturedFrame=useRef<Uint8ClampedArray|undefined>(undefined),calibrationCount=useRef(0),noiseMotion=useRef(0),stable=useRef(0),removalGate=useRef<RemovalGate>({latched:false,emptyFrames:0,replacementFrames:0}),capturing=useRef(false),inFlight=useRef(0),sessionGeneration=useRef(0),starting=useRef(false)
+  const previous=useRef<Uint8ClampedArray|undefined>(undefined),baseline=useRef<Uint8ClampedArray|undefined>(undefined),capturedFrame=useRef<Uint8ClampedArray|undefined>(undefined),calibrationCount=useRef(0),noiseMotion=useRef(0),stable=useRef(0),removalGate=useRef<RemovalGate>({latched:false,emptyFrames:0,replacementFrames:0}),capturing=useRef(false),inFlight=useRef(0),sessionGeneration=useRef(0)
   const [state,setState]=useState<State>('idle'),[error,setError]=useState<string>(),[metrics,setMetrics]=useState<ScannerMetrics>({brightness:0,contrast:0,motion:0,sceneDifference:0})
   const [pendingCaptures,setPendingCaptures]=useState(0)
   const [cameras,setCameras]=useState<MediaDeviceInfo[]>([]),[selectedCamera,setSelectedCamera]=useState('')
 
   const calibrate=useCallback(()=>{baseline.current=undefined;previous.current=undefined;capturedFrame.current=undefined;calibrationCount.current=0;noiseMotion.current=0;stable.current=0;removalGate.current={latched:false,emptyFrames:0,replacementFrames:0};setState('calibrating')},[])
-  const start=useCallback(async(deviceId?:string)=>{
-    const activeStream=video.current?.srcObject as MediaStream|null
-    if(starting.current||activeStream?.getVideoTracks().some(track=>track.readyState==='live'))return
-    starting.current=true
-    const generation=sessionGeneration.current
-    try{
+  const start=useCallback(async(deviceId?:string)=>{try{
     if(!window.isSecureContext||!navigator.mediaDevices?.getUserMedia)throw new Error('Camera access requires HTTPS or localhost. Use an HTTPS reverse proxy when opening MTGLogger from another computer.')
     setError(undefined)
     const stream=await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280},height:{ideal:720},...(deviceId?{deviceId:{exact:deviceId}}:{facingMode:'environment'})},audio:false})
-    if(generation!==sessionGeneration.current){stream.getTracks().forEach(track=>track.stop());return}
     if(video.current){video.current.srcObject=stream;await video.current.play();const active=stream.getVideoTracks()[0]?.getSettings().deviceId||deviceId||'';setSelectedCamera(active);setCameras((await navigator.mediaDevices.enumerateDevices()).filter(device=>device.kind==='videoinput'));calibrate()}
-  }catch(e){if(generation===sessionGeneration.current)setError(e instanceof Error?e.message:'Camera unavailable')}finally{if(generation===sessionGeneration.current)starting.current=false}},[calibrate])
-  const stop=useCallback(()=>{sessionGeneration.current++;starting.current=false;(video.current?.srcObject as MediaStream|null)?.getTracks().forEach(track=>track.stop());if(video.current)video.current.srcObject=null;baseline.current=undefined;previous.current=undefined;capturing.current=false;inFlight.current=0;setPendingCaptures(0);setState('idle')},[])
+  }catch(e){setError(e instanceof Error?e.message:'Camera unavailable')}},[calibrate])
+  const stop=useCallback(()=>{sessionGeneration.current++;(video.current?.srcObject as MediaStream|null)?.getTracks().forEach(track=>track.stop());baseline.current=undefined;previous.current=undefined;capturing.current=false;inFlight.current=0;setPendingCaptures(0);setState('idle')},[])
   const switchCamera=useCallback(async(deviceId:string)=>{stop();setSelectedCamera(deviceId);await start(deviceId)},[start,stop])
 
   useEffect(()=>{
@@ -77,27 +71,23 @@ export function useAutoScanner(
       }
       const next=analyze(pixels,previous.current,baseline.current);previous.current=new Uint8ClampedArray(pixels);setMetrics(next)
       const cardPresent=next.sceneDifference>=tuning.entryDifference
-      const calibratedNoise=noiseMotion.current/Math.max(1,calibrationCount.current)
-      const stableLimit=Math.max(tuning.stableMotion,calibratedNoise*1.6)
       if(removalGate.current.latched){
         const replacementDifference=capturedFrame.current?analyze(pixels,undefined,capturedFrame.current).sceneDifference:0
         // A direct swap produces consecutive frames that differ substantially
         // from the captured card (usually a hand, then the replacement). Minor
         // exposure drift or an unmoved card remains latched.
-        const substantiallyChanged=replacementDifference>=Math.max(24,tuning.entryDifference*1.75)&&next.motion<stableLimit
+        const substantiallyChanged=replacementDifference>=Math.max(24,tuning.entryDifference*1.75)
         const update=advanceRemovalGate(removalGate.current,cardPresent,substantiallyChanged)
         removalGate.current=update.gate
-        if(update.rearmed){
-          // Calibration is user-controlled. Never replace the empty-table
-          // baseline during a batch, even after a removal or exposure shift.
-          stable.current=0;setState('waiting')
-        }
+        if(update.rearmed){stable.current=0;setState('waiting')}
         return
       }
       if(!cardPresent){setState('waiting');stable.current=0;return}
       if(!pipelineHasCapacity(inFlight.current,maxInFlight)){
         stable.current=0;setState('processing');return
       }
+      const calibratedNoise=noiseMotion.current/Math.max(1,calibrationCount.current)
+      const stableLimit=Math.max(tuning.stableMotion,calibratedNoise*1.6)
       setState('stabilizing')
       if(next.motion<stableLimit)stable.current++;else stable.current=0
       if(stable.current<tuning.stableFrames)return
@@ -106,20 +96,14 @@ export function useAutoScanner(
       const full=document.createElement('canvas');full.width=element.videoWidth;full.height=element.videoHeight;full.getContext('2d')!.drawImage(element,0,0)
       full.toBlob(blob=>{
         capturing.current=false;stable.current=0
-        if(!blob){setState('waiting');return}
+        if(!blob){calibrate();return}
         // Latch before network work begins. The video loop can observe removal
         // and prepare another physical card while this request is identifying.
         removalGate.current={latched:true,emptyFrames:0,replacementFrames:0};setState('remove')
         const generation=sessionGeneration.current
         inFlight.current++;setPendingCaptures(inFlight.current)
         void onCapture(blob).then(cardCaptured=>{
-          if(generation===sessionGeneration.current&&!cardCaptured){
-            // A rejected/background frame is not evidence that the user's
-            // empty-table calibration is wrong. Resume with the same baseline.
-            removalGate.current={latched:false,emptyFrames:0,replacementFrames:0}
-            capturedFrame.current=undefined
-            setState('waiting')
-          }
+          if(generation===sessionGeneration.current&&!cardCaptured)calibrate()
         }).catch(e=>{if(generation===sessionGeneration.current)setError(e instanceof Error?e.message:'Scan failed')}).finally(()=>{
           if(generation!==sessionGeneration.current)return
           inFlight.current=Math.max(0,inFlight.current-1);setPendingCaptures(inFlight.current)
@@ -127,7 +111,7 @@ export function useAutoScanner(
       },'image/jpeg',.9)
     },180)
     return()=>clearInterval(timer)
-  },[state,error,maxInFlight,onCapture,tuning])
+  },[state,error,maxInFlight,onCapture,tuning,calibrate])
   useEffect(()=>stop,[stop])
   return {video,canvas,state,error,metrics,cameras,selectedCamera,pendingCaptures,start,stop,switchCamera,calibrate,setError}
 }
