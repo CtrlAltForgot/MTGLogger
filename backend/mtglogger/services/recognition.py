@@ -1800,6 +1800,33 @@ class CardRecognizer:
                 confidence=round(self.visual_only_score(score), 1),
             )
         candidates = sorted(ranked.values(), key=lambda item: item.confidence, reverse=True)
+        if candidates:
+            top = candidates[0]
+            runner_up_confidence = candidates[1].confidence if len(candidates) > 1 else 0.0
+            descriptor_agrees = bool(
+                descriptor_catalog_complete
+                and top.scryfall_id == descriptor_top_id
+                and descriptor_scores.get(top.scryfall_id, 0) >= 70
+                and descriptor_margin >= 8
+            )
+            artwork_agrees = bool(
+                descriptor_catalog_complete
+                and top.scryfall_id == descriptor_art_top_id
+                and descriptor_art_scores.get(top.scryfall_id, 0) >= 78
+                and descriptor_art_margin >= 8
+            )
+            # Foil glare frequently costs the final tenth of a point even when
+            # every useful signal agrees. Promote only a clearly separated
+            # visual winner with an exactly read identity and a complete local
+            # comparison family. Close/reused-art printings remain in Review.
+            if self.has_decisive_candidate_lead(
+                top.confidence,
+                runner_up_confidence,
+                self.card_name_similarity(title, top.name),
+                descriptor_agrees or artwork_agrees,
+            ):
+                top.confidence = max(top.confidence, 98.5)
+                safe_candidate_ids.add(top.scryfall_id)
         finished = time.perf_counter()
         logger.info(
             "Recognition timings frame=%dx%d recovery=%s prep=%dms ocr=%dms "
@@ -2072,6 +2099,21 @@ class CardRecognizer:
             and card_id == descriptor_top_id
             and descriptor_score >= 88
             and descriptor_margin >= 18
+        )
+
+    @staticmethod
+    def has_decisive_candidate_lead(
+        top_confidence: float,
+        runner_up_confidence: float,
+        title_score: float,
+        exhaustive_visual_agreement: bool,
+    ) -> bool:
+        """Promote a near-threshold match only when independent evidence agrees."""
+        return bool(
+            top_confidence >= 97.5
+            and top_confidence - runner_up_confidence >= 8.0
+            and title_score >= 0.93
+            and exhaustive_visual_agreement
         )
 
     @staticmethod

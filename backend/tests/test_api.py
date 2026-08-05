@@ -1140,6 +1140,11 @@ def test_basic_land_auto_add_requires_decisive_exact_art_evidence():
     assert CardRecognizer.set_code_score("ORL", "ori") == 1.0
     assert CardRecognizer.set_code_score("MIS", "m15") == 1.0
     assert CardRecognizer.set_code_score("2NC", "znc") == 1.0
+    assert CardRecognizer.has_decisive_candidate_lead(98.4, 80.8, 1.0, True)
+    assert CardRecognizer.has_decisive_candidate_lead(97.8, 86.1, 1.0, True)
+    assert not CardRecognizer.has_decisive_candidate_lead(98.4, 93.0, 1.0, True)
+    assert not CardRecognizer.has_decisive_candidate_lead(98.4, 80.8, 0.85, True)
+    assert not CardRecognizer.has_decisive_candidate_lead(98.4, 80.8, 1.0, False)
     assert not CardRecognizer.has_decisive_symbol_match(swamp["id"], "rtr-swamp-261", 94, 20)
     # A decisive illustration match within an exact set remains safe even when
     # the tiny collector-number footer is unreadable or misread.
