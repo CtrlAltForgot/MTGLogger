@@ -427,6 +427,7 @@ async def _index_card(db, provider: ScryfallProvider, card: dict) -> bool:
         "oracle_text": oracle_text or None,
         "artist": card.get("artist"),
         "promo_types": json.dumps(card.get("promo_types") or []),
+        "finishes": json.dumps(card.get("finishes") or []),
         "released_at": _released_at(card),
         "image_url": image_url,
         "market_price": provider.market_price(card),

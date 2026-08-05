@@ -71,23 +71,29 @@ export function useAutoScanner(
       }
       const next=analyze(pixels,previous.current,baseline.current);previous.current=new Uint8ClampedArray(pixels);setMetrics(next)
       const cardPresent=next.sceneDifference>=tuning.entryDifference
+      const calibratedNoise=noiseMotion.current/Math.max(1,calibrationCount.current)
+      const stableLimit=Math.max(tuning.stableMotion,calibratedNoise*1.6)
       if(removalGate.current.latched){
         const replacementDifference=capturedFrame.current?analyze(pixels,undefined,capturedFrame.current).sceneDifference:0
         // A direct swap produces consecutive frames that differ substantially
         // from the captured card (usually a hand, then the replacement). Minor
         // exposure drift or an unmoved card remains latched.
-        const substantiallyChanged=replacementDifference>=Math.max(24,tuning.entryDifference*1.75)
+        const substantiallyChanged=replacementDifference>=Math.max(24,tuning.entryDifference*1.75)&&next.motion<stableLimit
         const update=advanceRemovalGate(removalGate.current,cardPresent,substantiallyChanged)
         removalGate.current=update.gate
-        if(update.rearmed){stable.current=0;setState('waiting')}
+        if(update.rearmed){
+          // Refresh the empty-table baseline after a completed removal. This
+          // absorbs exposure drift instead of treating the newly lit table as
+          // another card a split second later.
+          if(!cardPresent)baseline.current=new Uint8ClampedArray(pixels)
+          stable.current=0;setState('waiting')
+        }
         return
       }
       if(!cardPresent){setState('waiting');stable.current=0;return}
       if(!pipelineHasCapacity(inFlight.current,maxInFlight)){
         stable.current=0;setState('processing');return
       }
-      const calibratedNoise=noiseMotion.current/Math.max(1,calibrationCount.current)
-      const stableLimit=Math.max(tuning.stableMotion,calibratedNoise*1.6)
       setState('stabilizing')
       if(next.motion<stableLimit)stable.current++;else stable.current=0
       if(stable.current<tuning.stableFrames)return

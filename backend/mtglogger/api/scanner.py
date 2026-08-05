@@ -64,7 +64,10 @@ async def recognize_card(
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
-    if not result.card_structure and not result.ocr_text.strip() and not result.candidates:
+    # OCR can hallucinate convincing names from table grain, glare, hands, or
+    # a one-frame removal transition. Never turn a structure-negative frame
+    # into either inventory or Review noise regardless of its text score.
+    if not result.card_structure:
         return ScanResult(
             disposition="empty",
             confidence=0,

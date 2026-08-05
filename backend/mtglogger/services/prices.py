@@ -83,6 +83,13 @@ async def refresh_prices() -> None:
                     )
                 )
                 for item in items:
+                    # Some catalog entries (notably The List variants) only
+                    # exist in foil. Older local reference rows did not retain
+                    # finishes, so those copies could be stored as nonfoil and
+                    # would forever request Scryfall's null USD nonfoil field.
+                    finishes = set(card.get("finishes") or [])
+                    if finishes == {"foil"} and not item.foil:
+                        item.foil = True
                     value = _price(card, item.foil)
                     if apply_price(db, item, value):
                         with _state_lock:

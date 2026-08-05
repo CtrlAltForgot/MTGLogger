@@ -177,6 +177,7 @@ def resolve_review(review_id: str, payload: ReviewResolve, db: Session = Depends
                 image_url=card.image_url,
                 art_hash=learned_hash,
                 market_price=card.market_price,
+                finishes=json.dumps(card.finishes or []),
             )
             db.add(reference)
             db.flush()

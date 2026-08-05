@@ -49,6 +49,7 @@ def migrate_schema() -> None:
             "oracle_text": "TEXT",
             "artist": "VARCHAR(255)",
             "promo_types": "TEXT",
+            "finishes": "TEXT",
         }
         for column_name, column_type in additive_reference_columns.items():
             if column_name not in reference_columns:

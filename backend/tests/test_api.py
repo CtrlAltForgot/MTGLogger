@@ -1614,6 +1614,12 @@ def test_ocr_hints_reject_rules_fragments_and_join_split_showcase_title():
 
     assert title == "Den of the Bugbear"
 
+    title, _, _, _ = CardRecognizer.hints(
+        "Dungeon Module R12\nDen of the\nDUN\nBugbear\n"
+        "ANADVENTUREFORCHARACTERLEVELS17-20\nLand\n351\nFR·EN"
+    )
+    assert title == "Den of the Bugbear"
+
 
 def test_ocr_hints_recover_name_from_glued_planeswalker_type_line():
     from mtglogger.services.recognition import CardRecognizer

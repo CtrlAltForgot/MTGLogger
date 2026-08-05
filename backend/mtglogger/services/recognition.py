@@ -454,6 +454,14 @@ class CardRecognizer:
             # Showcase titles can be emitted as adjacent OCR boxes.
             if index + 1 < len(title_lines) and plausible_title(title_lines[index + 1]):
                 title_candidates.append(f"{line} {title_lines[index + 1]}")
+            # Showcase/module frames sometimes insert a tiny expansion marker
+            # between two title boxes ("Den of the" / "DUN" / "Bugbear").
+            if (
+                index + 2 < len(title_lines)
+                and re.fullmatch(r"[A-Z]{2,4}", title_lines[index + 1])
+                and plausible_title(title_lines[index + 2])
+            ):
+                title_candidates.append(f"{line} {title_lines[index + 2]}")
         title = max(title_candidates, key=len, default=None)
 
         # OCR frequently removes the spaces and dash from a planeswalker type
@@ -1047,6 +1055,7 @@ class CardRecognizer:
             "oracle_text": reference.oracle_text or "",
             "artist": reference.artist,
             "promo_types": json.loads(reference.promo_types or "[]"),
+            "finishes": json.loads(reference.finishes or "[]"),
         }
 
     @classmethod
@@ -1114,6 +1123,7 @@ class CardRecognizer:
                     )
                 },
                 "lang": "en",
+                "finishes": json.loads(reference.finishes or "[]"),
             }
             for reference in rows
         ]

@@ -122,7 +122,8 @@ function CopySelector({item,selected,onToggle}:{item:Inventory;selected:Set<numb
 }
 
 function PriceMovement({item}:{item:Inventory}){
-  const current=Number(item.market_price||0),previous=item.previous_market_price==null?null:Number(item.previous_market_price)
+  const current=item.market_price==null?null:Number(item.market_price),previous=item.previous_market_price==null?null:Number(item.previous_market_price)
+  if(current==null)return <Typography className="card-price" variant="body2" color="text.secondary" fontWeight={800}>Price unavailable</Typography>
   const change=previous&&current!==previous?(current-previous)/previous*100:null
   const up=change!=null&&change>0
   return <Stack direction="row" alignItems="center" spacing={.75}>

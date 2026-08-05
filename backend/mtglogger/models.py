@@ -162,6 +162,7 @@ class CardReference(Base):
     oracle_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     artist: Mapped[str | None] = mapped_column(String(255), nullable=True)
     promo_types: Mapped[str | None] = mapped_column(Text, nullable=True)
+    finishes: Mapped[str | None] = mapped_column(Text, nullable=True)
     released_at: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
     image_url: Mapped[str] = mapped_column(Text)
     art_hash: Mapped[str] = mapped_column(String(16), index=True)
