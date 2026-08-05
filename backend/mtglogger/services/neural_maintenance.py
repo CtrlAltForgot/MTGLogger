@@ -105,7 +105,7 @@ def write_maintenance_state(result: dict[str, int]) -> None:
 def run_neural_maintenance() -> dict[str, object]:
     result = backfill_confirmed_embeddings()
     result["training"] = train_metric_adapter()
-    NeuralRetriever.invalidate()
+    NeuralRetriever.refresh_in_background()
     write_maintenance_state(result)
     return result
 
@@ -366,7 +366,7 @@ def train_metric_adapter(epochs: int = 120) -> dict[str, object]:
             json.dumps({"version": version, "weights": candidate_path.name}, indent=2) + "\n"
         )
         temporary.replace(manifest)
-        NeuralRetriever.invalidate()
+        NeuralRetriever.refresh_in_background()
     return report
 
 
@@ -450,7 +450,7 @@ async def backfill_reference_embeddings(
             )
             temporary.replace(state_path)
             await asyncio.sleep(0.05)
-    NeuralRetriever.invalidate()
+    NeuralRetriever.refresh_in_background()
     return result
 
 

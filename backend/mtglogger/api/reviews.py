@@ -22,7 +22,7 @@ from ..schemas import (
 from ..services.decks import assign_to_deck
 from ..services.evaluation import preserve_confirmed_scan
 from ..services.inventory import upsert_inventory
-from ..services.neural import embed_and_store
+from ..services.neural import NeuralRetriever, embed_and_store
 from ..services.recognition import CardRecognizer
 from ..services.references import artwork_descriptors, artwork_hash, save_example_descriptors
 
@@ -210,6 +210,7 @@ def resolve_review(review_id: str, payload: ReviewResolve, db: Session = Depends
         logger.exception("Could not preserve confirmed scan %s", review.id)
     db.commit()
     CardRecognizer.invalidate_visual_catalog()
+    NeuralRetriever.refresh_in_background()
     # Keep the confirmed camera frame as labeled ground truth. These examples
     # are what let us benchmark recognition and improve it from real hardware
     # instead of tuning confidence against synthetic fixtures.

@@ -225,6 +225,7 @@ class NeuralRetriever:
 
     _index: NeuralIndex | None = None
     _index_lock = threading.Lock()
+    _refreshing = False
 
     def __init__(self):
         self.embedder = _default_embedder
@@ -238,6 +239,30 @@ class NeuralRetriever:
     def warm(cls) -> int:
         index = cls._get_index()
         return len(index.references)
+
+    @classmethod
+    def refresh_in_background(cls) -> None:
+        """Build a fresh snapshot without blocking searches using the old one."""
+        with cls._index_lock:
+            if cls._refreshing:
+                return
+            cls._refreshing = True
+
+        def refresh() -> None:
+            try:
+                from ..database import SessionLocal
+
+                with SessionLocal() as db:
+                    replacement = NeuralIndex(db)
+                with cls._index_lock:
+                    cls._index = replacement
+            except Exception:
+                logger.exception("Could not refresh neural retrieval gallery")
+            finally:
+                with cls._index_lock:
+                    cls._refreshing = False
+
+        threading.Thread(target=refresh, name="neural-index-refresh", daemon=True).start()
 
     @classmethod
     def _get_index(cls) -> NeuralIndex:
