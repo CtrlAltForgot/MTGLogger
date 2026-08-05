@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import math
+import threading
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -28,6 +29,7 @@ from .neural import (
 )
 
 logger = logging.getLogger(__name__)
+_adapter_training_lock = threading.Lock()
 
 
 def _reference_guided_crop(
@@ -180,10 +182,57 @@ def write_maintenance_state(result: dict[str, int]) -> None:
 
 def run_neural_maintenance() -> dict[str, object]:
     result = backfill_confirmed_embeddings()
-    result["training"] = train_metric_adapter()
+    result["training"] = train_metric_adapter_if_new_corrections(force=True)
     NeuralRetriever.refresh_in_background()
     write_maintenance_state(result)
     return result
+
+
+def train_metric_adapter_if_new_corrections(*, force: bool = False) -> dict[str, object]:
+    """Train once per completed correction batch without overlapping maintenance."""
+    settings = get_settings()
+    state_path = settings.neural_index_dir / "adapter-training.json"
+    with SessionLocal() as db:
+        correction_count = int(
+            db.scalar(
+                select(func.count())
+                .select_from(CardNeuralEmbedding)
+                .where(
+                    CardNeuralEmbedding.model_version == settings.neural_model_version,
+                    CardNeuralEmbedding.source_kind == "correction",
+                )
+            )
+            or 0
+        )
+    previous_count = -1
+    if state_path.is_file():
+        try:
+            previous_count = int(json.loads(state_path.read_text()).get("correction_count", -1))
+        except (OSError, ValueError, json.JSONDecodeError):
+            logger.exception("Could not read neural adapter training state")
+    if not force and correction_count <= previous_count:
+        return {"state": "unchanged", "corrections": correction_count}
+    if not _adapter_training_lock.acquire(blocking=False):
+        return {"state": "already-running", "corrections": correction_count}
+    try:
+        started = datetime.now(ZoneInfo(settings.neural_maintenance_timezone))
+        result = train_metric_adapter()
+        completed = datetime.now(ZoneInfo(settings.neural_maintenance_timezone))
+        state = {
+            "model_version": settings.neural_model_version,
+            "correction_count": correction_count,
+            "started_at": started.isoformat(),
+            "completed_at": completed.isoformat(),
+            "duration_seconds": round((completed - started).total_seconds(), 3),
+            "result": result,
+        }
+        settings.neural_index_dir.mkdir(parents=True, exist_ok=True)
+        temporary = state_path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(state, indent=2) + "\n")
+        temporary.replace(state_path)
+        return state
+    finally:
+        _adapter_training_lock.release()
 
 
 def benchmark_confirmed_embeddings() -> dict[str, object]:

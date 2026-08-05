@@ -3,9 +3,9 @@ import logging
 from pathlib import Path
 
 import cv2
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..database import get_db
@@ -23,6 +23,7 @@ from ..services.decks import assign_to_deck
 from ..services.evaluation import preserve_confirmed_scan
 from ..services.inventory import upsert_inventory
 from ..services.neural import NeuralRetriever, embed_and_store
+from ..services.neural_maintenance import train_metric_adapter_if_new_corrections
 from ..services.recognition import CardRecognizer
 from ..services.references import (
     artwork_hash,
@@ -41,6 +42,21 @@ def serialize(item: ReviewItem) -> ReviewRead:
     defaults = ScanDefaults.model_validate(
         stored.get("defaults", {}) if isinstance(stored, dict) else {}
     )
+
+
+def schedule_training_if_queue_drained(
+    db: Session, background_tasks: BackgroundTasks
+) -> None:
+    pending_reviews = int(
+        db.scalar(
+            select(func.count())
+            .select_from(ReviewItem)
+            .where(ReviewItem.status == ReviewStatus.pending)
+        )
+        or 0
+    )
+    if pending_reviews == 0:
+        background_tasks.add_task(train_metric_adapter_if_new_corrections)
     return ReviewRead(
         **{
             key: getattr(item, key)
@@ -101,7 +117,12 @@ def review_image(review_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/{review_id}/resolve")
-def resolve_review(review_id: str, payload: ReviewResolve, db: Session = Depends(get_db)):
+def resolve_review(
+    review_id: str,
+    payload: ReviewResolve,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
     review = db.get(ReviewItem, review_id)
     if not review:
         raise HTTPException(404, "Review item not found")
@@ -215,6 +236,10 @@ def resolve_review(review_id: str, payload: ReviewResolve, db: Session = Depends
     db.commit()
     CardRecognizer.invalidate_visual_catalog()
     NeuralRetriever.refresh_in_background()
+    # The individual correction is already searchable immediately. Once the
+    # user finishes the batch, consolidate all new corrections into a validated
+    # metric-adapter update after returning this response.
+    schedule_training_if_queue_drained(db, background_tasks)
     # Keep the confirmed camera frame as labeled ground truth. These examples
     # are what let us benchmark recognition and improve it from real hardware
     # instead of tuning confidence against synthetic fixtures.
@@ -222,16 +247,21 @@ def resolve_review(review_id: str, payload: ReviewResolve, db: Session = Depends
 
 
 @router.post("/{review_id}/ignore", status_code=204)
-def ignore_review(review_id: str, db: Session = Depends(get_db)):
+def ignore_review(
+    review_id: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)
+):
     review = db.get(ReviewItem, review_id)
     if not review:
         raise HTTPException(404, "Review item not found")
     review.status = ReviewStatus.ignored
     db.commit()
+    schedule_training_if_queue_drained(db, background_tasks)
 
 
 @router.delete("/{review_id}", status_code=204)
-def delete_review(review_id: str, db: Session = Depends(get_db)):
+def delete_review(
+    review_id: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)
+):
     review = db.get(ReviewItem, review_id)
     if not review:
         raise HTTPException(404, "Review item not found")
@@ -239,3 +269,4 @@ def delete_review(review_id: str, db: Session = Depends(get_db)):
     db.delete(review)
     db.commit()
     Path(image_path).unlink(missing_ok=True)
+    schedule_training_if_queue_drained(db, background_tasks)
