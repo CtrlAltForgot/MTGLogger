@@ -20,6 +20,7 @@ from ..config import get_settings
 from ..database import SessionLocal
 from ..models import CardNeuralEmbedding, CardReference
 from .neural import (
+    MetricAdapter,
     NeuralEmbedder,
     NeuralRetriever,
     decode_vector,
@@ -203,7 +204,8 @@ def benchmark_confirmed_embeddings() -> dict[str, object]:
     gallery_indices = [index for index, row in enumerate(rows) if row.source_kind != "correction"]
     if not corrections or not gallery_indices:
         return {"queries": len(corrections), "gallery": len(gallery_indices)}
-    matrix = np.stack([decode_vector(row.vector, row.dimensions) for row in rows])
+    adapter = MetricAdapter.load_active()
+    matrix = np.stack([adapter.apply(decode_vector(row.vector, row.dimensions)) for row in rows])
     gallery = matrix[gallery_indices]
     exact_top1 = exact_top5 = name_top1 = 0
     identity_top1 = identity_top5 = identity_queries = 0

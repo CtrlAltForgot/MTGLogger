@@ -26,7 +26,7 @@ def main() -> None:
     migrate_schema()
     if args.reindex_corrections:
         print(backfill_confirmed_embeddings(force=True))
-    else:
+    elif not (args.references or args.benchmark or args.train):
         print(run_neural_maintenance())
     if args.references:
         print(
