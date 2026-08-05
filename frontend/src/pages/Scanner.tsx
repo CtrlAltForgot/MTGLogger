@@ -93,7 +93,7 @@ export default function Scanner(){
   return <Grid container spacing={3}>
     <Grid size={{xs:12,lg:8}}>
       <Box sx={{overflow:'hidden',position:'relative',bgcolor:'#050807',borderRadius:3,minHeight:320}}>
-        <Box component="video" ref={scan.video} muted playsInline sx={{width:'100%',aspectRatio:'16/9',display:'block',objectFit:'cover'}}/>
+        <Box component="video" ref={scan.video} muted playsInline disablePictureInPicture controlsList="nodownload noplaybackrate noremoteplayback" sx={{width:'100%',aspectRatio:'16/9',display:'block',objectFit:'cover'}}/>
         <canvas ref={scan.canvas} hidden/>
         {scan.metrics.bounds&&scan.state!=='calibrating'&&<Box sx={{position:'absolute',left:`${scan.metrics.bounds.left}%`,top:`${scan.metrics.bounds.top}%`,width:`${scan.metrics.bounds.width}%`,height:`${scan.metrics.bounds.height}%`,border:'3px solid',borderColor:'success.main',borderRadius:2,boxShadow:'0 0 0 1px rgba(0,0,0,.4), 0 0 24px rgba(100,217,151,.28)',transition:'all 120ms linear',pointerEvents:'none'}}/>}
         {stateLabel&&<Chip label={stateLabel} color={scan.state==='remove'?'success':scan.state==='processing'?'warning':'default'} sx={{position:'absolute',top:16,left:16,fontWeight:700,backdropFilter:'blur(12px)'}}/>}
