@@ -264,6 +264,7 @@ export default function Decks() {
                 sx={{
                   cursor: "pointer",
                   height: "100%",
+                  maxWidth: 440,
                   position: "relative",
                   "&:hover": {
                     borderColor: "primary.main",
@@ -606,15 +607,12 @@ export default function Decks() {
 type DeckForm={name:string;format:string;description:string;image_url:string}
 
 function DeckArtwork({deck}:{deck:Deck}){
-  const colors=[...new Set(deck.entries.flatMap(entry=>entry.inventory.color_identity.split('')).filter(Boolean))]
-  const palette:Record<string,string>={W:'#eee4bf',U:'#4ea7d8',B:'#44384f',R:'#d85845',G:'#4f8a59'}
-  const background=colors.length?`linear-gradient(135deg,${colors.map(color=>palette[color]||'#6c6265').join(',')})`:'linear-gradient(135deg,#322428,#130d0f)'
   const pool=deck.entries.filter(entry=>entry.inventory.image_url)
   const seed=[...deck.id].reduce((value,character)=>value+character.charCodeAt(0),0)
   const spreadCount=Math.min(7,pool.length)
   const cards=pool.length<=spreadCount?pool:Array.from({length:spreadCount},(_,index)=>pool[(seed+index*997)%pool.length])
   const custom=deck.image_url?.startsWith('/api/')?`${API}${deck.image_url}`:deck.image_url
-  return <Box sx={{height:140,background,position:'relative',overflow:'hidden'}}>{custom?<Box component="img" src={custom} alt="" sx={{width:'100%',height:'100%',objectFit:'cover'}}/>:<Box sx={{position:'absolute',inset:0,display:'flex',justifyContent:'center',alignItems:'center'}}>{cards.map((entry,index)=>{const midpoint=(cards.length-1)/2;const offset=index-midpoint;return <Box key={entry.id} component="img" src={entry.inventory.image_url!} alt="" sx={{position:'absolute',width:82,borderRadius:1,boxShadow:'0 8px 22px rgba(0,0,0,.6)',transform:`translate(${offset*42}px, ${Math.abs(offset)*5+12}px) rotate(${offset*5.5}deg)`,transformOrigin:'50% 85%',zIndex:index}}/>})}</Box>}<Box sx={{position:'absolute',inset:0,background:'linear-gradient(0deg,rgba(10,6,7,.76),transparent 72%)'}}/></Box>
+  return <Box sx={{height:140,position:'relative',overflow:'hidden',background:'transparent'}}>{custom?<Box component="img" src={custom} alt="" sx={{width:'100%',height:'100%',objectFit:'cover'}}/>:<Box sx={{position:'absolute',inset:0,display:'flex',justifyContent:'center',alignItems:'center'}}>{cards.map((entry,index)=>{const midpoint=(cards.length-1)/2;const offset=index-midpoint;return <Box key={entry.id} component="img" src={entry.inventory.image_url!} alt="" sx={{position:'absolute',width:82,borderRadius:1,boxShadow:'0 8px 22px rgba(0,0,0,.6)',transform:`translate(${offset*42}px, ${Math.abs(offset)*4-5}px) rotate(${offset*5.5}deg)`,transformOrigin:'50% 85%',zIndex:index}}/>})}</Box>}{custom&&<Box sx={{position:'absolute',inset:0,background:'linear-gradient(0deg,rgba(10,6,7,.6),transparent 72%)'}}/>}</Box>
 }
 
 function CreateDialog({
