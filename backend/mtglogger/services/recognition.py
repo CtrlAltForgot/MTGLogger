@@ -420,8 +420,13 @@ class CardRecognizer:
         # Collector numbers often share the copyright line. Prefer an explicit
         # numerator/denominator pair before filtering copyright years.
         for line in reversed(lines):
-            match = re.search(r"(?<!\d)(\d{1,4}[a-z]?)\s*[/|\\]\s*\d{1,4}(?!\d)", line, re.I)
-            if match:
+            match = re.search(
+                r"(?<!\d)(\d{1,4}[a-z]?)\s*[/|\\]\s*(\d{1,4})(?!\d)", line, re.I
+            )
+            # Power/toughness (for example 5/4) is read far more reliably
+            # than a tiny footer. A real collector denominator represents a
+            # set/card-sheet total and is not a single digit.
+            if match and int(match.group(2)) >= 10:
                 number = match.group(1)
                 break
         # Low-resolution OCR commonly drops the slash ("062/249" -> "02 249").
@@ -557,6 +562,29 @@ class CardRecognizer:
             SequenceMatcher(None, value.lstrip("0") or "0", right).ratio() for value in variants
         )
         return min(0.85, max(direct, inferred))
+
+    @classmethod
+    def observed_footer_contradicts_printing(
+        cls,
+        number: str | None,
+        printed_set_code: str | None,
+        candidate_number: str,
+        candidate_set_code: str,
+    ) -> bool:
+        """Return whether readable footer evidence rules out a candidate.
+
+        Promos and reprints frequently reuse artwork. A visual winner cannot be
+        the exact physical printing when its catalog set or collector number
+        strongly disagrees with a field that was read from the card itself.
+        """
+        number_mismatch = bool(
+            number and cls.collector_score(number, candidate_number) < 0.78
+        )
+        set_mismatch = bool(
+            printed_set_code
+            and cls.set_code_score(printed_set_code, candidate_set_code) < 0.78
+        )
+        return number_mismatch or set_mismatch
 
     @staticmethod
     def normalized_name(value: str) -> str:
@@ -1606,6 +1634,12 @@ class CardRecognizer:
             title_score = self.card_name_similarity(title, card["name"]) if title else 0.55
             number_score = self.collector_score(number, card["collector_number"])
             set_score = self.set_code_score(printed_set_code, card["set"])
+            footer_contradiction = self.observed_footer_contradicts_printing(
+                number,
+                printed_set_code,
+                card["collector_number"],
+                card["set"],
+            )
             released_year = int(card.get("released_at", "0000")[:4])
             year_score = 1.0 if copyright_year and released_year == copyright_year else 0.0
             if printed_set_code:
@@ -1845,6 +1879,12 @@ class CardRecognizer:
                     confidence = min(confidence, 98.4)
             elif exact_printed_identity:
                 safe_candidate_ids.add(card["id"])
+            # Reused artwork can make a promo descriptor look nearly perfect.
+            # The physical footer remains authoritative for exact-printing
+            # identity, so a contradicted candidate must neither lead nor add.
+            if footer_contradiction:
+                confidence = min(confidence, 90.0)
+                safe_candidate_ids.discard(card["id"])
             confidence = min(99.5, confidence)
             if oracle_recovery and not printing_signal and not visual_printing_proof:
                 # Rules text can identify a card, but it cannot prove which set,

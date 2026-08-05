@@ -1556,6 +1556,37 @@ def test_artwork_alone_cannot_auto_add_a_reused_printing():
     assert CardRecognizer.visual_only_score(87.0) == 87.0
 
 
+def test_readable_footer_rejects_reused_art_promo_printing():
+    from mtglogger.services.recognition import CardRecognizer
+
+    # ZNC #056 Syr Konrad and PW23 #5 reuse the same artwork. The artwork
+    # winner must not override the set and number printed on the physical card.
+    assert not CardRecognizer.observed_footer_contradicts_printing(
+        "056", "ZNC", "56", "znc"
+    )
+    assert CardRecognizer.observed_footer_contradicts_printing("056", "ZNC", "5", "pw23")
+    assert CardRecognizer.observed_footer_contradicts_printing("056", None, "5", "pw23")
+    assert CardRecognizer.observed_footer_contradicts_printing(None, "ZNC", "5", "pw23")
+
+
+def test_power_toughness_does_not_replace_footer_collector_number():
+    from mtglogger.services.recognition import CardRecognizer
+
+    text = "\n".join(
+        [
+            "Syr Konrad,the Grim",
+            "Legendary Creature — Human Knight",
+            "056",
+            "U",
+            "5/4",
+            "ZNC·EN ANNA STEINBAUER",
+            "2020 Wizards of the Coast",
+        ]
+    )
+
+    assert CardRecognizer.hints(text) == ("Syr Konrad,the Grim", "056", "znc", 2020)
+
+
 def test_damaged_collector_number_can_uniquely_identify_printing():
     from mtglogger.services.recognition import CardRecognizer
 
