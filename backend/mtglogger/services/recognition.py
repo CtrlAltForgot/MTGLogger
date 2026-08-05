@@ -1607,6 +1607,18 @@ class CardRecognizer:
                 confidence = max(confidence, 98.5)
                 if number_score == 1.0 and unique_release_year:
                     safe_candidate_ids.add(card["id"])
+                copyright_art_printing_proof = bool(
+                    unique_release_year
+                    and card["id"] == descriptor_art_top_id
+                    and descriptor_art_scores.get(card["id"], 0) >= 90
+                    and artist_scores.get(card["id"], 0) >= 0.9
+                )
+                if copyright_art_printing_proof:
+                    # Older frames frequently defeat collector-number OCR. An
+                    # exact title plus a unique copyright/release year, printed
+                    # artist credit, and the strongest high-quality artwork
+                    # match are independent proof of the physical printing.
+                    safe_candidate_ids.add(card["id"])
             # Footer OCR sometimes loses a leading digit (123/272 -> 23/272)
             # while retaining enough evidence to distinguish every printing of
             # an exactly-read card name. Accept it only when one candidate has a
