@@ -12,6 +12,17 @@ CARD = {
 }
 
 
+def test_eur_price_is_used_only_when_native_usd_is_missing():
+    from decimal import Decimal
+
+    from mtglogger.services.prices import _price
+
+    card = {"prices": {"usd_foil": None, "eur_foil": "0.18"}}
+    assert _price(card, True, Decimal("1.15")) == Decimal("0.21")
+    card["prices"]["usd_foil"] = "0.19"
+    assert _price(card, True, Decimal("1.15")) == Decimal("0.19")
+
+
 def test_health(client):
     assert client.get("/api/health").json()["status"] == "ok"
 
@@ -1112,6 +1123,19 @@ def test_basic_land_auto_add_requires_decisive_exact_art_evidence():
     assert CardRecognizer.has_decisive_symbol_match(swamp["id"], swamp["id"], 91, 18)
     assert CardRecognizer.set_code_score("ORL", "ori") == 1.0
     assert CardRecognizer.set_code_score("MIS", "m15") == 1.0
+    assert CardRecognizer.set_code_score("2NC", "znc") == 1.0
+
+
+def test_ocr_hints_recovers_joined_rarity_and_confused_znc_code():
+    from mtglogger.services.recognition import CardRecognizer
+
+    title, number, set_code, _year = CardRecognizer.hints(
+        "Whispersteel Dagger\n005R\n2NC·EN\nSUUO"
+    )
+
+    assert title == "Whispersteel Dagger"
+    assert number == "005"
+    assert set_code == "2nc"
     assert not CardRecognizer.has_decisive_symbol_match(swamp["id"], "rtr-swamp-261", 94, 20)
     # A decisive illustration match within an exact set remains safe even when
     # the tiny collector-number footer is unreadable or misread.

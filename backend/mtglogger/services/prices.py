@@ -8,8 +8,9 @@ from threading import Lock
 from sqlalchemy import func, select
 
 from ..database import SessionLocal
-from ..models import CollectionValueSnapshot, InventoryItem, PriceSnapshot
+from ..models import CardReference, CollectionValueSnapshot, InventoryItem, PriceSnapshot
 from ..providers import ScryfallProvider
+from ..providers.scryfall import scryfall_api_get
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +38,28 @@ def refresh_status() -> dict:
     return result
 
 
-def _price(card: dict, foil: bool) -> Decimal | None:
-    return ScryfallProvider.market_price(card, foil)
+def _price(card: dict, foil: bool, eur_usd_rate: Decimal | None = None) -> Decimal | None:
+    native = ScryfallProvider.market_price(card, foil)
+    if native is not None or eur_usd_rate is None:
+        return native
+    value = card.get("prices", {}).get("eur_foil" if foil else "eur")
+    try:
+        return (Decimal(value) * eur_usd_rate).quantize(Decimal("0.01")) if value else None
+    except Exception:
+        return None
+
+
+async def _eur_usd_rate() -> Decimal | None:
+    """Fetch the ECB-backed daily rate used only when Scryfall has no USD price."""
+    try:
+        response = await scryfall_api_get(
+            "https://api.frankfurter.dev/v1/latest", params={"from": "EUR", "to": "USD"}
+        )
+        response.raise_for_status()
+        return Decimal(str(response.json()["rates"]["USD"]))
+    except Exception:
+        logger.warning("EUR price fallback unavailable", exc_info=True)
+        return None
 
 
 def apply_price(db, item: InventoryItem, value: Decimal | None) -> bool:
@@ -69,6 +90,7 @@ async def refresh_prices() -> None:
         _state.started_at = datetime.now(UTC).isoformat()
         _state.finished_at = None
     provider = ScryfallProvider()
+    eur_usd_rate = await _eur_usd_rate()
     with SessionLocal() as db:
         scryfall_ids = list(db.scalars(select(InventoryItem.scryfall_id).distinct()))
     with _state_lock:
@@ -93,10 +115,15 @@ async def refresh_prices() -> None:
                     finishes = set(card.get("finishes") or [])
                     if finishes == {"foil"} and not item.foil:
                         item.foil = True
-                    value = _price(card, item.foil)
+                    value = _price(card, item.foil, eur_usd_rate)
                     if apply_price(db, item, value):
                         with _state_lock:
                             _state.updated_items += 1
+                reference = db.get(CardReference, scryfall_id)
+                if reference:
+                    reference.color_identity = "".join(card.get("color_identity") or [])
+                    reference.rarity = card.get("rarity")
+                    reference.type_line = card.get("type_line")
                 db.commit()
         except Exception:
             logger.exception("Price refresh failed for Scryfall card %s", scryfall_id)

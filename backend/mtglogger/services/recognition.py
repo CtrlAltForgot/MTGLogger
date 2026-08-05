@@ -322,7 +322,7 @@ class CardRecognizer:
         # override a clean ``ORI-EN`` elsewhere in the OCR passes.
         for line in reversed(lines):
             match = re.match(
-                rf"^\s*([A-Z][A-Z0-9]{{1,5}}?)[\s·•.+\-:]+(?:{languages})(?=\s|$|[A-Z])",
+                rf"^\s*([A-Z2][A-Z0-9]{{1,5}}?)[\s·•.+\-:]+(?:{languages})(?=\s|$|[A-Z])",
                 line,
             )
             if match:
@@ -331,7 +331,7 @@ class CardRecognizer:
         if not set_code:
             for line in reversed(lines):
                 match = re.match(
-                    rf"^\s*([A-Z][A-Z0-9]{{1,5}}?)(?:{languages})(?=\s|$|[A-Z])",
+                    rf"^\s*([A-Z2][A-Z0-9]{{1,5}}?)(?:{languages})(?=\s|$|[A-Z])",
                     line,
                 )
                 if match:
@@ -343,9 +343,18 @@ class CardRecognizer:
             # short uppercase/alphanumeric footer tokens, never ordinary title
             # or rules text.
             language_tokens = set(languages.split("|"))
-            for line in reversed(lines[-5:]):
+            for line in reversed(lines):
                 token = line.strip()
-                if re.fullmatch(r"[A-Z][A-Z0-9]{1,4}", token) and token not in language_tokens:
+                # Standalone set codes can appear near the title/type text in
+                # Paddle's reading order even though they are physically in the
+                # footer. Requiring an all-caps short token keeps rules text out;
+                # a digit or the usual three-character code shape excludes mana
+                # and rarity glyphs.
+                if (
+                    re.fullmatch(r"[A-Z2][A-Z0-9]{1,4}", token)
+                    and token not in language_tokens
+                    and (any(character.isdigit() for character in token) or len(token) == 3)
+                ):
                     set_code = token.lower()
                     break
         number = None
@@ -359,6 +368,14 @@ class CardRecognizer:
         # Low-resolution OCR commonly drops the slash ("062/249" -> "02 249").
         # On a copyright line, the last two non-year numbers are still a strong
         # collector/total pair; retain the leading zero as useful OCR evidence.
+        if not number:
+            # Modern footers print a zero-padded collector number immediately
+            # beside a one-letter rarity. OCR commonly joins them ("005 R" ->
+            # "005R"). The rarity is not a collector suffix.
+            footer = "\n".join(lines[-6:])
+            rarity_joined = re.search(r"(?<!\d)(\d{3})[CMRU](?=\s|$)", footer)
+            if rarity_joined:
+                number = rarity_joined.group(1)
         if not number:
             for line in reversed(lines[-5:]):
                 if "©" not in line and "Wizards" not in line:
@@ -677,10 +694,11 @@ class CardRecognizer:
         variants = {
             source,
             source.translate(str.maketrans({"i": "1", "l": "1", "s": "5", "o": "0"})),
+            source.translate(str.maketrans({"2": "z"})),
         }
         # Codes are tiny: ORI often reads ORL and M15 reads MIS. Normalize
         # visually indistinguishable glyphs on both sides before fuzzy scoring.
-        visual_key = str.maketrans({"1": "i", "l": "i", "5": "s", "0": "o"})
+        visual_key = str.maketrans({"1": "i", "l": "i", "5": "s", "0": "o", "2": "z"})
         if target in variants or source.translate(visual_key) == target.translate(visual_key):
             return 1.0
         return min(
@@ -1014,6 +1032,10 @@ class CardRecognizer:
             "oracle_text": reference.oracle_text or "",
             "artist": reference.artist,
             "promo_types": json.loads(reference.promo_types or "[]"),
+            "finishes": json.loads(reference.finishes or "[]"),
+            "color_identity": list(reference.color_identity or ""),
+            "rarity": reference.rarity,
+            "type_line": reference.type_line,
         }
 
     @classmethod
