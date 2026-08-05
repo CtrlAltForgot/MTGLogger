@@ -1146,6 +1146,36 @@ def test_basic_land_auto_add_requires_decisive_exact_art_evidence():
     assert not CardRecognizer.has_decisive_candidate_lead(98.4, 80.8, 0.85, True)
     assert not CardRecognizer.has_decisive_candidate_lead(98.4, 80.8, 1.0, False)
     assert not CardRecognizer.has_decisive_symbol_match(swamp["id"], "rtr-swamp-261", 94, 20)
+    m21_lands = [
+        {"id": "m21-plains-260", "set": "m21", "collector_number": "260"},
+        {"id": "m21-plains-261", "set": "m21", "collector_number": "261"},
+        {"id": "m21-plains-262", "set": "m21", "collector_number": "262"},
+        {"id": "m21-mountain-269", "set": "m21", "collector_number": "269"},
+    ]
+    assert CardRecognizer.has_repeated_footer_printing_evidence(
+        "Plains\n61/274L\nM21\n61/274L\nM21",
+        m21_lands[1],
+        m21_lands,
+        "21",
+    )
+    assert CardRecognizer.has_repeated_footer_printing_evidence(
+        "Mountain\n69/274L\nM21\n869/274L\nM21",
+        m21_lands[3],
+        m21_lands,
+        "M21",
+    )
+    assert not CardRecognizer.has_repeated_footer_printing_evidence(
+        "Plains\n61/274L\nM21",
+        m21_lands[1],
+        m21_lands,
+        "M21",
+    )
+    assert not CardRecognizer.has_repeated_footer_printing_evidence(
+        "Plains\n61/274L\nM21\n61/274L\nM21",
+        m21_lands[0],
+        m21_lands,
+        "M21",
+    )
     # A decisive illustration match within an exact set remains safe even when
     # the tiny collector-number footer is unreadable or misread.
     assert CardRecognizer.has_safe_basic_land_match(

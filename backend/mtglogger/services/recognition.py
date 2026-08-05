@@ -1702,18 +1702,11 @@ class CardRecognizer:
             # exhaustive visual catalogue independently agrees with a clear
             # margin.  They remain first-class suggestions for quick review.
             if self.is_basic_land(card):
-                repeated_footer_number = bool(
-                    number
-                    and printed_set_code
-                    and printed_set_code.casefold() == card["set"].casefold()
-                    and len(
-                        re.findall(
-                            rf"(?<!\d)0*{re.escape(number.casefold().lstrip('0') or '0')}(?=\D|$)",
-                            text,
-                            re.I,
-                        )
-                    )
-                    >= 2
+                repeated_footer_number = self.has_repeated_footer_printing_evidence(
+                    text,
+                    card,
+                    cards,
+                    printed_set_code,
                 )
                 safe_land_match = self.has_safe_basic_land_match(
                     card["id"],
@@ -2130,6 +2123,57 @@ class CardRecognizer:
     ) -> bool:
         """Require a unique regional set-symbol match before prioritizing a set."""
         return bool(card_id == symbol_top_id and symbol_score >= 80 and symbol_margin >= 12)
+
+    @staticmethod
+    def has_repeated_footer_printing_evidence(
+        text: str,
+        card: dict,
+        candidates: list[dict],
+        printed_set_code: str | None,
+    ) -> bool:
+        """Accept repeated, uniquely resolving footer fragments from foil scans.
+
+        Foil glare commonly drops the leading collector digit (``261`` becomes
+        ``61``) or invents one (``269`` becomes ``869``).  Several OCR passes
+        are merged into ``text``, so two observations with the same final two
+        digits are strong evidence only when that suffix uniquely identifies a
+        printing inside the OCR-matched set.  The denominator is deliberately
+        ignored and a single reading can never auto-add a card.
+        """
+        card_set = str(card.get("set") or "")
+        collector = re.sub(r"\D", "", str(card.get("collector_number") or ""))
+        if not printed_set_code or len(collector) < 2:
+            return False
+        if CardRecognizer.set_code_score(printed_set_code, card_set) < 0.78:
+            return False
+
+        numerators = re.findall(r"(?<!\d)(\d{1,4})\s*[/|\\]\s*\d{1,4}", text or "")
+        suffix_counts: dict[str, int] = {}
+        for observed in numerators:
+            suffix = observed[-2:] if len(observed) >= 2 else ""
+            if suffix and collector.endswith(suffix):
+                suffix_counts[suffix] = suffix_counts.get(suffix, 0) + 1
+
+        for suffix, count in suffix_counts.items():
+            if count < 2:
+                continue
+            matching_ids = {
+                str(candidate.get("id") or "")
+                for candidate in candidates
+                if CardRecognizer.set_code_score(
+                    printed_set_code,
+                    str(candidate.get("set") or ""),
+                )
+                >= 0.78
+                and re.sub(
+                    r"\D",
+                    "",
+                    str(candidate.get("collector_number") or ""),
+                ).endswith(suffix)
+            }
+            if matching_ids == {str(card.get("id") or "")}:
+                return True
+        return False
 
     @staticmethod
     def has_safe_basic_land_match(
