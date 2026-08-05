@@ -23,13 +23,14 @@ _set_metadata_lock = asyncio.Lock()
 async def scryfall_api_get(url: str, **kwargs) -> httpx.Response:
     """Pace and retry API traffic so background indexing cannot starve scans."""
     global _api_last_request_at
+    method = kwargs.pop("method", "GET")
     async with _api_request_lock:
         delay = 0.1 - (time.monotonic() - _api_last_request_at)
         if delay > 0:
             await asyncio.sleep(delay)
         for attempt in range(6):
             try:
-                response = await scryfall_client().get(url, **kwargs)
+                response = await scryfall_client().request(method, url, **kwargs)
                 _api_last_request_at = time.monotonic()
                 if response.status_code != 429:
                     return response
@@ -92,6 +93,21 @@ class ScryfallProvider:
         response.raise_for_status()
         return response.json()
 
+    async def get_cards(self, scryfall_ids: list[str]) -> list[dict]:
+        """Fetch exact cards through Scryfall's bounded collection endpoint."""
+        cards: list[dict] = []
+        for offset in range(0, len(scryfall_ids), 75):
+            response = await scryfall_api_get(
+                f"{self.base_url}/cards/collection",
+                method="POST",
+                json={
+                    "identifiers": [{"id": value} for value in scryfall_ids[offset : offset + 75]]
+                },
+            )
+            response.raise_for_status()
+            cards.extend(response.json().get("data", []))
+        return cards
+
     async def set_metadata(self) -> dict[str, dict]:
         """Return authoritative set symbols, cached for one day."""
         global _set_metadata, _set_metadata_loaded_at
@@ -112,9 +128,7 @@ class ScryfallProvider:
 
     async def fuzzy_name(self, name: str) -> str | None:
         """Resolve a slightly damaged OCR title without choosing its printing."""
-        response = await scryfall_api_get(
-            f"{self.base_url}/cards/named", params={"fuzzy": name}
-        )
+        response = await scryfall_api_get(f"{self.base_url}/cards/named", params={"fuzzy": name})
         if response.status_code == 404:
             return None
         response.raise_for_status()

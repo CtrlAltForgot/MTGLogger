@@ -1,23 +1,44 @@
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+import cv2
+import numpy as np
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
+from ..config import get_settings
 from ..database import get_db
 from ..models import Deck, DeckEntry, InventoryItem, InventoryStatus
+from ..providers import ScryfallProvider
 from ..schemas import (
     AvailableCard,
     AvailablePage,
     DeckAllocations,
     DeckCreate,
     DeckEntryRead,
+    DeckFormatSuggestion,
+    DeckFormatSuggestions,
     DeckRead,
     DeckUpdate,
     InventoryRead,
 )
 
 router = APIRouter(prefix="/decks", tags=["decks"])
+
+FORMAT_LABELS = {
+    "standard": "Standard",
+    "pioneer": "Pioneer",
+    "modern": "Modern",
+    "pauper": "Pauper",
+    "legacy": "Legacy",
+    "vintage": "Vintage",
+    "commander": "Commander",
+    "brawl": "Brawl",
+    "oathbreaker": "Oathbreaker",
+    "duel": "Duel Commander",
+    "paupercommander": "Pauper Commander",
+}
 
 
 def deck_query():
@@ -83,11 +104,134 @@ def update_deck(deck_id: str, payload: DeckUpdate, db: Session = Depends(get_db)
     return serialize(get_deck(db, deck.id))
 
 
+@router.post("/{deck_id}/image", response_model=DeckRead)
+async def upload_deck_image(
+    deck_id: str, image: UploadFile = File(...), db: Session = Depends(get_db)
+):
+    deck = get_deck(db, deck_id)
+    if image.content_type not in {"image/jpeg", "image/png", "image/webp"}:
+        raise HTTPException(415, "Upload a JPEG, PNG, or WebP image")
+    raw = await image.read(8 * 1024 * 1024 + 1)
+    if len(raw) > 8 * 1024 * 1024:
+        raise HTTPException(413, "Deck image must be 8 MB or smaller")
+    decoded = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if decoded is None:
+        raise HTTPException(422, "Deck image is unreadable")
+    height, width = decoded.shape[:2]
+    scale = min(1.0, 1600 / max(height, width))
+    if scale < 1:
+        decoded = cv2.resize(decoded, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+    path = get_settings().deck_image_dir / f"{deck.id}.jpg"
+    if not cv2.imwrite(str(path), decoded, [cv2.IMWRITE_JPEG_QUALITY, 90]):
+        raise HTTPException(500, "Could not save deck image")
+    deck.image_url = f"/api/decks/{deck.id}/image"
+    db.commit()
+    return serialize(get_deck(db, deck.id))
+
+
+@router.get("/{deck_id}/image", response_class=FileResponse)
+def deck_image(deck_id: str, db: Session = Depends(get_db)):
+    deck = get_deck(db, deck_id)
+    path = get_settings().deck_image_dir / f"{deck.id}.jpg"
+    if not path.is_file():
+        raise HTTPException(404, "Deck image not found")
+    return FileResponse(path, media_type="image/jpeg")
+
+
+@router.get("/{deck_id}/format-suggestions", response_model=DeckFormatSuggestions)
+async def format_suggestions(deck_id: str, db: Session = Depends(get_db)):
+    deck = get_deck(db, deck_id)
+    total = sum(entry.quantity for entry in deck.entries)
+    if not deck.entries:
+        return DeckFormatSuggestions(complete_deck=False, card_count=0, suggestions=[])
+    requested_ids = list(dict.fromkeys(entry.inventory.scryfall_id for entry in deck.entries))
+    cards = await ScryfallProvider().get_cards(requested_ids)
+    if len(cards) != len(requested_ids):
+        raise HTTPException(503, "Could not verify every exact card in this deck")
+    by_id = {card["id"]: card for card in cards}
+    suggestions: list[DeckFormatSuggestion] = []
+    constructed_size = total >= 60
+    singleton = all(
+        entry.quantity == 1
+        or "Basic Land" in (by_id.get(entry.inventory.scryfall_id, {}).get("type_line") or "")
+        for entry in deck.entries
+    )
+    four_copy = all(
+        entry.quantity <= 4
+        or "Basic Land" in (by_id.get(entry.inventory.scryfall_id, {}).get("type_line") or "")
+        for entry in deck.entries
+    )
+    deck_colors = set().union(*(set(card.get("color_identity", [])) for card in cards))
+    commander_candidates = [
+        card
+        for card in cards
+        if "Legendary" in (card.get("type_line") or "")
+        and "Creature" in (card.get("type_line") or "")
+        and deck_colors.issubset(set(card.get("color_identity", [])))
+    ]
+    oathbreaker_candidates = [
+        card
+        for card in cards
+        if "Planeswalker" in (card.get("type_line") or "")
+        and deck_colors.issubset(set(card.get("color_identity", [])))
+    ]
+    for key, label in FORMAT_LABELS.items():
+        statuses = [card.get("legalities", {}).get(key, "not_legal") for card in cards]
+        if not statuses or any(status in {"not_legal", "banned"} for status in statuses):
+            continue
+        commander_style = key in {"commander", "duel", "paupercommander"}
+        exact_size = total == (60 if key in {"brawl", "oathbreaker"} else 100)
+        structure_ok = (
+            singleton and exact_size
+            if commander_style or key in {"brawl", "oathbreaker"}
+            else constructed_size and four_copy
+        )
+        if key in {"commander", "duel", "paupercommander", "brawl"}:
+            structure_ok = structure_ok and bool(commander_candidates)
+        elif key == "oathbreaker":
+            structure_ok = structure_ok and bool(oathbreaker_candidates)
+        reasons = [f"All {len(cards)} unique cards are currently {label}-legal."]
+        if structure_ok:
+            reasons.append("Stored card count and copy limits match the format.")
+            confidence = "high"
+        else:
+            reasons.append(
+                f"The stored deck has {total} cards; it may be incomplete "
+                "or use casual construction."
+            )
+            confidence = "possible"
+        suggestions.append(
+            DeckFormatSuggestion(format=label, confidence=confidence, reasons=reasons)
+        )
+    suggestions.append(
+        DeckFormatSuggestion(
+            format="Casual / Kitchen Table",
+            confidence="possible",
+            reasons=["Casual play allows a custom card pool and house rules."],
+        )
+    )
+    suggestions.sort(
+        key=lambda item: (
+            item.confidence != "high",
+            {value: index for index, value in enumerate(FORMAT_LABELS.values())}.get(
+                item.format, 999
+            ),
+        )
+    )
+    return DeckFormatSuggestions(
+        complete_deck=any(item.confidence == "high" for item in suggestions),
+        card_count=total,
+        suggestions=suggestions,
+    )
+
+
 @router.delete("/{deck_id}", status_code=204)
 def delete_deck(deck_id: str, db: Session = Depends(get_db)):
     deck = get_deck(db, deck_id)
+    image_path = get_settings().deck_image_dir / f"{deck.id}.jpg"
     db.delete(deck)
     db.commit()
+    image_path.unlink(missing_ok=True)
 
 
 @router.get("/{deck_id}/available", response_model=AvailablePage)
@@ -122,17 +266,17 @@ def available_cards(
         .where(*filters)
     )
     statement = (
-        base
-        .order_by(InventoryItem.card_name.asc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
+        base.order_by(InventoryItem.card_name.asc()).offset((page - 1) * page_size).limit(page_size)
     )
-    total = db.scalar(
-        select(func.count())
-        .select_from(InventoryItem)
-        .outerjoin(assigned, assigned.c.inventory_id == InventoryItem.id)
-        .where(*filters)
-    ) or 0
+    total = (
+        db.scalar(
+            select(func.count())
+            .select_from(InventoryItem)
+            .outerjoin(assigned, assigned.c.inventory_id == InventoryItem.id)
+            .where(*filters)
+        )
+        or 0
+    )
     items = [
         AvailableCard(
             inventory=InventoryRead.model_validate(item),

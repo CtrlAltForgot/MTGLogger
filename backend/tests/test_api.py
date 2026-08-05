@@ -60,9 +60,9 @@ def test_duplicate_printing_becomes_most_recent_collection_activity(client):
     )
 
     duplicate = client.post("/api/inventory", json=CARD).json()
-    recent = client.get(
-        "/api/inventory", params={"sort": "updated_at", "descending": True}
-    ).json()["items"]
+    recent = client.get("/api/inventory", params={"sort": "updated_at", "descending": True}).json()[
+        "items"
+    ]
 
     assert duplicate["id"] == first["id"]
     assert duplicate["updated_at"] > first["updated_at"]
@@ -89,9 +89,7 @@ def test_inventory_finish_move_splits_foil_and_nonfoil_quantities(monkeypatch):
         db.add(item)
         db.commit()
         target = asyncio.run(
-            inventory.move_inventory_finish(
-                item.id, InventoryFinishMove(foil=True, quantity=1), db
-            )
+            inventory.move_inventory_finish(item.id, InventoryFinishMove(foil=True, quantity=1), db)
         )
         variants = list(db.query(InventoryItem).all())
 
@@ -333,9 +331,7 @@ def test_deck_builder_pages_through_all_unassigned_entries(client):
         assert response.status_code == 201
     deck_id = client.post("/api/decks", json={"name": "Paged Deck"}).json()["id"]
 
-    first = client.get(
-        f"/api/decks/{deck_id}/available", params={"page": 1, "page_size": 2}
-    ).json()
+    first = client.get(f"/api/decks/{deck_id}/available", params={"page": 1, "page_size": 2}).json()
     second = client.get(
         f"/api/decks/{deck_id}/available", params={"page": 2, "page_size": 2}
     ).json()
@@ -343,6 +339,42 @@ def test_deck_builder_pages_through_all_unassigned_entries(client):
     assert first["total"] == second["total"] == 3
     assert [item["inventory"]["card_name"] for item in first["items"]] == ["Alpha", "Beta"]
     assert [item["inventory"]["card_name"] for item in second["items"]] == ["Gamma"]
+
+
+def test_deck_format_suggestions_require_legality_and_structure(monkeypatch):
+    import asyncio
+
+    from mtglogger.api import decks
+    from mtglogger.database import Base, SessionLocal, engine
+    from mtglogger.models import Deck, DeckEntry, InventoryItem
+
+    Base.metadata.drop_all(engine)
+    Base.metadata.create_all(engine)
+    with SessionLocal() as db:
+        land = InventoryItem(**{**CARD, "type_line": "Basic Land — Swamp"}, quantity=60)
+        deck = Deck(name="Old deck")
+        db.add_all([land, deck])
+        db.flush()
+        db.add(DeckEntry(deck_id=deck.id, inventory_id=land.id, quantity=60))
+        db.commit()
+
+        async def cards(_provider, _ids):
+            return [
+                {
+                    "id": land.scryfall_id,
+                    "type_line": "Basic Land — Swamp",
+                    "color_identity": ["B"],
+                    "legalities": {"standard": "legal", "pioneer": "legal"},
+                }
+            ]
+
+        monkeypatch.setattr(decks.ScryfallProvider, "get_cards", cards)
+        result = asyncio.run(decks.format_suggestions(deck.id, db))
+
+    assert result.complete_deck is True
+    assert result.suggestions[0].format == "Standard"
+    assert result.suggestions[0].confidence == "high"
+    assert result.suggestions[-1].format == "Casual / Kitchen Table"
 
 
 def test_recognition_reference_status(client):
@@ -447,15 +479,11 @@ def test_local_artwork_descriptors_prefer_same_art_under_camera_changes():
     image[101:487, 33:567] = texture
     adjusted = cv2.convertScaleAbs(image, alpha=1.04, beta=5)
     different_image = np.zeros_like(image)
-    different_image[101:487, 33:567] = rng.integers(
-        0, 256, (386, 534, 3), dtype=np.uint8
-    )
+    different_image[101:487, 33:567] = rng.integers(0, 256, (386, 534, 3), dtype=np.uint8)
 
     query = artwork_descriptors(adjusted)
     same = CardRecognizer._descriptor_score(query, artwork_descriptors(image))
-    different = CardRecognizer._descriptor_score(
-        query, artwork_descriptors(different_image)
-    )
+    different = CardRecognizer._descriptor_score(query, artwork_descriptors(different_image))
 
     assert same is not None and different is not None
     assert same > different + 10
@@ -512,9 +540,7 @@ def test_basic_land_art_outvotes_one_wrong_footer_digit():
     }
 
     actual_score = CardRecognizer._descriptor_bundle_score(scan, actual_print)
-    wrong_score = CardRecognizer._descriptor_bundle_score(
-        scan, ocr_selected_wrong_print
-    )
+    wrong_score = CardRecognizer._descriptor_bundle_score(scan, ocr_selected_wrong_print)
 
     assert actual_score is not None and wrong_score is not None
     assert actual_score > wrong_score + 10
@@ -679,12 +705,13 @@ def test_card_name_catalog_treats_both_faces_as_exact_identity_aliases():
 
     double_faced = "Liliana, Heretical Healer // Liliana, Defiant Necromancer"
 
-    assert CardRecognizer.card_name_similarity(
-        "Liliana,Defiant Necromancer", double_faced
-    ) == 1
-    assert CardRecognizer.closest_catalog_names(
-        "Liliana,Defiant Necromancer", [double_faced, "Liliana, the Necromancer"], 1
-    )[0][0] == double_faced
+    assert CardRecognizer.card_name_similarity("Liliana,Defiant Necromancer", double_faced) == 1
+    assert (
+        CardRecognizer.closest_catalog_names(
+            "Liliana,Defiant Necromancer", [double_faced, "Liliana, the Necromancer"], 1
+        )[0][0]
+        == double_faced
+    )
     assert CardRecognizer.has_strong_card_identity(
         "Liliana,Defiant Necromancer", [{"name": double_faced}]
     )
@@ -834,15 +861,9 @@ def test_exact_footer_match_skips_printing_family_only_for_complete_evidence():
         "set": "gtc",
     }
 
-    assert CardRecognizer.has_exact_footer_match(
-        "Death's Approach", "62", "GTC", [card]
-    )
-    assert not CardRecognizer.has_exact_footer_match(
-        "Death's Approach", "222", "GTC", [card]
-    )
-    assert not CardRecognizer.has_exact_footer_match(
-        "Death's Approach", "62", None, [card]
-    )
+    assert CardRecognizer.has_exact_footer_match("Death's Approach", "62", "GTC", [card])
+    assert not CardRecognizer.has_exact_footer_match("Death's Approach", "222", "GTC", [card])
+    assert not CardRecognizer.has_exact_footer_match("Death's Approach", "62", None, [card])
 
 
 def test_unique_set_and_collector_footer_is_strong_without_a_title():
@@ -860,9 +881,7 @@ def test_unique_set_and_collector_footer_is_strong_without_a_title():
     }
 
     assert CardRecognizer.unique_exact_footer_card("106", "ORI", [exact, promo]) == exact
-    assert CardRecognizer.has_strong_lookup_evidence(
-        None, "106", "ORI", 2015, [exact, promo]
-    )
+    assert CardRecognizer.has_strong_lookup_evidence(None, "106", "ORI", 2015, [exact, promo])
     assert CardRecognizer.unique_exact_footer_card("106", None, [exact]) is None
     assert CardRecognizer.unique_exact_footer_card("106", "ORI", [exact, exact]) is None
 
@@ -917,9 +936,7 @@ def test_printing_family_reports_when_a_result_is_truncated(monkeypatch):
 
     scryfall._printing_family_cache.clear()
     monkeypatch.setattr(scryfall, "scryfall_api_get", fake_get)
-    cards, total = asyncio.run(
-        scryfall.ScryfallProvider().printing_family("Swamp", limit=12)
-    )
+    cards, total = asyncio.run(scryfall.ScryfallProvider().printing_family("Swamp", limit=12))
 
     assert len(cards) == 12
     assert total == 27
@@ -1022,9 +1039,7 @@ def test_collector_footer_survives_full_card_title_fallback():
 def test_footer_artist_line_is_not_invented_as_a_card_title():
     from mtglogger.services.recognition import CardRecognizer
 
-    title, number, set_code, _ = CardRecognizer.hints(
-        "264/272L\nORI·EN IUNGPARK"
-    )
+    title, number, set_code, _ = CardRecognizer.hints("264/272L\nORI·EN IUNGPARK")
 
     assert title is None
     assert number == "264"
@@ -1090,15 +1105,11 @@ def test_basic_land_auto_add_requires_decisive_exact_art_evidence():
 
     swamp = {"id": "rtr-swamp-264", "name": "Swamp", "type_line": "Basic Land — Swamp"}
     assert CardRecognizer.is_basic_land(swamp)
-    assert not CardRecognizer.has_decisive_art_match(
-        swamp["id"], "rtr-swamp-261", True, 96, 24
-    )
-    assert not CardRecognizer.has_decisive_art_match(
-        swamp["id"], swamp["id"], True, 87, 24
-    )
-    assert CardRecognizer.has_decisive_art_match(
-        swamp["id"], swamp["id"], True, 92, 21
-    )
+    assert not CardRecognizer.has_decisive_art_match(swamp["id"], "rtr-swamp-261", True, 96, 24)
+    assert not CardRecognizer.has_decisive_art_match(swamp["id"], swamp["id"], True, 87, 24)
+    assert CardRecognizer.has_decisive_art_match(swamp["id"], swamp["id"], True, 92, 21)
+    assert CardRecognizer.has_decisive_symbol_match(swamp["id"], swamp["id"], 91, 18)
+    assert not CardRecognizer.has_decisive_symbol_match(swamp["id"], "rtr-swamp-261", 94, 20)
     # A decisive illustration match within an exact set remains safe even when
     # the tiny collector-number footer is unreadable or misread.
     assert CardRecognizer.has_safe_basic_land_match(
@@ -1114,17 +1125,81 @@ def test_basic_land_auto_add_requires_decisive_exact_art_evidence():
         swamp["id"], swamp["id"], True, 92, 21, "264", "rtr", 1.0, 1.0
     )
     assert CardRecognizer.has_safe_basic_land_match(
+        swamp["id"], swamp["id"], True, 96.9, 11.2, "264", "rtr", 1.0, 1.0
+    )
+    assert not CardRecognizer.has_safe_basic_land_match(
+        swamp["id"], swamp["id"], True, 96.9, 9.9, "264", "rtr", 1.0, 1.0
+    )
+    assert CardRecognizer.has_safe_basic_land_match(
         swamp["id"], swamp["id"], True, 92, 21, "261", "rtr", 0.0, 1.0
     )
     # Older cards may not print a readable set code. A decisive set-symbol
     # region plus the decisive artwork match provides the same independent proof.
     assert CardRecognizer.has_safe_basic_land_match(
-        swamp["id"], swamp["id"], True, 92, 21, None, None, 0.0, 0.0,
-        swamp["id"], 91, 18,
+        swamp["id"],
+        swamp["id"],
+        True,
+        92,
+        21,
+        None,
+        None,
+        0.0,
+        0.0,
+        swamp["id"],
+        91,
+        18,
     )
     assert not CardRecognizer.has_safe_basic_land_match(
-        swamp["id"], swamp["id"], True, 92, 21, None, None, 0.0, 0.0,
-        "rtr-swamp-261", 94, 20,
+        swamp["id"],
+        swamp["id"],
+        True,
+        92,
+        21,
+        None,
+        None,
+        0.0,
+        0.0,
+        "rtr-swamp-261",
+        94,
+        20,
+    )
+    # Identical symbols on several lands in one set must not cancel each other.
+    # Once the symbol proves the set, compare artwork only within that set.
+    assert CardRecognizer.has_safe_basic_land_match(
+        swamp["id"],
+        "same-art-reprint",
+        True,
+        95,
+        2,
+        None,
+        None,
+        0.0,
+        0.0,
+        card_set="rtr",
+        symbol_top_set="rtr",
+        symbol_set_score=93,
+        symbol_set_margin=19,
+        set_art_top_id=swamp["id"],
+        set_art_score=94,
+        set_art_margin=20,
+    )
+    assert not CardRecognizer.has_safe_basic_land_match(
+        swamp["id"],
+        "same-art-reprint",
+        True,
+        95,
+        2,
+        None,
+        None,
+        0.0,
+        0.0,
+        card_set="rtr",
+        symbol_top_set="isd",
+        symbol_set_score=93,
+        symbol_set_margin=19,
+        set_art_top_id=swamp["id"],
+        set_art_score=94,
+        set_art_margin=20,
     )
 
 
@@ -1156,9 +1231,7 @@ def test_catalog_fallback_recovers_canonical_name_with_exact_printing():
 
     recognizer = CardRecognizer.__new__(CardRecognizer)
     recognizer.provider = CatalogProvider()
-    cards = asyncio.run(
-        recognizer._lookup_cards("Consecrafed by Blood", "087", "ori", None, "en")
-    )
+    cards = asyncio.run(recognizer._lookup_cards("Consecrafed by Blood", "087", "ori", None, "en"))
 
     assert cards == [card]
     assert ('!"Consecrated by Blood" cn:087', "ori", "en") in recognizer.provider.calls
@@ -1202,9 +1275,7 @@ def test_intro_pack_footer_selects_promo_printing_not_regular_set_card():
     recognizer = CardRecognizer.__new__(CardRecognizer)
     recognizer.provider = Provider()
     cards = asyncio.run(
-        recognizer._lookup_cards(
-            "Kothophed, Soul Hoarder", "104", "ori", None, "en", "intropack"
-        )
+        recognizer._lookup_cards("Kothophed, Soul Hoarder", "104", "ori", None, "en", "intropack")
     )
 
     assert cards == [intro_pack]
@@ -1218,9 +1289,7 @@ def test_intro_pack_footer_selects_promo_printing_not_regular_set_card():
 def test_intro_pack_hint_tolerates_footer_ocr_damage():
     from mtglogger.services.recognition import CardRecognizer
 
-    assert CardRecognizer.promo_type_hint("104/272RInroOPack\nORIENTIANHUAX") == (
-        "intropack"
-    )
+    assert CardRecognizer.promo_type_hint("104/272RInroOPack\nORIENTIANHUAX") == ("intropack")
 
 
 def test_weak_internal_crop_recovers_from_original_camera_frame():
@@ -1286,25 +1355,17 @@ def test_damaged_collector_number_can_uniquely_identify_printing():
 
     # Touch of Moonglove 123/272 was read as 23/272. The suffix remains a
     # strong match and no competing printing comes close.
-    assert CardRecognizer.has_unique_printing_signal(
-        1.0, "23", 0.8, [0.44, 0.33], None, "ori", 1
-    )
+    assert CardRecognizer.has_unique_printing_signal(1.0, "23", 0.8, [0.44, 0.33], None, "ori", 1)
     # Equal printing scores (Death's Approach #62 vs #222 with no footer) are
     # deliberately not enough to add anything automatically.
-    assert not CardRecognizer.has_unique_printing_signal(
-        1.0, None, 0.45, [0.45], None, "gtc", 1
-    )
+    assert not CardRecognizer.has_unique_printing_signal(1.0, None, 0.45, [0.45], None, "gtc", 1)
 
 
 def test_exact_set_signal_can_uniquely_identify_printing():
     from mtglogger.services.recognition import CardRecognizer
 
-    assert CardRecognizer.has_unique_printing_signal(
-        1.0, None, 0.45, [0.45], "ORI", "ori", 1
-    )
-    assert not CardRecognizer.has_unique_printing_signal(
-        1.0, None, 0.45, [0.45], "ORI", "ori", 2
-    )
+    assert CardRecognizer.has_unique_printing_signal(1.0, None, 0.45, [0.45], "ORI", "ori", 1)
+    assert not CardRecognizer.has_unique_printing_signal(1.0, None, 0.45, [0.45], "ORI", "ori", 2)
 
 
 def test_rules_recovery_does_not_discard_independent_printing_signal():
@@ -1444,9 +1505,7 @@ def test_non_english_lookup_falls_back_to_exact_collector_and_language():
 
     recognizer = CardRecognizer.__new__(CardRecognizer)
     recognizer.provider = LocalizedProvider()
-    cards = asyncio.run(
-        recognizer._lookup_cards("稲妻", "188", "fdn", None, "ja")
-    )
+    cards = asyncio.run(recognizer._lookup_cards("稲妻", "188", "fdn", None, "ja"))
     assert cards == [{"id": "japanese-printing"}]
     assert recognizer.provider.calls == [
         ('!"稲妻" cn:188', "fdn", "ja"),
@@ -1534,9 +1593,7 @@ def test_ocr_hints_do_not_invent_title_from_type_or_rules_text():
 def test_ocr_hints_recovers_basic_land_name_from_type_line():
     from mtglogger.services.recognition import CardRecognizer
 
-    title, number, set_code, year = CardRecognizer.hints(
-        "Basic Land -Swamp\nORI"
-    )
+    title, number, set_code, year = CardRecognizer.hints("Basic Land -Swamp\nORI")
 
     assert title == "Swamp"
     assert number is None
@@ -1550,9 +1607,7 @@ def test_printing_descriptors_require_one_ocr_established_card_identity():
     languish = {"name": "Languish"}
     number_only_candidates = [languish, {"name": "Bone Splinters"}]
 
-    assert CardRecognizer.has_constrained_visual_identity(
-        "Languish", [languish], {"Languish"}
-    )
+    assert CardRecognizer.has_constrained_visual_identity("Languish", [languish], {"Languish"})
     assert not CardRecognizer.has_constrained_visual_identity(
         None,
         number_only_candidates,
@@ -1627,8 +1682,7 @@ def test_ocr_hints_read_set_code_when_language_and_artist_are_joined():
     from mtglogger.services.recognition import CardRecognizer
 
     title, number, set_code, year = CardRecognizer.hints(
-        "Touch of Moonglove\nInstant\n123/272C\n&\n"
-        "2015Wuarsoh\nORI·ENSCOTTMURPHY"
+        "Touch of Moonglove\nInstant\n123/272C\n&\n2015Wuarsoh\nORI·ENSCOTTMURPHY"
     )
     assert title == "Touch of Moonglove"
     assert number == "123"
@@ -1639,9 +1693,7 @@ def test_ocr_hints_read_set_code_when_language_and_artist_are_joined():
 def test_ocr_hints_accept_plus_or_missing_set_language_separator():
     from mtglogger.services.recognition import CardRecognizer
 
-    assert CardRecognizer.hints(
-        "Gurmag Swiftwing\n074/269U\nKTK+ENJEFFSIMPSON"
-    )[2] == "ktk"
+    assert CardRecognizer.hints("Gurmag Swiftwing\n074/269U\nKTK+ENJEFFSIMPSON")[2] == "ktk"
     title, number, set_code, _ = CardRecognizer.hints(
         "Korhophed,Soul Hoarder\n104/272RintroPack\nORIENTIANHUAX"
     )
@@ -1703,8 +1755,7 @@ def test_exact_joined_footer_reaches_near_certain_auto_add_confidence():
     recognizer.decode = lambda _raw: image
     recognizer.rectify = lambda decoded: decoded
     recognizer.extract_text = lambda _image: (
-        "Touch of Moonglove\nInstant\n123/272C\n&\n"
-        "2015Wuarsoh\nORI·ENSCOTTMURPHY"
+        "Touch of Moonglove\nInstant\n123/272C\n&\n2015Wuarsoh\nORI·ENSCOTTMURPHY"
     )
     recognizer._visual_matches = lambda _scan_hash, _set_code: []
 
@@ -1923,9 +1974,7 @@ def test_confirmed_scan_is_preserved_as_durable_labeled_evidence(tmp_path, monke
     source = tmp_path / "capture.jpg"
     source.write_bytes(b"physical webcam evidence")
     corpus = tmp_path / "corpus"
-    monkeypatch.setattr(
-        evaluation, "get_settings", lambda: SimpleNamespace(evaluation_dir=corpus)
-    )
+    monkeypatch.setattr(evaluation, "get_settings", lambda: SimpleNamespace(evaluation_dir=corpus))
     candidate = Candidate(
         scryfall_id="00000000-0000-0000-0000-000000000259",
         name="Swamp",
@@ -1935,9 +1984,7 @@ def test_confirmed_scan_is_preserved_as_durable_labeled_evidence(tmp_path, monke
         confidence=99.5,
     )
 
-    preserved = evaluation.preserve_confirmed_scan(
-        source, "review-259", candidate, "en"
-    )
+    preserved = evaluation.preserve_confirmed_scan(source, "review-259", candidate, "en")
 
     assert preserved.read_bytes() == source.read_bytes()
     manifest = json.loads((corpus / "manifest.json").read_text())

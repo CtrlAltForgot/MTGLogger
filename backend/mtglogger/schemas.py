@@ -220,6 +220,18 @@ class DeckRead(DeckCreate):
     entries: list[DeckEntryRead]
 
 
+class DeckFormatSuggestion(BaseModel):
+    format: str
+    confidence: str
+    reasons: list[str]
+
+
+class DeckFormatSuggestions(BaseModel):
+    complete_deck: bool
+    card_count: int
+    suggestions: list[DeckFormatSuggestion]
+
+
 class AvailableCard(BaseModel):
     inventory: InventoryRead
     assigned_quantity: int

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Add, ArrowBack, Delete, Edit, Remove, Search } from "@mui/icons-material";
+import { Add, ArrowBack, AutoAwesome, CloudUpload, Delete, Edit, Remove, Search } from "@mui/icons-material";
 import {
   Alert,
   Box,
@@ -22,9 +22,9 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import { request } from "../api";
+import { API, request } from "../api";
 import { CardName } from "../components/CardDetails";
-import type { AvailableCard, AvailablePage, Deck } from "../types";
+import type { AvailableCard, AvailablePage, Deck, DeckFormatSuggestions } from "../types";
 
 export default function Decks() {
   const [decks, setDecks] = useState<Deck[]>([]),
@@ -37,6 +37,9 @@ export default function Decks() {
     [deleting, setDeleting] = useState(false),
     [error, setError] = useState<string>(),
     [busy, setBusy] = useState(false);
+  const [coverFile,setCoverFile]=useState<File>();
+  const [formatSuggestions,setFormatSuggestions]=useState<DeckFormatSuggestions>();
+  const [detectingFormat,setDetectingFormat]=useState(false);
   const [quantities, setQuantities] = useState<Record<string, number>>({});
   const [availableTotal, setAvailableTotal] = useState(0),
     [availablePage, setAvailablePage] = useState(0),
@@ -124,16 +127,21 @@ export default function Decks() {
     if (!selected) return;
     setForm({name:selected.name,format:selected.format||"",description:selected.description||"",image_url:selected.image_url||""});
     setEditing(true);
+    setCoverFile(undefined);
+    setFormatSuggestions(undefined);
   };
   const saveDeck = async () => {
     if (!selected) return;
     setBusy(true);
     try {
-      replaceDeck(await request<Deck>(`/decks/${selected.id}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:form.name,format:form.format||null,description:form.description||null,image_url:form.image_url||null})}));
+      let updated=await request<Deck>(`/decks/${selected.id}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:form.name,format:form.format||null,description:form.description||null,image_url:form.image_url||null})});
+      if(coverFile){const body=new FormData();body.append('image',coverFile);updated=await request<Deck>(`/decks/${selected.id}/image`,{method:'POST',body})}
+      replaceDeck(updated);
       setEditing(false);
     } catch (e) { setError(e instanceof Error?e.message:"Could not update deck"); }
     finally { setBusy(false); }
   };
+  const detectFormat=async()=>{if(!selected)return;setDetectingFormat(true);setError(undefined);try{setFormatSuggestions(await request<DeckFormatSuggestions>(`/decks/${selected.id}/format-suggestions`))}catch(e){setError(e instanceof Error?e.message:'Could not analyze deck format')}finally{setDetectingFormat(false)}};
   const addSelected = async () => {
     if (!selected || !chosen.size) return;
     setBusy(true);
@@ -284,7 +292,7 @@ export default function Decks() {
                       {deck.description}
                     </Typography>
                   )}
-                  <Tooltip title="Edit deck"><IconButton aria-label={`Edit ${deck.name}`} onClick={event=>{event.stopPropagation();setSelectedId(deck.id);setForm({name:deck.name,format:deck.format||"",description:deck.description||"",image_url:deck.image_url||""});setEditing(true)}} sx={{position:"absolute",right:8,bottom:8}}><Edit/></IconButton></Tooltip>
+                  <Tooltip title="Edit deck"><IconButton aria-label={`Edit ${deck.name}`} onClick={event=>{event.stopPropagation();setSelectedId(deck.id);setForm({name:deck.name,format:deck.format||"",description:deck.description||"",image_url:deck.image_url||""});setCoverFile(undefined);setFormatSuggestions(undefined);setEditing(true)}} sx={{position:"absolute",left:8,bottom:8}}><Edit/></IconButton></Tooltip>
                 </CardContent>
               </Card>
             </Grid>
@@ -590,7 +598,7 @@ export default function Decks() {
           </Button>
         </DialogActions>
       </Dialog>
-      <DeckDialog open={editing} title="Edit deck" form={form} setForm={setForm} busy={busy} close={()=>setEditing(false)} submit={saveDeck} submitLabel="Save changes"/>
+      <DeckDialog open={editing} title="Edit deck" form={form} setForm={setForm} busy={busy} close={()=>setEditing(false)} submit={saveDeck} submitLabel="Save changes" coverFile={coverFile} setCoverFile={setCoverFile} suggestions={formatSuggestions} detectingFormat={detectingFormat} detectFormat={detectFormat}/>
     </>
   );
 }
@@ -601,7 +609,12 @@ function DeckArtwork({deck}:{deck:Deck}){
   const colors=[...new Set(deck.entries.flatMap(entry=>entry.inventory.color_identity.split('')).filter(Boolean))]
   const palette:Record<string,string>={W:'#eee4bf',U:'#4ea7d8',B:'#44384f',R:'#d85845',G:'#4f8a59'}
   const background=colors.length?`linear-gradient(135deg,${colors.map(color=>palette[color]||'#6c6265').join(',')})`:'linear-gradient(135deg,#322428,#130d0f)'
-  return <Box sx={{height:120,background,position:'relative',overflow:'hidden'}}>{deck.image_url&&<Box component="img" src={deck.image_url} alt="" sx={{width:'100%',height:'100%',objectFit:'cover'}}/>}<Box sx={{position:'absolute',inset:0,background:'linear-gradient(0deg,rgba(10,6,7,.66),transparent 70%)'}}/></Box>
+  const pool=deck.entries.filter(entry=>entry.inventory.image_url)
+  const seed=[...deck.id].reduce((value,character)=>value+character.charCodeAt(0),0)
+  const spreadCount=Math.min(7,pool.length)
+  const cards=pool.length<=spreadCount?pool:Array.from({length:spreadCount},(_,index)=>pool[(seed+index*997)%pool.length])
+  const custom=deck.image_url?.startsWith('/api/')?`${API}${deck.image_url}`:deck.image_url
+  return <Box sx={{height:140,background,position:'relative',overflow:'hidden'}}>{custom?<Box component="img" src={custom} alt="" sx={{width:'100%',height:'100%',objectFit:'cover'}}/>:<Box sx={{position:'absolute',inset:0,display:'flex',justifyContent:'center',alignItems:'center'}}>{cards.map((entry,index)=>{const midpoint=(cards.length-1)/2;const offset=index-midpoint;return <Box key={entry.id} component="img" src={entry.inventory.image_url!} alt="" sx={{position:'absolute',width:82,borderRadius:1,boxShadow:'0 8px 22px rgba(0,0,0,.6)',transform:`translate(${offset*42}px, ${Math.abs(offset)*5+12}px) rotate(${offset*5.5}deg)`,transformOrigin:'50% 85%',zIndex:index}}/>})}</Box>}<Box sx={{position:'absolute',inset:0,background:'linear-gradient(0deg,rgba(10,6,7,.76),transparent 72%)'}}/></Box>
 }
 
 function CreateDialog({
@@ -622,7 +635,8 @@ function CreateDialog({
   return <DeckDialog open={open} title="Create a deck" form={form} setForm={setForm} busy={busy} close={close} submit={create} submitLabel="Create deck"/>
 }
 
-function DeckDialog({open,title,form,setForm,busy,close,submit,submitLabel}:{open:boolean;title:string;form:DeckForm;setForm:(form:DeckForm)=>void;busy:boolean;close:()=>void;submit:()=>void;submitLabel:string}){
+function DeckDialog({open,title,form,setForm,busy,close,submit,submitLabel,coverFile,setCoverFile,suggestions,detectingFormat,detectFormat}:{open:boolean;title:string;form:DeckForm;setForm:(form:DeckForm)=>void;busy:boolean;close:()=>void;submit:()=>void;submitLabel:string;coverFile?:File;setCoverFile?:(file?:File)=>void;suggestions?:DeckFormatSuggestions;detectingFormat?:boolean;detectFormat?:()=>void}){
+  const acceptCover=(files:FileList|null)=>{const file=files?.[0];if(file&&setCoverFile)setCoverFile(file)}
   return (
     <Dialog open={open} onClose={close} fullWidth maxWidth="sm">
       <DialogTitle>{title}</DialogTitle>
@@ -635,18 +649,15 @@ function DeckDialog({open,title,form,setForm,busy,close,submit,submitLabel}:{ope
             onChange={(e) => setForm({ ...form, image_url: e.target.value })}
             helperText="Leave blank to use a color-identity banner generated from the deck."
           />
+          {setCoverFile&&<Box component="label" onDragOver={event=>event.preventDefault()} onDrop={event=>{event.preventDefault();acceptCover(event.dataTransfer.files)}} sx={{border:'1px dashed',borderColor:'divider',borderRadius:2,p:2,textAlign:'center',cursor:'pointer','&:hover':{borderColor:'primary.main',backgroundColor:'action.hover'}}}><CloudUpload color="primary"/><Typography fontWeight={800}>{coverFile?coverFile.name:'Drop a cover image here'}</Typography><Typography variant="caption" color="text.secondary">or click to choose a JPEG, PNG, or WebP</Typography><input hidden type="file" accept="image/jpeg,image/png,image/webp" onChange={event=>acceptCover(event.target.files)}/></Box>}
           <TextField
             autoFocus
             label="Deck name"
             value={form.name}
             onChange={(e) => setForm({ ...form, name: e.target.value })}
           />
-          <TextField
-            label="Format"
-            placeholder="Commander, Modern, Casual…"
-            value={form.format}
-            onChange={(e) => setForm({ ...form, format: e.target.value })}
-          />
+          <Stack direction={{xs:'column',sm:'row'}} spacing={1} alignItems="stretch"><TextField sx={{flex:1}} label="Format" placeholder="Commander, Modern, Casual…" value={form.format} onChange={(e) => setForm({ ...form, format: e.target.value })}/>{detectFormat&&<Button sx={{minWidth:190}} variant="outlined" startIcon={<AutoAwesome/>} disabled={detectingFormat} onClick={detectFormat}>{detectingFormat?'Analyzing…':'Identify format'}</Button>}</Stack>
+          {suggestions&&<Box><Typography variant="body2" color="text.secondary" mb={1}>{suggestions.complete_deck?'These formats match both legality and deck structure.':`This ${suggestions.card_count}-card deck may be incomplete, so these are possibilities.`}</Typography><Stack direction="row" gap={1} flexWrap="wrap">{suggestions.suggestions.slice(0,6).map(item=><Tooltip key={item.format} title={item.reasons.join(' ')}><Chip clickable color={item.confidence==='high'?'success':'default'} label={`${item.format}${item.confidence==='possible'?' · possible':''}`} onClick={()=>setForm({...form,format:item.format})}/></Tooltip>)}</Stack>{!suggestions.suggestions.length&&<Typography color="warning.main">No supported current format fits every stored card.</Typography>}</Box>}
           <TextField
             label="Description"
             multiline

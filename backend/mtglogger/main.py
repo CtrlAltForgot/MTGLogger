@@ -19,6 +19,7 @@ async def lifespan(_: FastAPI):
     Base.metadata.create_all(bind=engine)
     migrate_schema()
     get_settings().image_dir.mkdir(parents=True, exist_ok=True)
+    get_settings().deck_image_dir.mkdir(parents=True, exist_ok=True)
     get_settings().reference_image_dir.mkdir(parents=True, exist_ok=True)
     price_task = asyncio.create_task(price_refresh_loop(get_settings().price_refresh_hours))
     reference_task = (

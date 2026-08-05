@@ -196,9 +196,7 @@ class CardRecognizer:
         # of the physical card edge. Preserve the identifying footer margin.
         ordered = CardRecognizer.expand_quad(ordered, image.shape)
         target = np.array([[0, 0], [599, 0], [599, 839], [0, 839]], dtype="float32")
-        return cv2.warpPerspective(
-            image, cv2.getPerspectiveTransform(ordered, target), (600, 840)
-        )
+        return cv2.warpPerspective(image, cv2.getPerspectiveTransform(ordered, target), (600, 840))
 
     def extract_text(self, image: np.ndarray) -> str:
         if self._ocr is None:
@@ -305,18 +303,13 @@ class CardRecognizer:
         # "© 1993-2011 Wizards").  The final/latest year identifies the
         # physical printing; taking the first year incorrectly labels every
         # such card as a 1993 printing.
-        years = [
-            int(value)
-            for value in re.findall(r"(?<!\d)((?:19|20)\d{2})(?!\d)", text)
-        ]
+        years = [int(value) for value in re.findall(r"(?<!\d)((?:19|20)\d{2})(?!\d)", text)]
         copyright_year = max(years) if years else None
         if copyright_year is None:
             # Tiny copyright text often loses "20" while retaining a marker
             # and the final two digits (for example ©2013 -> "co13").
             footer = "\n".join(lines[-5:])
-            short_year = re.search(
-                r"(?:©|&|co|c|o)[^0-9\n]{0,2}([0-2]\d)(?!\d)", footer, re.I
-            )
+            short_year = re.search(r"(?:©|&|co|c|o)[^0-9\n]{0,2}([0-2]\d)(?!\d)", footer, re.I)
             if short_year:
                 inferred = 2000 + int(short_year.group(1))
                 if 1993 <= inferred <= 2030:
@@ -352,10 +345,7 @@ class CardRecognizer:
             language_tokens = set(languages.split("|"))
             for line in reversed(lines[-5:]):
                 token = line.strip()
-                if (
-                    re.fullmatch(r"[A-Z][A-Z0-9]{1,4}", token)
-                    and token not in language_tokens
-                ):
+                if re.fullmatch(r"[A-Z][A-Z0-9]{1,4}", token) and token not in language_tokens:
                     set_code = token.lower()
                     break
         number = None
@@ -395,12 +385,7 @@ class CardRecognizer:
                 # Single-digit bare values are much more likely to be a mana
                 # cost or power/toughness than a collector number. Exact
                 # single-digit collectors still work through the slash form.
-                if (
-                    numeric < 10
-                    or 1900 <= numeric <= 2100
-                    or "©" in line
-                    or "Wizards" in line
-                ):
+                if numeric < 10 or 1900 <= numeric <= 2100 or "©" in line or "Wizards" in line:
                     continue
                 number = value
                 break
@@ -457,11 +442,7 @@ class CardRecognizer:
             )
 
         title = next(
-            (
-                line
-                for line in title_lines
-                if plausible_title(line)
-            ),
+            (line for line in title_lines if plausible_title(line)),
             None,
         )
         # A basic land's type line contains its actual card name after the dash.
@@ -508,8 +489,7 @@ class CardRecognizer:
             return 0.0
         names = [catalog_name, *catalog_name.split(" // ")]
         return max(
-            SequenceMatcher(None, source, cls.normalized_name(name)).ratio()
-            for name in names
+            SequenceMatcher(None, source, cls.normalized_name(name)).ratio() for name in names
         )
 
     @classmethod
@@ -628,10 +608,7 @@ class CardRecognizer:
             except (TimeoutError, httpx.HTTPError, RuntimeError, ValueError):
                 return None, []
         ranked = sorted(
-            (
-                (card, self.oracle_similarity(text, card.get("oracle_text", "")))
-                for card in matches
-            ),
+            ((card, self.oracle_similarity(text, card.get("oracle_text", ""))) for card in matches),
             key=lambda item: item[1],
             reverse=True,
         )
@@ -660,10 +637,7 @@ class CardRecognizer:
         for row in rows:
             key = row.oracle_id or row.name.casefold()
             unique.setdefault(key, row)
-        return [
-            {"name": row.name, "oracle_text": row.oracle_text or ""}
-            for row in unique.values()
-        ]
+        return [{"name": row.name, "oracle_text": row.oracle_text or ""} for row in unique.values()]
 
     @classmethod
     def promo_type_hint(cls, text: str) -> str | None:
@@ -685,8 +659,7 @@ class CardRecognizer:
                 (name, cls.card_name_similarity(title, name))
                 for name in names
                 if any(
-                    abs(len(cls.normalized_name(face)) - len(query))
-                    <= max(5, len(query) // 2)
+                    abs(len(cls.normalized_name(face)) - len(query)) <= max(5, len(query) // 2)
                     for face in [name, *name.split(" // ")]
                 )
             ),
@@ -730,10 +703,7 @@ class CardRecognizer:
             return True
         if not title or not cards:
             return False
-        title_scores = [
-            cls.card_name_similarity(title, card["name"])
-            for card in cards
-        ]
+        title_scores = [cls.card_name_similarity(title, card["name"]) for card in cards]
         best_index = max(range(len(cards)), key=title_scores.__getitem__)
         if title_scores[best_index] < 0.9:
             return False
@@ -748,9 +718,7 @@ class CardRecognizer:
             return True
         if copyright_year:
             matching_years = [
-                card
-                for card in cards
-                if int(card.get("released_at", "0000")[:4]) == copyright_year
+                card for card in cards if int(card.get("released_at", "0000")[:4]) == copyright_year
             ]
             return len(matching_years) == 1
         return False
@@ -776,10 +744,7 @@ class CardRecognizer:
     def has_strong_card_identity(cls, title: str | None, cards: list[dict]) -> bool:
         if not title or not cards:
             return False
-        return any(
-            cls.card_name_similarity(title, card["name"]) >= 0.90
-            for card in cards
-        )
+        return any(cls.card_name_similarity(title, card["name"]) >= 0.90 for card in cards)
 
     @classmethod
     def has_exact_footer_match(
@@ -805,9 +770,7 @@ class CardRecognizer:
     ) -> bool:
         """Allow printing-level visual reranking only after one name is established."""
         return bool(
-            len(identity_names) == 1
-            and cards
-            and cls.has_strong_card_identity(title, cards)
+            len(identity_names) == 1 and cards and cls.has_strong_card_identity(title, cards)
         )
 
     @staticmethod
@@ -825,12 +788,7 @@ class CardRecognizer:
         # independent set signal is still printing-specific evidence.
         if title_score >= 0.93 and number_score == 1.0 and set_score >= 0.78:
             return max(confidence, 98.5)
-        if (
-            title_score >= 0.9
-            and number_score >= 0.78
-            and set_score >= 0.78
-            and year_score == 1.0
-        ):
+        if title_score >= 0.9 and number_score >= 0.78 and set_score >= 0.78 and year_score == 1.0:
             return max(confidence, 98.5)
         return confidence
 
@@ -847,10 +805,7 @@ class CardRecognizer:
         unique_number = bool(
             number
             and number_score >= 0.78
-            and (
-                not competing_number_scores
-                or number_score - max(competing_number_scores) >= 0.12
-            )
+            and (not competing_number_scores or number_score - max(competing_number_scores) >= 0.12)
         )
         unique_set = bool(
             printed_set_code
@@ -929,9 +884,7 @@ class CardRecognizer:
             if local_cards:
                 return local_cards
 
-        async def search_variants(
-            candidate_title: str, *, relaxed: bool = False
-        ) -> list[dict]:
+        async def search_variants(candidate_title: str, *, relaxed: bool = False) -> list[dict]:
             title_query = f'!"{candidate_title}"'
             if promo_type:
                 title_query += " is:promo"
@@ -977,25 +930,19 @@ class CardRecognizer:
                 # is more reliable than forcing a misspelled OCR title into the
                 # initial query.
                 if not cards and number and printed_set_code and not promo_type:
-                    cards = await self.provider.search(
-                        f"cn:{number}", printed_set_code, language
-                    )
+                    cards = await self.provider.search(f"cn:{number}", printed_set_code, language)
                 # Localized title text is not consistently searchable through
                 # Scryfall's canonical-name field. Set + collector number + chosen
                 # language identifies the printing without guessing an English ID.
                 if not cards and number and language != "en" and preferred_set:
-                    cards = await self.provider.search(
-                        f"cn:{number}", preferred_set, language
-                    )
+                    cards = await self.provider.search(f"cn:{number}", preferred_set, language)
                 if not cards and title and hasattr(self.provider, "fuzzy_name"):
                     canonical_name = await self.provider.fuzzy_name(title)
                     if canonical_name:
                         cards = await search_variants(canonical_name, relaxed=True)
                 if not cards and title and hasattr(self.provider, "card_names"):
                     catalog = await self.provider.card_names()
-                    closest = await asyncio.to_thread(
-                        self.closest_catalog_names, title, catalog
-                    )
+                    closest = await asyncio.to_thread(self.closest_catalog_names, title, catalog)
                     for canonical_name, _similarity in closest:
                         cards = await search_variants(canonical_name, relaxed=True)
                         if cards:
@@ -1028,8 +975,7 @@ class CardRecognizer:
                     rows = list(
                         db.scalars(
                             select(CardReference).where(
-                                func.lower(CardReference.name)
-                                == closest[0][0].casefold()
+                                func.lower(CardReference.name) == closest[0][0].casefold()
                             )
                         )
                     )
@@ -1040,14 +986,8 @@ class CardRecognizer:
         exact = [
             reference
             for reference in rows
-            if (
-                not preferred_set
-                or cls.set_code_score(preferred_set, reference.set_code) == 1.0
-            )
-            and (
-                not number
-                or cls.collector_score(number, reference.collector_number) == 1.0
-            )
+            if (not preferred_set or cls.set_code_score(preferred_set, reference.set_code) == 1.0)
+            and (not number or cls.collector_score(number, reference.collector_number) == 1.0)
         ]
         selected = exact or rows
         return [cls._reference_card(reference) for reference in selected[:24]]
@@ -1061,16 +1001,10 @@ class CardRecognizer:
             "set": reference.set_code,
             "set_name": reference.set_name,
             "collector_number": reference.collector_number,
-            "released_at": (
-                reference.released_at.isoformat() if reference.released_at else "0000"
-            ),
+            "released_at": (reference.released_at.isoformat() if reference.released_at else "0000"),
             "image_uris": {"normal": reference.image_url},
             "prices": {
-                "usd": (
-                    str(reference.market_price)
-                    if reference.market_price is not None
-                    else None
-                )
+                "usd": (str(reference.market_price) if reference.market_price is not None else None)
             },
             "lang": reference.language or "en",
             "oracle_id": reference.oracle_id,
@@ -1080,9 +1014,7 @@ class CardRecognizer:
         }
 
     @classmethod
-    def _lookup_local_printing_family(
-        cls, name: str, language: str
-    ) -> tuple[list[dict], int]:
+    def _lookup_local_printing_family(cls, name: str, language: str) -> tuple[list[dict], int]:
         """Return a printing family from the completed local catalog.
 
         Exact-print recognition must never wait behind Scryfall once the same
@@ -1095,10 +1027,12 @@ class CardRecognizer:
             with SessionLocal() as db:
                 rows = list(
                     db.scalars(
-                        select(CardReference).where(
+                        select(CardReference)
+                        .where(
                             func.lower(CardReference.name) == name.casefold(),
                             CardReference.language == language,
-                        ).order_by(
+                        )
+                        .order_by(
                             CardReference.released_at.desc(),
                             CardReference.set_code,
                             CardReference.collector_number,
@@ -1110,9 +1044,7 @@ class CardRecognizer:
         return [cls._reference_card(reference) for reference in rows], len(rows)
 
     @classmethod
-    def _lookup_local_cards_by_number(
-        cls, number: str, preferred_set: str | None
-    ) -> list[dict]:
+    def _lookup_local_cards_by_number(cls, number: str, preferred_set: str | None) -> list[dict]:
         normalized = number.casefold().lstrip("0") or "0"
         try:
             with SessionLocal() as db:
@@ -1127,11 +1059,7 @@ class CardRecognizer:
         except SQLAlchemyError:
             return []
         if preferred_set:
-            preferred = [
-                row
-                for row in rows
-                if row.set_code.casefold() == preferred_set.casefold()
-            ]
+            preferred = [row for row in rows if row.set_code.casefold() == preferred_set.casefold()]
             rows = preferred or rows
         return [
             {
@@ -1146,9 +1074,7 @@ class CardRecognizer:
                 "image_uris": {"normal": reference.image_url},
                 "prices": {
                     "usd": (
-                        str(reference.market_price)
-                        if reference.market_price is not None
-                        else None
+                        str(reference.market_price) if reference.market_price is not None else None
                     )
                 },
                 "lang": "en",
@@ -1187,9 +1113,7 @@ class CardRecognizer:
                 )
             )
             cards = await lookup_task
-            exact_footer_card = self.unique_exact_footer_card(
-                number, printed_set_code, cards
-            )
+            exact_footer_card = self.unique_exact_footer_card(number, printed_set_code, cards)
             if title is None and exact_footer_card:
                 # Populate the title from the uniquely identified local
                 # printing so downstream scoring follows the same path as a
@@ -1200,25 +1124,17 @@ class CardRecognizer:
             # practice: one mistaken footer digit silently selects a different
             # artwork from the same set. Never let footer OCR bypass independent
             # artwork verification for those cards.
-            exact_land_needs_art = bool(
-                exact_footer_card and self.is_basic_land(exact_footer_card)
-            )
+            exact_land_needs_art = bool(exact_footer_card and self.is_basic_land(exact_footer_card))
             if exact_footer_card and not exact_land_needs_art:
                 scan_fingerprints = {}
                 visual_matches = []
             else:
-                scan_fingerprints = await asyncio.to_thread(
-                    visual_fingerprints, corrected
-                )
+                scan_fingerprints = await asyncio.to_thread(visual_fingerprints, corrected)
                 visual_matches = await asyncio.to_thread(
                     self._visual_matches,
                     scan_fingerprints,
                     printed_set_code or box_set_code,
-                    *(
-                        [ignored_visual_hashes]
-                        if ignored_visual_hashes is not None
-                        else []
-                    ),
+                    *([ignored_visual_hashes] if ignored_visual_hashes is not None else []),
                 )
             descriptor_image = corrected
             if not self.has_strong_lookup_evidence(
@@ -1315,23 +1231,16 @@ class CardRecognizer:
                 # Keep visual candidates from the best localized crop. Visual
                 # evidence is capped below auto-add, so it can rescue a damaged
                 # OCR title without silently accepting a bad contour.
-            identity_names = {
-                card["name"] for card in cards
-            } or ({title} if title else set())
+            identity_names = {card["name"] for card in cards} or ({title} if title else set())
             identity_is_constrained = self.has_constrained_visual_identity(
                 title, cards, identity_names
             )
-            exact_footer_match = self.has_exact_footer_match(
-                title, number, printed_set_code, cards
-            )
+            exact_footer_match = self.has_exact_footer_match(title, number, printed_set_code, cards)
             exact_footer_can_skip_art = exact_footer_match and not any(
                 self.is_basic_land(card) for card in cards
             )
             family_complete = False
-            if (
-                identity_is_constrained
-                and not exact_footer_can_skip_art
-            ):
+            if identity_is_constrained and not exact_footer_can_skip_art:
                 try:
                     family_name = next(iter(identity_names))
                     family_cards, family_total = await asyncio.to_thread(
@@ -1339,24 +1248,15 @@ class CardRecognizer:
                         family_name,
                         language,
                     )
-                    if (
-                        not family_cards
-                        and hasattr(self.provider, "printing_family")
-                    ):
+                    if not family_cards and hasattr(self.provider, "printing_family"):
                         async with asyncio.timeout(3.0):
-                            family_cards, family_total = (
-                                await self.provider.printing_family(
-                                    family_name, language
-                                )
+                            family_cards, family_total = await self.provider.printing_family(
+                                family_name, language
                             )
                     if family_cards:
-                        family_complete = bool(
-                            len(family_cards) == family_total
-                        )
+                        family_complete = bool(len(family_cards) == family_total)
                         known_ids = {card["id"] for card in cards}
-                        cards.extend(
-                            card for card in family_cards if card["id"] not in known_ids
-                        )
+                        cards.extend(card for card in family_cards if card["id"] not in known_ids)
                         if family_complete:
                             await ensure_reference_profiles(self.provider, family_cards)
                 except (TimeoutError, httpx.HTTPError, RuntimeError, ValueError):
@@ -1446,13 +1346,26 @@ class CardRecognizer:
             reference.scryfall_id: score for reference, score in descriptor_symbol_matches
         }
         descriptor_symbol_top_id = (
-            descriptor_symbol_matches[0][0].scryfall_id
-            if descriptor_symbol_matches else None
+            descriptor_symbol_matches[0][0].scryfall_id if descriptor_symbol_matches else None
         )
         descriptor_symbol_margin = (
             descriptor_symbol_matches[0][1] - descriptor_symbol_matches[1][1]
             if len(descriptor_symbol_matches) > 1
             else (descriptor_symbol_matches[0][1] if descriptor_symbol_matches else 0)
+        )
+        symbol_scores_by_set: dict[str, float] = {}
+        for reference, score in descriptor_symbol_matches:
+            code = reference.set_code.casefold()
+            symbol_scores_by_set[code] = max(score, symbol_scores_by_set.get(code, 0))
+        ranked_symbol_sets = sorted(
+            symbol_scores_by_set.items(), key=lambda item: item[1], reverse=True
+        )
+        descriptor_symbol_top_set = ranked_symbol_sets[0][0] if ranked_symbol_sets else None
+        descriptor_symbol_set_score = ranked_symbol_sets[0][1] if ranked_symbol_sets else 0
+        descriptor_symbol_set_margin = (
+            ranked_symbol_sets[0][1] - ranked_symbol_sets[1][1]
+            if len(ranked_symbol_sets) > 1
+            else descriptor_symbol_set_score
         )
         descriptor_top_id = descriptor_matches[0][0].scryfall_id if descriptor_matches else None
         descriptor_margin = (
@@ -1465,26 +1378,29 @@ class CardRecognizer:
         )
         ranked: dict[str, Candidate] = {}
         release_years = [int(card.get("released_at", "0000")[:4]) for card in cards]
-        number_scores = [
-            self.collector_score(number, card["collector_number"]) for card in cards
-        ]
+        number_scores = [self.collector_score(number, card["collector_number"]) for card in cards]
         exact_set_counts: dict[str, int] = {}
         for card in cards:
+            same_set_art = [
+                (reference.scryfall_id, score)
+                for reference, score in descriptor_art_matches
+                if reference.set_code.casefold() == card["set"].casefold()
+            ]
+            set_art_top_id = same_set_art[0][0] if same_set_art else None
+            set_art_score = same_set_art[0][1] if same_set_art else 0
+            set_art_margin = (
+                same_set_art[0][1] - same_set_art[1][1]
+                if len(same_set_art) > 1
+                else set_art_score
+            )
             code = card["set"].casefold()
             exact_set_counts[code] = exact_set_counts.get(code, 0) + 1
         artist_scores = {
-            card["id"]: self.artist_text_score(text, card.get("artist"))
-            for card in cards
+            card["id"]: self.artist_text_score(text, card.get("artist")) for card in cards
         }
-        strong_artist_ids = {
-            card_id for card_id, score in artist_scores.items() if score >= 0.9
-        }
+        strong_artist_ids = {card_id for card_id, score in artist_scores.items() if score >= 0.9}
         for card in cards:
-            title_score = (
-                self.card_name_similarity(title, card["name"])
-                if title
-                else 0.55
-            )
+            title_score = self.card_name_similarity(title, card["name"]) if title else 0.55
             number_score = self.collector_score(number, card["collector_number"])
             set_score = self.set_code_score(printed_set_code, card["set"])
             released_year = int(card.get("released_at", "0000")[:4])
@@ -1523,9 +1439,7 @@ class CardRecognizer:
             # A unique matching copyright year can distinguish reused artwork.
             only_printing = len(cards) == 1
             unique_release_year = bool(
-                copyright_year
-                and year_score == 1.0
-                and release_years.count(copyright_year) == 1
+                copyright_year and year_score == 1.0 and release_years.count(copyright_year) == 1
             )
             if title_score >= 0.93 and (only_printing or unique_release_year):
                 confidence = max(confidence, 98.5)
@@ -1550,6 +1464,29 @@ class CardRecognizer:
             if printing_signal:
                 confidence = max(confidence, 98.5)
             descriptor_score = descriptor_scores.get(card["id"], 0)
+            descriptor_symbol_score = descriptor_symbol_scores.get(card["id"], 0)
+            visual_printing_proof = bool(
+                not self.is_basic_land(card)
+                and descriptor_catalog_complete
+                and card["id"] == descriptor_top_id
+                and descriptor_score >= 88
+                and descriptor_margin >= 18
+            )
+            if visual_printing_proof:
+                # The full-card descriptor contains artwork plus footer and set
+                # symbol regions. A large exhaustive-family margin proves the
+                # physical printing even when rules-text recovery found its name.
+                confidence = max(confidence, 98.5)
+            if self.has_decisive_symbol_match(
+                card["id"],
+                descriptor_symbol_top_id,
+                descriptor_symbol_score,
+                descriptor_symbol_margin,
+            ):
+                # A clear set symbol can retrieve and prioritize the right set
+                # even when glare leaves too few artwork keypoints. It remains
+                # below auto-add unless decisive artwork independently agrees.
+                confidence = max(confidence, 96.5)
             if (
                 card["id"] == descriptor_top_id
                 and title_score >= 0.93
@@ -1601,6 +1538,13 @@ class CardRecognizer:
                     descriptor_symbol_top_id,
                     descriptor_symbol_scores.get(card["id"], 0),
                     descriptor_symbol_margin,
+                    card["set"],
+                    descriptor_symbol_top_set,
+                    descriptor_symbol_set_score,
+                    descriptor_symbol_set_margin,
+                    set_art_top_id,
+                    set_art_score,
+                    set_art_margin,
                 )
                 if safe_land_match:
                     # Exact set plus a decisive illustration match is safer
@@ -1610,7 +1554,7 @@ class CardRecognizer:
                 else:
                     confidence = min(confidence, 98.4)
             confidence = min(99.5, confidence)
-            if oracle_recovery and not printing_signal:
+            if oracle_recovery and not printing_signal and not visual_printing_proof:
                 # Rules text can identify a card, but it cannot prove which set,
                 # collector number, or finish is physically present. Independent
                 # collector/set footer evidence may still prove the printing.
@@ -1703,9 +1647,7 @@ class CardRecognizer:
         ignored_example_hashes: set[str] | None = None,
     ) -> list[tuple[CardReference, float]]:
         ignored_example_hashes = ignored_example_hashes or set()
-        scan_fingerprints = (
-            scan_hash if isinstance(scan_hash, dict) else {"art_hash": scan_hash}
-        )
+        scan_fingerprints = scan_hash if isinstance(scan_hash, dict) else {"art_hash": scan_hash}
         catalog = CardRecognizer._get_visual_catalog()
         set_code = box_set_code.lower() if box_set_code else None
         scan_art = int(scan_fingerprints["art_hash"], 16)
@@ -1771,8 +1713,6 @@ class CardRecognizer:
         if not names:
             return [], [], []
         scan = visual_descriptor_bundle(image)
-        if len(scan["art"]) < 12:
-            return [], [], []
         with SessionLocal() as db:
             statement = (
                 select(CardReference, CardVisualFingerprint)
@@ -1787,14 +1727,18 @@ class CardRecognizer:
                 statement = statement.where(CardReference.set_code == box_set_code.casefold())
             rows = list(db.execute(statement))
             reference_ids = [reference.scryfall_id for reference, _fingerprint in rows]
-            example_rows = list(
-                db.scalars(
-                    select(CardVisualExample).where(
-                        CardVisualExample.scryfall_id.in_(reference_ids),
-                        CardVisualExample.descriptor_path.is_not(None),
+            example_rows = (
+                list(
+                    db.scalars(
+                        select(CardVisualExample).where(
+                            CardVisualExample.scryfall_id.in_(reference_ids),
+                            CardVisualExample.descriptor_path.is_not(None),
+                        )
                     )
                 )
-            ) if reference_ids else []
+                if reference_ids
+                else []
+            )
         ignored_reviews = ignored_example_review_ids or set()
         examples: dict[str, list[str]] = {}
         for example in example_rows:
@@ -1839,11 +1783,10 @@ class CardRecognizer:
                 )
                 if symbol_score is not None:
                     symbol_scores.append(symbol_score)
-            if not scores:
-                continue
-            score = max(scores)
-            if score >= 45:
-                ranked.append((reference, round(score, 3)))
+            if scores:
+                score = max(scores)
+                if score >= 45:
+                    ranked.append((reference, round(score, 3)))
             if art_scores:
                 art_score = max(art_scores)
                 if art_score >= 45:
@@ -1884,9 +1827,7 @@ class CardRecognizer:
                     .where(func.lower(CardReference.name).in_(names))
                 )
                 if box_set_code:
-                    statement = statement.where(
-                        CardReference.set_code == box_set_code.casefold()
-                    )
+                    statement = statement.where(CardReference.set_code == box_set_code.casefold())
                 rows = list(db.execute(statement))
         except SQLAlchemyError:
             return []
@@ -1894,9 +1835,7 @@ class CardRecognizer:
         ranked = []
         for reference, fingerprint in rows:
             art_distance = (scan_art ^ int(fingerprint.art_hash, 16)).bit_count()
-            score = CardRecognizer._fingerprint_score(
-                scan_fingerprints, fingerprint, art_distance
-            )
+            score = CardRecognizer._fingerprint_score(scan_fingerprints, fingerprint, art_distance)
             if score >= 55:
                 ranked.append((reference, score))
         ranked.sort(key=lambda item: item[1], reverse=True)
@@ -1933,6 +1872,16 @@ class CardRecognizer:
         )
 
     @staticmethod
+    def has_decisive_symbol_match(
+        card_id: str,
+        symbol_top_id: str | None,
+        symbol_score: float,
+        symbol_margin: float,
+    ) -> bool:
+        """Require a unique regional set-symbol match before prioritizing a set."""
+        return bool(card_id == symbol_top_id and symbol_score >= 80 and symbol_margin >= 12)
+
+    @staticmethod
     def has_safe_basic_land_match(
         card_id: str,
         descriptor_top_id: str | None,
@@ -1946,6 +1895,13 @@ class CardRecognizer:
         symbol_top_id: str | None = None,
         symbol_score: float = 0,
         symbol_margin: float = 0,
+        card_set: str | None = None,
+        symbol_top_set: str | None = None,
+        symbol_set_score: float = 0,
+        symbol_set_margin: float = 0,
+        set_art_top_id: str | None = None,
+        set_art_score: float = 0,
+        set_art_margin: float = 0,
     ) -> bool:
         """Require decisive artwork plus exact set text or symbol evidence.
 
@@ -1955,22 +1911,67 @@ class CardRecognizer:
         overruled visibly correct artwork. Exact set text or a decisive visual
         set-symbol region narrows the family; artwork then selects the illustration.
         """
-        return bool(
-            (
-                (printed_set_code and set_score == 1.0)
-                or (
-                    card_id == symbol_top_id
-                    and symbol_score >= 80
-                    and symbol_margin >= 12
+        global_art_matches = card_id == descriptor_top_id and catalog_complete
+        global_evidence = global_art_matches and (
+                (
+                    collector_number
+                    and printed_set_code
+                    and number_score == 1.0
+                    and set_score == 1.0
+                    and descriptor_score >= 92
+                    and descriptor_margin >= 10
                 )
+                or (
+                    (
+                        (printed_set_code and set_score == 1.0)
+                        or CardRecognizer.has_decisive_symbol_match(
+                            card_id,
+                            symbol_top_id,
+                            symbol_score,
+                            symbol_margin,
+                        )
+                    )
+                    and CardRecognizer.has_decisive_art_match(
+                        card_id,
+                        descriptor_top_id,
+                        catalog_complete,
+                        descriptor_score,
+                        descriptor_margin,
+                    )
+                )
+            )
+        set_scoped_evidence = (
+            catalog_complete
+            and CardRecognizer.has_decisive_symbol_set_match(
+                card_set,
+                symbol_top_set,
+                symbol_set_score,
+                symbol_set_margin,
             )
             and CardRecognizer.has_decisive_art_match(
                 card_id,
-                descriptor_top_id,
+                set_art_top_id,
                 catalog_complete,
-                descriptor_score,
-                descriptor_margin,
+                set_art_score,
+                set_art_margin,
             )
+        )
+        return bool(global_evidence or set_scoped_evidence)
+
+    @staticmethod
+    def has_decisive_symbol_set_match(
+        card_set: str | None,
+        symbol_top_set: str | None,
+        symbol_score: float,
+        symbol_margin: float,
+    ) -> bool:
+        """Treat duplicate symbols inside one set as one set-level vote."""
+        return bool(
+            card_set
+            and symbol_top_set
+            and card_set.casefold() == symbol_top_set.casefold()
+            and symbol_score >= 80
+            and symbol_margin >= 12
         )
 
     @staticmethod
@@ -2031,12 +2032,8 @@ class CardRecognizer:
         art = CardRecognizer._descriptor_score(scan["art"], canonical["art"])
         if art is None:
             return None
-        footer = CardRecognizer._ratio_descriptor_score(
-            scan.get("footer"), canonical.get("footer")
-        )
-        symbol = CardRecognizer._ratio_descriptor_score(
-            scan.get("symbol"), canonical.get("symbol")
-        )
+        footer = CardRecognizer._ratio_descriptor_score(scan.get("footer"), canonical.get("footer"))
+        symbol = CardRecognizer._ratio_descriptor_score(scan.get("symbol"), canonical.get("symbol"))
         # Artwork must remain the majority signal. Set symbols are identical on
         # every basic land in a set and a one-digit footer OCR error is precisely
         # the failure this reranker exists to catch. Regional descriptors support
