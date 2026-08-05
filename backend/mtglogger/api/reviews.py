@@ -8,6 +8,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ..config import get_settings
 from ..database import get_db
 from ..models import CardReference, CardVisualExample, Deck, ReviewItem, ReviewStatus
 from ..providers import ScryfallProvider
@@ -106,6 +107,22 @@ async def search_cards(
         )
         for card in cards
     ]
+
+
+@router.get("/training/status")
+def training_status():
+    path = get_settings().neural_index_dir / "adapter-training.json"
+    if not path.is_file():
+        return {"state": "idle", "phase": "idle", "progress": 0.0}
+    try:
+        state = json.loads(path.read_text())
+    except (OSError, ValueError, json.JSONDecodeError):
+        logger.exception("Could not read neural adapter training status")
+        return {"state": "unknown", "phase": "unknown", "progress": 0.0}
+    # Older completed records predate live phase reporting.
+    if "progress" not in state and state.get("completed_at"):
+        state.update({"state": "completed", "phase": "completed", "progress": 1.0})
+    return state
 
 
 @router.get("/{review_id}/image", response_class=FileResponse)

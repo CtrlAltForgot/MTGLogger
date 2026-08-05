@@ -8,6 +8,7 @@ import logging
 import math
 import threading
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -216,12 +217,33 @@ def train_metric_adapter_if_new_corrections(*, force: bool = False) -> dict[str,
         return {"state": "already-running", "corrections": correction_count}
     try:
         started = datetime.now(ZoneInfo(settings.neural_maintenance_timezone))
-        result = train_metric_adapter()
-        completed = datetime.now(ZoneInfo(settings.neural_maintenance_timezone))
-        state = {
+        base_state: dict[str, object] = {
             "model_version": settings.neural_model_version,
             "correction_count": correction_count,
             "started_at": started.isoformat(),
+        }
+
+        def report_progress(phase: str, progress: float, details: dict[str, object]) -> None:
+            settings.neural_index_dir.mkdir(parents=True, exist_ok=True)
+            live_state = {
+                **base_state,
+                "state": "running",
+                "phase": phase,
+                "progress": round(max(0.0, min(1.0, progress)), 4),
+                **details,
+            }
+            temporary = state_path.with_suffix(".tmp")
+            temporary.write_text(json.dumps(live_state, indent=2) + "\n")
+            temporary.replace(state_path)
+
+        report_progress("preparing", 0.01, {})
+        result = train_metric_adapter(progress_callback=report_progress)
+        completed = datetime.now(ZoneInfo(settings.neural_maintenance_timezone))
+        state = {
+            **base_state,
+            "state": "completed",
+            "phase": "completed",
+            "progress": 1.0,
             "completed_at": completed.isoformat(),
             "duration_seconds": round((completed - started).total_seconds(), 3),
             "result": result,
@@ -355,7 +377,10 @@ def _retrieval_metrics(
     }
 
 
-def train_metric_adapter(epochs: int = 120) -> dict[str, object]:
+def train_metric_adapter(
+    epochs: int = 120,
+    progress_callback: Callable[[str, float, dict[str, object]], None] | None = None,
+) -> dict[str, object]:
     """Train and conservatively promote a sleeve/camera-aware feature metric."""
     settings = get_settings()
     with SessionLocal() as db:
@@ -371,6 +396,12 @@ def train_metric_adapter(epochs: int = 120) -> dict[str, object]:
         row for row in rows if row.source_kind == "correction" and row.scryfall_id in canonical
     ]
     labels = sorted({row.scryfall_id for row in corrections})
+    if progress_callback:
+        progress_callback(
+            "preparing",
+            0.06,
+            {"corrections": len(corrections), "labels": len(labels)},
+        )
     if len(corrections) < 24 or len(labels) < 8:
         return {
             "state": "insufficient-data",
@@ -410,6 +441,8 @@ def train_metric_adapter(epochs: int = 120) -> dict[str, object]:
         evaluation_gallery_labels,
         identity,
     )
+    if progress_callback:
+        progress_callback("training", 0.16, {"epoch": 0, "epochs": epochs})
     try:
         import paddle
         import paddle.nn.functional as functional
@@ -426,7 +459,7 @@ def train_metric_adapter(epochs: int = 120) -> dict[str, object]:
     label_indices = paddle.to_tensor(
         np.array([gallery_labels.index(row.scryfall_id) for row in train_rows], dtype=np.int64)
     )
-    for _ in range(max(1, epochs)):
+    for epoch in range(max(1, epochs)):
         scale_tensor = paddle.exp(paddle.clip(log_scale, -1.5, 1.5))
         query_features = functional.normalize(query_tensor * scale_tensor, axis=1)
         positive_features = functional.normalize(positive_tensor * scale_tensor, axis=1)
@@ -442,6 +475,14 @@ def train_metric_adapter(epochs: int = 120) -> dict[str, object]:
         loss.backward()
         optimizer.step()
         optimizer.clear_grad()
+        if progress_callback and (epoch == 0 or (epoch + 1) % 5 == 0 or epoch + 1 == epochs):
+            progress_callback(
+                "training",
+                0.16 + 0.62 * ((epoch + 1) / max(1, epochs)),
+                {"epoch": epoch + 1, "epochs": epochs},
+            )
+    if progress_callback:
+        progress_callback("validating", 0.82, {"epoch": epochs, "epochs": epochs})
     scale = np.exp(np.clip(log_scale.numpy(), -1.5, 1.5)).astype(np.float32)
     candidate = _retrieval_metrics(
         validation_query,
@@ -473,7 +514,7 @@ def train_metric_adapter(epochs: int = 120) -> dict[str, object]:
         all_indices = paddle.to_tensor(
             np.array([gallery_labels.index(row.scryfall_id) for row in corrections], dtype=np.int64)
         )
-        for _ in range(40):
+        for refinement_epoch in range(40):
             scale_tensor = paddle.exp(paddle.clip(log_scale, -1.5, 1.5))
             query_features = functional.normalize(all_query * scale_tensor, axis=1)
             positive_features = functional.normalize(all_positive * scale_tensor, axis=1)
@@ -489,6 +530,16 @@ def train_metric_adapter(epochs: int = 120) -> dict[str, object]:
             loss.backward()
             optimizer.step()
             optimizer.clear_grad()
+            if progress_callback and (
+                refinement_epoch == 0
+                or (refinement_epoch + 1) % 5 == 0
+                or refinement_epoch == 39
+            ):
+                progress_callback(
+                    "refining",
+                    0.84 + 0.13 * ((refinement_epoch + 1) / 40),
+                    {"epoch": refinement_epoch + 1, "epochs": 40},
+                )
         scale = np.exp(np.clip(log_scale.numpy(), -1.5, 1.5)).astype(np.float32)
     timestamp = datetime.now(ZoneInfo(settings.neural_maintenance_timezone)).strftime(
         "%Y%m%d-%H%M%S"
@@ -506,6 +557,8 @@ def train_metric_adapter(epochs: int = 120) -> dict[str, object]:
         "baseline": baseline,
         "candidate": candidate,
     }
+    if progress_callback:
+        progress_callback("finalizing", 0.99, {"promoted": promoted})
     (root / f"{version}.json").write_text(json.dumps(report, indent=2) + "\n")
     if promoted:
         manifest = root / "active-adapter.json"
