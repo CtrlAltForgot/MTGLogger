@@ -457,6 +457,11 @@ class CardRecognizer:
                 line,
             ):
                 return False
+            # A clean standalone set code (for example ``ORI``) is common in
+            # the focused footer pass. It is evidence for the printing, never
+            # a card title; accepting it suppresses the full-card title pass.
+            if re.fullmatch(r"[A-Z2][A-Z0-9]{1,5}", line):
+                return False
             return (
                 not re.search(r"\d{3,}", line)
                 and len(line) <= 60
@@ -1786,32 +1791,39 @@ class CardRecognizer:
         if not names:
             return [], [], []
         scan = visual_descriptor_bundle(image)
-        with SessionLocal() as db:
-            statement = (
-                select(CardReference, CardVisualFingerprint)
-                .join(
-                    CardVisualFingerprint,
-                    CardVisualFingerprint.scryfall_id == CardReference.scryfall_id,
+        try:
+            with SessionLocal() as db:
+                statement = (
+                    select(CardReference, CardVisualFingerprint)
+                    .join(
+                        CardVisualFingerprint,
+                        CardVisualFingerprint.scryfall_id == CardReference.scryfall_id,
+                    )
+                    .where(func.lower(CardReference.name).in_(names))
+                    .where(CardVisualFingerprint.descriptor_path.is_not(None))
                 )
-                .where(func.lower(CardReference.name).in_(names))
-                .where(CardVisualFingerprint.descriptor_path.is_not(None))
-            )
-            if box_set_code:
-                statement = statement.where(CardReference.set_code == box_set_code.casefold())
-            rows = list(db.execute(statement))
-            reference_ids = [reference.scryfall_id for reference, _fingerprint in rows]
-            example_rows = (
-                list(
-                    db.scalars(
-                        select(CardVisualExample).where(
-                            CardVisualExample.scryfall_id.in_(reference_ids),
-                            CardVisualExample.descriptor_path.is_not(None),
+                if box_set_code:
+                    statement = statement.where(CardReference.set_code == box_set_code.casefold())
+                rows = list(db.execute(statement))
+                reference_ids = [reference.scryfall_id for reference, _fingerprint in rows]
+                example_rows = (
+                    list(
+                        db.scalars(
+                            select(CardVisualExample).where(
+                                CardVisualExample.scryfall_id.in_(reference_ids),
+                                CardVisualExample.descriptor_path.is_not(None),
+                            )
                         )
                     )
+                    if reference_ids
+                    else []
                 )
-                if reference_ids
-                else []
-            )
+        except SQLAlchemyError:
+            # Recognition must remain usable during first-run schema creation
+            # and in isolated callers that intentionally provide only a card
+            # provider. Descriptor evidence is optional and conservative.
+            logger.debug("Visual descriptor catalog is not available yet", exc_info=True)
+            return [], [], []
         ignored_reviews = ignored_example_review_ids or set()
         examples: dict[str, list[str]] = {}
         for example in example_rows:

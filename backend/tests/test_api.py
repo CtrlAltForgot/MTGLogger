@@ -693,6 +693,7 @@ def test_card_structure_rejects_empty_table_but_accepts_card_frame():
 
     empty = np.zeros((840, 600, 3), dtype=np.uint8)
     card = empty.copy()
+    cv2.rectangle(card, (80, 80), (520, 760), (255, 255, 255), 4)
     for y in (80, 300, 610, 760):
         cv2.line(card, (80, y), (520, y), (255, 255, 255), 4)
 
@@ -1134,18 +1135,6 @@ def test_basic_land_auto_add_requires_decisive_exact_art_evidence():
     assert CardRecognizer.set_code_score("ORL", "ori") == 1.0
     assert CardRecognizer.set_code_score("MIS", "m15") == 1.0
     assert CardRecognizer.set_code_score("2NC", "znc") == 1.0
-
-
-def test_ocr_hints_recovers_joined_rarity_and_confused_znc_code():
-    from mtglogger.services.recognition import CardRecognizer
-
-    title, number, set_code, _year = CardRecognizer.hints(
-        "Whispersteel Dagger\n005R\n2NC·EN\nSUUO"
-    )
-
-    assert title == "Whispersteel Dagger"
-    assert number == "005"
-    assert set_code == "2nc"
     assert not CardRecognizer.has_decisive_symbol_match(swamp["id"], "rtr-swamp-261", 94, 20)
     # A decisive illustration match within an exact set remains safe even when
     # the tiny collector-number footer is unreadable or misread.
@@ -1238,6 +1227,18 @@ def test_ocr_hints_recovers_joined_rarity_and_confused_znc_code():
         set_art_score=94,
         set_art_margin=20,
     )
+
+
+def test_ocr_hints_recovers_joined_rarity_and_confused_znc_code():
+    from mtglogger.services.recognition import CardRecognizer
+
+    title, number, set_code, _year = CardRecognizer.hints(
+        "Whispersteel Dagger\n005R\n2NC·EN\nSUUO"
+    )
+
+    assert title == "Whispersteel Dagger"
+    assert number == "005"
+    assert set_code == "2nc"
 
 
 def test_catalog_fallback_recovers_canonical_name_with_exact_printing():
