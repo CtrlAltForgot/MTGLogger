@@ -990,6 +990,20 @@ class CardRecognizer:
                     )
                 )
                 if not rows:
+                    # Planeswalker type lines expose the character's short name
+                    # ("Zariel") while the canonical card name carries an
+                    # epithet ("Zariel, Archduke of Avernus"). Prefer that
+                    # unambiguous local family before collector-number fallback.
+                    rows = list(
+                        db.scalars(
+                            select(CardReference).where(
+                                func.lower(CardReference.name).like(
+                                    f"{title.casefold()},%"
+                                )
+                            )
+                        )
+                    )
+                if not rows:
                     names = list(db.scalars(select(CardReference.name).distinct()))
                     closest = cls.closest_catalog_names(title, names, limit=1)
                     if not closest or closest[0][1] < 0.72:
