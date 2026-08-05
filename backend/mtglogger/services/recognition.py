@@ -1557,6 +1557,19 @@ class CardRecognizer:
             # exhaustive visual catalogue independently agrees with a clear
             # margin.  They remain first-class suggestions for quick review.
             if self.is_basic_land(card):
+                repeated_footer_number = bool(
+                    number
+                    and printed_set_code
+                    and printed_set_code.casefold() == card["set"].casefold()
+                    and len(
+                        re.findall(
+                            rf"(?<!\d)0*{re.escape(number.casefold().lstrip('0') or '0')}(?=\D|$)",
+                            text,
+                            re.I,
+                        )
+                    )
+                    >= 2
+                )
                 safe_land_match = self.has_safe_basic_land_match(
                     card["id"],
                     descriptor_art_top_id,
@@ -1579,7 +1592,7 @@ class CardRecognizer:
                     set_art_margin,
                     artist_score,
                 )
-                if safe_land_match:
+                if safe_land_match or repeated_footer_number:
                     # Exact set plus a decisive illustration match is safer
                     # than a tiny collector-number crop. This specifically
                     # prevents a misread 264 as 261 from selecting the wrong art.

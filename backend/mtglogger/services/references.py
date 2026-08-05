@@ -2,6 +2,7 @@ import asyncio
 import json
 import math
 import time
+import uuid
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -15,7 +16,7 @@ from sqlalchemy import func, select
 
 from ..config import get_settings
 from ..database import SessionLocal
-from ..models import CardReference, CardVisualFingerprint
+from ..models import CardReference, CardVisualExample, CardVisualFingerprint
 from ..providers import ScryfallProvider
 
 
@@ -210,6 +211,9 @@ def sync_status() -> dict:
             or 0
         )
         result["descriptor_cards"] = result["fingerprinted_cards"]
+        result["variant_profiles"] = (
+            db.scalar(select(func.count()).select_from(CardVisualExample)) or 0
+        )
     total = result["catalog_total"] or 0
     result["coverage_percent"] = (
         min(100.0, round(result["fingerprinted_cards"] / total * 100, 2)) if total else None
@@ -228,7 +232,12 @@ def sync_status() -> dict:
         # Four canonical images per second is a deliberately conservative
         # bootstrap until this process observes enough real download progress.
         rate = _rate_ema or 4.0
-    remaining = max(0, total - result["fingerprinted_cards"])
+    active_art_sync = result["state"] == "running" and result["set_code"] == "art-series"
+    remaining = (
+        max(0, result["total"] - result["completed"])
+        if active_art_sync
+        else max(0, total - result["fingerprinted_cards"])
+    )
     if result["state"] == "running" and total and remaining:
         seconds = math.ceil(remaining / max(0.01, rate))
         result["indexing_rate_per_second"] = round(rate, 2)
@@ -406,6 +415,8 @@ async def _sync_art_series(provider: ScryfallProvider) -> None:
             return
         with _state_lock:
             _state.set_code = "art-series"
+            _state.completed = 0
+            _state.total = art_total
         async for cards in provider.art_series_pages():
             for card in cards:
                 downloaded = False
@@ -417,6 +428,8 @@ async def _sync_art_series(provider: ScryfallProvider) -> None:
                         _state.errors += 1
                 if downloaded:
                     await asyncio.sleep(0.1)
+                with _state_lock:
+                    _state.completed += 1
 
 
 async def reference_refresh_loop(interval_hours: int) -> None:
@@ -481,6 +494,8 @@ async def _index_card(db, provider: ScryfallProvider, card: dict) -> bool:
         # Metadata and prices can change without changing the canonical image.
         for field, value in metadata.items():
             setattr(existing, field, value)
+        if card.get("layout") == "art_series":
+            await _index_art_series_variants(db, provider, card)
         db.commit()
         return False
     raw = await provider.download_image(image_url)
@@ -512,8 +527,40 @@ async def _index_card(db, provider: ScryfallProvider, card: dict) -> bool:
             descriptor_path=str(descriptor_path) if descriptor_path else None,
         )
     )
+    if card.get("layout") == "art_series":
+        await _index_art_series_variants(db, provider, card)
     db.commit()
     return True
+
+
+async def _index_art_series_variants(db, provider: ScryfallProvider, card: dict) -> None:
+    """Attach every alternate Art Series face to its searchable parent card."""
+    canonical_url = provider.image_url(card)
+    for face_index, face in enumerate(card.get("card_faces") or []):
+        images = face.get("image_uris") or {}
+        image_url = images.get("normal") or images.get("large")
+        if not image_url or image_url == canonical_url:
+            continue
+        variant_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{card['id']}:{face_index}:{image_url}"))
+        if db.scalar(
+            select(CardVisualExample.id).where(CardVisualExample.source_review_id == variant_id)
+        ):
+            continue
+        raw = await provider.download_image(image_url)
+        image = cv2.imdecode(np.frombuffer(raw, dtype="uint8"), cv2.IMREAD_COLOR)
+        if image is None:
+            continue
+        descriptors = visual_descriptor_bundle(image).get("art", np.empty((0, 32), np.uint8))
+        descriptor_path = save_example_descriptors(card["id"], variant_id, descriptors)
+        db.add(
+            CardVisualExample(
+                id=variant_id,
+                scryfall_id=card["id"],
+                art_hash=artwork_hash(image),
+                descriptor_path=str(descriptor_path) if descriptor_path else None,
+                source_review_id=variant_id,
+            )
+        )
 
 
 async def ensure_reference_profiles(provider, cards: list[dict]) -> int:
