@@ -1718,7 +1718,9 @@ class CardRecognizer:
                 safe_land_match = self.has_safe_basic_land_match(
                     card["id"],
                     descriptor_art_top_id,
-                    descriptor_catalog_complete,
+                    # Safety depends on complete coverage of this card identity,
+                    # not unrelated entries in the global visual catalog.
+                    candidate_descriptor_catalog_complete,
                     descriptor_art_scores.get(card["id"], 0),
                     descriptor_art_margin,
                     number,
