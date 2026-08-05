@@ -6,6 +6,7 @@ export type ScannerTuning={entryDifference:number;stableMotion:number;stableFram
 export type DetectionBounds={left:number;top:number;width:number;height:number}
 export type ScanArea=DetectionBounds
 export type ScannerMetrics={brightness:number;contrast:number;motion:number;sceneDifference:number;bounds?:DetectionBounds}
+export type CameraRotation=0|90|180|270
 export const defaultTuning:ScannerTuning={entryDifference:12,stableMotion:4,stableFrames:5,slingerMode:false}
 export const pipelineHasCapacity=(inFlight:number,maxInFlight:number)=>inFlight<Math.max(1,maxInFlight)
 export function paddedCaptureBounds(bounds:DetectionBounds,videoWidth:number,videoHeight:number){
@@ -18,6 +19,30 @@ export function paddedCaptureBounds(bounds:DetectionBounds,videoWidth:number,vid
 }
 
 const FRAME_WIDTH=160,FRAME_HEIGHT=120,CALIBRATION_FRAMES=12
+
+export function sourceAreaForRotation(area:ScanArea,rotation:CameraRotation){
+  const left=area.left/100,top=area.top/100,width=area.width/100,height=area.height/100
+  if(rotation===90)return {left:top,top:1-left-width,width:height,height:width}
+  if(rotation===180)return {left:1-left-width,top:1-top-height,width,height}
+  if(rotation===270)return {left:1-top-height,top:left,width:height,height:width}
+  return {left,top,width,height}
+}
+
+function drawOriented(
+  context:CanvasRenderingContext2D,
+  video:HTMLVideoElement,
+  source:{x:number;y:number;width:number;height:number},
+  rotation:CameraRotation,
+  width:number,
+  height:number,
+){
+  context.save()
+  if(rotation===90){context.translate(width,0);context.rotate(Math.PI/2);context.drawImage(video,source.x,source.y,source.width,source.height,0,0,height,width)}
+  else if(rotation===180){context.translate(width,height);context.rotate(Math.PI);context.drawImage(video,source.x,source.y,source.width,source.height,0,0,width,height)}
+  else if(rotation===270){context.translate(0,height);context.rotate(-Math.PI/2);context.drawImage(video,source.x,source.y,source.width,source.height,0,0,height,width)}
+  else context.drawImage(video,source.x,source.y,source.width,source.height,0,0,width,height)
+  context.restore()
+}
 
 export function cardShapedBounds(changed:Uint8Array){
   const columns=FRAME_WIDTH/2,rows=FRAME_HEIGHT/2,seen=new Uint8Array(changed.length)
@@ -91,8 +116,10 @@ export function useAutoScanner(
   const [state,setState]=useState<State>('idle'),[error,setError]=useState<string>(),[metrics,setMetrics]=useState<ScannerMetrics>({brightness:0,contrast:0,motion:0,sceneDifference:0})
   const [pendingCaptures,setPendingCaptures]=useState(0)
   const [cameras,setCameras]=useState<MediaDeviceInfo[]>([]),[selectedCamera,setSelectedCamera]=useState('')
+  const [rotation,setRotationState]=useState<CameraRotation>(0)
   const [scanArea,setScanAreaState]=useState<ScanArea>({left:0,top:0,width:100,height:100})
   const setScanArea=useCallback((area:ScanArea)=>setScanAreaState({left:Math.max(0,Math.min(100,area.left)),top:Math.max(0,Math.min(100,area.top)),width:Math.max(1,Math.min(100-area.left,area.width)),height:Math.max(1,Math.min(100-area.top,area.height))}),[])
+  const rotateCamera=useCallback(()=>{setRotationState(current=>((current+90)%360) as CameraRotation);calibrationCount.current=0;baseline.current=undefined;previous.current=undefined;setState('calibrating')},[])
 
   const calibrate=useCallback(()=>{baseline.current=undefined;previous.current=undefined;capturedFrame.current=undefined;calibrationCount.current=0;noiseMotion.current=0;stable.current=0;removalGate.current=initialRemovalGate();setState('calibrating')},[])
   const start=useCallback(async(deviceId?:string)=>{try{
@@ -110,9 +137,10 @@ export function useAutoScanner(
       const element=video.current,preview=canvas.current
       if(!element||!preview||element.readyState<2||capturing.current)return
       const context=preview.getContext('2d',{willReadFrequently:true});if(!context)return
-      const areaX=scanArea.left/100*element.videoWidth,areaY=scanArea.top/100*element.videoHeight
-      const areaWidth=scanArea.width/100*element.videoWidth,areaHeight=scanArea.height/100*element.videoHeight
-      preview.width=FRAME_WIDTH;preview.height=FRAME_HEIGHT;context.drawImage(element,areaX,areaY,areaWidth,areaHeight,0,0,FRAME_WIDTH,FRAME_HEIGHT)
+      const sourceArea=sourceAreaForRotation(scanArea,rotation)
+      const areaX=sourceArea.left*element.videoWidth,areaY=sourceArea.top*element.videoHeight
+      const areaWidth=sourceArea.width*element.videoWidth,areaHeight=sourceArea.height*element.videoHeight
+      preview.width=FRAME_WIDTH;preview.height=FRAME_HEIGHT;drawOriented(context,element,{x:areaX,y:areaY,width:areaWidth,height:areaHeight},rotation,FRAME_WIDTH,FRAME_HEIGHT)
       const pixels=context.getImageData(0,0,FRAME_WIDTH,FRAME_HEIGHT).data
       if(!baseline.current){
         if(!previous.current){previous.current=new Uint8ClampedArray(pixels);return}
@@ -156,11 +184,14 @@ export function useAutoScanner(
       if(stable.current<tuning.stableFrames)return
       capturing.current=true;setState('capturing')
       capturedFrame.current=new Uint8ClampedArray(pixels)
-      const full=document.createElement('canvas'),localCrop=next.bounds?paddedCaptureBounds(next.bounds,areaWidth,areaHeight):undefined
-      const crop=localCrop?{x:Math.round(areaX+localCrop.x),y:Math.round(areaY+localCrop.y),width:localCrop.width,height:localCrop.height}:{x:Math.round(areaX),y:Math.round(areaY),width:Math.round(areaWidth),height:Math.round(areaHeight)}
+      const oriented=document.createElement('canvas'),orientedWidth=rotation%180?areaHeight:areaWidth,orientedHeight=rotation%180?areaWidth:areaHeight
+      oriented.width=Math.round(orientedWidth);oriented.height=Math.round(orientedHeight)
+      drawOriented(oriented.getContext('2d')!,element,{x:areaX,y:areaY,width:areaWidth,height:areaHeight},rotation,oriented.width,oriented.height)
+      const full=document.createElement('canvas'),localCrop=next.bounds?paddedCaptureBounds(next.bounds,oriented.width,oriented.height):undefined
+      const crop=localCrop||{x:0,y:0,width:oriented.width,height:oriented.height}
       full.width=crop.width;full.height=crop.height
       const fullContext=full.getContext('2d')!
-      fullContext.drawImage(element,crop.x,crop.y,crop.width,crop.height,0,0,crop.width,crop.height)
+      fullContext.drawImage(oriented,crop.x,crop.y,crop.width,crop.height,0,0,crop.width,crop.height)
       full.toBlob(blob=>{
         capturing.current=false;stable.current=0
         if(!blob){setState('waiting');return}
@@ -176,7 +207,7 @@ export function useAutoScanner(
       },'image/jpeg',.9)
     },tuning.slingerMode?100:180)
     return()=>clearInterval(timer)
-  },[state,error,maxInFlight,onCapture,scanArea,tuning])
+  },[state,error,maxInFlight,onCapture,rotation,scanArea,tuning])
   useEffect(()=>stop,[stop])
-  return {video,canvas,state,error,metrics,cameras,selectedCamera,pendingCaptures,scanArea,setScanArea,start,stop,switchCamera,calibrate,setError}
+  return {video,canvas,state,error,metrics,cameras,selectedCamera,pendingCaptures,rotation,rotateCamera,scanArea,setScanArea,start,stop,switchCamera,calibrate,setError}
 }

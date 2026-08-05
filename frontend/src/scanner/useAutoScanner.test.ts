@@ -1,5 +1,5 @@
 import {describe,expect,it} from 'vitest'
-import {analyze,paddedCaptureBounds,pipelineHasCapacity} from './useAutoScanner'
+import {analyze,paddedCaptureBounds,pipelineHasCapacity,sourceAreaForRotation} from './useAutoScanner'
 
 const width=160,height=120
 const frame=(value=20)=>new Uint8ClampedArray(width*height*4).map((_,index)=>index%4===3?255:value)
@@ -71,5 +71,19 @@ describe('bounded recognition pipeline',()=>{
     expect(pipelineHasCapacity(1,2)).toBe(true)
     expect(pipelineHasCapacity(2,2)).toBe(false)
     expect(pipelineHasCapacity(1,1)).toBe(false)
+  })
+})
+
+describe('camera orientation mapping',()=>{
+  const area={left:10,top:20,width:30,height:40}
+
+  it('keeps a full-feed crop full-feed at every orientation',()=>{
+    for(const rotation of [0,90,180,270] as const)expect(sourceAreaForRotation({left:0,top:0,width:100,height:100},rotation)).toEqual({left:0,top:0,width:1,height:1})
+  })
+
+  it('maps an upright crop back onto the raw camera pixels',()=>{
+    expect(sourceAreaForRotation(area,90)).toMatchObject({left:.2,top:expect.closeTo(.6),width:.4,height:.3})
+    expect(sourceAreaForRotation(area,180)).toMatchObject({left:expect.closeTo(.6),top:expect.closeTo(.4),width:.3,height:.4})
+    expect(sourceAreaForRotation(area,270)).toMatchObject({left:expect.closeTo(.4),top:.1,width:.4,height:.3})
   })
 })
