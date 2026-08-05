@@ -18,6 +18,7 @@ from ..database import SessionLocal
 from ..models import CardReference, CardVisualExample, CardVisualFingerprint
 from ..providers import ScryfallProvider
 from ..schemas import Candidate
+from .neural import NeuralRetriever
 from .references import (
     ensure_reference_profiles,
     hash_distance,
@@ -57,6 +58,7 @@ class CardRecognizer:
     def __init__(self) -> None:
         self.provider = ScryfallProvider()
         self._recognition_lock = asyncio.Lock()
+        self._neural = NeuralRetriever()
         self._ocr = None
         try:
             from paddleocr import PaddleOCR
@@ -1128,6 +1130,9 @@ class CardRecognizer:
             oracle_recovery = False
             decoded = self.decode(raw)
             corrected = await asyncio.to_thread(lambda: self.rectify(decoded))
+            neural_task = asyncio.create_task(
+                asyncio.to_thread(self._neural.search, corrected, 10)
+            )
             prepared = time.perf_counter()
             card_structure = await asyncio.to_thread(self.has_card_structure, corrected)
             text = await asyncio.to_thread(self.extract_identification_text, corrected)
@@ -1350,6 +1355,15 @@ class CardRecognizer:
                 local_card["lang"] = language
                 cards.append(local_card)
                 known_card_ids.add(reference.scryfall_id)
+            neural_matches = await neural_task
+            if neural_matches:
+                logger.info(
+                    "Neural shadow top=%s similarity=%.4f source=%s candidates=%d",
+                    neural_matches[0].reference.scryfall_id,
+                    neural_matches[0].similarity,
+                    neural_matches[0].source_kind,
+                    len(neural_matches),
+                )
             matching_complete = time.perf_counter()
         visual_scores = {reference.scryfall_id: score for reference, score in visual_matches}
         for reference, score in identity_visual_matches:

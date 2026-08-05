@@ -4,6 +4,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
+    LargeBinary,
     Date,
     DateTime,
     Enum,
@@ -215,6 +216,26 @@ class CardVisualExample(Base):
     source_review_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     reference: Mapped[CardReference] = relationship(back_populates="visual_examples")
+
+
+class CardNeuralEmbedding(Base):
+    """Versioned normalized image embedding for a reference or learned capture."""
+
+    __tablename__ = "card_neural_embeddings"
+    __table_args__ = (
+        UniqueConstraint("model_version", "source_kind", "source_id", name="uq_neural_source"),
+        Index("ix_neural_card_model", "scryfall_id", "model_version"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    scryfall_id: Mapped[str] = mapped_column(
+        ForeignKey("card_references.scryfall_id", ondelete="CASCADE"), index=True
+    )
+    model_version: Mapped[str] = mapped_column(String(96), index=True)
+    source_kind: Mapped[str] = mapped_column(String(32), index=True)
+    source_id: Mapped[str] = mapped_column(String(255))
+    dimensions: Mapped[int] = mapped_column()
+    vector: Mapped[bytes] = mapped_column(LargeBinary)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
 class Deck(Base):

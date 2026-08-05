@@ -8,3 +8,4 @@ services:
       - /mnt/user/appdata/mtglogger/paddlex:/root/.paddlex
       # Compact ORB descriptors live on the array, not the cache-backed appdata share.
       - /mnt/user/mtglogger-reference-data/descriptors:/app/descriptors
+      - /mnt/user/mtglogger-reference-data/neural:/app/data/neural

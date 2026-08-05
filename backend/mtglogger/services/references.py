@@ -18,6 +18,7 @@ from ..config import get_settings
 from ..database import SessionLocal
 from ..models import CardReference, CardVisualExample, CardVisualFingerprint
 from ..providers import ScryfallProvider
+from .neural import embed_and_store
 
 
 @dataclass
@@ -527,6 +528,13 @@ async def _index_card(db, provider: ScryfallProvider, card: dict) -> bool:
             descriptor_path=str(descriptor_path) if descriptor_path else None,
         )
     )
+    embed_and_store(
+        db,
+        image,
+        scryfall_id=card["id"],
+        source_kind="canonical",
+        source_id=card["id"],
+    )
     if card.get("layout") == "art_series":
         await _index_art_series_variants(db, provider, card)
     db.commit()
@@ -560,6 +568,13 @@ async def _index_art_series_variants(db, provider: ScryfallProvider, card: dict)
                 descriptor_path=str(descriptor_path) if descriptor_path else None,
                 source_review_id=variant_id,
             )
+        )
+        embed_and_store(
+            db,
+            image,
+            scryfall_id=card["id"],
+            source_kind="alternate",
+            source_id=variant_id,
         )
 
 

@@ -13,6 +13,14 @@ class Settings(BaseSettings):
     evaluation_dir: Path = Path("data/evaluation")
     reference_image_dir: Path = Path("data/references")
     reference_descriptor_dir: Path = Path("data/descriptors")
+    neural_model_dir: Path = Path("data/neural/model")
+    neural_index_dir: Path = Path("data/neural/index")
+    neural_enabled: bool = True
+    neural_shadow_mode: bool = True
+    neural_auto_download: bool = False
+    neural_maintenance_hour: int = 6
+    neural_maintenance_timezone: str = "America/Chicago"
+    neural_model_version: str = "PP-ShiTuV2_rec-paddle3.0b2"
     reference_image_cache: str = "compact"
     reference_refresh_hours: int = 24
     reference_auto_sync: bool = True

@@ -11,6 +11,7 @@ from .config import get_settings
 from .database import Base, SessionLocal, engine, migrate_schema
 from .providers import close_scryfall_client
 from .services.prices import price_refresh_loop
+from .services.neural_maintenance import neural_maintenance_loop
 from .services.references import reference_refresh_loop
 
 
@@ -27,17 +28,27 @@ async def lifespan(_: FastAPI):
         if get_settings().reference_auto_sync
         else None
     )
+    neural_task = (
+        asyncio.create_task(neural_maintenance_loop())
+        if get_settings().neural_enabled
+        else None
+    )
     try:
         yield
     finally:
         price_task.cancel()
         if reference_task:
             reference_task.cancel()
+        if neural_task:
+            neural_task.cancel()
         with suppress(asyncio.CancelledError):
             await price_task
         if reference_task:
             with suppress(asyncio.CancelledError):
                 await reference_task
+        if neural_task:
+            with suppress(asyncio.CancelledError):
+                await neural_task
         await close_scryfall_client()
 
 

@@ -22,6 +22,7 @@ from ..schemas import (
 from ..services.decks import assign_to_deck
 from ..services.evaluation import preserve_confirmed_scan
 from ..services.inventory import upsert_inventory
+from ..services.neural import embed_and_store
 from ..services.recognition import CardRecognizer
 from ..services.references import artwork_descriptors, artwork_hash, save_example_descriptors
 
@@ -148,6 +149,18 @@ def resolve_review(review_id: str, payload: ReviewResolve, db: Session = Depends
         descriptor_path = save_example_descriptors(
             card.scryfall_id, review.id, artwork_descriptors(corrected)
         )
+        try:
+            embed_and_store(
+                db,
+                corrected,
+                scryfall_id=card.scryfall_id,
+                source_kind="correction",
+                source_id=review.id,
+            )
+        except RuntimeError:
+            # The confirmed label remains durable. Nightly maintenance can
+            # backfill it after a transient model/runtime failure.
+            logger.exception("Could not embed confirmed review %s", review.id)
         if reference:
             existing_example = db.scalar(
                 select(CardVisualExample).where(
