@@ -339,6 +339,24 @@ class CardRecognizer:
         years = [int(value) for value in re.findall(r"(?<!\d)((?:19|20)\d{2})(?!\d)", text)]
         copyright_year = max(years) if years else None
         if copyright_year is None:
+            # Decorative copyright type is particularly hostile to OCR: the
+            # common 1996 footer is often read as ``Ol9g6`` (©/1/g confusion).
+            # Normalize only footer-like lines containing an artist/copyright
+            # marker so ordinary rules text cannot manufacture a release year.
+            footer = "\n".join(lines[-8:])
+            for raw_line in footer.splitlines():
+                if not re.search(r"(?:illus|wizard|coast|©|rights?)", raw_line, re.I):
+                    continue
+                compact = re.sub(r"[^A-Za-z0-9]", "", raw_line)
+                normalized = compact.translate(str.maketrans({"O": "0", "o": "0", "l": "1", "I": "1", "g": "9"}))
+                fuzzy_years = [
+                    int(value)
+                    for value in re.findall(r"(?<!\d)((?:19|20)\d{2})(?!\d)", normalized)
+                ]
+                if fuzzy_years:
+                    copyright_year = max(fuzzy_years)
+                    break
+        if copyright_year is None:
             # Tiny copyright text often loses "20" while retaining a marker
             # and the final two digits (for example ©2013 -> "co13").
             footer = "\n".join(lines[-5:])

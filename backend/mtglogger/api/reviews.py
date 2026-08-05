@@ -24,7 +24,11 @@ from ..services.evaluation import preserve_confirmed_scan
 from ..services.inventory import upsert_inventory
 from ..services.neural import NeuralRetriever, embed_and_store
 from ..services.recognition import CardRecognizer
-from ..services.references import artwork_descriptors, artwork_hash, save_example_descriptors
+from ..services.references import (
+    artwork_hash,
+    save_example_descriptor_bundle,
+    visual_descriptor_bundle,
+)
 
 router = APIRouter(prefix="/reviews", tags=["reviews"])
 provider = ScryfallProvider()
@@ -146,8 +150,8 @@ def resolve_review(review_id: str, payload: ReviewResolve, db: Session = Depends
         reference = db.get(CardReference, card.scryfall_id)
         corrected = CardRecognizer.rectify(image)
         learned_hash = artwork_hash(corrected)
-        descriptor_path = save_example_descriptors(
-            card.scryfall_id, review.id, artwork_descriptors(corrected)
+        descriptor_path = save_example_descriptor_bundle(
+            card.scryfall_id, review.id, visual_descriptor_bundle(corrected)
         )
         try:
             embed_and_store(

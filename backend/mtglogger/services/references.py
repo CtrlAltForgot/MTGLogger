@@ -184,6 +184,24 @@ def save_example_descriptors(
     return path
 
 
+def save_example_descriptor_bundle(
+    scryfall_id: str,
+    source_id: str,
+    descriptors: dict[str, np.ndarray],
+) -> Path | None:
+    """Persist all regional features for an alternate or confirmed camera view."""
+    if not any(len(value) for value in descriptors.values()):
+        return None
+    root = get_settings().reference_descriptor_dir / "examples" / "v3" / scryfall_id[:2]
+    path = root / f"{scryfall_id}-{source_id}.npz"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    with temporary.open("wb") as output:
+        np.savez_compressed(output, **descriptors)
+    temporary.replace(path)
+    return path
+
+
 def hash_distance(left: str, right: str) -> int:
     return bin(int(left, 16) ^ int(right, 16)).count("1")
 
@@ -584,14 +602,20 @@ async def _index_art_series_variants(db, provider: ScryfallProvider, card: dict)
                 CardNeuralEmbedding.source_id == variant_id,
             )
         )
-        if existing_example and existing_neural:
+        existing_bundle = bool(
+            existing_example
+            and existing_example.descriptor_path
+            and existing_example.descriptor_path.endswith(".npz")
+        )
+        if existing_bundle and existing_neural:
             continue
         raw = await provider.download_image(image_url)
         image = cv2.imdecode(np.frombuffer(raw, dtype="uint8"), cv2.IMREAD_COLOR)
         if image is None:
             continue
-        descriptors = visual_descriptor_bundle(image).get("art", np.empty((0, 32), np.uint8))
-        descriptor_path = save_example_descriptors(card["id"], variant_id, descriptors)
+        descriptor_path = save_example_descriptor_bundle(
+            card["id"], variant_id, visual_descriptor_bundle(image)
+        )
         if not existing_example:
             db.add(
                 CardVisualExample(
@@ -602,6 +626,8 @@ async def _index_art_series_variants(db, provider: ScryfallProvider, card: dict)
                     source_review_id=variant_id,
                 )
             )
+        else:
+            existing_example.descriptor_path = str(descriptor_path) if descriptor_path else None
         embed_and_store(
             db,
             image,

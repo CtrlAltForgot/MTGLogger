@@ -1967,6 +1967,13 @@ def test_ocr_hints_recovers_truncated_footer_year():
     assert CardRecognizer.hints("Death'sApproach\nTerese Nielsen\nco13rdsofthCat2")[3] == 2013
 
 
+def test_ocr_hints_recovers_corrupted_1996_footer_year():
+    from mtglogger.services.recognition import CardRecognizer
+
+    text = "Pacifism\nIllus. Robert Bliss\nOl9g6 Wuards of be Coaet, Inc. Alf righ rescred"
+    assert CardRecognizer.hints(text)[3] == 1996
+
+
 def test_unique_copyright_year_disambiguates_reused_printing():
     import asyncio
 
