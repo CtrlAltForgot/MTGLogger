@@ -1377,6 +1377,7 @@ class CardRecognizer:
                     neural_vector,
                     10,
                     allowed_names=identity_names if identity_is_constrained else None,
+                    ignored_source_ids=ignored_example_review_ids,
                 )
                 if neural is not None
                 else []
@@ -1574,6 +1575,7 @@ class CardRecognizer:
             descriptor_symbol_score = descriptor_symbol_scores.get(card["id"], 0)
             visual_printing_proof = bool(
                 not self.is_basic_land(card)
+                and title_score >= 0.72
                 and descriptor_catalog_complete
                 and card["id"] == descriptor_top_id
                 and descriptor_score >= 88

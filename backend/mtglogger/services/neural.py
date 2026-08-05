@@ -180,6 +180,7 @@ class NeuralIndex:
         *,
         allowed_ids: set[str] | None = None,
         allowed_names: set[str] | None = None,
+        ignored_source_ids: set[str] | None = None,
     ) -> list[NeuralMatch]:
         vector = np.asarray(query, dtype=np.float32).reshape(-1)
         if not len(self.references) or self.matrix.shape[1] != vector.shape[0]:
@@ -190,7 +191,8 @@ class NeuralIndex:
             [
                 (not allowed_ids or reference.scryfall_id in allowed_ids)
                 and (not allowed_names or reference.name in allowed_names)
-                for reference in self.references
+                and (not ignored_source_ids or self.source_ids[index] not in ignored_source_ids)
+                for index, reference in enumerate(self.references)
             ],
             dtype=bool,
         )
@@ -318,6 +320,7 @@ class NeuralRetriever:
         *,
         allowed_ids: set[str] | None = None,
         allowed_names: set[str] | None = None,
+        ignored_source_ids: set[str] | None = None,
     ) -> list[NeuralMatch]:
         if vector is None:
             return []
@@ -327,6 +330,7 @@ class NeuralRetriever:
                 limit=limit,
                 allowed_ids=allowed_ids,
                 allowed_names=allowed_names,
+                ignored_source_ids=ignored_source_ids,
             )
         except Exception:
             logger.exception("Neural retrieval failed; continuing with hybrid recognition")

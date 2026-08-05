@@ -65,10 +65,16 @@ def test_neural_vector_storage_and_exact_cosine_search():
             limit=2,
             allowed_names={"Alpha"},
         )
+        held_out = index.search(
+            np.array([0.0, 1.0, 0.0], dtype=np.float32),
+            limit=2,
+            ignored_source_ids={"review-b"},
+        )
 
     assert [match.reference.scryfall_id for match in matches] == ["card-b", "card-a"]
     assert matches[0].source_kind == "correction"
     assert [match.reference.scryfall_id for match in constrained] == ["card-a"]
+    assert [match.reference.scryfall_id for match in held_out] == ["card-a"]
     packed = encode_vector(np.array([0.6, 0.8], dtype=np.float32))
     np.testing.assert_allclose(decode_vector(packed, 2), [0.6, 0.8], atol=5e-4)
 
