@@ -232,6 +232,26 @@ class ScryfallProvider:
         response.raise_for_status()
         return int(response.json().get("total_cards") or 0)
 
+    async def art_series_pages(self) -> AsyncIterator[list[dict]]:
+        """Stream artwork-only Art Series cards for visual recognition."""
+        url = f"{self.base_url}/cards/search"
+        params = {"q": "layout:art_series", "unique": "prints", "order": "set"}
+        while url:
+            response = await scryfall_api_get(url, params=params)
+            response.raise_for_status()
+            page = response.json()
+            yield page.get("data", [])
+            url = page.get("next_page") if page.get("has_more") else None
+            params = None
+
+    async def art_series_count(self) -> int:
+        response = await scryfall_api_get(
+            f"{self.base_url}/cards/search",
+            params={"q": "layout:art_series", "unique": "prints", "page": 1},
+        )
+        response.raise_for_status()
+        return int(response.json().get("total_cards") or 0)
+
     async def download_image(self, url: str) -> bytes:
         response = await scryfall_client().get(url)
         response.raise_for_status()

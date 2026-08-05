@@ -315,6 +315,7 @@ async def sync_all() -> None:
                 or 0
             )
         if catalog_total and ready_profiles >= catalog_total:
+            await _sync_art_series(provider)
             with _state_lock:
                 _state.state = "complete"
                 _state.set_code = "all-paper"
@@ -382,6 +383,36 @@ async def _retry_full_sync(delay_seconds: int = 60) -> None:
             return
         _state.state = "idle"
     await sync_all()
+
+
+async def _sync_art_series(provider: ScryfallProvider) -> None:
+    """Resumably add artwork-only cards without changing paper queue totals."""
+    art_total = await provider.art_series_count()
+    with SessionLocal() as db:
+        ready = (
+            db.scalar(
+                select(func.count())
+                .select_from(CardVisualFingerprint)
+                .where(CardVisualFingerprint.layout == "art_series")
+                .where(CardVisualFingerprint.descriptor_path.like("%/v3/%"))
+            )
+            or 0
+        )
+        if art_total and ready >= art_total:
+            return
+        with _state_lock:
+            _state.set_code = "art-series"
+        async for cards in provider.art_series_pages():
+            for card in cards:
+                downloaded = False
+                try:
+                    downloaded = await _index_card(db, provider, card)
+                except Exception:
+                    db.rollback()
+                    with _state_lock:
+                        _state.errors += 1
+                if downloaded:
+                    await asyncio.sleep(0.1)
 
 
 async def reference_refresh_loop(interval_hours: int) -> None:
