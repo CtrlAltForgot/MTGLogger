@@ -1,16 +1,15 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { CameraAlt, RestartAlt, VideocamOff } from '@mui/icons-material'
 import {
   Alert, Box, Button, Card, CardContent, Chip, FormControlLabel, Grid,
   IconButton, LinearProgress, MenuItem, Select, Slider, Snackbar, Stack, Switch, TextField, Tooltip, Typography,
 } from '@mui/material'
 import { request, submitScan } from '../api'
-import ScanConfirmation from '../components/ScanConfirmation'
 import FoilArtwork from '../components/FoilArtwork'
 import { CardName } from '../components/CardDetails'
 import { cardsPerMinute, initialSessionStats, recordSuccessfulAddition, reviewPercentage } from '../scanner/sessionStats'
 import { defaultTuning, useAutoScanner, type ScannerTuning } from '../scanner/useAutoScanner'
-import type { Candidate, Deck, Defaults, Inventory, ScanResult } from '../types'
+import type { Deck, Defaults, Inventory, ScanResult } from '../types'
 
 const initial:Defaults={condition:'near_mint',foil:false,language:'en',storage_location:'Unsorted',collection_name:'Main',status:'owned',box_set_code:null,auto_add:true,deck_id:null}
 const languages=[
@@ -24,13 +23,10 @@ export default function Scanner(){
   const [result,setResult]=useState<ScanResult|null>(null)
   const [tuning,setTuning]=useState<ScannerTuning>(defaultTuning)
   const [decks,setDecks]=useState<Deck[]>([])
-  const [decisionBusy,setDecisionBusy]=useState(false)
   const [success,setSuccess]=useState<Inventory|null>(null)
   const [lastIdentified,setLastIdentified]=useState<{inventory:Inventory;confidence:number}|null>(null)
   const [reviewNotice,setReviewNotice]=useState<ScanResult|null>(null)
-  const [resolveImmediately,setResolveImmediately]=useState(true)
   const [stats,setStats]=useState(initialSessionStats)
-  const decisionComplete=useRef<(()=>void)|null>(null)
 
   const capture=useCallback(async(blob:Blob)=>{
     const started=performance.now()
@@ -46,45 +42,14 @@ export default function Scanner(){
       setSuccess(next.inventory)
       setLastIdentified({inventory:next.inventory,confidence:next.confidence})
     }
-    if(next.disposition!=='added'&&defaults.auto_add&&!resolveImmediately)setReviewNotice(next)
-    if(
-      next.disposition!=='added'
-      && (resolveImmediately||!defaults.auto_add)
-    ){
-      await new Promise<void>(resolve=>{decisionComplete.current=resolve})
-    }
+    if(next.disposition!=='added')setReviewNotice(next)
     return true
-  },[defaults,resolveImmediately])
-  const scan=useAutoScanner(capture,tuning,resolveImmediately||!defaults.auto_add?1:2)
+  },[defaults])
+  const scan=useAutoScanner(capture,tuning,2)
 
   useEffect(()=>{void request<Deck[]>('/decks').then(setDecks)},[])
   useEffect(()=>{void scan.start()},[scan.start])
 
-  const finishDecision=()=>{decisionComplete.current?.();decisionComplete.current=null;setDecisionBusy(false)}
-  const accept=useCallback(async(candidate:Candidate)=>{
-    if(!result?.review_id)return
-    setDecisionBusy(true)
-    try{
-      const inventory=await request<Inventory>(`/reviews/${result.review_id}/resolve`,{
-        method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({candidate,defaults}),
-      })
-      setResult({...result,disposition:'added',inventory,message:`Added ${inventory.card_name}`})
-      setSuccess(inventory)
-      setLastIdentified({inventory,confidence:result.confidence})
-      setStats(current=>recordSuccessfulAddition(current,performance.now()))
-      finishDecision()
-    }catch(error){setDecisionBusy(false);scan.setError(error instanceof Error?error.message:'Could not accept card')}
-  },[defaults,result,scan])
-  const skip=useCallback(async()=>{
-    if(!result?.review_id)return
-    setDecisionBusy(true)
-    try{await request(`/reviews/${result.review_id}/ignore`,{method:'POST'});setResult(null);finishDecision()}
-    catch(error){setDecisionBusy(false);scan.setError(error instanceof Error?error.message:'Could not skip card')}
-  },[result,scan])
-
-  const uncertain=result&&result.disposition!=='added'&&result.disposition!=='empty'
-  const immediateDecision=!!(uncertain&&result.review_id&&(resolveImmediately||!defaults.auto_add))
   const tone=result?.disposition==='added'?'success':result?.disposition==='suggestions'||result?.disposition==='confirmation'?'warning':'error'
   const stateLabel=scan.state==='remove'?'Swap to next card':scan.state==='processing'?'Identifying…':scan.state==='stabilizing'?'Hold still…':scan.state==='calibrating'?'Calibrating…':scan.state==='waiting'?'Ready for card':''
   const sessionCardsPerMinute=cardsPerMinute(stats)
@@ -118,7 +83,7 @@ export default function Scanner(){
         {stats.scans>0&&<><Typography variant="caption">Last <strong>{(stats.lastMs/1000).toFixed(1)}s</strong></Typography><Typography variant="caption">Recognition <strong>{(stats.serverMs/1000).toFixed(1)}s</strong></Typography><Typography variant="caption">Average <strong>{(stats.totalMs/stats.scans/1000).toFixed(1)}s</strong></Typography></>}
       </Stack>
       {scan.error&&<Alert severity="error" sx={{mt:2}} onClose={()=>scan.setError(undefined)}>{scan.error}</Alert>}
-      {result&&!immediateDecision&&<Alert severity={tone} variant="filled" sx={{mt:2,fontSize:'1.05rem'}}>
+      {result&&<Alert severity={tone} variant="filled" sx={{mt:2,fontSize:'1.05rem'}}>
         <strong>{result.message}</strong> · {result.confidence.toFixed(1)}%
         {result.inventory&&<> · {result.inventory.set_name} #{result.inventory.collector_number} · ${Number(result.inventory.market_price||0).toFixed(2)} · Quantity {result.inventory.quantity}</>}
       </Alert>}
@@ -152,7 +117,6 @@ export default function Scanner(){
         <Grid size={12}><Stack direction={{xs:'column',sm:'row'}} spacing={{xs:0,sm:2}} flexWrap="wrap">
           <FormControlLabel control={<Switch checked={defaults.foil} onChange={event=>setDefaults({...defaults,foil:event.target.checked})}/>} label="Foil"/>
           <FormControlLabel control={<Switch checked={defaults.auto_add} onChange={event=>setDefaults({...defaults,auto_add:event.target.checked})}/>} label="Auto-add near-certain matches (98.5%+)"/>
-          <FormControlLabel control={<Switch checked={resolveImmediately} onChange={event=>setResolveImmediately(event.target.checked)}/>} label="Resolve uncertain cards immediately"/>
         </Stack></Grid>
       </Grid></Grid>
           <Grid size={{xs:12,md:5}} sx={{borderLeft:{md:'1px solid'},borderColor:{md:'divider'},pl:{md:4}}}>
@@ -168,7 +132,6 @@ export default function Scanner(){
         </Grid>
       </CardContent></Card>
     </Grid>
-    {immediateDecision&&<ScanConfirmation reviewId={result!.review_id!} candidates={result!.candidates} confidence={result!.confidence} foil={defaults.foil} language={defaults.language} onAccept={accept} onSkip={skip} busy={decisionBusy}/>}
     <Snackbar key={success?`${success.id}-${success.quantity}`:'empty'} open={!!success} autoHideDuration={1800} onClose={()=>setSuccess(null)} anchorOrigin={{vertical:'bottom',horizontal:'center'}}>
       <Card elevation={12} sx={{display:'flex',alignItems:'center',minWidth:{xs:320,sm:460},border:'2px solid',borderColor:'success.main',overflow:'hidden'}}>
         {success?.image_url&&<FoilArtwork src={success.image_url} alt={success.card_name} foil={success.foil} sx={{width:82,height:114}} imageSx={{objectFit:'cover',objectPosition:'top'}}/>}
@@ -176,7 +139,7 @@ export default function Scanner(){
       </Card>
     </Snackbar>
     <Snackbar key={reviewNotice?.review_id||'no-review'} open={!!reviewNotice} autoHideDuration={1800} onClose={()=>setReviewNotice(null)} anchorOrigin={{vertical:'bottom',horizontal:'center'}}>
-      <Alert severity="warning" variant="filled" sx={{minWidth:{xs:320,sm:460}}}><Typography fontWeight={900}>SAVED FOR REVIEW · {reviewNotice?.confidence.toFixed(1)}%</Typography><Typography>{reviewNotice?.candidates[0]?.name||'Printing uncertain'} · Keep scanning</Typography></Alert>
+      <Alert severity="warning" variant="filled" sx={{minWidth:{xs:320,sm:460}}}><Typography fontWeight={900}>CARD REQUIRES REVIEW</Typography><Typography>{reviewNotice?.candidates[0]?.name||'Printing uncertain'} · Saved to Review · Keep scanning</Typography></Alert>
     </Snackbar>
   </Grid>
 }
