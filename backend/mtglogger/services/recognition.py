@@ -1545,6 +1545,7 @@ class CardRecognizer:
                     set_art_top_id,
                     set_art_score,
                     set_art_margin,
+                    artist_score,
                 )
                 if safe_land_match:
                     # Exact set plus a decisive illustration match is safer
@@ -1902,6 +1903,7 @@ class CardRecognizer:
         set_art_top_id: str | None = None,
         set_art_score: float = 0,
         set_art_margin: float = 0,
+        artist_score: float = 0,
     ) -> bool:
         """Require decisive artwork plus exact set text or symbol evidence.
 
@@ -1918,8 +1920,10 @@ class CardRecognizer:
                     and printed_set_code
                     and number_score == 1.0
                     and set_score == 1.0
-                    and descriptor_score >= 92
-                    and descriptor_margin >= 10
+                and (
+                    (descriptor_score >= 92 and descriptor_margin >= 10)
+                    or artist_score >= 0.9
+                )
                 )
                 or (
                     (
