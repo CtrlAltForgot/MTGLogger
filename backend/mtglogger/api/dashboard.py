@@ -53,6 +53,17 @@ def summary(db: Session = Depends(get_db)):
             )
         ]
 
+    def group_colors():
+        return [
+            {"label": label or "C", "count": count}
+            for label, count in db.execute(
+                select(InventoryItem.color_identity, func.sum(InventoryItem.quantity))
+                .group_by(InventoryItem.color_identity)
+                .order_by(desc(func.sum(InventoryItem.quantity)))
+                .limit(20)
+            )
+        ]
+
     valuable = list(
         db.scalars(
             select(InventoryItem)
@@ -78,7 +89,7 @@ def summary(db: Session = Depends(get_db)):
         unique_printings=unique,
         review_count=review_count,
         by_set=group_sets(),
-        by_color=group(InventoryItem.color_identity),
+        by_color=group_colors(),
         by_rarity=group(InventoryItem.rarity),
         by_type=group(InventoryItem.type_line),
         most_valuable=valuable,
