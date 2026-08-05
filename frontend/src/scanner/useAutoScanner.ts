@@ -82,10 +82,8 @@ export function useAutoScanner(
         const update=advanceRemovalGate(removalGate.current,cardPresent,substantiallyChanged)
         removalGate.current=update.gate
         if(update.rearmed){
-          // Refresh the empty-table baseline after a completed removal. This
-          // absorbs exposure drift instead of treating the newly lit table as
-          // another card a split second later.
-          if(!cardPresent)baseline.current=new Uint8ClampedArray(pixels)
+          // Calibration is user-controlled. Never replace the empty-table
+          // baseline during a batch, even after a removal or exposure shift.
           stable.current=0;setState('waiting')
         }
         return
@@ -102,14 +100,20 @@ export function useAutoScanner(
       const full=document.createElement('canvas');full.width=element.videoWidth;full.height=element.videoHeight;full.getContext('2d')!.drawImage(element,0,0)
       full.toBlob(blob=>{
         capturing.current=false;stable.current=0
-        if(!blob){calibrate();return}
+        if(!blob){setState('waiting');return}
         // Latch before network work begins. The video loop can observe removal
         // and prepare another physical card while this request is identifying.
         removalGate.current={latched:true,emptyFrames:0,replacementFrames:0};setState('remove')
         const generation=sessionGeneration.current
         inFlight.current++;setPendingCaptures(inFlight.current)
         void onCapture(blob).then(cardCaptured=>{
-          if(generation===sessionGeneration.current&&!cardCaptured)calibrate()
+          if(generation===sessionGeneration.current&&!cardCaptured){
+            // A rejected/background frame is not evidence that the user's
+            // empty-table calibration is wrong. Resume with the same baseline.
+            removalGate.current={latched:false,emptyFrames:0,replacementFrames:0}
+            capturedFrame.current=undefined
+            setState('waiting')
+          }
         }).catch(e=>{if(generation===sessionGeneration.current)setError(e instanceof Error?e.message:'Scan failed')}).finally(()=>{
           if(generation!==sessionGeneration.current)return
           inFlight.current=Math.max(0,inFlight.current-1);setPendingCaptures(inFlight.current)
@@ -117,7 +121,7 @@ export function useAutoScanner(
       },'image/jpeg',.9)
     },180)
     return()=>clearInterval(timer)
-  },[state,error,maxInFlight,onCapture,tuning,calibrate])
+  },[state,error,maxInFlight,onCapture,tuning])
   useEffect(()=>stop,[stop])
   return {video,canvas,state,error,metrics,cameras,selectedCamera,pendingCaptures,start,stop,switchCamera,calibrate,setError}
 }
