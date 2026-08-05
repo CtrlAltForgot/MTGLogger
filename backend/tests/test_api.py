@@ -1107,6 +1107,9 @@ def test_full_frame_land_title_fuses_with_focused_collector_footer():
     recognizer = CardRecognizer.__new__(CardRecognizer)
     recognizer.provider = Provider()
     recognizer._recognition_lock = asyncio.Lock()
+    recognizer._lookup_local_cards = lambda *_args: []
+    recognizer._lookup_local_cards_by_number = lambda *_args: []
+    recognizer._lookup_local_printing_family = lambda *_args: ([], 0)
     image = np.zeros((840, 600, 3), dtype=np.uint8)
     recognizer.decode = lambda _raw: image
     recognizer.rectify = lambda decoded: decoded
@@ -1361,6 +1364,9 @@ def test_weak_internal_crop_recovers_from_original_camera_frame():
     recognizer = CardRecognizer.__new__(CardRecognizer)
     recognizer.provider = Provider()
     recognizer._recognition_lock = asyncio.Lock()
+    recognizer._lookup_local_cards = lambda *_args: []
+    recognizer._lookup_local_cards_by_number = lambda *_args: []
+    recognizer._lookup_local_printing_family = lambda *_args: ([], 0)
     original = np.zeros((720, 1280, 3), dtype=np.uint8)
     bad_crop = np.zeros((840, 600, 3), dtype=np.uint8)
     recognizer.decode = lambda _raw: original

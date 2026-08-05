@@ -1237,9 +1237,13 @@ class CardRecognizer:
                     recovered_title, recovered_number, recovered_set, recovered_year = (
                         recovery_hints
                     )
-                    fused_number = number or recovered_number
-                    fused_set = printed_set_code or recovered_set
-                    fused_year = copyright_year or recovered_year
+                    # The focused crop has already failed to establish a card
+                    # identity on this branch. Prefer complete fields from the
+                    # successful full-frame identity pass over damaged-but-
+                    # nonempty focused OCR (for example 116 read as 11).
+                    fused_number = recovered_number or number
+                    fused_set = recovered_set or printed_set_code
+                    fused_year = recovered_year or copyright_year
                     fused_cards = await self._lookup_cards(
                         recovered_title,
                         fused_number,
