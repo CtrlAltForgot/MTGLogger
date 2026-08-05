@@ -1159,7 +1159,7 @@ def test_basic_land_auto_add_requires_decisive_exact_art_evidence():
         "21",
     )
     assert CardRecognizer.has_repeated_footer_printing_evidence(
-        "Mountain\n69/274L\nM21\n869/274L\nM21",
+        "Mountain\n69/274L\nM21\n9/274L\nM21",
         m21_lands[3],
         m21_lands,
         "M21",

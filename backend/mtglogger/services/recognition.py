@@ -2148,14 +2148,25 @@ class CardRecognizer:
             return False
 
         numerators = re.findall(r"(?<!\d)(\d{1,4})\s*[/|\\]\s*\d{1,4}", text or "")
-        suffix_counts: dict[str, int] = {}
+        observed_numbers: list[str] = []
         for observed in numerators:
-            suffix = observed[-2:] if len(observed) >= 2 else ""
-            if suffix and collector.endswith(suffix):
-                suffix_counts[suffix] = suffix_counts.get(suffix, 0) + 1
+            normalized = observed.lstrip("0") or "0"
+            if collector.endswith(normalized[-min(2, len(normalized)) :]):
+                observed_numbers.append(normalized)
 
-        for suffix, count in suffix_counts.items():
-            if count < 2:
+        for observed in observed_numbers:
+            if len(observed) < 2:
+                continue
+            suffix = observed[-2:]
+            # A second pass may lose another leading digit (``69`` -> ``9``).
+            # It still corroborates the longer reading, but a lone one-digit
+            # observation is never enough to create evidence by itself.
+            corroborating = sum(
+                1
+                for other in observed_numbers
+                if other.endswith(suffix) or suffix.endswith(other)
+            )
+            if corroborating < 2:
                 continue
             matching_ids = {
                 str(candidate.get("id") or "")
