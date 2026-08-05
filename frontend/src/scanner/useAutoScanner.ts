@@ -45,7 +45,41 @@ function drawOriented(
 }
 
 export function cardShapedBounds(changed:Uint8Array){
-  const columns=FRAME_WIDTH/2,rows=FRAME_HEIGHT/2,seen=new Uint8Array(changed.length)
+  const columns=FRAME_WIDTH/2,rows=FRAME_HEIGHT/2
+  // Search inside the motion mask for the densest MTG-shaped window. A global
+  // exposure shift can connect the card to a large patch of table, so the
+  // connected component's outer bounds are not necessarily the card's edges.
+  // The integral image lets us score every plausible portrait window cheaply.
+  const integral=new Uint16Array((columns+1)*(rows+1))
+  for(let row=0;row<rows;row++)for(let column=0;column<columns;column++){
+    const at=(row+1)*(columns+1)+column+1
+    integral[at]=changed[row*columns+column]+integral[at-1]+integral[at-(columns+1)]-integral[at-(columns+2)]
+  }
+  const countIn=(left:number,top:number,width:number,height:number)=>{
+    const stride=columns+1,right=left+width,bottom=top+height
+    return integral[bottom*stride+right]-integral[top*stride+right]-integral[bottom*stride+left]+integral[top*stride+left]
+  }
+  // In the 4:3 analysis bitmap, a portrait card viewed through a normal 16:9
+  // feed is about 0.54 as wide as it is tall.
+  const targetAspect=(63/88)*(FRAME_WIDTH/FRAME_HEIGHT)/(16/9)
+  let windowBest:DetectionBounds|undefined,windowScore=0
+  for(let height=Math.ceil(rows*.3);height<=rows;height++){
+    const width=Math.max(6,Math.round(height*targetAspect))
+    if(width>columns)continue
+    for(let top=0;top<=rows-height;top++)for(let left=0;left<=columns-width;left++){
+      const count=countIn(left,top,width,height),density=count/(width*height)
+      if(count<24||density<.22)continue
+      // Density is deliberately squared: a correctly fitted card beats a
+      // larger rectangle padded with table pixels.
+      const score=density*density*Math.sqrt(width*height)*(height/rows)
+      if(score<=windowScore)continue
+      windowScore=score
+      windowBest={left:left/columns*100,top:top/rows*100,width:width/columns*100,height:height/rows*100}
+    }
+  }
+  if(windowBest)return windowBest
+
+  const seen=new Uint8Array(changed.length)
   let best:DetectionBounds|undefined,bestScore=0
   for(let origin=0;origin<changed.length;origin++){
     if(!changed[origin]||seen[origin])continue

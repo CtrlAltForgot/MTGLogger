@@ -43,6 +43,20 @@ describe('wide scanner presence analysis',()=>{
     expect(bounds!.left).toBeLessThan(15)
     expect(bounds!.width).toBeLessThan(45)
   })
+
+  it('does not let connected table noise stretch the card outline',()=>{
+    const pixels=changedRegion(8,54,8,116)
+    // Join a broad table change to the card with a narrow noisy bridge.
+    for(let y=54;y<64;y++)for(let x=54;x<142;x++){
+      const index=(y*width+x)*4
+      pixels[index]=pixels[index+1]=pixels[index+2]=180
+    }
+    const bounds=analyze(pixels,undefined,frame()).bounds
+    expect(bounds).toBeDefined()
+    expect(bounds!.left).toBeLessThan(12)
+    expect(bounds!.width).toBeLessThan(40)
+    expect(bounds!.height).toBeGreaterThan(70)
+  })
 })
 
 describe('bounded recognition pipeline',()=>{
