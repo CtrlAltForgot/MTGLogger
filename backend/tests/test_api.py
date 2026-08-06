@@ -3256,6 +3256,66 @@ def test_independent_visual_consensus_can_prove_footerless_nonbasic_printing():
     )
 
 
+def test_unique_symbol_consensus_does_not_require_a_scoring_lead():
+    from mtglogger.services.recognition import CardRecognizer
+
+    evidence = dict(
+        is_basic_land=False,
+        identity_is_constrained=True,
+        family_complete=True,
+        title_score=1.0,
+        candidate_id="gtc-printing",
+        candidate_lead=1.0,
+        neural_top_id="gtc-printing",
+        neural_score=0.851,
+        neural_margin=0.065,
+        visual_top_id="gtc-printing",
+        visual_score=76.4,
+        visual_margin=0.24,
+        art_top_id="list-printing",
+        art_score=99.5,
+        symbol_top_set="gtc",
+        candidate_set="gtc",
+        symbol_score=99.5,
+        symbol_margin=20,
+        footer_contradiction=False,
+    )
+
+    assert CardRecognizer.has_safe_multimodal_printing_consensus(**evidence)
+    assert not CardRecognizer.has_safe_multimodal_printing_consensus(
+        **{**evidence, "neural_margin": 0.02}
+    )
+    assert not CardRecognizer.has_safe_multimodal_printing_consensus(
+        **{**evidence, "is_basic_land": True}
+    )
+
+
+def test_strong_artwork_consensus_accepts_camera_threshold_edges():
+    from mtglogger.services.recognition import CardRecognizer
+
+    assert CardRecognizer.has_safe_multimodal_printing_consensus(
+        is_basic_land=False,
+        identity_is_constrained=True,
+        family_complete=True,
+        title_score=1.0,
+        candidate_id="jou-printing",
+        candidate_lead=13.6,
+        neural_top_id="jou-printing",
+        neural_score=0.798,
+        neural_margin=0.294,
+        visual_top_id="jou-printing",
+        visual_score=74.08,
+        visual_margin=12.5,
+        art_top_id="jou-printing",
+        art_score=93.8,
+        symbol_top_set=None,
+        candidate_set="jou",
+        symbol_score=0,
+        symbol_margin=0,
+        footer_contradiction=False,
+    )
+
+
 def test_visual_catalog_is_reused_until_explicitly_invalidated():
     from mtglogger.services.recognition import CardRecognizer
 

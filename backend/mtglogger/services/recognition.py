@@ -2133,6 +2133,22 @@ class CardRecognizer:
                     text = "\n".join(
                         part for part in (text, symbol_text) if part.strip()
                     )
+            if identity_is_constrained and family_complete:
+                # Treat OCR fields as contradictory only when they plausibly
+                # describe at least one member of the complete card family.
+                # Rules/flavor text and damaged logos otherwise manufacture
+                # values such as Wild Guess #8993 or DTK -> OTK, which match
+                # no real printing and used to veto strong independent proof.
+                if number and not any(
+                    self.collector_score(number, card["collector_number"]) >= 0.78
+                    for card in cards
+                ):
+                    number = None
+                if printed_set_code and not any(
+                    self.set_code_score(printed_set_code, card["set"]) >= 0.78
+                    for card in cards
+                ):
+                    printed_set_code = None
             family_complete_at = time.perf_counter()
             neural_vector = (
                 neural_vector
@@ -3392,6 +3408,24 @@ class CardRecognizer:
         footer_contradiction: bool,
     ) -> bool:
         """Accept footerless non-basic printings only after independent consensus."""
+        symbol_consensus = bool(
+            not is_basic_land
+            and identity_is_constrained
+            and family_complete
+            and title_score >= 0.93
+            and candidate_id == neural_top_id == visual_top_id
+            and neural_score >= 0.84
+            and neural_margin >= 0.06
+            and visual_score >= 75
+            and visual_margin >= 0.15
+            and symbol_top_set
+            and candidate_set.casefold() == symbol_top_set.casefold()
+            and symbol_score >= 95
+            and symbol_margin >= 4
+            and not footer_contradiction
+        )
+        if symbol_consensus:
+            return True
         common = bool(
             not is_basic_land
             and identity_is_constrained
@@ -3399,7 +3433,7 @@ class CardRecognizer:
             and title_score >= 0.93
             and candidate_lead >= 8.0
             and candidate_id == neural_top_id == visual_top_id
-            and visual_score >= 75
+            and visual_score >= 73
             and not footer_contradiction
         )
         if not common:
@@ -3408,7 +3442,7 @@ class CardRecognizer:
         artwork_consensus = bool(
             candidate_id == art_top_id
             and art_score >= 90
-            and neural_score >= 0.80
+            and neural_score >= 0.79
             and neural_margin >= 0.015
             and visual_margin >= 0.20
         )
