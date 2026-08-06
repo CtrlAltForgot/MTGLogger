@@ -1944,6 +1944,21 @@ class CardRecognizer:
                 confidence = max(confidence, 97.8 if len(strong_artist_ids) == 1 else 96.0)
             elif strong_artist_ids and card.get("artist"):
                 confidence = min(confidence, 86.0)
+            exact_footer_artist_proof = bool(
+                not self.is_basic_land(card)
+                and number_score == 1.0
+                and set_score == 1.0
+                and artist_score >= 0.9
+                and len(strong_artist_ids) == 1
+            )
+            if exact_footer_artist_proof:
+                # A globally exact set/collector pair plus the independently
+                # printed artist credit proves a non-land printing even when a
+                # crop or glare destroys its title. This covers hard scans such
+                # as Goblin Heelcutter and Artful Maneuver without weakening the
+                # reused-art and basic-land safeguards.
+                confidence = max(confidence, 98.5)
+                safe_candidate_ids.add(card["id"])
             neural_score = neural_scores.get(card["id"], 0.0)
             neural_is_safe = self.neural_printing_is_safe(
                 shadow_mode=get_settings().neural_shadow_mode,
