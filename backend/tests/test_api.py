@@ -955,6 +955,7 @@ def test_exact_footer_title_fragment_requires_matching_non_land_year():
     }
 
     assert CardRecognizer.has_exact_footer_title_fragment("Aven", card, 2015)
+    assert CardRecognizer.has_exact_footer_title_fragment("Aven", card, None)
     assert not CardRecognizer.has_exact_footer_title_fragment("Aven", card, 2016)
     assert not CardRecognizer.has_exact_footer_title_fragment("Pri", card, 2015)
     assert not CardRecognizer.has_exact_footer_title_fragment(

@@ -1035,20 +1035,28 @@ class CardRecognizer:
         card: dict,
         copyright_year: int | None,
     ) -> bool:
-        """Corroborate one exact non-land footer with a real title fragment and year."""
-        if cls.is_basic_land(card) or not observed_title or not copyright_year:
+        """Corroborate one exact non-land footer with a real title fragment.
+
+        The caller has already resolved an exact set-code/collector-number pair
+        to one catalog printing. A four-character substring of that printing's
+        title is independent corroboration; requiring copyright OCR as a third
+        signal only forced another slow full-frame pass. Basic lands retain the
+        stricter artwork path because their shared names cannot corroborate a
+        particular illustration.
+        """
+        if cls.is_basic_land(card) or not observed_title:
             return False
         source = cls.normalized_name(observed_title)
         target = cls.normalized_name(str(card.get("name") or ""))
+        if len(source) < 4 or source not in target:
+            return False
+        if not copyright_year:
+            return True
         try:
             released_year = int(str(card.get("released_at") or "0000")[:4])
         except ValueError:
             return False
-        return bool(
-            len(source) >= 4
-            and source in target
-            and released_year == copyright_year
-        )
+        return released_year == copyright_year
 
     @classmethod
     def has_constrained_visual_identity(
