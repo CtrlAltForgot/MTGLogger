@@ -1048,6 +1048,26 @@ def test_confirmed_camera_rerank_must_agree_with_observed_footer():
     )
 
 
+def test_neural_artwork_can_rerank_without_footer_but_not_claim_safety():
+    from mtglogger.services.recognition import CardRecognizer
+
+    evidence = {
+        "source_kind": "correction",
+        "similarity": 0.85,
+        "margin": 0.13,
+        "observed_number": None,
+        "observed_set": None,
+    }
+    assert CardRecognizer.neural_rerank_without_footer(**evidence)
+    assert CardRecognizer.neural_rerank_without_footer(
+        **(evidence | {"source_kind": "canonical"})
+    )
+    assert not CardRecognizer.neural_rerank_without_footer(
+        **(evidence | {"similarity": 0.81})
+    )
+    assert not CardRecognizer.neural_rerank_without_footer(
+        **(evidence | {"observed_number": "256"})
+    )
 def test_exceptionally_close_confirmed_camera_scan_is_printing_safe():
     from mtglogger.services.recognition import CardRecognizer
 
@@ -1366,7 +1386,6 @@ def test_full_frame_land_title_fuses_with_focused_collector_footer():
 def test_basic_land_auto_add_requires_decisive_exact_art_evidence():
     from mtglogger.services.recognition import CardRecognizer
 
-    swamp = {"id": "rtr-swamp-264", "name": "Swamp", "type_line": "Basic Land — Swamp"}
     assert CardRecognizer.is_basic_land(swamp)
     assert not CardRecognizer.has_decisive_art_match(swamp["id"], "rtr-swamp-261", True, 96, 24)
     assert not CardRecognizer.has_decisive_art_match(swamp["id"], swamp["id"], True, 87, 24)
@@ -1376,6 +1395,7 @@ def test_basic_land_auto_add_requires_decisive_exact_art_evidence():
 def test_land_art_and_printed_artist_can_recover_a_glare_reduced_margin():
     from mtglogger.services.recognition import CardRecognizer
 
+    swamp = {"id": "rtr-swamp-264", "name": "Swamp", "type_line": "Basic Land — Swamp"}
     assert CardRecognizer.has_safe_basic_land_match(
         "ths-mountain-244",
         "ths-mountain-244",
@@ -2163,6 +2183,10 @@ def test_ocr_hints_repair_core_set_separator_and_split_collector_pair():
         "Firehoof Cavalry\n011/\n269\nKTK+EN YW TANG"
     )
     assert (title, number, set_code) == ("Firehoof Cavalry", "011", "ktk")
+
+    assert CardRecognizer.hints(
+        "Mountain\nTomasz Jedruszek\n1991-2011 Wizards of the Coast LLC 172L75"
+    )[1] == "172"
 
 
 def test_ocr_hints_do_not_treat_split_denominator_as_set_code():

@@ -20,6 +20,25 @@ def test_neural_preprocess_matches_model_contract():
     np.testing.assert_allclose(tensor[0, :, 0, 0], [-2.117904, -2.035714, -1.804444], rtol=1e-5)
 
 
+def test_neural_warm_executes_one_inference_and_is_idempotent(monkeypatch, tmp_path):
+    from mtglogger.services.neural import NeuralEmbedder
+
+    embedder = NeuralEmbedder(tmp_path)
+    observed = []
+    monkeypatch.setattr(
+        embedder,
+        "embed",
+        lambda image: observed.append(image.copy()) or np.ones(4, dtype=np.float32),
+    )
+
+    embedder.warm()
+    embedder.warm()
+
+    assert len(observed) == 1
+    assert observed[0].shape == (224, 224, 3)
+    assert not observed[0].any()
+
+
 def test_neural_vector_storage_and_exact_cosine_search():
     from mtglogger.database import Base, SessionLocal, engine
     from mtglogger.models import CardReference

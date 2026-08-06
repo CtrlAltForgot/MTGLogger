@@ -74,14 +74,24 @@ class NeuralEmbedder:
         self.model_root = model_root or get_settings().neural_model_dir
         self._predictor = None
         self._lock = threading.Lock()
+        self._warmed = False
 
     @property
     def available(self) -> bool:
         return model_is_ready(self.model_root)
 
     def warm(self) -> None:
-        """Load the predictor without charging initialization to the first scan."""
-        self._load()
+        """Load and execute the predictor before scanner traffic is admitted.
+
+        Creating Paddle's predictor does not compile every execution path. The
+        first real ``run`` used to cost another six to eight seconds even though
+        startup had called this method. Execute one representative tensor so
+        model initialization is paid by API startup rather than the first card.
+        """
+        if self._warmed:
+            return
+        self.embed(np.zeros((224, 224, 3), dtype=np.uint8))
+        self._warmed = True
 
     def _load(self):
         if self._predictor is not None:

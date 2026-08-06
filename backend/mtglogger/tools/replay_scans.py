@@ -24,6 +24,11 @@ async def replay(limit: int, status: ReviewStatus) -> dict:
         )
 
     recognizer = CardRecognizer()
+    await asyncio.gather(
+        asyncio.to_thread(recognizer._neural.warm),
+        asyncio.to_thread(recognizer._neural.warm_model),
+        asyncio.to_thread(recognizer._get_visual_catalog),
+    )
     scans = []
     for review in rows:
         path = Path(review.image_path)

@@ -151,6 +151,13 @@ async def evaluate(
             labeled = [(*row, "en") for row in db.execute(statement)]
 
     recognizer = CardRecognizer()
+    # Match the API lifespan: model execution and gallery hydration happen
+    # before health checks admit live scanner traffic.
+    await asyncio.gather(
+        asyncio.to_thread(recognizer._neural.warm),
+        asyncio.to_thread(recognizer._neural.warm_model),
+        asyncio.to_thread(recognizer._get_visual_catalog),
+    )
     results = []
     available_sources = 0
     for review, expected, language in labeled:

@@ -23,6 +23,11 @@ async def replay(limit: int) -> None:
             )
         )
     recognizer = CardRecognizer()
+    await asyncio.gather(
+        asyncio.to_thread(recognizer._neural.warm),
+        asyncio.to_thread(recognizer._neural.warm_model),
+        asyncio.to_thread(recognizer._get_visual_catalog),
+    )
     for review in reviews:
         path = Path(review.image_path)
         if not path.is_file():

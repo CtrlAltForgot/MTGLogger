@@ -599,7 +599,10 @@ class CardRecognizer:
         number_sources = ["\n".join(lines[-8:]), *reversed(lines)]
         for line in number_sources:
             match = re.search(
-                r"(?<!\d)(\d{1,4}[a-z]?)\s*[/|\\]\s*(\d{1,4})(?!\d)", line, re.I
+                # Tiny legacy slashes are commonly transcribed as ``L``
+                # (``172/175`` -> ``172L75``). Requiring digits on both sides
+                # keeps this repair out of ordinary words and artist credits.
+                r"(?<!\d)(\d{1,4}[a-z]?)\s*[/|\\Ll]\s*(\d{1,4})(?!\d)", line, re.I
             )
             # Power/toughness (for example 5/4) is read far more reliably
             # than a tiny footer. A real collector denominator represents a
@@ -1301,6 +1304,30 @@ class CardRecognizer:
                 not observed_set
                 or cls.set_code_score(observed_set, candidate_set) >= 0.78
             )
+        )
+
+    @staticmethod
+    def neural_rerank_without_footer(
+        *,
+        source_kind: str | None,
+        similarity: float,
+        margin: float,
+        observed_number: str | None,
+        observed_set: str | None,
+    ) -> bool:
+        """Rank a decisive neural artwork match first, without auto-adding it.
+
+        A clear canonical or prior-camera win is better than arbitrary database
+        order when OCR supplies only the exact card name. It still cannot prove
+        an exact printing because artwork may be reused, so callers cap this
+        path below the automatic-add threshold.
+        """
+        return bool(
+            source_kind in {"canonical", "correction"}
+            and similarity >= 0.82
+            and margin >= 0.08
+            and not observed_number
+            and not observed_set
         )
 
     @staticmethod
@@ -2045,6 +2072,17 @@ class CardRecognizer:
                     text = "\n".join(
                         part for part in (text, basic_footer_text) if part.strip()
                     )
+            if (
+                identity_is_constrained
+                and any(self.is_basic_land(card) for card in cards)
+                and len(re.sub(r"\D", "", number or "")) == 1
+                and not printed_set_code
+            ):
+                # One isolated digit on a legacy land is overwhelmingly a
+                # clipped collector numerator, not authoritative printing
+                # evidence. Let exhaustive art/artist ranking decide while the
+                # card remains reviewable if no independent proof is decisive.
+                number = None
             family_complete_at = time.perf_counter()
             neural_vector = (
                 neural_vector
@@ -2062,6 +2100,7 @@ class CardRecognizer:
                 if neural_live
                 else []
             )
+            neural_lookup_complete = time.perf_counter()
             pre_descriptor_neural_margin = (
                 neural_matches[0].similarity - neural_matches[1].similarity
                 if len(neural_matches) > 1
@@ -2193,7 +2232,7 @@ class CardRecognizer:
                 local_card["lang"] = language
                 cards.append(local_card)
                 known_card_ids.add(reference.scryfall_id)
-            neural_complete = time.perf_counter()
+            candidate_expansion_complete = time.perf_counter()
             if neural_matches:
                 neural_match_margin = (
                     neural_matches[0].similarity - neural_matches[1].similarity
@@ -2769,6 +2808,54 @@ class CardRecognizer:
             ):
                 camera_candidate.confidence = max(camera_candidate.confidence, 98.4)
                 candidates.sort(key=lambda item: item.confidence, reverse=True)
+        if neural_matches:
+            neural_candidate = next(
+                (
+                    candidate
+                    for candidate in candidates
+                    if candidate.scryfall_id == neural_top_id
+                ),
+                None,
+            )
+            if (
+                neural_candidate
+                and identity_is_constrained
+                and family_complete
+                and self.card_name_similarity(merged_title, neural_candidate.name) >= 0.93
+                and self.neural_rerank_without_footer(
+                    source_kind=neural_matches[0].source_kind,
+                    similarity=neural_top_score,
+                    margin=neural_margin,
+                    observed_number=number,
+                    observed_set=printed_set_code,
+                )
+            ):
+                neural_candidate.confidence = max(neural_candidate.confidence, 98.4)
+                candidates.sort(key=lambda item: item.confidence, reverse=True)
+            elif (
+                neural_candidate
+                and identity_is_constrained
+                and family_complete
+                and self.card_name_similarity(merged_title, neural_candidate.name) >= 0.93
+                and neural_top_score >= 0.70
+                and neural_margin >= 0.02
+                and number
+                and self.collector_score(
+                    number, neural_candidate.collector_number
+                )
+                == 1.0
+                and not self.observed_footer_contradicts_printing(
+                    number,
+                    printed_set_code,
+                    neural_candidate.collector_number,
+                    neural_candidate.set_code,
+                )
+            ):
+                # Put independent neural evidence ahead of database tie order;
+                # the verifier below still decides whether footer consensus is
+                # sufficient for an automatic add.
+                neural_candidate.confidence = max(neural_candidate.confidence, 98.4)
+                candidates.sort(key=lambda item: item.confidence, reverse=True)
         if candidates:
             top = candidates[0]
             top_card = next(
@@ -2865,11 +2952,13 @@ class CardRecognizer:
                     (family_complete_at - recovery_complete) * 1000
                 ),
                 "descriptors": round(
-                    (descriptor_complete - family_complete_at) * 1000
+                    (descriptor_complete - neural_lookup_complete) * 1000
                 ),
-                "neural_search": round((neural_complete - descriptor_complete) * 1000),
+                "neural_search": round(
+                    (neural_lookup_complete - family_complete_at) * 1000
+                ),
                 "candidate_merge": round(
-                    (matching_complete - neural_complete) * 1000
+                    (matching_complete - candidate_expansion_complete) * 1000
                 ),
                 "lookup_visual": round((matching_complete - ocr_complete) * 1000),
                 "rank": round((finished - matching_complete) * 1000),

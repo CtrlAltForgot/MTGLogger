@@ -30,11 +30,23 @@ async def diagnose(review_id: str) -> dict:
         raise ValueError(f"Captured image is missing: {path}")
 
     recognizer = CardRecognizer()
+    await asyncio.gather(
+        asyncio.to_thread(recognizer._neural.warm),
+        asyncio.to_thread(recognizer._neural.warm_model),
+        asyncio.to_thread(recognizer._get_visual_catalog),
+    )
     raw = path.read_bytes()
     decoded = recognizer.decode(raw)
     corrected = recognizer.rectify(decoded)
-    result = await recognizer.recognize(raw)
     fingerprints = visual_fingerprints(corrected)
+    # Diagnose held-out behavior. Letting the scan retrieve its own learned
+    # descriptor/embedding makes difficult examples look solved and masks the
+    # exact failure this tool is meant to explain.
+    result = await recognizer.recognize(
+        raw,
+        ignored_visual_hashes={fingerprints["art_hash"]},
+        ignored_example_review_ids={review_id},
+    )
     names = {candidate.name for candidate in result.candidates}
     visual = recognizer._identity_visual_matches(fingerprints, names)
     descriptors, art_descriptors, symbol_descriptors = recognizer._descriptor_matches_with_art(
