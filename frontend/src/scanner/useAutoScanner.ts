@@ -41,6 +41,12 @@ export function paddedCaptureBounds(bounds:DetectionBounds,videoWidth:number,vid
 
 const FRAME_WIDTH=160,FRAME_HEIGHT=120,CALIBRATION_FRAMES=12
 
+function median(values:number[]){
+  if(!values.length)return 0
+  const sorted=[...values].sort((a,b)=>a-b),middle=Math.floor(sorted.length/2)
+  return sorted.length%2?sorted[middle]:(sorted[middle-1]+sorted[middle])/2
+}
+
 export function sourceAreaForRotation(area:ScanArea,rotation:CameraRotation){
   const left=area.left/100,top=area.top/100,width=area.width/100,height=area.height/100
   if(rotation===90)return {left:top,top:1-left-width,width:height,height:width}
@@ -144,14 +150,29 @@ export function cardShapedBounds(changed:Uint8Array){
 
 export function analyze(pixels:Uint8ClampedArray,previous?:Uint8ClampedArray,baseline?:Uint8ClampedArray){
   let brightness=0,variance=0,motion=0,sceneDifference=0,samples=0
-  const sceneChanges:number[]=[],changed=new Uint8Array(FRAME_WIDTH/2*FRAME_HEIGHT/2)
+  const baselineDeltas:number[]=[],changed=new Uint8Array(FRAME_WIDTH/2*FRAME_HEIGHT/2)
   // Every visible pixel is a valid scan position. Cards may touch an edge when
   // fed by a Card Slinger, so there are deliberately no invisible gutters.
   for(let y=0;y<FRAME_HEIGHT;y+=2)for(let x=0;x<FRAME_WIDTH;x+=2){
     const index=(y*FRAME_WIDTH+x)*4,luminance=(pixels[index]+pixels[index+1]+pixels[index+2])/3
     brightness+=luminance;variance+=luminance*luminance;samples++
     if(previous)motion+=Math.abs(luminance-(previous[index]+previous[index+1]+previous[index+2])/3)
-    if(baseline){const difference=Math.abs(luminance-(baseline[index]+baseline[index+1]+baseline[index+2])/3);sceneChanges.push(difference);if(difference>=24)changed[y/2*(FRAME_WIDTH/2)+x/2]=1}
+    if(baseline)baselineDeltas.push(luminance-(baseline[index]+baseline[index+1]+baseline[index+2])/3)
+  }
+  const sceneChanges:number[]=[]
+  if(baselineDeltas.length){
+    // Camera auto-exposure changes every table pixel together. Treat that
+    // coherent luminance offset as illumination, not as a newly arrived card.
+    // A physical card has varied artwork, border and text deltas, producing a
+    // much wider residual distribution and therefore receives no correction.
+    const exposureOffset=median(baselineDeltas)
+    const deviation=median(baselineDeltas.map(delta=>Math.abs(delta-exposureOffset)))
+    const correction=deviation<=8?exposureOffset:0
+    for(let sample=0;sample<baselineDeltas.length;sample++){
+      const difference=Math.abs(baselineDeltas[sample]-correction)
+      sceneChanges.push(difference)
+      if(difference>=24)changed[sample]=1
+    }
   }
   // A card may occupy only a quarter of a widescreen frame. Average the most
   // changed third so a clearly visible off-center card is not diluted by table.
@@ -234,7 +255,12 @@ export function useAutoScanner(
         if(update.rearmed){stable.current=0;setState('waiting')}
         return
       }
-      if(!cardPresent){setState('waiting');stable.current=0;return}
+      if(!cardPresent){
+        // Follow stable changes in room light so a fixed calibration frame
+        // cannot slowly drift into a false card detection.
+        if(next.motion<stableLimit)baseline.current=new Uint8ClampedArray(pixels)
+        setState('waiting');stable.current=0;return
+      }
       if(!pipelineHasCapacity(inFlight.current,maxInFlight)){
         stable.current=0;setState('processing');return
       }
