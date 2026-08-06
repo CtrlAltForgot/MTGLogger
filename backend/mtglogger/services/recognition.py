@@ -115,7 +115,9 @@ class CardRecognizer:
                 return cached[1]
             try:
                 with SessionLocal() as db:
-                    total = int(db.scalar(select(func.count(CardReference.id))) or 0)
+                    total = int(
+                        db.scalar(select(func.count()).select_from(CardReference)) or 0
+                    )
             except SQLAlchemyError:
                 total = 0
             ready = total >= _LOCAL_CATALOG_READY_MINIMUM
