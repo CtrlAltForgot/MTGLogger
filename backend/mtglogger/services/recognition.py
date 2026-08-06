@@ -3,6 +3,7 @@ import json
 import logging
 import re
 import time
+import unicodedata
 from collections import Counter
 from dataclasses import dataclass
 from difflib import SequenceMatcher
@@ -519,11 +520,24 @@ class CardRecognizer:
                     copyright_year = inferred
         set_code = None
         languages = "EN|ES|FR|DE|IT|PT|JA|KO|RU|ZHS|ZHT|HE|LA|GRC|AR|SA|PHY"
+        # Core-set footers frequently lose their separator to a letter-like
+        # glyph (``M21 · EN`` -> ``M21AEN`` or ``M21^EN``). Prefer the real
+        # core-set token before the general joined parser can manufacture the
+        # nonexistent set code ``M21A``.
+        core_language_match = re.search(
+            rf"(?<![A-Z0-9])(M(?:1[0-9]|2[01]))(?:A|[^A-Z0-9])*(?:{languages})(?=\s|$|[A-Z])",
+            "\n".join(lines),
+            re.I,
+        )
+        if core_language_match:
+            set_code = core_language_match.group(1).lower()
         # Prefer a footer with a visible separator. A permissive joined-footer
         # match is useful for tiny text, but can hallucinate a language inside
         # an artist fragment (for example NGPARK -> NGP + AR) and must not
         # override a clean ``ORI-EN`` elsewhere in the OCR passes.
         for line in reversed(lines):
+            if set_code:
+                break
             match = re.match(
                 rf"^\s*([A-Z2][A-Z0-9]{{1,5}}?)[\s·•.+\-:]+(?:{languages})(?=\s|$|[A-Z])",
                 line,
@@ -556,6 +570,7 @@ class CardRecognizer:
                 if (
                     re.fullmatch(r"[A-Z2][A-Z0-9]{1,4}", token)
                     and token not in language_tokens
+                    and any(character.isalpha() for character in token)
                     and (any(character.isdigit() for character in token) or len(token) == 3)
                 ):
                     set_code = token.lower()
@@ -578,7 +593,11 @@ class CardRecognizer:
         number = None
         # Collector numbers often share the copyright line. Prefer an explicit
         # numerator/denominator pair before filtering copyright years.
-        for line in reversed(lines):
+        # Paddle sometimes returns the slash and denominator as a separate text
+        # line (``011/`` followed by ``269``). Search the joined footer first so
+        # that physical layout still becomes one collector pair.
+        number_sources = ["\n".join(lines[-8:]), *reversed(lines)]
+        for line in number_sources:
             match = re.search(
                 r"(?<!\d)(\d{1,4}[a-z]?)\s*[/|\\]\s*(\d{1,4})(?!\d)", line, re.I
             )
@@ -606,7 +625,11 @@ class CardRecognizer:
             footer = "\n".join(lines[-6:])
             for joined in reversed(re.findall(r"(?<!\d)(\d{5,7})(?!\d)", footer)):
                 numerator, denominator = joined[:-3], joined[-3:]
-                if 1 <= int(numerator) <= int(denominator) and int(denominator) >= 100:
+                # Showcase and bonus-sheet collector numbers may legitimately
+                # exceed the printed denominator, and tiny denominator digits
+                # are often wrong (``236/249`` -> ``236219``). The numerator is
+                # still useful when title/year/artist independently agree.
+                if 1 <= int(numerator) <= 9999 and int(denominator) >= 100:
                     number = numerator
                     break
         if not number:
@@ -704,10 +727,11 @@ class CardRecognizer:
                 and sum(character.isalpha() for character in line) >= 3
             )
 
+        basic_names = {"plains", "island", "swamp", "mountain", "forest", "wastes"}
         title = next(
-            (line for line in title_lines if plausible_title(line)),
+            (line.title() for line in lines if line.casefold() in basic_names),
             None,
-        )
+        ) or next((line for line in title_lines if plausible_title(line)), None)
         # A basic land's type line contains its actual card name after the dash.
         # This is the one safe case where a type line can recover identity when
         # glare or a dark frame hides the title. Keeping the allow-list narrow
@@ -765,7 +789,12 @@ class CardRecognizer:
 
     @staticmethod
     def normalized_name(value: str) -> str:
-        return "".join(character for character in value.casefold() if character.isalnum())
+        decomposed = unicodedata.normalize("NFKD", value.casefold())
+        return "".join(
+            character
+            for character in decomposed
+            if character.isalnum() and not unicodedata.combining(character)
+        )
 
     @classmethod
     def card_name_similarity(cls, observed: str | None, catalog_name: str) -> float:
@@ -794,7 +823,7 @@ class CardRecognizer:
             return 1.0
         tokens = [
             cls.normalized_name(token)
-            for token in re.findall(r"[A-Za-zÀ-ÿ'-]+", artist or "")
+            for token in re.findall(r"[^\W\d_]+", artist or "", re.UNICODE)
             if len(cls.normalized_name(token)) >= 3
         ]
         if len(tokens) >= 2 and all(token in source for token in tokens):
@@ -806,7 +835,21 @@ class CardRecognizer:
         # ``Kev Walker``). Treat a close full-name window as strong evidence;
         # callers still require independent printing evidence before this can
         # authorize an automatic add.
-        if cls.fuzzy_contains(text, artist or "", threshold=0.82):
+        if cls.fuzzy_contains(text, artist or "", threshold=0.80):
+            return 0.9
+        observed_tokens = [
+            cls.normalized_name(token)
+            for token in re.findall(r"[^\W\d_]+", text or "", re.UNICODE)
+            if len(cls.normalized_name(token)) >= 3
+        ]
+        if len(tokens) >= 2 and observed_tokens and all(
+            max(
+                SequenceMatcher(None, expected, observed).ratio()
+                for observed in observed_tokens
+            )
+            >= 0.75
+            for expected in tokens
+        ):
             return 0.9
         return 0.0
 
@@ -1250,7 +1293,7 @@ class CardRecognizer:
         """Use a prior physical scan to rerank only when its footer agrees."""
         return bool(
             source_kind == "correction"
-            and similarity >= 0.83
+            and similarity >= 0.82
             and margin >= 0.08
             and observed_number
             and cls.collector_score(observed_number, candidate_number) >= 0.78
@@ -1310,6 +1353,27 @@ class CardRecognizer:
             and candidates_in_set == 1
         )
         return title_score >= (0.93 if unique_set else 0.95) and (unique_number or unique_set)
+
+    @staticmethod
+    def unique_number_year_artist_ids(
+        cards: list[dict],
+        collector_number: str | None,
+        copyright_year: int | None,
+        artist_scores: dict[str, float],
+    ) -> set[str]:
+        """Resolve a printing from three independent footer observations."""
+        if not collector_number or not copyright_year:
+            return set()
+        return {
+            card["id"]
+            for card in cards
+            if CardRecognizer.collector_score(
+                collector_number, card["collector_number"]
+            )
+            == 1.0
+            and int(card.get("released_at", "0000")[:4]) == copyright_year
+            and artist_scores.get(card["id"], 0.0) >= 0.9
+        }
 
     @staticmethod
     def visual_only_score(score: float) -> float:
@@ -1387,6 +1451,23 @@ class CardRecognizer:
                 and self.set_code_score(printed_set_code, card["set"]) == 1.0
             ]
             if exact_footer_cards:
+                # A perfectly readable catalog title must veto a conflicting
+                # exact-looking footer digit. Tiny numerators commonly lose a
+                # leading digit (Plains 261/274 -> 26/274), which otherwise
+                # becomes the unrelated M21 card #26. Damaged/non-catalog
+                # titles retain the footer-first rescue used for glare cases.
+                if title and all(
+                    self.card_name_similarity(title, card["name"]) < 0.72
+                    for card in exact_footer_cards
+                ):
+                    title_cards = await asyncio.to_thread(
+                        self._lookup_local_cards, title, None, None
+                    )
+                    if title_cards and any(
+                        self.card_name_similarity(title, card["name"]) >= 0.93
+                        for card in title_cards
+                    ):
+                        return title_cards
                 return exact_footer_cards
         if title and not promo_type and language.casefold() == "en":
             local_cards = await asyncio.to_thread(
@@ -1930,6 +2011,40 @@ class CardRecognizer:
                 except (TimeoutError, httpx.HTTPError, RuntimeError, ValueError):
                     # The normal conservative path remains valid while offline.
                     family_complete = False
+            observed_digits = re.sub(r"\D", "", number or "")
+            if (
+                identity_is_constrained
+                and any(self.is_basic_land(card) for card in cards)
+                and len(observed_digits) < 3
+            ):
+                # A short land numerator is commonly a clipped leading/trailing
+                # digit (240 -> 24, 261 -> 26). Rectification makes the physical
+                # footer rows stable, so one recognition-only pass is cheaper
+                # than comparing hundreds of land profiles and supplies exact
+                # digits for the independent artwork safety gate.
+                basic_footer_text = await asyncio.to_thread(
+                    # Preserve the original rectified luminance here. The
+                    # low-light normalization that helps broad OCR can erase
+                    # thin white legacy-footer digits (the fresh M13 Swamp
+                    # reads 240/249 twice before normalization).
+                    self.extract_fixed_footer_text,
+                    corrected,
+                )
+                if basic_footer_text.strip():
+                    _, footer_number, footer_set, footer_year = self.hints(
+                        basic_footer_text
+                    )
+                    if footer_number:
+                        number = footer_number
+                    if footer_set and any(
+                        self.exact_set_code_match(footer_set, card["set"])
+                        for card in cards
+                    ):
+                        printed_set_code = footer_set
+                    copyright_year = footer_year or copyright_year
+                    text = "\n".join(
+                        part for part in (text, basic_footer_text) if part.strip()
+                    )
             family_complete_at = time.perf_counter()
             neural_vector = (
                 neural_vector
@@ -1947,33 +2062,61 @@ class CardRecognizer:
                 if neural_live
                 else []
             )
-            if identity_is_constrained:
-                identity_visual_matches = await asyncio.to_thread(
-                    self._identity_visual_matches,
-                    scan_fingerprints,
-                    identity_names,
-                    box_set_code,
+            pre_descriptor_neural_margin = (
+                neural_matches[0].similarity - neural_matches[1].similarity
+                if len(neural_matches) > 1
+                else (neural_matches[0].similarity if neural_matches else 0.0)
+            )
+            confirmed_footer_neural_id = (
+                neural_matches[0].reference.scryfall_id
+                if neural_matches
+                and self.confirmed_camera_rerank_matches_footer(
+                    source_kind=neural_matches[0].source_kind,
+                    similarity=neural_matches[0].similarity,
+                    margin=pre_descriptor_neural_margin,
+                    observed_number=number,
+                    candidate_number=neural_matches[0].reference.collector_number,
+                    observed_set=printed_set_code,
+                    candidate_set=neural_matches[0].reference.set_code,
+                )
+                else None
+            )
+            if identity_is_constrained and not confirmed_footer_neural_id:
+                # A shortlist is safe and valuable for basic lands only when
+                # the observed collector number names at least one printing in
+                # the complete local family.  Cards without a trustworthy
+                # footer must retain exhaustive descriptor comparison: the
+                # broader corpus contains several reprints whose exact artwork
+                # is absent from the neural/hash shortlist.  Likewise, reject
+                # impossible OCR numerators (for example 172 -> 740) instead of
+                # letting them hide the genuine printing.
+                basic_number_is_catalogued = bool(
+                    number
+                    and any(self.is_basic_land(card) for card in cards)
+                    and any(
+                        self.collector_score(number, card["collector_number"]) == 1.0
+                        for card in cards
+                    )
+                )
+                # Scoring every regional hash for a basic land means walking
+                # hundreds of near-identical printings. Once an exact catalogued
+                # numerator exists, the adaptive artwork pass below supplies the
+                # stronger evidence and retains its exhaustive fallback.
+                identity_visual_matches = (
+                    []
+                    if basic_number_is_catalogued
+                    else await asyncio.to_thread(
+                        self._identity_visual_matches,
+                        scan_fingerprints,
+                        identity_names,
+                        box_set_code,
+                    )
                 )
                 descriptor_shortlist = {
-                    match.reference.scryfall_id for match in neural_matches
-                } | {
-                    reference.scryfall_id for reference, _score in identity_visual_matches
-                }
-                descriptor_shortlist.update(
                     card["id"]
                     for card in cards
-                    if (
-                        self.collector_score(number, card["collector_number"]) >= 0.78
-                        and (
-                            not printed_set_code
-                            or self.set_code_score(printed_set_code, card["set"]) >= 0.8
-                        )
-                    )
-                    or (
-                        printed_set_code
-                        and self.set_code_score(printed_set_code, card["set"]) == 1.0
-                    )
-                )
+                    if self.collector_score(number, card["collector_number"]) == 1.0
+                }
                 descriptor_evidence = await asyncio.to_thread(
                     self._descriptor_matches_with_art,
                     descriptor_image,
@@ -1983,8 +2126,35 @@ class CardRecognizer:
                     # from another set before any automatic add is considered.
                     box_set_code,
                     ignored_example_review_ids,
-                    descriptor_shortlist if family_complete else None,
+                    (
+                        descriptor_shortlist
+                        if family_complete and basic_number_is_catalogued
+                        else None
+                    ),
+                    bool(family_complete and basic_number_is_catalogued),
                 )
+                # A correct land numerator normally leaves fewer than a dozen
+                # plausible profiles. If none supplies strong artwork evidence,
+                # assume the tiny footer was misread and immediately retry the
+                # complete family. This keeps the common path fast without
+                # allowing a bad OCR digit to remove the genuine printing.
+                if (
+                    family_complete
+                    and basic_number_is_catalogued
+                    and (
+                        not descriptor_evidence[1]
+                        or descriptor_evidence[1][0][1] < 88
+                    )
+                ):
+                    descriptor_evidence = await asyncio.to_thread(
+                        self._descriptor_matches_with_art,
+                        descriptor_image,
+                        identity_names,
+                        box_set_code,
+                        ignored_example_review_ids,
+                        None,
+                        False,
+                    )
                 (
                     descriptor_matches,
                     descriptor_art_matches,
@@ -2164,6 +2334,9 @@ class CardRecognizer:
             card["id"]: artist_score_by_name[card.get("artist")] for card in cards
         }
         strong_artist_ids = {card_id for card_id, score in artist_scores.items() if score >= 0.9}
+        structured_printing_ids = self.unique_number_year_artist_ids(
+            cards, number, copyright_year, artist_scores
+        )
         for card in cards:
             set_art_top_id, set_art_score, set_art_margin = set_art_evidence.get(
                 card["set"].casefold(), (None, 0.0, 0.0)
@@ -2369,6 +2542,20 @@ class CardRecognizer:
                 # lands retain their stricter artwork-specific safeguards.
                 confidence = max(confidence, 98.5)
                 safe_candidate_ids.add(card["id"])
+            structured_printing_proof = bool(
+                identity_is_constrained
+                and family_complete
+                and title_score >= 0.93
+                and structured_printing_ids == {card["id"]}
+            )
+            if structured_printing_proof:
+                # Collector number, printed copyright/release year, and artist
+                # are three independent physical fields. Requiring their
+                # intersection to be unique across the complete printing
+                # family safely resolves core-set lands even when the set logo
+                # itself is not transcribed.
+                confidence = max(confidence, 98.5)
+                safe_candidate_ids.add(card["id"])
             neural_score = neural_scores.get(card["id"], 0.0)
             footer_contradiction = self.observed_footer_contradicts_printing(
                 number,
@@ -2474,7 +2661,13 @@ class CardRecognizer:
                     artist_score,
                     descriptor_catalog_complete,
                 )
-                if safe_land_match or repeated_footer_number or unique_set_artist or neural_is_safe:
+                if (
+                    safe_land_match
+                    or repeated_footer_number
+                    or unique_set_artist
+                    or neural_is_safe
+                    or structured_printing_proof
+                ):
                     # Exact set plus a decisive illustration match is safer
                     # than a tiny collector-number crop. This specifically
                     # prevents a misread 264 as 261 from selecting the wrong art.
@@ -2781,6 +2974,7 @@ class CardRecognizer:
         box_set_code: str | None = None,
         ignored_example_review_ids: set[str] | None = None,
         allowed_ids: set[str] | None = None,
+        art_only: bool = False,
     ) -> tuple[
         list[tuple[CardReference, float]],
         list[tuple[CardReference, float]],
@@ -2857,12 +3051,14 @@ class CardRecognizer:
                     continue
                 if len(known.get("art", ())) < 12:
                     continue
-                score = CardRecognizer._descriptor_bundle_score(scan, known)
-                if score is not None:
-                    scores.append(score)
                 art_score = CardRecognizer._descriptor_score(scan["art"], known["art"])
                 if art_score is not None:
                     art_scores.append(art_score)
+                if art_only:
+                    continue
+                score = CardRecognizer._descriptor_bundle_score(scan, known)
+                if score is not None:
+                    scores.append(score)
                 symbol_score = CardRecognizer._ratio_descriptor_score(
                     scan.get("symbol"), known.get("symbol")
                 )
@@ -3153,6 +3349,12 @@ class CardRecognizer:
                 artist_score >= 0.9
                 and descriptor_score >= 94
                 and descriptor_margin >= 15
+            )
+            or (
+                collector_number
+                and number_score == 1.0
+                and descriptor_score >= 98
+                and descriptor_margin >= 25
             )
             or
             (

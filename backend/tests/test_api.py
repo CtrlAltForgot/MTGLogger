@@ -1037,6 +1037,9 @@ def test_confirmed_camera_rerank_must_agree_with_observed_footer():
     }
 
     assert CardRecognizer.confirmed_camera_rerank_matches_footer(**evidence)
+    assert CardRecognizer.confirmed_camera_rerank_matches_footer(
+        **(evidence | {"similarity": 0.82})
+    )
     assert not CardRecognizer.confirmed_camera_rerank_matches_footer(
         **(evidence | {"candidate_number": "238"})
     )
@@ -2148,6 +2151,78 @@ def test_ocr_hints_accept_plus_or_missing_set_language_separator():
     assert set_code == "ori"
 
 
+def test_ocr_hints_repair_core_set_separator_and_split_collector_pair():
+    from mtglogger.services.recognition import CardRecognizer
+
+    title, number, set_code, _ = CardRecognizer.hints(
+        "Capture Sphere\n047/274C\nM21AEN\nMARK BEHM"
+    )
+    assert (title, number, set_code) == ("Capture Sphere", "047", "m21")
+
+    title, number, set_code, _ = CardRecognizer.hints(
+        "Firehoof Cavalry\n011/\n269\nKTK+EN YW TANG"
+    )
+    assert (title, number, set_code) == ("Firehoof Cavalry", "011", "ktk")
+
+
+def test_ocr_hints_do_not_treat_split_denominator_as_set_code():
+    from mtglogger.services.recognition import CardRecognizer
+
+    assert CardRecognizer.hints("Firehoof Cavalry\n011/\n269\nYW TANG")[1:3] == (
+        "011",
+        None,
+    )
+
+
+def test_ocr_hints_prefer_exact_basic_name_and_retain_damaged_denominator_number():
+    from mtglogger.services.recognition import CardRecognizer
+
+    assert CardRecognizer.hints("m\n24\namd\nSwamp")[0] == "Swamp"
+    assert CardRecognizer.hints(
+        "Island\nScott Bailey\n1993-2009 Wizards LLC236219"
+    )[1] == "236"
+
+
+def test_number_year_and_artist_uniquely_resolve_basic_land_printing():
+    from mtglogger.services.recognition import CardRecognizer
+
+    cards = [
+        {
+            "id": "m12-mountain-242",
+            "collector_number": "242",
+            "released_at": "2011-07-15",
+        },
+        {
+            "id": "m13-mountain-242",
+            "collector_number": "242",
+            "released_at": "2012-07-13",
+        },
+        {
+            "id": "m14-mountain-242",
+            "collector_number": "242",
+            "released_at": "2013-07-19",
+        },
+    ]
+
+    assert CardRecognizer.unique_number_year_artist_ids(
+        cards,
+        "242",
+        2012,
+        {
+            "m12-mountain-242": 0.9,
+            "m13-mountain-242": 0.96,
+            "m14-mountain-242": 0.9,
+        },
+    ) == {"m13-mountain-242"}
+
+
+def test_artist_credit_normalizes_diacritics_and_two_small_ocr_errors():
+    from mtglogger.services.recognition import CardRecognizer
+
+    assert CardRecognizer.artist_text_score("Volkan Baga", "Volkan Baǵa") == 1.0
+    assert CardRecognizer.artist_text_score("Soott Balley", "Scott Bailey") == 0.9
+
+
 def test_ocr_hints_prefer_explicit_footer_over_joined_artist_noise():
     from mtglogger.services.recognition import CardRecognizer
 
@@ -2362,6 +2437,40 @@ def test_local_exact_footer_outvotes_damaged_title(monkeypatch):
     )
 
     assert cards == [exact]
+
+
+def test_clean_catalog_title_vetoes_conflicting_exact_footer(monkeypatch):
+    import asyncio
+
+    from mtglogger.services.recognition import CardRecognizer
+
+    wrong_footer = {
+        "id": "makeshift-battalion-m21-26",
+        "name": "Makeshift Battalion",
+        "set": "m21",
+        "collector_number": "26",
+    }
+    plains = {
+        "id": "plains-m21-261",
+        "name": "Plains",
+        "set": "m21",
+        "collector_number": "261",
+    }
+    recognizer = object.__new__(CardRecognizer)
+    monkeypatch.setattr(
+        CardRecognizer,
+        "_lookup_local_cards_by_number",
+        classmethod(lambda cls, number, preferred_set: [wrong_footer]),
+    )
+    monkeypatch.setattr(
+        CardRecognizer,
+        "_lookup_local_cards",
+        classmethod(lambda cls, title, number, preferred_set: [plains]),
+    )
+
+    cards = asyncio.run(recognizer._lookup_cards("Plains", "26", "m21", None, "en"))
+
+    assert cards == [plains]
 
 
 def test_ocr_hints_recovers_truncated_footer_year():

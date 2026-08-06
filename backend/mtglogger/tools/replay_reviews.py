@@ -37,6 +37,9 @@ async def replay(limit: int) -> None:
                     "confidence": result.confidence,
                     "ocr_text": result.ocr_text,
                     "processing_ms": result.processing_ms,
+                    "auto_add_safe": result.auto_add_safe,
+                    "timings_ms": result.timings_ms,
+                    "neural_candidates": result.neural_candidates or [],
                     "candidates": [
                         {
                             "name": candidate.name,

@@ -37,8 +37,8 @@ async def diagnose(review_id: str) -> dict:
     fingerprints = visual_fingerprints(corrected)
     names = {candidate.name for candidate in result.candidates}
     visual = recognizer._identity_visual_matches(fingerprints, names)
-    descriptors = recognizer._descriptor_matches(
-        corrected, names, ignored_example_review_ids={review_id}
+    descriptors, art_descriptors, symbol_descriptors = recognizer._descriptor_matches_with_art(
+        corrected, names, None, {review_id}, None
     )
     title, number, set_code, year = recognizer.hints(result.ocr_text)
     candidate_ids = {candidate.scryfall_id for candidate in result.candidates}
@@ -64,6 +64,7 @@ async def diagnose(review_id: str) -> dict:
         "result": {
             "confidence": result.confidence,
             "processing_ms": result.processing_ms,
+            "timings_ms": result.timings_ms,
             "candidates": [
                 {
                     "name": candidate.name,
@@ -73,6 +74,7 @@ async def diagnose(review_id: str) -> dict:
                 }
                 for candidate in result.candidates
             ],
+            "neural_candidates": result.neural_candidates or [],
         },
         "visual_fingerprint_matches": [
             {
@@ -91,7 +93,16 @@ async def diagnose(review_id: str) -> dict:
                 "collector_number": reference.collector_number,
                 "score": score,
             }
-            for reference, score in descriptors[:12]
+            for reference, score in art_descriptors[:12]
+        ],
+        "symbol_descriptor_matches": [
+            {
+                "name": reference.name,
+                "set_code": reference.set_code,
+                "collector_number": reference.collector_number,
+                "score": score,
+            }
+            for reference, score in symbol_descriptors[:12]
         ],
         "candidate_descriptor_catalog_complete": (
             recognizer._descriptor_catalog_complete(candidate_ids)
