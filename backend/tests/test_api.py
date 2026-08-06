@@ -608,6 +608,31 @@ def test_footer_enhancement_preserves_dimensions_and_increases_local_contrast():
     assert enhanced.std() > footer.std()
 
 
+def test_low_light_normalization_brightens_dark_cards_without_changing_shape():
+    import numpy as np
+
+    from mtglogger.services.recognition import CardRecognizer
+
+    image = np.full((840, 600, 3), (35, 45, 55), dtype=np.uint8)
+    enhanced, applied = CardRecognizer.normalize_low_light(image)
+
+    assert applied is True
+    assert enhanced.shape == image.shape
+    assert CardRecognizer.low_light_score(enhanced) > CardRecognizer.low_light_score(image)
+
+
+def test_low_light_normalization_leaves_clean_capture_unchanged():
+    import numpy as np
+
+    from mtglogger.services.recognition import CardRecognizer
+
+    image = np.full((840, 600, 3), 150, dtype=np.uint8)
+    enhanced, applied = CardRecognizer.normalize_low_light(image)
+
+    assert applied is False
+    assert enhanced is image
+
+
 def test_perspective_quad_expands_to_preserve_printed_footer():
     import numpy as np
 

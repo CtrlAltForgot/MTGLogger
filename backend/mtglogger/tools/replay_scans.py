@@ -38,6 +38,7 @@ async def replay(limit: int, status: ReviewStatus) -> dict:
                 "previous_confidence": review.confidence,
                 "confidence": result.confidence,
                 "processing_ms": result.processing_ms,
+                "timings_ms": result.timings_ms,
                 "ocr_text": result.ocr_text,
                 "candidates": [
                     {

@@ -295,6 +295,47 @@ class CardRecognizer:
         return "\n".join(part for part in (focused, full_text) if part.strip())
 
     @staticmethod
+    def low_light_score(image: np.ndarray) -> float:
+        """Return a robust brightness estimate that ignores small foil glare.
+
+        A mean is badly skewed by a phone flash reflected from one corner of a
+        sleeve.  The 65th percentile describes the normally exposed card area
+        while still distinguishing a genuinely dark capture from black borders.
+        """
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        return float(np.percentile(gray, 65))
+
+    @classmethod
+    def normalize_low_light(cls, image: np.ndarray) -> tuple[np.ndarray, bool]:
+        """Brighten a dark card once for every recognition signal.
+
+        OCR, ORB descriptors, perceptual hashes, and the neural embedding must
+        all see the same normalized image.  Applying a bounded luminance-only
+        correction avoids an additional inference pass and preserves hue/set
+        symbol information. Clean captures are returned byte-for-byte unchanged.
+        """
+        brightness = cls.low_light_score(image)
+        if brightness >= 105:
+            return image, False
+
+        lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+        luminance, a_channel, b_channel = cv2.split(lab)
+        luminance = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(luminance)
+        # Bring the middle tones toward a readable level without blowing out a
+        # reflective sleeve. Gamma is deliberately capped for noisy webcams.
+        normalized = max(1.0 / 255.0, brightness / 255.0)
+        gamma = float(np.clip(np.log(118 / 255.0) / np.log(normalized), 0.58, 0.90))
+        lookup = np.array(
+            [min(255, round(((value / 255.0) ** gamma) * 255)) for value in range(256)],
+            dtype=np.uint8,
+        )
+        luminance = cv2.LUT(luminance, lookup)
+        enhanced = cv2.cvtColor(
+            cv2.merge((luminance, a_channel, b_channel)), cv2.COLOR_LAB2BGR
+        )
+        return enhanced, True
+
+    @staticmethod
     def scale_to_width(image: np.ndarray, target_width: int) -> np.ndarray:
         scale = target_width / max(1, image.shape[1])
         target_height = max(1, round(image.shape[0] * scale))
@@ -1311,15 +1352,18 @@ class CardRecognizer:
             oracle_recovery = False
             decoded = self.decode(raw)
             corrected = await asyncio.to_thread(lambda: self.rectify(decoded))
+            analysis_image, low_light_normalized = await asyncio.to_thread(
+                self.normalize_low_light, corrected
+            )
             neural = getattr(self, "_neural", None)
             neural_task = (
-                asyncio.create_task(asyncio.to_thread(neural.embed, corrected))
+                asyncio.create_task(asyncio.to_thread(neural.embed, analysis_image))
                 if neural is not None
                 else None
             )
             prepared = time.perf_counter()
-            card_structure = await asyncio.to_thread(self.has_card_structure, corrected)
-            text = await asyncio.to_thread(self.extract_identification_text, corrected)
+            card_structure = await asyncio.to_thread(self.has_card_structure, analysis_image)
+            text = await asyncio.to_thread(self.extract_identification_text, analysis_image)
             ocr_complete = time.perf_counter()
             title, number, printed_set_code, copyright_year = self.hints(text)
             promo_type = self.promo_type_hint(text)
@@ -1350,7 +1394,7 @@ class CardRecognizer:
                 scan_fingerprints = {}
                 visual_matches = []
             else:
-                scan_fingerprints = await asyncio.to_thread(visual_fingerprints, corrected)
+                scan_fingerprints = await asyncio.to_thread(visual_fingerprints, analysis_image)
                 visual_matches = await asyncio.to_thread(
                     self._visual_matches,
                     scan_fingerprints,
@@ -1358,7 +1402,7 @@ class CardRecognizer:
                     *([ignored_visual_hashes] if ignored_visual_hashes is not None else []),
                 )
             initial_match_complete = time.perf_counter()
-            descriptor_image = corrected
+            descriptor_image = analysis_image
             if not self.has_strong_lookup_evidence(
                 title, number, printed_set_code, copyright_year, cards
             ):
@@ -2073,6 +2117,7 @@ class CardRecognizer:
             processing_ms=round((finished - started) * 1000),
             card_structure=card_structure,
             timings_ms={
+                "low_light_normalized": int(low_light_normalized),
                 "prepare": round((prepared - started) * 1000),
                 "ocr": round((ocr_complete - prepared) * 1000),
                 "initial_lookup_visual": round(
