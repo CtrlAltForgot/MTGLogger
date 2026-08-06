@@ -721,6 +721,13 @@ class CardRecognizer:
             return 0.95
         if tokens and len(tokens[-1]) >= 5 and tokens[-1] in source:
             return 0.78
+        # Footer OCR commonly inserts, drops, or confuses one character in an
+        # otherwise complete artist credit (for example ``NKEVWALRER`` for
+        # ``Kev Walker``). Treat a close full-name window as strong evidence;
+        # callers still require independent printing evidence before this can
+        # authorize an automatic add.
+        if cls.fuzzy_contains(text, artist or "", threshold=0.82):
+            return 0.9
         return 0.0
 
     @classmethod
