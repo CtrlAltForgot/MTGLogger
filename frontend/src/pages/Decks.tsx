@@ -25,6 +25,7 @@ import {
 } from "@mui/material";
 import { API, request } from "../api";
 import { CardName } from "../components/CardDetails";
+import { recommendedDeckFormat } from "../decks/formatRecommendation";
 import type { AvailableCard, AvailablePage, Deck, DeckFormatSuggestions } from "../types";
 
 export default function Decks() {
@@ -142,7 +143,7 @@ export default function Decks() {
     } catch (e) { setError(e instanceof Error?e.message:"Could not update deck"); }
     finally { setBusy(false); }
   };
-  const detectFormat=async()=>{if(!selected)return;setDetectingFormat(true);setError(undefined);try{setFormatSuggestions(await request<DeckFormatSuggestions>(`/decks/${selected.id}/format-suggestions`))}catch(e){setError(e instanceof Error?e.message:'Could not analyze deck format')}finally{setDetectingFormat(false)}};
+  const detectFormat=async()=>{if(!selected)return;setDetectingFormat(true);setError(undefined);try{const result=await request<DeckFormatSuggestions>(`/decks/${selected.id}/format-suggestions`);setFormatSuggestions(result);const recommended=recommendedDeckFormat(result);if(recommended)setForm(current=>({...current,format:recommended}))}catch(e){setError(e instanceof Error?e.message:'Could not analyze deck format')}finally{setDetectingFormat(false)}};
   const addSelected = async () => {
     if (!selected || !chosen.size) return;
     setBusy(true);
