@@ -1015,6 +1015,28 @@ class CardRecognizer:
         )
 
     @classmethod
+    def has_exact_footer_title_fragment(
+        cls,
+        observed_title: str | None,
+        card: dict,
+        copyright_year: int | None,
+    ) -> bool:
+        """Corroborate one exact non-land footer with a real title fragment and year."""
+        if cls.is_basic_land(card) or not observed_title or not copyright_year:
+            return False
+        source = cls.normalized_name(observed_title)
+        target = cls.normalized_name(str(card.get("name") or ""))
+        try:
+            released_year = int(str(card.get("released_at") or "0000")[:4])
+        except ValueError:
+            return False
+        return bool(
+            len(source) >= 4
+            and source in target
+            and released_year == copyright_year
+        )
+
+    @classmethod
     def has_constrained_visual_identity(
         cls, title: str | None, cards: list[dict], identity_names: set[str]
     ) -> bool:
@@ -1389,26 +1411,7 @@ class CardRecognizer:
         if preferred_set:
             preferred = [row for row in rows if row.set_code.casefold() == preferred_set.casefold()]
             rows = preferred or rows
-        return [
-            {
-                "id": reference.scryfall_id,
-                "name": reference.name,
-                "set": reference.set_code,
-                "set_name": reference.set_name,
-                "collector_number": reference.collector_number,
-                "released_at": (
-                    reference.released_at.isoformat() if reference.released_at else "0000"
-                ),
-                "image_uris": {"normal": reference.image_url},
-                "prices": {
-                    "usd": (
-                        str(reference.market_price) if reference.market_price is not None else None
-                    )
-                },
-                "lang": "en",
-            }
-            for reference in rows
-        ]
+        return [cls._reference_card(reference) for reference in rows]
 
     async def recognize(
         self,
@@ -1452,10 +1455,19 @@ class CardRecognizer:
             )
             cards = await lookup_task
             exact_footer_card = self.unique_exact_footer_card(number, printed_set_code, cards)
-            if title is None and exact_footer_card:
+            if exact_footer_card and (
+                title is None
+                or self.has_exact_footer_title_fragment(
+                    title,
+                    exact_footer_card,
+                    copyright_year,
+                )
+            ):
                 # Populate the title from the uniquely identified local
                 # printing so downstream scoring follows the same path as a
-                # readable title without paying for broad OCR recovery.
+                # readable title without paying for broad OCR recovery. A real
+                # fragment plus matching copyright year may safely repair a
+                # truncated non-land title; basic lands never use this shortcut.
                 title = exact_footer_card["name"]
             # A set code plus collector number is normally the canonical
             # identifier for a paper printing. Basic lands are the exception in
@@ -1580,6 +1592,38 @@ class CardRecognizer:
             identity_is_constrained = self.has_constrained_visual_identity(
                 title, cards, identity_names
             )
+            neural_vector = None
+            neural_matches = []
+            if neural_live and not identity_is_constrained:
+                neural_vector = await neural_task if neural_task is not None else None
+                neural_matches = await asyncio.to_thread(
+                    neural.search_vector,
+                    neural_vector,
+                    10,
+                    ignored_source_ids=ignored_example_review_ids,
+                )
+                neural_identity_margin = (
+                    neural_matches[0].similarity - neural_matches[1].similarity
+                    if len(neural_matches) > 1
+                    else (neural_matches[0].similarity if neural_matches else 0.0)
+                )
+                if (
+                    neural_matches
+                    and neural_matches[0].similarity >= 0.80
+                    and neural_identity_margin >= 0.03
+                ):
+                    # A decisive embedding can recover the card *name* cheaply
+                    # when glare destroys title OCR. Treat it like oracle-text
+                    # recovery: it narrows expensive local comparisons and
+                    # improves Review ordering, but artwork-derived identity is
+                    # capped below auto-add unless footer evidence independently
+                    # proves the physical printing.
+                    recovered = self._reference_card(neural_matches[0].reference)
+                    title = recovered["name"]
+                    cards = [recovered]
+                    identity_names = {title}
+                    identity_is_constrained = True
+                    oracle_recovery = True
             if scan_fingerprints and not identity_is_constrained:
                 visual_matches = await asyncio.to_thread(
                     self._visual_matches,
@@ -1615,7 +1659,11 @@ class CardRecognizer:
                     # The normal conservative path remains valid while offline.
                     family_complete = False
             family_complete_at = time.perf_counter()
-            neural_vector = await neural_task if neural_task is not None else None
+            neural_vector = (
+                neural_vector
+                if neural_vector is not None
+                else (await neural_task if neural_task is not None else None)
+            )
             neural_matches = (
                 await asyncio.to_thread(
                     neural.search_vector,

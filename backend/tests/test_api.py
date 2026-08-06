@@ -901,6 +901,25 @@ def test_partial_title_with_exact_set_and_number_is_strong_printing_evidence():
     assert not CardRecognizer.has_exact_printing_identity(0.9, "083", "ORI", 0.8, 1.0)
 
 
+def test_exact_footer_title_fragment_requires_matching_non_land_year():
+    from mtglogger.services.recognition import CardRecognizer
+
+    card = {
+        "name": "Aven Battle Priest",
+        "type_line": "Creature — Bird Cleric",
+        "released_at": "2015-07-17",
+    }
+
+    assert CardRecognizer.has_exact_footer_title_fragment("Aven", card, 2015)
+    assert not CardRecognizer.has_exact_footer_title_fragment("Aven", card, 2016)
+    assert not CardRecognizer.has_exact_footer_title_fragment("Pri", card, 2015)
+    assert not CardRecognizer.has_exact_footer_title_fragment(
+        "Swamp",
+        {**card, "name": "Swamp", "type_line": "Basic Land — Swamp"},
+        2015,
+    )
+
+
 def test_neural_artwork_match_cannot_certify_a_reused_art_printing_alone():
     from mtglogger.services.recognition import CardRecognizer
 
