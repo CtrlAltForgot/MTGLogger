@@ -21,8 +21,17 @@ const saveCameraRotation=(rotation:CameraRotation)=>{
   try{globalThis.localStorage?.setItem(CAMERA_ROTATION_STORAGE_KEY,String(rotation))}catch{/* Storage may be disabled. */}
 }
 export const pipelineHasCapacity=(inFlight:number,maxInFlight:number)=>inFlight<Math.max(1,maxInFlight)
+export function preferredVideoConstraints(deviceId?:string):MediaTrackConstraints{
+  return {
+    width:{ideal:1920},height:{ideal:1080},frameRate:{ideal:30},
+    ...(deviceId?{deviceId:{exact:deviceId}}:{facingMode:'environment'}),
+    advanced:[{focusMode:'continuous'} as MediaTrackConstraintSet],
+  }
+}
 export function paddedCaptureBounds(bounds:DetectionBounds,videoWidth:number,videoHeight:number){
-  const padding=1
+  // Preserve the physical edge so perspective correction never clips the tiny
+  // collector line when the motion mask ends at the printed black border.
+  const padding=3
   const left=Math.max(0,bounds.left-padding),top=Math.max(0,bounds.top-padding)
   const right=Math.min(100,bounds.left+bounds.width+padding),bottom=Math.min(100,bounds.top+bounds.height+padding)
   const width=right-left,height=bottom-top,aspect=(width*videoWidth)/(height*videoHeight)
@@ -175,7 +184,7 @@ export function useAutoScanner(
   const start=useCallback(async(deviceId?:string)=>{try{
     if(!window.isSecureContext||!navigator.mediaDevices?.getUserMedia)throw new Error('Camera access requires HTTPS or localhost. Use an HTTPS reverse proxy when opening MTGLogger from another computer.')
     setError(undefined)
-    const stream=await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280},height:{ideal:720},...(deviceId?{deviceId:{exact:deviceId}}:{facingMode:'environment'})},audio:false})
+    const stream=await navigator.mediaDevices.getUserMedia({video:preferredVideoConstraints(deviceId),audio:false})
     if(video.current){video.current.srcObject=stream;await video.current.play();const active=stream.getVideoTracks()[0]?.getSettings().deviceId||deviceId||'';setSelectedCamera(active);setCameras((await navigator.mediaDevices.enumerateDevices()).filter(device=>device.kind==='videoinput'));calibrate()}
   }catch(e){setError(e instanceof Error?e.message:'Camera unavailable')}},[calibrate])
   const stop=useCallback(()=>{sessionGeneration.current++;(video.current?.srcObject as MediaStream|null)?.getTracks().forEach(track=>track.stop());baseline.current=undefined;previous.current=undefined;capturing.current=false;inFlight.current=0;setPendingCaptures(0);setState('idle')},[])
@@ -254,7 +263,7 @@ export function useAutoScanner(
           if(generation!==sessionGeneration.current)return
           inFlight.current=Math.max(0,inFlight.current-1);setPendingCaptures(inFlight.current)
         })
-      },'image/jpeg',.9)
+      },'image/jpeg',.96)
     },tuning.slingerMode?100:180)
     return()=>clearInterval(timer)
   },[state,error,maxInFlight,onCapture,rotation,scanArea,tuning])

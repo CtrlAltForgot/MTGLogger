@@ -1,5 +1,5 @@
 import {describe,expect,it} from 'vitest'
-import {analyze,paddedCaptureBounds,parseCameraRotation,pipelineHasCapacity,sourceAreaForRotation} from './useAutoScanner'
+import {analyze,paddedCaptureBounds,parseCameraRotation,pipelineHasCapacity,preferredVideoConstraints,sourceAreaForRotation} from './useAutoScanner'
 
 const width=160,height=120
 const frame=(value=20)=>new Uint8ClampedArray(width*height*4).map((_,index)=>index%4===3?255:value)
@@ -60,6 +60,14 @@ describe('wide scanner presence analysis',()=>{
 })
 
 describe('bounded recognition pipeline',()=>{
+  it('requests a high-resolution continuously focused camera feed',()=>{
+    const constraints=preferredVideoConstraints('camera-id')
+    expect(constraints.width).toEqual({ideal:1920})
+    expect(constraints.height).toEqual({ideal:1080})
+    expect(constraints.deviceId).toEqual({exact:'camera-id'})
+    expect(constraints.advanced).toContainEqual({focusMode:'continuous'})
+  })
+
   it('crops a detected portrait card with a small margin',()=>{
     const crop=paddedCaptureBounds({left:18,top:8,width:34,height:82},1280,720)
     expect(crop).toBeDefined()
