@@ -840,6 +840,23 @@ class CardRecognizer:
         promo_printing = bool(promo_types) or card.get("set", "").casefold().startswith("p")
         return 93.5 if promo_printing else 94.0
 
+    @staticmethod
+    def oracle_recovery_requires_cap(
+        oracle_recovery: bool,
+        exact_printed_identity: bool,
+        printing_signal: bool,
+        visual_printing_proof: bool,
+        title_art_symbol_proof: bool,
+    ) -> bool:
+        """Cap rules-text identity only when no independent printing proof exists."""
+        return bool(
+            oracle_recovery
+            and not exact_printed_identity
+            and not printing_signal
+            and not visual_printing_proof
+            and not title_art_symbol_proof
+        )
+
     async def _oracle_recovery(self, text: str, language: str) -> tuple[str | None, list[dict]]:
         if language != "en":
             return None, []
@@ -1654,6 +1671,36 @@ class CardRecognizer:
                 # Keep visual candidates from the best localized crop. Visual
                 # evidence is capped below auto-add, so it can rescue a damaged
                 # OCR title without silently accepting a bad contour.
+            # Recovery may append a cleaner footer after the initial lookup.
+            # Reconcile the merged observations once before printing-family
+            # verification; otherwise ranking can display an exact footer while
+            # still using stale set/collector variables from the first pass.
+            merged_title, merged_number, merged_set, merged_year = self.hints(text)
+            if merged_number and merged_set:
+                merged_cards = await self._lookup_cards(
+                    merged_title or title,
+                    merged_number,
+                    merged_set,
+                    box_set_code,
+                    language,
+                    promo_type,
+                )
+                merged_exact = self.unique_exact_footer_card(
+                    merged_number, merged_set, merged_cards
+                )
+                merged_identity = merged_title or title
+                if merged_exact and (
+                    not merged_identity
+                    or self.card_name_similarity(
+                        merged_identity, merged_exact["name"]
+                    )
+                    >= 0.72
+                ):
+                    title = merged_exact["name"]
+                    number = merged_number
+                    printed_set_code = merged_set
+                    copyright_year = merged_year or copyright_year
+                    cards = merged_cards
             recovery_complete = time.perf_counter()
             identity_names = {card["name"] for card in cards} or ({title} if title else set())
             identity_is_constrained = self.has_constrained_visual_identity(
@@ -2262,11 +2309,12 @@ class CardRecognizer:
                 confidence = min(confidence, 90.0)
                 safe_candidate_ids.discard(card["id"])
             confidence = min(99.5, confidence)
-            if (
-                oracle_recovery
-                and not printing_signal
-                and not visual_printing_proof
-                and not title_art_symbol_proof
+            if self.oracle_recovery_requires_cap(
+                oracle_recovery,
+                exact_printed_identity,
+                printing_signal,
+                visual_printing_proof,
+                title_art_symbol_proof,
             ):
                 # Rules text can identify a card, but it cannot prove which set,
                 # collector number, or finish is physically present. Independent

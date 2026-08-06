@@ -1062,6 +1062,17 @@ def test_oracle_recovery_orders_exact_regular_and_promo_printings_below_auto_add
     assert CardRecognizer.oracle_printing_cap(1, None, 0.45, None, regular) == 89
 
 
+def test_exact_footer_proof_is_not_downgraded_by_identity_recovery():
+    from mtglogger.services.recognition import CardRecognizer
+
+    assert not CardRecognizer.oracle_recovery_requires_cap(
+        True, True, False, False, False
+    )
+    assert CardRecognizer.oracle_recovery_requires_cap(
+        True, False, False, False, False
+    )
+
+
 def test_set_code_score_handles_bounded_footer_glyph_confusion():
     from mtglogger.services.recognition import CardRecognizer
 
