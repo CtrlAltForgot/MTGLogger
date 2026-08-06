@@ -995,11 +995,14 @@ def test_printing_verifier_consensus_requires_complete_constrained_family():
         "neural_margin": 0.03,
         "collector_number_exact": False,
         "is_basic_land": False,
-        "has_observed_footer_identity": False,
+        "has_observed_footer_identity": True,
         "footer_contradiction": False,
     }
 
     assert CardRecognizer.printing_verifiers_agree(**evidence)
+    assert not CardRecognizer.printing_verifiers_agree(
+        **(evidence | {"has_observed_footer_identity": False})
+    )
     assert not CardRecognizer.printing_verifiers_agree(
         **(evidence | {"family_complete": False})
     )
@@ -1008,9 +1011,6 @@ def test_printing_verifier_consensus_requires_complete_constrained_family():
     )
     assert CardRecognizer.printing_verifiers_agree(
         **(evidence | {"neural_margin": 0.015, "collector_number_exact": True})
-    )
-    assert not CardRecognizer.printing_verifiers_agree(
-        **(evidence | {"is_basic_land": True})
     )
     assert CardRecognizer.printing_verifiers_agree(
         **(
@@ -1230,7 +1230,7 @@ def test_focused_ocr_reads_only_enlarged_title_and_footer_when_title_is_usable()
     assert calls[0][1] == 840
 
 
-def test_incomplete_footer_gets_wide_high_resolution_collector_pass():
+def test_incomplete_footer_does_not_repeat_general_detection():
     import numpy as np
 
     from mtglogger.services.recognition import CardRecognizer
@@ -1247,10 +1247,9 @@ def test_incomplete_footer_gets_wide_high_resolution_collector_pass():
     recognizer.extract_text = extract
     text = recognizer.extract_identification_text(np.zeros((840, 600, 3), dtype=np.uint8))
 
-    assert "264/272" in text
-    assert len(calls) == 2
+    assert "264/272" not in text
+    assert len(calls) == 1
     assert calls[0][1] == 840
-    assert calls[1][1] == 1200
 
 
 def test_collector_footer_survives_full_card_title_fallback():
@@ -1259,14 +1258,14 @@ def test_collector_footer_survives_full_card_title_fallback():
     from mtglogger.services.recognition import CardRecognizer
 
     recognizer = CardRecognizer.__new__(CardRecognizer)
-    responses = iter(("ORI", "264/272\nORI·EN", "Basic Land - Swamp"))
+    responses = iter(("ORI", "Basic Land - Swamp"))
     recognizer.extract_text = lambda _image: next(responses)
 
     text = recognizer.extract_identification_text(np.zeros((840, 600, 3), dtype=np.uint8))
     title, number, set_code, _ = recognizer.hints(text)
 
     assert title == "Swamp"
-    assert number == "264"
+    assert number is None
     assert set_code == "ori"
 
 
@@ -1872,6 +1871,9 @@ def test_full_frame_recovery_cannot_replace_a_proven_focused_title():
     recognizer.rectify = lambda decoded: decoded
     recognizer.extract_identification_text = lambda _image: "Rite of the Serpent"
     recognizer.extract_text = lambda _image: "Sadistic Obsession\n86/269\nKTK·EN"
+    recognizer.extract_recovery_footer_text = (
+        lambda *_args: "Sadistic Obsession\n86/269\nKTK·EN"
+    )
     recognizer._visual_matches = lambda _scan_hash, _set_code: []
 
     result = asyncio.run(recognizer.recognize(b"camera-frame"))
@@ -2214,7 +2216,7 @@ def test_ocr_hints_recovers_collector_number_when_slash_is_dropped():
     assert year == 2012
 
 
-def test_recovery_footer_preserves_lower_card_geometry():
+def test_recovery_footer_does_not_repeat_general_detection_when_fixed_reader_is_unavailable():
     import numpy as np
 
     from mtglogger.services.recognition import CardRecognizer
@@ -2223,11 +2225,13 @@ def test_recovery_footer_preserves_lower_card_geometry():
     observed = []
     recognizer.extract_text = lambda image: observed.append(image.shape) or "032/272 ORI"
 
-    assert recognizer.extract_recovery_footer_text(
-        np.zeros((650, 474, 3), dtype=np.uint8)
-    ) == "032/272 ORI"
-    assert observed[0][1] == 840
-    assert observed[0][0] > 300
+    assert (
+        recognizer.extract_recovery_footer_text(
+            np.zeros((650, 474, 3), dtype=np.uint8)
+        )
+        == ""
+    )
+    assert observed == []
 
 
 def test_fixed_footer_reader_uses_normalized_collector_and_set_rows():
@@ -2241,9 +2245,14 @@ def test_fixed_footer_reader_uses_normalized_collector_and_set_rows():
 
     class FooterOcr:
         def predict(self, rows):
-            assert len(rows) == 2
+            assert len(rows) == 4
             assert all(row.shape[1] == 270 for row in rows)
-            return [Result("017/272 C"), Result("ORI EN")]
+            return [
+                Result("017/272 C"),
+                Result("ORI EN"),
+                Result(""),
+                Result(""),
+            ]
 
     recognizer = CardRecognizer.__new__(CardRecognizer)
     recognizer._footer_ocr = FooterOcr()

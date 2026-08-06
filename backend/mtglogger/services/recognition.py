@@ -312,15 +312,7 @@ class CardRecognizer:
         separator = np.zeros((18, 840, 3), dtype=np.uint8)
         focused_image = np.vstack((title, separator, footer_left))
         focused = self.extract_text(focused_image)
-        focused_title, number, set_code, _ = self.hints(focused)
-        if not number or not set_code:
-            collector_footer = footer[:, : int(width * 0.78)]
-            collector_footer = self.scale_to_width(collector_footer, 1200)
-            enhanced_footer = self.enhance_footer(collector_footer)
-            enhanced_text = self.extract_text(enhanced_footer)
-            if enhanced_text.strip():
-                focused = "\n".join((focused, enhanced_text))
-            focused_title, _, _, _ = self.hints(focused)
+        focused_title, _, _, _ = self.hints(focused)
         if focused_title:
             return focused
         # Showcase frames and older layouts occasionally place the title outside
@@ -331,27 +323,63 @@ class CardRecognizer:
         # the tiny collector footer. Preserve both independent observations.
         return "\n".join(part for part in (focused, full_text) if part.strip())
 
-    def extract_recovery_footer_text(self, image: np.ndarray) -> str:
+    def extract_recovery_footer_text(
+        self,
+        image: np.ndarray,
+        expected_numbers: set[str] | None = None,
+        expected_sets: set[str] | None = None,
+    ) -> str:
         """Read a geometry-preserving lower card band after identity is known."""
-        fixed = self.extract_fixed_footer_text(image)
-        if fixed.strip():
-            return fixed
-        height = image.shape[0]
-        footer_band = image[int(height * 0.70) :]
-        return self.extract_text(self.scale_to_width(footer_band, 840))
+        fixed_lines = self.extract_fixed_footer_lines(image)
+        if fixed_lines:
+            matching_lines = []
+            for line in fixed_lines:
+                _title, number, set_code, _year = self.hints(line)
+                number_matches = bool(
+                    number
+                    and expected_numbers
+                    and any(
+                        self.collector_score(number, expected) == 1.0
+                        for expected in expected_numbers
+                    )
+                )
+                set_matches = bool(
+                    set_code
+                    and expected_sets
+                    and any(
+                        self.exact_set_code_match(set_code, expected)
+                        for expected in expected_sets
+                    )
+                )
+                if number_matches or set_matches:
+                    matching_lines.append(line)
+            if matching_lines:
+                return "\n".join(matching_lines)
+        # The general detector costs multiple seconds and, after the first two
+        # OCR passes already failed, mostly repeats noisy evidence. Preserve the
+        # initial observation and let exhaustive visual/neural ranking decide;
+        # uncertain exact printings remain review items instead of stalling the
+        # live scanner for a low-yield third OCR pass.
+        return ""
 
     def extract_fixed_footer_text(self, image: np.ndarray) -> str:
         """Read normalized collector and set rows without text detection."""
+        return "\n".join(self.extract_fixed_footer_lines(image))
+
+    def extract_fixed_footer_lines(self, image: np.ndarray) -> list[str]:
+        """Read modern-left and legacy-right footer rows independently."""
         if getattr(self, "_footer_ocr", None) is None:
-            return ""
+            return []
         height, width = image.shape[:2]
-        # The left 45% contains collector/total/rarity and set/language on
-        # conventional paper frames. Avoiding artist/copyright text materially
-        # improves recognition of the tiny identifiers that precede it.
-        right = int(width * 0.45)
+        # Modern frames put collector/set fields at lower left. Older frames
+        # often put the collector pair after the copyright at lower right.
+        # Read the layouts independently so the recognizer is never forced to
+        # transcribe an entire tiny copyright line just to recover three digits.
         rows = (
-            image[int(height * 0.90) : int(height * 0.95), :right],
-            image[int(height * 0.94) : int(height * 0.995), :right],
+            image[int(height * 0.90) : int(height * 0.95), : int(width * 0.45)],
+            image[int(height * 0.94) : int(height * 0.995), : int(width * 0.45)],
+            image[int(height * 0.93) : int(height * 0.98), int(width * 0.55) :],
+            image[int(height * 0.94) : int(height * 0.995), int(width * 0.55) :],
         )
         try:
             texts = []
@@ -362,10 +390,10 @@ class CardRecognizer:
                 value = (data.get("res") or {}).get("rec_text", "")
                 if value.strip():
                     texts.append(value)
-            return "\n".join(texts)
+            return texts
         except Exception:
             logger.exception("Footer OCR inference failed")
-            return ""
+            return []
 
     @staticmethod
     def low_light_score(image: np.ndarray) -> float:
@@ -1199,7 +1227,11 @@ class CardRecognizer:
                 neural_margin >= 0.02
                 or (collector_number_exact and neural_margin >= 0.01)
             )
-            and (not is_basic_land or has_observed_footer_identity)
+            # Reused artwork can make both the full-card embedding and title
+            # agree with the wrong physical printing. Consensus is auto-safe
+            # only when the camera also supplied printing-specific footer data,
+            # for every card type (not merely basic lands).
+            and has_observed_footer_identity
             and not footer_contradiction
         )
 
@@ -1669,11 +1701,15 @@ class CardRecognizer:
                 # A fast crop can occasionally lock onto an internal rules box,
                 # and tiny footers may be incomplete. OCR the original frame only
                 # for weak scans, then rerank before interrupting the user.
-                recovery_text = await asyncio.to_thread(
-                    self.extract_recovery_footer_text
+                recovery_text = (
+                    await asyncio.to_thread(
+                        self.extract_recovery_footer_text,
+                        decoded,
+                        {card["collector_number"] for card in cards},
+                        {card["set"] for card in cards},
+                    )
                     if focused_identity_is_strong
-                    else self.extract_text,
-                    decoded,
+                    else await asyncio.to_thread(self.extract_text, decoded)
                 )
                 recovery_hints = self.hints(recovery_text)
                 recovery_promo = self.promo_type_hint(recovery_text)
@@ -1837,12 +1873,14 @@ class CardRecognizer:
                     printed_set_code or box_set_code,
                     *([ignored_visual_hashes] if ignored_visual_hashes is not None else []),
                 )
-            exact_footer_match = self.has_exact_footer_match(title, number, printed_set_code, cards)
-            exact_footer_can_skip_art = exact_footer_match and not any(
-                self.is_basic_land(card) for card in cards
-            )
             family_complete = False
-            if identity_is_constrained and not exact_footer_can_skip_art:
+            if identity_is_constrained:
+                # Even a syntactically exact set/collector pair can be an OCR
+                # substitution for another real printing (055 -> 065 is common
+                # in tiny footers). Always admit the complete local family so
+                # independent artwork/neural evidence can overturn that error.
+                # Local expansion is cheap and auto-add safety is decided later
+                # by corroboration, never by this candidate-admission step.
                 try:
                     family_name = next(iter(identity_names))
                     family_cards, family_total = await asyncio.to_thread(
@@ -1881,7 +1919,7 @@ class CardRecognizer:
                 if neural_live
                 else []
             )
-            if identity_is_constrained and not exact_footer_can_skip_art:
+            if identity_is_constrained:
                 identity_visual_matches = await asyncio.to_thread(
                     self._identity_visual_matches,
                     scan_fingerprints,
@@ -2246,6 +2284,17 @@ class CardRecognizer:
                 # A clear set symbol can retrieve and prioritize the right set
                 # even when glare leaves too few artwork keypoints. It remains
                 # below auto-add unless decisive artwork independently agrees.
+                confidence = max(confidence, 96.5)
+            if (
+                descriptor_symbol_top_set
+                and card["set"].casefold() == descriptor_symbol_top_set
+                and descriptor_symbol_set_score >= 65
+                and descriptor_symbol_set_margin >= 8
+            ):
+                # A set symbol identifies the set, not one arbitrary card row
+                # within it. Apply its reranking evidence to every candidate in
+                # that set; exact artwork/collector evidence still chooses the
+                # printing and the automatic-add gate remains unchanged.
                 confidence = max(confidence, 96.5)
             if (
                 card["id"] == descriptor_top_id
@@ -2945,24 +2994,6 @@ class CardRecognizer:
                 printed_set_code
                 and CardRecognizer.set_code_score(printed_set_code, candidate_set) >= 0.78
             )
-
-        # A complete three-or-more-digit collector number plus independently
-        # recognized set text uniquely proves these modern basic-land printings.
-        # Unlike the suffix path below, this does not need a duplicate OCR pass.
-        if len(collector) >= 3 and collector in observed_numbers:
-            exact_ids = {
-                str(candidate.get("id") or "")
-                for candidate in candidates
-                if candidate_is_in_set(candidate)
-                and re.sub(
-                    r"\D",
-                    "",
-                    str(candidate.get("collector_number") or ""),
-                )
-                == collector
-            }
-            if exact_ids == {str(card.get("id") or "")}:
-                return True
 
         for observed in observed_numbers:
             if len(observed) < 2:
