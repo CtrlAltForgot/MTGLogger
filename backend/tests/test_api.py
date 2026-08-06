@@ -2018,6 +2018,68 @@ def test_ocr_hints_recover_legacy_collector_pair_from_copyright_line():
     )
 
 
+def test_ocr_hints_recovers_embedded_core_set_symbol():
+    from mtglogger.services.recognition import CardRecognizer
+
+    title, _number, set_code, year = CardRecognizer.hints(
+        "Forest\nBasic Land - Forest M14 Volkan Baga\n2013 Wizards of the Coast"
+    )
+
+    assert title == "Forest"
+    assert set_code == "m14"
+    assert year == 2013
+
+
+def test_ocr_hints_does_not_invent_core_set_from_unrelated_number():
+    from mtglogger.services.recognition import CardRecognizer
+
+    _title, _number, set_code, _year = CardRecognizer.hints(
+        "Creature — Human\nTarget creature gets +1/+0 until end of turn.\n14 cards"
+    )
+
+    assert set_code is None
+
+
+def test_local_exact_footer_outvotes_damaged_title(monkeypatch):
+    import asyncio
+
+    from mtglogger.services.recognition import CardRecognizer
+
+    exact = {
+        "id": "celestial-flare-ori-8",
+        "name": "Celestial Flare",
+        "set": "ori",
+        "collector_number": "8",
+    }
+    recognizer = object.__new__(CardRecognizer)
+
+    monkeypatch.setattr(
+        CardRecognizer,
+        "_lookup_local_cards_by_number",
+        classmethod(lambda cls, number, preferred_set: [exact]),
+    )
+    monkeypatch.setattr(
+        CardRecognizer,
+        "_lookup_local_cards",
+        classmethod(
+            lambda cls, title, number, preferred_set: [
+                {
+                    "id": "wrong-title-match",
+                    "name": "Gideon's Triumph",
+                    "set": "war",
+                    "collector_number": "15",
+                }
+            ]
+        ),
+    )
+
+    cards = asyncio.run(
+        recognizer._lookup_cards("Tiac GideonJura", "008", "ORI", None, "en")
+    )
+
+    assert cards == [exact]
+
+
 def test_ocr_hints_recovers_truncated_footer_year():
     from mtglogger.services.recognition import CardRecognizer
 

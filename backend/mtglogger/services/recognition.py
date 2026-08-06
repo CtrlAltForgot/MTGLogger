@@ -416,6 +416,21 @@ class CardRecognizer:
                 ):
                     set_code = token.lower()
                     break
+        if not set_code:
+            # Core-set symbols are unusually OCR-friendly even when Paddle
+            # returns them on the same line as the type, artist, or card name
+            # (``Basic Land - Forest M14 Volkan Baga``).  The previous parser
+            # only accepted a standalone token, throwing away exact M10-M21
+            # evidence and leaving artwork-identical lands tied across sets.
+            # Restrict this rescue to real modern core-set codes so a mana cost
+            # or arbitrary rules-text token cannot become a fabricated set.
+            core_set_match = re.search(
+                r"(?<![A-Z0-9])M(?:1[0-9]|2[01])(?![A-Z0-9])",
+                "\n".join(lines),
+                re.I,
+            )
+            if core_set_match:
+                set_code = core_set_match.group(0).lower()
         number = None
         # Collector numbers often share the copyright line. Prefer an explicit
         # numerator/denominator pair before filtering copyright years.
@@ -1032,6 +1047,30 @@ class CardRecognizer:
         # identity and avoids putting every physical scan behind Scryfall's
         # network latency. Remote lookup remains the fallback for new/unindexed
         # cards and supplies printing-family completeness below.
+        if (
+            number
+            and printed_set_code
+            and not promo_type
+            and language.casefold() == "en"
+        ):
+            # Set + collector number identifies a physical printing even when
+            # glare turns the title into plausible-looking nonsense.  Looking
+            # up the damaged title first used to hide this exact local match
+            # (for example ``Tiac GideonJura`` beside ``ORI 008/272``), leaving
+            # the correct card in Review at a low confidence.  Require both
+            # footer fields to match exactly so a partial/misread collector
+            # number cannot bypass the normal title and artwork safeguards.
+            footer_cards = await asyncio.to_thread(
+                self._lookup_local_cards_by_number, number, printed_set_code
+            )
+            exact_footer_cards = [
+                card
+                for card in footer_cards
+                if self.collector_score(number, card["collector_number"]) == 1.0
+                and self.set_code_score(printed_set_code, card["set"]) == 1.0
+            ]
+            if exact_footer_cards:
+                return exact_footer_cards
         if title and not promo_type and language.casefold() == "en":
             local_cards = await asyncio.to_thread(
                 self._lookup_local_cards, title, number, preferred_set
