@@ -133,8 +133,10 @@ class CardRecognizer:
         self._recognition_lock = asyncio.Lock()
         self._neural = NeuralRetriever()
         self._ocr = None
+        self._footer_ocr = None
         try:
             from paddleocr import PaddleOCR
+            from paddlex import create_model
 
             self._ocr = PaddleOCR(
                 use_doc_orientation_classify=False,
@@ -151,6 +153,12 @@ class CardRecognizer:
                 text_det_limit_side_len=840,
                 text_det_limit_type="max",
             )
+            # Rectification puts the two footer rows at stable coordinates, so
+            # they do not need the comparatively expensive general text
+            # detector. The recognition-only model reads each complete row in
+            # tens of milliseconds and is also less likely to discard tiny
+            # collector digits as background.
+            self._footer_ocr = create_model("PP-OCRv4_mobile_rec")
         except (ImportError, RuntimeError):
             pass
 
@@ -306,15 +314,6 @@ class CardRecognizer:
         focused = self.extract_text(focused_image)
         focused_title, number, set_code, _ = self.hints(focused)
         if not number or not set_code:
-            # Tiny foil/set/collector text benefits from local contrast and
-            # sharpening. Run this extra OCR pass only when the normal footer
-            # did not already provide complete printing evidence.
-            # Collector numbers are the decisive signal for basic-land artwork
-            # and visually similar reprints. Keep a wider slice than the fast
-            # combined pass and render it substantially larger: on a 720p
-            # camera feed the footer glyphs can otherwise be only 5-7 pixels
-            # tall. The extra OCR call is paid only when the fast pass did not
-            # already recover complete printing evidence.
             collector_footer = footer[:, : int(width * 0.78)]
             collector_footer = self.scale_to_width(collector_footer, 1200)
             enhanced_footer = self.enhance_footer(collector_footer)
@@ -331,6 +330,42 @@ class CardRecognizer:
         # The full-card pass can recover a title from a type line while losing
         # the tiny collector footer. Preserve both independent observations.
         return "\n".join(part for part in (focused, full_text) if part.strip())
+
+    def extract_recovery_footer_text(self, image: np.ndarray) -> str:
+        """Read a geometry-preserving lower card band after identity is known."""
+        fixed = self.extract_fixed_footer_text(image)
+        if fixed.strip():
+            return fixed
+        height = image.shape[0]
+        footer_band = image[int(height * 0.70) :]
+        return self.extract_text(self.scale_to_width(footer_band, 840))
+
+    def extract_fixed_footer_text(self, image: np.ndarray) -> str:
+        """Read normalized collector and set rows without text detection."""
+        if getattr(self, "_footer_ocr", None) is None:
+            return ""
+        height, width = image.shape[:2]
+        # The left 45% contains collector/total/rarity and set/language on
+        # conventional paper frames. Avoiding artist/copyright text materially
+        # improves recognition of the tiny identifiers that precede it.
+        right = int(width * 0.45)
+        rows = (
+            image[int(height * 0.90) : int(height * 0.95), :right],
+            image[int(height * 0.94) : int(height * 0.995), :right],
+        )
+        try:
+            texts = []
+            for result in self._footer_ocr.predict(list(rows)):
+                data = result.json if hasattr(result, "json") else {}
+                if callable(data):
+                    data = data()
+                value = (data.get("res") or {}).get("rec_text", "")
+                if value.strip():
+                    texts.append(value)
+            return "\n".join(texts)
+        except Exception:
+            logger.exception("Footer OCR inference failed")
+            return ""
 
     @staticmethod
     def low_light_score(image: np.ndarray) -> float:
@@ -1140,6 +1175,59 @@ class CardRecognizer:
             and independently_corroborated
         )
 
+    @staticmethod
+    def printing_verifiers_agree(
+        *,
+        identity_is_constrained: bool,
+        family_complete: bool,
+        title_score: float,
+        candidate_id: str,
+        neural_top_id: str | None,
+        neural_margin: float,
+        collector_number_exact: bool,
+        is_basic_land: bool,
+        has_observed_footer_identity: bool,
+        footer_contradiction: bool,
+    ) -> bool:
+        """Promote a printing only when independent constrained verifiers agree."""
+        return bool(
+            identity_is_constrained
+            and family_complete
+            and title_score >= 0.93
+            and candidate_id == neural_top_id
+            and (
+                neural_margin >= 0.02
+                or (collector_number_exact and neural_margin >= 0.01)
+            )
+            and (not is_basic_land or has_observed_footer_identity)
+            and not footer_contradiction
+        )
+
+    @classmethod
+    def confirmed_camera_rerank_matches_footer(
+        cls,
+        *,
+        source_kind: str | None,
+        similarity: float,
+        margin: float,
+        observed_number: str | None,
+        candidate_number: str,
+        observed_set: str | None,
+        candidate_set: str,
+    ) -> bool:
+        """Use a prior physical scan to rerank only when its footer agrees."""
+        return bool(
+            source_kind == "correction"
+            and similarity >= 0.83
+            and margin >= 0.08
+            and observed_number
+            and cls.collector_score(observed_number, candidate_number) >= 0.78
+            and (
+                not observed_set
+                or cls.set_code_score(observed_set, candidate_set) >= 0.78
+            )
+        )
+
     @classmethod
     def has_unique_printing_signal(
         cls,
@@ -1581,7 +1669,12 @@ class CardRecognizer:
                 # A fast crop can occasionally lock onto an internal rules box,
                 # and tiny footers may be incomplete. OCR the original frame only
                 # for weak scans, then rerank before interrupting the user.
-                recovery_text = await asyncio.to_thread(self.extract_text, decoded)
+                recovery_text = await asyncio.to_thread(
+                    self.extract_recovery_footer_text
+                    if focused_identity_is_strong
+                    else self.extract_text,
+                    decoded,
+                )
                 recovery_hints = self.hints(recovery_text)
                 recovery_promo = self.promo_type_hint(recovery_text)
                 recovery_cards = await self._lookup_cards(
@@ -2368,8 +2461,56 @@ class CardRecognizer:
                 confidence=round(self.visual_only_score(score), 1),
             )
         candidates = sorted(ranked.values(), key=lambda item: item.confidence, reverse=True)
+        if neural_matches and neural_matches[0].source_kind == "correction":
+            camera_candidate = next(
+                (
+                    candidate
+                    for candidate in candidates
+                    if candidate.scryfall_id == neural_top_id
+                ),
+                None,
+            )
+            if camera_candidate and self.confirmed_camera_rerank_matches_footer(
+                source_kind=neural_matches[0].source_kind,
+                similarity=neural_top_score,
+                margin=neural_margin,
+                observed_number=number,
+                candidate_number=camera_candidate.collector_number,
+                observed_set=printed_set_code,
+                candidate_set=camera_candidate.set_code,
+            ):
+                camera_candidate.confidence = max(camera_candidate.confidence, 98.4)
+                candidates.sort(key=lambda item: item.confidence, reverse=True)
         if candidates:
             top = candidates[0]
+            top_card = next(
+                (card for card in cards if card["id"] == top.scryfall_id), None
+            )
+            if top_card and self.printing_verifiers_agree(
+                identity_is_constrained=identity_is_constrained,
+                family_complete=family_complete,
+                title_score=self.card_name_similarity(merged_title, top.name),
+                candidate_id=top.scryfall_id,
+                neural_top_id=neural_top_id,
+                neural_margin=neural_margin,
+                collector_number_exact=bool(
+                    number
+                    and self.collector_score(number, top.collector_number) == 1.0
+                ),
+                is_basic_land=self.is_basic_land(top_card),
+                has_observed_footer_identity=bool(
+                    number
+                    or self.exact_set_code_match(printed_set_code, top.set_code)
+                ),
+                footer_contradiction=self.observed_footer_contradicts_printing(
+                    number,
+                    printed_set_code,
+                    top.collector_number,
+                    top.set_code,
+                ),
+            ):
+                top.confidence = 99.5
+                safe_candidate_ids.add(top.scryfall_id)
             runner_up_confidence = candidates[1].confidence if len(candidates) > 1 else 0.0
             descriptor_agrees = bool(
                 descriptor_catalog_complete
@@ -2983,7 +3124,9 @@ class CardRecognizer:
             set_art_catalog_complete
             and bool(collector_number and printed_set_code)
             and number_score >= 0.78
-            and set_score >= 0.78
+            and CardRecognizer.exact_set_code_match(
+                printed_set_code, card_set or ""
+            )
             and card_id == set_art_top_id
             and set_art_score >= 85
             and set_art_margin >= 8

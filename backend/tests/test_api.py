@@ -983,6 +983,68 @@ def test_neural_artwork_match_cannot_certify_a_reused_art_printing_alone():
     )
 
 
+def test_printing_verifier_consensus_requires_complete_constrained_family():
+    from mtglogger.services.recognition import CardRecognizer
+
+    evidence = {
+        "identity_is_constrained": True,
+        "family_complete": True,
+        "title_score": 1.0,
+        "candidate_id": "ori-032",
+        "neural_top_id": "ori-032",
+        "neural_margin": 0.03,
+        "collector_number_exact": False,
+        "is_basic_land": False,
+        "has_observed_footer_identity": False,
+        "footer_contradiction": False,
+    }
+
+    assert CardRecognizer.printing_verifiers_agree(**evidence)
+    assert not CardRecognizer.printing_verifiers_agree(
+        **(evidence | {"family_complete": False})
+    )
+    assert not CardRecognizer.printing_verifiers_agree(
+        **(evidence | {"neural_margin": 0.018})
+    )
+    assert CardRecognizer.printing_verifiers_agree(
+        **(evidence | {"neural_margin": 0.015, "collector_number_exact": True})
+    )
+    assert not CardRecognizer.printing_verifiers_agree(
+        **(evidence | {"is_basic_land": True})
+    )
+    assert CardRecognizer.printing_verifiers_agree(
+        **(
+            evidence
+            | {"is_basic_land": True, "has_observed_footer_identity": True}
+        )
+    )
+    assert not CardRecognizer.printing_verifiers_agree(
+        **(evidence | {"footer_contradiction": True})
+    )
+
+
+def test_confirmed_camera_rerank_must_agree_with_observed_footer():
+    from mtglogger.services.recognition import CardRecognizer
+
+    evidence = {
+        "source_kind": "correction",
+        "similarity": 0.85,
+        "margin": 0.10,
+        "observed_number": "240",
+        "candidate_number": "240",
+        "observed_set": None,
+        "candidate_set": "m13",
+    }
+
+    assert CardRecognizer.confirmed_camera_rerank_matches_footer(**evidence)
+    assert not CardRecognizer.confirmed_camera_rerank_matches_footer(
+        **(evidence | {"candidate_number": "238"})
+    )
+    assert not CardRecognizer.confirmed_camera_rerank_matches_footer(
+        **(evidence | {"observed_set": "RTR"})
+    )
+
+
 def test_printed_artist_credit_is_exact_art_evidence():
     from mtglogger.services.recognition import CardRecognizer
 
@@ -2150,6 +2212,48 @@ def test_ocr_hints_recovers_collector_number_when_slash_is_dropped():
     assert number == "246"
     assert set_code is None
     assert year == 2012
+
+
+def test_recovery_footer_preserves_lower_card_geometry():
+    import numpy as np
+
+    from mtglogger.services.recognition import CardRecognizer
+
+    recognizer = CardRecognizer.__new__(CardRecognizer)
+    observed = []
+    recognizer.extract_text = lambda image: observed.append(image.shape) or "032/272 ORI"
+
+    assert recognizer.extract_recovery_footer_text(
+        np.zeros((650, 474, 3), dtype=np.uint8)
+    ) == "032/272 ORI"
+    assert observed[0][1] == 840
+    assert observed[0][0] > 300
+
+
+def test_fixed_footer_reader_uses_normalized_collector_and_set_rows():
+    import numpy as np
+
+    from mtglogger.services.recognition import CardRecognizer
+
+    class Result:
+        def __init__(self, text):
+            self.json = {"res": {"rec_text": text}}
+
+    class FooterOcr:
+        def predict(self, rows):
+            assert len(rows) == 2
+            assert all(row.shape[1] == 270 for row in rows)
+            return [Result("017/272 C"), Result("ORI EN")]
+
+    recognizer = CardRecognizer.__new__(CardRecognizer)
+    recognizer._footer_ocr = FooterOcr()
+
+    text = recognizer.extract_fixed_footer_text(
+        np.zeros((840, 600, 3), dtype=np.uint8)
+    )
+
+    assert text == "017/272 C\nORI EN"
+    assert CardRecognizer.hints(text)[1:3] == ("017", "ori")
 
 
 def test_ocr_hints_recovers_embedded_core_set_symbol():
