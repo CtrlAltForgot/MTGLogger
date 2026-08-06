@@ -2551,6 +2551,13 @@ def test_ocr_hints_recovers_corrupted_1996_footer_year():
     assert CardRecognizer.hints(text)[3] == 1996
 
 
+def test_ocr_hints_recovers_year_joined_to_collector_noise():
+    from mtglogger.services.recognition import CardRecognizer
+
+    assert CardRecognizer.hints("Canyon Minotaur\nSteve Prescott\n094092012W")[3] == 2012
+    assert CardRecognizer.hints("Rules text mentions 094092012 creatures")[3] is None
+
+
 def test_unique_copyright_year_disambiguates_reused_printing():
     import asyncio
 
@@ -2596,6 +2603,7 @@ def test_unique_copyright_year_disambiguates_reused_printing():
     recognizer.decode = lambda _raw: image
     recognizer.rectify = lambda decoded: decoded
     recognizer.extract_identification_text = lambda _image: "Death'sApproach\nco13rdsofthCat2"
+    recognizer.extract_set_symbol_text = lambda _image: ""
     recognizer._visual_matches = lambda _scan_hash, _set_code: []
 
     result = asyncio.run(recognizer.recognize(b"camera-frame"))
@@ -3209,6 +3217,42 @@ def test_title_art_and_set_symbol_can_prove_printing_without_footer():
     )
     assert not CardRecognizer.has_safe_title_art_symbol_match(
         "printing-a", 1.0, False, "m21", "m21", 92, 20, "printing-a", 94, 22
+    )
+
+
+def test_independent_visual_consensus_can_prove_footerless_nonbasic_printing():
+    from mtglogger.services.recognition import CardRecognizer
+
+    evidence = dict(
+        is_basic_land=False,
+        identity_is_constrained=True,
+        family_complete=True,
+        title_score=1.0,
+        candidate_id="printing-a",
+        candidate_lead=9.4,
+        neural_top_id="printing-a",
+        neural_score=0.87,
+        neural_margin=0.12,
+        visual_top_id="printing-a",
+        visual_score=77.0,
+        visual_margin=2.0,
+        art_top_id="printing-b",
+        art_score=95.0,
+        symbol_top_set="m13",
+        candidate_set="m13",
+        symbol_score=99.5,
+        symbol_margin=0.5,
+        footer_contradiction=False,
+    )
+    assert CardRecognizer.has_safe_multimodal_printing_consensus(**evidence)
+    assert not CardRecognizer.has_safe_multimodal_printing_consensus(
+        **{**evidence, "is_basic_land": True}
+    )
+    assert not CardRecognizer.has_safe_multimodal_printing_consensus(
+        **{**evidence, "candidate_lead": 3.0}
+    )
+    assert not CardRecognizer.has_safe_multimodal_printing_consensus(
+        **{**evidence, "footer_contradiction": True}
     )
 
 

@@ -367,6 +367,16 @@ class CardRecognizer:
         """Read normalized collector and set rows without text detection."""
         return "\n".join(self.extract_fixed_footer_lines(image))
 
+    def extract_set_symbol_text(self, image: np.ndarray) -> str:
+        """Read an alphanumeric expansion/core-set logo from the type-line corner."""
+        height, width = image.shape[:2]
+        symbol = image[
+            int(height * 0.53) : int(height * 0.64),
+            int(width * 0.72) : int(width * 0.99),
+        ]
+        symbol = cv2.resize(symbol, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
+        return self.extract_text(symbol)
+
     def extract_fixed_footer_lines(self, image: np.ndarray) -> list[str]:
         """Read modern-left and legacy-right footer rows independently."""
         if getattr(self, "_footer_ocr", None) is None:
@@ -518,6 +528,21 @@ class CardRecognizer:
                 inferred = 2000 + int(short_year.group(1))
                 if 1993 <= inferred <= 2030:
                     copyright_year = inferred
+        if copyright_year is None:
+            # Footer OCR can concatenate the collector denominator and the
+            # copyright year (for example ``094092012W``).  The normal digit
+            # boundaries intentionally reject that shape, so recover it only
+            # from the final footer lines and only when the year is immediately
+            # followed by the beginning of the Wizards credit.  This avoids
+            # treating four digits in rules text or a collector number as a
+            # release year.
+            footer = "\n".join(lines[-3:])
+            joined_years = [
+                int(value)
+                for value in re.findall(r"((?:19|20)\d{2})(?=\s*W)", footer, re.I)
+            ]
+            if joined_years:
+                copyright_year = max(joined_years)
         set_code = None
         languages = "EN|ES|FR|DE|IT|PT|JA|KO|RU|ZHS|ZHT|HE|LA|GRC|AR|SA|PHY"
         # Core-set footers frequently lose their separator to a letter-like
@@ -2083,6 +2108,31 @@ class CardRecognizer:
                 # evidence. Let exhaustive art/artist ranking decide while the
                 # card remains reviewable if no independent proof is decisive.
                 number = None
+            if (
+                identity_is_constrained
+                and not printed_set_code
+                and len({card["set"].casefold() for card in cards}) > 1
+            ):
+                # Alphanumeric set logos such as M13 remain large and crisp in
+                # the type line when the collector footer is unreadable. The
+                # tight crop prevents rules text from confusing the detector.
+                # Only admit an exact set already present in this constrained
+                # card family, so arbitrary OCR cannot inject a candidate.
+                symbol_text = await asyncio.to_thread(
+                    self.extract_set_symbol_text, analysis_image
+                )
+                _, _, symbol_set, _ = self.hints(symbol_text)
+                matching_sets = {
+                    card["set"].casefold()
+                    for card in cards
+                    if symbol_set
+                    and self.exact_set_code_match(symbol_set, card["set"])
+                }
+                if len(matching_sets) == 1:
+                    printed_set_code = next(iter(matching_sets))
+                    text = "\n".join(
+                        part for part in (text, symbol_text) if part.strip()
+                    )
             family_complete_at = time.perf_counter()
             neural_vector = (
                 neural_vector
@@ -2261,15 +2311,28 @@ class CardRecognizer:
                         cards.append(local_card)
                         known_card_ids.add(match.reference.scryfall_id)
             matching_complete = time.perf_counter()
-        visual_scores = {reference.scryfall_id: score for reference, score in visual_matches}
+        fingerprint_visual_scores = {
+            reference.scryfall_id: score for reference, score in visual_matches
+        }
         for reference, score in identity_visual_matches:
-            visual_scores[reference.scryfall_id] = max(
-                score, visual_scores.get(reference.scryfall_id, 0)
+            fingerprint_visual_scores[reference.scryfall_id] = max(
+                score, fingerprint_visual_scores.get(reference.scryfall_id, 0)
             )
+        visual_scores = dict(fingerprint_visual_scores)
         for reference, score in descriptor_matches:
             visual_scores[reference.scryfall_id] = max(
                 score, visual_scores.get(reference.scryfall_id, 0)
             )
+        ranked_visual_scores = sorted(
+            fingerprint_visual_scores.items(), key=lambda item: item[1], reverse=True
+        )
+        visual_top_id = ranked_visual_scores[0][0] if ranked_visual_scores else None
+        visual_top_score = ranked_visual_scores[0][1] if ranked_visual_scores else 0.0
+        visual_margin = (
+            ranked_visual_scores[0][1] - ranked_visual_scores[1][1]
+            if len(ranked_visual_scores) > 1
+            else visual_top_score
+        )
         descriptor_scores = {
             reference.scryfall_id: score for reference, score in descriptor_matches
         }
@@ -2456,6 +2519,13 @@ class CardRecognizer:
                     # exact title plus a unique copyright/release year, printed
                     # artist credit, and the strongest high-quality artwork
                     # match are independent proof of the physical printing.
+                    safe_candidate_ids.add(card["id"])
+                if unique_release_year and artist_scores.get(card["id"], 0) >= 0.9:
+                    # The copyright year is printing-specific when exactly one
+                    # member of the complete card family was released that
+                    # year. A matching printed artist credit anchors that tiny
+                    # footer observation to this card instead of unrelated OCR
+                    # noise, even when reused artwork defeats descriptor order.
                     safe_candidate_ids.add(card["id"])
             # Footer OCR sometimes loses a leading digit (123/272 -> 23/272)
             # while retaining enough evidence to distinguish every printing of
@@ -2914,6 +2984,39 @@ class CardRecognizer:
             ):
                 top.confidence = max(top.confidence, 98.5)
                 safe_candidate_ids.add(top.scryfall_id)
+            if self.has_safe_multimodal_printing_consensus(
+                is_basic_land=self.is_basic_land(top_card),
+                identity_is_constrained=identity_is_constrained,
+                family_complete=family_complete,
+                title_score=self.card_name_similarity(title, top.name),
+                candidate_id=top.scryfall_id,
+                candidate_lead=top.confidence - runner_up_confidence,
+                neural_top_id=neural_top_id,
+                neural_score=neural_top_score,
+                neural_margin=neural_margin,
+                visual_top_id=visual_top_id,
+                visual_score=visual_top_score,
+                visual_margin=visual_margin,
+                art_top_id=descriptor_art_top_id,
+                art_score=descriptor_art_scores.get(top.scryfall_id, 0),
+                symbol_top_set=descriptor_symbol_top_set,
+                candidate_set=top.set_code,
+                symbol_score=descriptor_symbol_set_score,
+                symbol_margin=descriptor_symbol_set_margin,
+                footer_contradiction=self.observed_footer_contradicts_printing(
+                    number,
+                    printed_set_code,
+                    top.collector_number,
+                    top.set_code,
+                ),
+            ):
+                # Independent embedding, regional fingerprint, and either
+                # frame/art or set-symbol evidence can resolve a reused-art
+                # printing even when every tiny footer OCR pass fails. The
+                # complete-family and clear candidate-lead requirements keep
+                # this path auditable; basic lands retain stricter safeguards.
+                top.confidence = max(top.confidence, 98.5)
+                safe_candidate_ids.add(top.scryfall_id)
         finished = time.perf_counter()
         logger.info(
             "Recognition timings frame=%dx%d recovery=%s prep=%dms ocr=%dms "
@@ -3264,6 +3367,61 @@ class CardRecognizer:
             and title_score >= 0.93
             and exhaustive_visual_agreement
         )
+
+    @staticmethod
+    def has_safe_multimodal_printing_consensus(
+        *,
+        is_basic_land: bool,
+        identity_is_constrained: bool,
+        family_complete: bool,
+        title_score: float,
+        candidate_id: str,
+        candidate_lead: float,
+        neural_top_id: str | None,
+        neural_score: float,
+        neural_margin: float,
+        visual_top_id: str | None,
+        visual_score: float,
+        visual_margin: float,
+        art_top_id: str | None,
+        art_score: float,
+        symbol_top_set: str | None,
+        candidate_set: str,
+        symbol_score: float,
+        symbol_margin: float,
+        footer_contradiction: bool,
+    ) -> bool:
+        """Accept footerless non-basic printings only after independent consensus."""
+        common = bool(
+            not is_basic_land
+            and identity_is_constrained
+            and family_complete
+            and title_score >= 0.93
+            and candidate_lead >= 8.0
+            and candidate_id == neural_top_id == visual_top_id
+            and visual_score >= 75
+            and not footer_contradiction
+        )
+        if not common:
+            return False
+        strong_neural = neural_score >= 0.84 and neural_margin >= 0.10
+        artwork_consensus = bool(
+            candidate_id == art_top_id
+            and art_score >= 90
+            and neural_score >= 0.80
+            and neural_margin >= 0.015
+            and visual_margin >= 0.20
+        )
+        symbol_consensus = bool(
+            symbol_top_set
+            and candidate_set.casefold() == symbol_top_set.casefold()
+            and symbol_score >= 95
+            and symbol_margin >= 4
+            and neural_score >= 0.80
+            and neural_margin >= 0.06
+            and visual_margin >= 0.5
+        )
+        return strong_neural or artwork_consensus or symbol_consensus
 
     @staticmethod
     def has_decisive_symbol_match(

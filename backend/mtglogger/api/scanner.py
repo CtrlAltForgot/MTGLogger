@@ -68,13 +68,9 @@ async def recognize_card(
     # regardless of that weak contour signal. Artwork-only cards are retained
     # when the visual Art Series matcher supplies a candidate.
     meaningful_ocr = re.findall(r"[A-Za-z0-9]{2,}", result.ocr_text)
-    corrected_height, corrected_width = result.corrected.shape[:2]
-    corrected_aspect = corrected_width / max(1, corrected_height)
-    portrait_card_capture = 0.48 <= corrected_aspect <= 0.92
     if (
         not result.candidates
         and sum(map(len, meaningful_ocr)) < 4
-        and (not result.card_structure or not portrait_card_capture)
     ):
         return ScanResult(
             disposition="empty",
