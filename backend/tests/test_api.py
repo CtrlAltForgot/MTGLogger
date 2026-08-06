@@ -928,6 +928,27 @@ def test_printed_artist_credit_is_exact_art_evidence():
     assert CardRecognizer.artist_text_score(footer, "Adam Paquette") == 0.0
 
 
+def test_exact_number_and_unique_artist_survive_damaged_set_code_safely():
+    from mtglogger.services.recognition import CardRecognizer
+
+    evidence = {
+        "is_basic_land": False,
+        "artist_score": 0.9,
+        "strong_artist_count": 1,
+    }
+
+    assert CardRecognizer.has_exact_footer_artist_proof(**evidence, number_score=1.0)
+    # A contradictory collector number, ambiguous artist, or basic land must
+    # still go to review even if the damaged set glyph happens to look close.
+    assert not CardRecognizer.has_exact_footer_artist_proof(**evidence, number_score=0.8)
+    assert not CardRecognizer.has_exact_footer_artist_proof(
+        **(evidence | {"strong_artist_count": 2}), number_score=1.0
+    )
+    assert not CardRecognizer.has_exact_footer_artist_proof(
+        **(evidence | {"is_basic_land": True}), number_score=1.0
+    )
+
+
 def test_exact_footer_match_skips_printing_family_only_for_complete_evidence():
     from mtglogger.services.recognition import CardRecognizer
 

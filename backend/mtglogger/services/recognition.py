@@ -730,6 +730,22 @@ class CardRecognizer:
             return 0.9
         return 0.0
 
+    @staticmethod
+    def has_exact_footer_artist_proof(
+        *,
+        is_basic_land: bool,
+        number_score: float,
+        artist_score: float,
+        strong_artist_count: int,
+    ) -> bool:
+        """Require two independent footer signals before trusting damaged set OCR."""
+        return bool(
+            not is_basic_land
+            and number_score == 1.0
+            and artist_score >= 0.9
+            and strong_artist_count == 1
+        )
+
     @classmethod
     def fuzzy_contains(cls, text: str, phrase: str, threshold: float = 0.78) -> bool:
         source, target = cls.normalized_name(text), cls.normalized_name(phrase)
@@ -1951,19 +1967,20 @@ class CardRecognizer:
                 confidence = max(confidence, 97.8 if len(strong_artist_ids) == 1 else 96.0)
             elif strong_artist_ids and card.get("artist"):
                 confidence = min(confidence, 86.0)
-            exact_footer_artist_proof = bool(
-                not self.is_basic_land(card)
-                and number_score == 1.0
-                and set_score == 1.0
-                and artist_score >= 0.9
-                and len(strong_artist_ids) == 1
+            exact_footer_artist_proof = self.has_exact_footer_artist_proof(
+                is_basic_land=self.is_basic_land(card),
+                number_score=number_score,
+                artist_score=artist_score,
+                strong_artist_count=len(strong_artist_ids),
             )
             if exact_footer_artist_proof:
-                # A globally exact set/collector pair plus the independently
-                # printed artist credit proves a non-land printing even when a
-                # crop or glare destroys its title. This covers hard scans such
-                # as Goblin Heelcutter and Artful Maneuver without weakening the
-                # reused-art and basic-land safeguards.
+                # Candidate families have already been constrained by the card
+                # identity. Within that family, an exact collector number plus
+                # one uniquely matching printed artist proves a non-basic
+                # printing even when glare damages the tiny set-code glyph.
+                # A wrong collector number (for example the known Singing Bell
+                # Strike #55 scan OCR'd as #65) cannot pass this gate, and basic
+                # lands retain their stricter artwork-specific safeguards.
                 confidence = max(confidence, 98.5)
                 safe_candidate_ids.add(card["id"])
             neural_score = neural_scores.get(card["id"], 0.0)
