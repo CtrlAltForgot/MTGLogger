@@ -40,6 +40,9 @@ class _VisualCatalog:
         str, tuple[tuple[CardReference, CardVisualFingerprint | None], ...]
     ]
     examples: dict[str, tuple[str, ...]]
+    global_hashes: np.ndarray
+    global_row_indices: np.ndarray
+    global_hash_is_example: np.ndarray
 
 
 _visual_catalog: _VisualCatalog | None = None
@@ -1489,6 +1492,51 @@ class CardRecognizer:
                 visual_matches = []
             initial_match_complete = time.perf_counter()
             descriptor_image = analysis_image
+            neural_vector = None
+            neural_matches = []
+            # The embedding is computed alongside OCR. Consult it before the
+            # expensive full-frame OCR recovery so a decisive artwork identity
+            # can fuse with an already-readable footer. This turns the common
+            # "damaged title, clean set/number" case into a local exact lookup
+            # instead of paying for broad OCR and catalog searches.
+            if (
+                neural_live
+                and not self.has_strong_lookup_evidence(
+                    title, number, printed_set_code, copyright_year, cards
+                )
+            ):
+                neural_vector = await neural_task if neural_task is not None else None
+                neural_matches = await asyncio.to_thread(
+                    neural.search_vector,
+                    neural_vector,
+                    10,
+                    ignored_source_ids=ignored_example_review_ids,
+                )
+                neural_identity_margin = (
+                    neural_matches[0].similarity - neural_matches[1].similarity
+                    if len(neural_matches) > 1
+                    else (neural_matches[0].similarity if neural_matches else 0.0)
+                )
+                if (
+                    neural_matches
+                    and neural_matches[0].similarity >= 0.80
+                    and neural_identity_margin >= 0.03
+                ):
+                    recovered_name = neural_matches[0].reference.name
+                    recovered_cards = await self._lookup_cards(
+                        recovered_name,
+                        number,
+                        printed_set_code,
+                        box_set_code,
+                        language,
+                        promo_type,
+                    )
+                    if recovered_cards:
+                        title = recovered_name
+                        cards = recovered_cards
+                        # Artwork may recover identity, but only the independent
+                        # footer can make the resulting exact printing auto-safe.
+                        oracle_recovery = True
             if not self.has_strong_lookup_evidence(
                 title, number, printed_set_code, copyright_year, cards
             ):
@@ -1592,16 +1640,15 @@ class CardRecognizer:
             identity_is_constrained = self.has_constrained_visual_identity(
                 title, cards, identity_names
             )
-            neural_vector = None
-            neural_matches = []
             if neural_live and not identity_is_constrained:
-                neural_vector = await neural_task if neural_task is not None else None
-                neural_matches = await asyncio.to_thread(
-                    neural.search_vector,
-                    neural_vector,
-                    10,
-                    ignored_source_ids=ignored_example_review_ids,
-                )
+                if not neural_matches:
+                    neural_vector = await neural_task if neural_task is not None else None
+                    neural_matches = await asyncio.to_thread(
+                        neural.search_vector,
+                        neural_vector,
+                        10,
+                        ignored_source_ids=ignored_example_review_ids,
+                    )
                 neural_identity_margin = (
                     neural_matches[0].similarity - neural_matches[1].similarity
                     if len(neural_matches) > 1
@@ -2356,16 +2403,47 @@ class CardRecognizer:
         scan_art = int(scan_fingerprints["art_hash"], 16)
         matches = []
         rows = catalog.rows_by_set.get(set_code, ()) if set_code else catalog.rows
-        for reference, fingerprint in rows:
-            candidate_hashes = (reference.art_hash,) + tuple(
-                example_hash
-                for example_hash in catalog.examples.get(reference.scryfall_id, ())
-                if example_hash not in ignored_example_hashes
-            )
-            art_distance = min(
-                (scan_art ^ int(candidate_hash, 16)).bit_count()
-                for candidate_hash in candidate_hashes
-            )
+        prefiltered_distances: dict[int, int] | None = None
+        if not set_code and len(catalog.global_hashes):
+            active = np.ones(len(catalog.global_hashes), dtype=bool)
+            if ignored_example_hashes:
+                ignored = np.fromiter(
+                    (int(value, 16) for value in ignored_example_hashes),
+                    dtype=np.uint64,
+                )
+                active &= ~(
+                    catalog.global_hash_is_example
+                    & np.isin(catalog.global_hashes, ignored)
+                )
+            hashes = catalog.global_hashes[active]
+            row_indices = catalog.global_row_indices[active]
+            differences = np.bitwise_xor(hashes, np.uint64(scan_art))
+            distances = np.unpackbits(
+                differences.view(np.uint8).reshape(-1, 8), axis=1
+            ).sum(axis=1)
+            close = np.flatnonzero(distances <= 22)
+            prefiltered_distances = {}
+            for index in close:
+                row_index = int(row_indices[index])
+                distance = int(distances[index])
+                prefiltered_distances[row_index] = min(
+                    distance, prefiltered_distances.get(row_index, 65)
+                )
+        for row_index, (reference, fingerprint) in enumerate(rows):
+            if prefiltered_distances is not None:
+                art_distance = prefiltered_distances.get(row_index)
+                if art_distance is None:
+                    continue
+            else:
+                candidate_hashes = (reference.art_hash,) + tuple(
+                    example_hash
+                    for example_hash in catalog.examples.get(reference.scryfall_id, ())
+                    if example_hash not in ignored_example_hashes
+                )
+                art_distance = min(
+                    (scan_art ^ int(candidate_hash, 16)).bit_count()
+                    for candidate_hash in candidate_hashes
+                )
             # Artwork retrieves the card family. Complementary canonical
             # regions then rank reprints that reuse the same illustration.
             if art_distance <= 22:
@@ -3004,6 +3082,25 @@ class CardRecognizer:
                     select(CardVisualExample.scryfall_id, CardVisualExample.art_hash)
                 ):
                     examples.setdefault(scryfall_id, []).append(example_hash)
+            row_index_by_id = {
+                reference.scryfall_id: index
+                for index, (reference, _fingerprint) in enumerate(rows)
+            }
+            global_hashes: list[int] = []
+            global_row_indices: list[int] = []
+            global_hash_is_example: list[bool] = []
+            for index, (reference, _fingerprint) in enumerate(rows):
+                global_hashes.append(int(reference.art_hash, 16))
+                global_row_indices.append(index)
+                global_hash_is_example.append(False)
+            for scryfall_id, hashes in examples.items():
+                row_index = row_index_by_id.get(scryfall_id)
+                if row_index is None:
+                    continue
+                for example_hash in hashes:
+                    global_hashes.append(int(example_hash, 16))
+                    global_row_indices.append(row_index)
+                    global_hash_is_example.append(True)
             _visual_catalog = _VisualCatalog(
                 loaded_at=now,
                 rows=rows,
@@ -3011,6 +3108,11 @@ class CardRecognizer:
                     key: tuple(value) for key, value in rows_by_set_lists.items()
                 },
                 examples={key: tuple(value) for key, value in examples.items()},
+                global_hashes=np.asarray(global_hashes, dtype=np.uint64),
+                global_row_indices=np.asarray(global_row_indices, dtype=np.int32),
+                global_hash_is_example=np.asarray(
+                    global_hash_is_example, dtype=bool
+                ),
             )
             return _visual_catalog
 
