@@ -48,6 +48,11 @@ _visual_catalog_lock = Lock()
 # immutable catalog any fresher, especially during a long Card Slinger batch.
 _VISUAL_CATALOG_TTL_SECONDS = 60 * 60
 
+_local_catalog_ready_cache: tuple[float, bool] | None = None
+_local_catalog_ready_lock = Lock()
+_LOCAL_CATALOG_READY_TTL_SECONDS = 60
+_LOCAL_CATALOG_READY_MINIMUM = 90_000
+
 
 @lru_cache(maxsize=512)
 def _load_descriptor_bundle(
@@ -89,6 +94,33 @@ class Recognition:
 
 class CardRecognizer:
     """Hybrid recognizer. PaddleOCR is optional so the API remains lightweight."""
+
+    @staticmethod
+    def _local_catalog_is_ready() -> bool:
+        """Return whether local recognition can replace remote broad search.
+
+        Once the server has the normal full catalog, a failed fuzzy-title query
+        should fall through to local artwork/descriptor retrieval instead of
+        waiting several seconds for the same broad Scryfall searches. Keep a
+        short TTL so a first-run database can cross the threshold while syncing.
+        """
+        global _local_catalog_ready_cache
+        now = time.monotonic()
+        cached = _local_catalog_ready_cache
+        if cached and now - cached[0] < _LOCAL_CATALOG_READY_TTL_SECONDS:
+            return cached[1]
+        with _local_catalog_ready_lock:
+            cached = _local_catalog_ready_cache
+            if cached and now - cached[0] < _LOCAL_CATALOG_READY_TTL_SECONDS:
+                return cached[1]
+            try:
+                with SessionLocal() as db:
+                    total = int(db.scalar(select(func.count(CardReference.id))) or 0)
+            except SQLAlchemyError:
+                total = 0
+            ready = total >= _LOCAL_CATALOG_READY_MINIMUM
+            _local_catalog_ready_cache = (now, ready)
+            return ready
 
     def __init__(self) -> None:
         self.provider = ScryfallProvider()
@@ -1136,6 +1168,18 @@ class CardRecognizer:
             if local_cards:
                 return local_cards
 
+        # A complete local catalog contains the same canonical identities used
+        # by remote search. If OCR could not find one, the scan benefits more
+        # from the already-scheduled local visual/neural recovery than from a
+        # sequence of network fuzzy searches. Promo and localized lookups retain
+        # their remote path because those variants may not exist locally yet.
+        if (
+            not promo_type
+            and language.casefold() == "en"
+            and await asyncio.to_thread(self._local_catalog_is_ready)
+        ):
+            return []
+
         async def search_variants(candidate_title: str, *, relaxed: bool = False) -> list[dict]:
             title_query = f'!"{candidate_title}"'
             if promo_type:
@@ -1994,6 +2038,12 @@ class CardRecognizer:
                 else:
                     confidence = min(confidence, 98.4)
             elif exact_printed_identity:
+                # The footer pair identifies one physical printing globally.
+                # This branch was already declared safe, but a partial title
+                # could leave its displayed score at 97.8 and the API therefore
+                # sent it to Review anyway. Keep basic lands on their stricter
+                # artwork path above; for other cards make score and safety agree.
+                confidence = max(confidence, 98.5)
                 safe_candidate_ids.add(card["id"])
             # Reused artwork can make a promo descriptor look nearly perfect.
             # The physical footer remains authoritative for exact-printing
