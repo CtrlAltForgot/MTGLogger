@@ -3,6 +3,7 @@ import json
 import logging
 import re
 import time
+from collections import Counter
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from functools import lru_cache
@@ -431,7 +432,9 @@ class CardRecognizer:
                 ):
                     continue
                 compact = re.sub(r"[^A-Za-z0-9]", "", raw_line)
-                normalized = compact.translate(str.maketrans({"O": "0", "o": "0", "l": "1", "I": "1", "g": "9"}))
+                normalized = compact.translate(
+                    str.maketrans({"O": "0", "o": "0", "l": "1", "I": "1", "g": "9"})
+                )
                 fuzzy_years = [
                     int(value)
                     for value in re.findall(r"(?<!\d)0?((?:19|20)\d{2})(?!\d)", normalized)
@@ -1425,9 +1428,10 @@ class CardRecognizer:
                 self.normalize_low_light, corrected
             )
             neural = getattr(self, "_neural", None)
+            neural_live = bool(neural is not None and not get_settings().neural_shadow_mode)
             neural_task = (
                 asyncio.create_task(asyncio.to_thread(neural.embed, analysis_image))
-                if neural is not None
+                if neural_live
                 else None
             )
             prepared = time.perf_counter()
@@ -1464,12 +1468,13 @@ class CardRecognizer:
                 visual_matches = []
             else:
                 scan_fingerprints = await asyncio.to_thread(visual_fingerprints, analysis_image)
-                visual_matches = await asyncio.to_thread(
-                    self._visual_matches,
-                    scan_fingerprints,
-                    printed_set_code or box_set_code,
-                    *([ignored_visual_hashes] if ignored_visual_hashes is not None else []),
-                )
+                # Do not search all ~100k fingerprints before OCR recovery has
+                # had a chance to establish the card name. Identity-scoped
+                # matching below compares the complete printing family without
+                # the global hash prefilter, so doing both only duplicated work.
+                # Truly unidentified scans still receive the exhaustive global
+                # rescue after recovery.
+                visual_matches = []
             initial_match_complete = time.perf_counter()
             descriptor_image = analysis_image
             if not self.has_strong_lookup_evidence(
@@ -1575,6 +1580,13 @@ class CardRecognizer:
             identity_is_constrained = self.has_constrained_visual_identity(
                 title, cards, identity_names
             )
+            if scan_fingerprints and not identity_is_constrained:
+                visual_matches = await asyncio.to_thread(
+                    self._visual_matches,
+                    scan_fingerprints,
+                    printed_set_code or box_set_code,
+                    *([ignored_visual_hashes] if ignored_visual_hashes is not None else []),
+                )
             exact_footer_match = self.has_exact_footer_match(title, number, printed_set_code, cards)
             exact_footer_can_skip_art = exact_footer_match and not any(
                 self.is_basic_land(card) for card in cards
@@ -1603,24 +1615,55 @@ class CardRecognizer:
                     # The normal conservative path remains valid while offline.
                     family_complete = False
             family_complete_at = time.perf_counter()
+            neural_vector = await neural_task if neural_task is not None else None
+            neural_matches = (
+                await asyncio.to_thread(
+                    neural.search_vector,
+                    neural_vector,
+                    10,
+                    allowed_names=identity_names if identity_is_constrained else None,
+                    ignored_source_ids=ignored_example_review_ids,
+                )
+                if neural_live
+                else []
+            )
             if identity_is_constrained and not exact_footer_can_skip_art:
-                descriptor_evidence, identity_visual_matches = await asyncio.gather(
-                    asyncio.to_thread(
-                        self._descriptor_matches_with_art,
-                        descriptor_image,
-                        identity_names,
-                        # A tiny footer can turn M15 into MIS. Never let uncertain
-                        # OCR remove the correct artwork candidate; only explicit
-                        # Box Mode is authoritative enough to constrain retrieval.
-                        box_set_code,
-                        ignored_example_review_ids,
-                    ),
-                    asyncio.to_thread(
-                        self._identity_visual_matches,
-                        scan_fingerprints,
-                        identity_names,
-                        box_set_code,
-                    ),
+                identity_visual_matches = await asyncio.to_thread(
+                    self._identity_visual_matches,
+                    scan_fingerprints,
+                    identity_names,
+                    box_set_code,
+                )
+                descriptor_shortlist = {
+                    match.reference.scryfall_id for match in neural_matches
+                } | {
+                    reference.scryfall_id for reference, _score in identity_visual_matches
+                }
+                descriptor_shortlist.update(
+                    card["id"]
+                    for card in cards
+                    if (
+                        self.collector_score(number, card["collector_number"]) >= 0.78
+                        and (
+                            not printed_set_code
+                            or self.set_code_score(printed_set_code, card["set"]) >= 0.8
+                        )
+                    )
+                    or (
+                        printed_set_code
+                        and self.set_code_score(printed_set_code, card["set"]) == 1.0
+                    )
+                )
+                descriptor_evidence = await asyncio.to_thread(
+                    self._descriptor_matches_with_art,
+                    descriptor_image,
+                    identity_names,
+                    # Only explicit Box Mode may constrain the set. A plausible
+                    # but wrong land footer must still be contradicted by art
+                    # from another set before any automatic add is considered.
+                    box_set_code,
+                    ignored_example_review_ids,
+                    descriptor_shortlist if family_complete else None,
                 )
                 (
                     descriptor_matches,
@@ -1660,18 +1703,6 @@ class CardRecognizer:
                 local_card["lang"] = language
                 cards.append(local_card)
                 known_card_ids.add(reference.scryfall_id)
-            neural_vector = await neural_task if neural_task is not None else None
-            neural_matches = (
-                await asyncio.to_thread(
-                    neural.search_vector,
-                    neural_vector,
-                    10,
-                    allowed_names=identity_names if identity_is_constrained else None,
-                    ignored_source_ids=ignored_example_review_ids,
-                )
-                if neural is not None
-                else []
-            )
             neural_complete = time.perf_counter()
             if neural_matches:
                 neural_match_margin = (
@@ -1770,7 +1801,19 @@ class CardRecognizer:
         ranked: dict[str, Candidate] = {}
         safe_candidate_ids: set[str] = set()
         release_years = [int(card.get("released_at", "0000")[:4]) for card in cards]
+        release_year_counts = Counter(release_years)
         number_scores = [self.collector_score(number, card["collector_number"]) for card in cards]
+        # Ranking used to rebuild the complete competing-score list for every
+        # candidate. Large printing families (especially basic lands) made that
+        # O(n²) and could spend several seconds repeating the same comparisons.
+        # The uniqueness rule only needs the best *other* score, so derive it
+        # once while preserving the exact same margin decision below.
+        ranked_number_scores = sorted(number_scores, reverse=True)
+        best_number_score = ranked_number_scores[0] if ranked_number_scores else None
+        best_number_score_count = (
+            number_scores.count(best_number_score) if best_number_score is not None else 0
+        )
+        second_number_score = ranked_number_scores[1] if len(ranked_number_scores) > 1 else None
         exact_set_counts: dict[str, int] = {}
         set_art_evidence: dict[str, tuple[str | None, float, float]] = {}
         for card in cards:
@@ -1790,8 +1833,15 @@ class CardRecognizer:
             )
             set_art_evidence[code] = (set_art_top_id, set_art_score, set_art_margin)
             exact_set_counts[code] = exact_set_counts.get(code, 0) + 1
+        # Reprints frequently share the same artist. Fuzzy footer matching is
+        # substantially more expensive than a dictionary lookup, so score each
+        # distinct printed credit once instead of once per printing.
+        artist_score_by_name = {
+            artist: self.artist_text_score(text, artist)
+            for artist in {card.get("artist") for card in cards}
+        }
         artist_scores = {
-            card["id"]: self.artist_text_score(text, card.get("artist")) for card in cards
+            card["id"]: artist_score_by_name[card.get("artist")] for card in cards
         }
         strong_artist_ids = {card_id for card_id, score in artist_scores.items() if score >= 0.9}
         for card in cards:
@@ -1854,7 +1904,9 @@ class CardRecognizer:
             # A unique matching copyright year can distinguish reused artwork.
             only_printing = len(cards) == 1
             unique_release_year = bool(
-                copyright_year and year_score == 1.0 and release_years.count(copyright_year) == 1
+                copyright_year
+                and year_score == 1.0
+                and release_year_counts[copyright_year] == 1
             )
             copyright_art_printing_proof = False
             if title_score >= 0.93 and (only_printing or unique_release_year):
@@ -1877,11 +1929,14 @@ class CardRecognizer:
             # while retaining enough evidence to distinguish every printing of
             # an exactly-read card name. Accept it only when one candidate has a
             # strong collector-number match with a clear margin over all others.
-            competing_number_scores = [
-                score
-                for candidate, score in zip(cards, number_scores, strict=True)
-                if candidate["id"] != card["id"]
-            ]
+            if best_number_score is None:
+                competing_number_scores = []
+            elif number_score == best_number_score and best_number_score_count == 1:
+                competing_number_scores = (
+                    [second_number_score] if second_number_score is not None else []
+                )
+            else:
+                competing_number_scores = [best_number_score]
             printing_signal = self.has_unique_printing_signal(
                 title_score,
                 number,
@@ -2050,7 +2105,7 @@ class CardRecognizer:
                     descriptor_art_top_id,
                     # Safety depends on complete coverage of this card identity,
                     # not unrelated entries in the global visual catalog.
-                    candidate_descriptor_catalog_complete,
+                    descriptor_catalog_complete,
                     descriptor_art_scores.get(card["id"], 0),
                     descriptor_art_margin,
                     number,
@@ -2068,7 +2123,7 @@ class CardRecognizer:
                     set_art_score,
                     set_art_margin,
                     artist_score,
-                    candidate_descriptor_catalog_complete,
+                    descriptor_catalog_complete,
                 )
                 if safe_land_match or repeated_footer_number or unique_set_artist or neural_is_safe:
                     # Exact set plus a decisive illustration match is safer
@@ -2296,6 +2351,7 @@ class CardRecognizer:
         identity_names: set[str],
         box_set_code: str | None = None,
         ignored_example_review_ids: set[str] | None = None,
+        allowed_ids: set[str] | None = None,
     ) -> tuple[
         list[tuple[CardReference, float]],
         list[tuple[CardReference, float]],
@@ -2325,6 +2381,8 @@ class CardRecognizer:
                 )
                 if box_set_code:
                     statement = statement.where(CardReference.set_code == box_set_code.casefold())
+                if allowed_ids:
+                    statement = statement.where(CardReference.scryfall_id.in_(allowed_ids))
                 rows = list(db.execute(statement))
                 reference_ids = [reference.scryfall_id for reference, _fingerprint in rows]
                 example_rows = (

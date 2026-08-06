@@ -27,7 +27,11 @@ async def lifespan(_: FastAPI):
     if get_settings().neural_enabled and NeuralRetriever().available:
         # Pay the one-time gallery load during API startup, never on the first
         # physical card of a scanning session.
-        await asyncio.to_thread(NeuralRetriever.warm)
+        retriever = NeuralRetriever()
+        await asyncio.gather(
+            asyncio.to_thread(retriever.warm),
+            asyncio.to_thread(retriever.warm_model),
+        )
     # The global artwork fallback contains roughly 100k references. Hydrate it
     # before health checks admit scanner traffic so the first physical card in
     # a batch never pays the multi-second catalog construction cost.

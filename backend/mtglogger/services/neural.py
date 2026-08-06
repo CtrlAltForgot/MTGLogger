@@ -79,6 +79,10 @@ class NeuralEmbedder:
     def available(self) -> bool:
         return model_is_ready(self.model_root)
 
+    def warm(self) -> None:
+        """Load the predictor without charging initialization to the first scan."""
+        self._load()
+
     def _load(self):
         if self._predictor is not None:
             return self._predictor
@@ -167,6 +171,11 @@ class NeuralIndex:
         self.references = [row[1] for row in rows]
         self.source_kinds = [row[0].source_kind for row in rows]
         self.source_ids = [row[0].source_id for row in rows]
+        self.indices_by_id: dict[str, list[int]] = {}
+        self.indices_by_name: dict[str, list[int]] = {}
+        for index, reference in enumerate(self.references):
+            self.indices_by_id.setdefault(reference.scryfall_id, []).append(index)
+            self.indices_by_name.setdefault(reference.name, []).append(index)
         self.adapter = MetricAdapter.load_active()
         vectors = [
             self.adapter.apply(decode_vector(row[0].vector, row[0].dimensions)) for row in rows
@@ -186,30 +195,68 @@ class NeuralIndex:
         if not len(self.references) or self.matrix.shape[1] != vector.shape[0]:
             return []
         vector = self.adapter.apply(vector)
-        scores = self.matrix @ vector
-        eligible = np.array(
-            [
-                (not allowed_ids or reference.scryfall_id in allowed_ids)
-                and (not allowed_names or reference.name in allowed_names)
-                and (not ignored_source_ids or self.source_ids[index] not in ignored_source_ids)
-                for index, reference in enumerate(self.references)
-            ],
-            dtype=bool,
-        )
-        eligible_indices = np.flatnonzero(eligible)
+        # Apply identity constraints before the matrix multiplication. Scanner
+        # OCR commonly narrows 100k embeddings to a few dozen printings; taking
+        # a full-gallery dot product and discarding 99.9% afterward turned this
+        # supporting signal into several seconds of avoidable latency.
+        if allowed_ids:
+            eligible_indices = np.fromiter(
+                (
+                    index
+                    for scryfall_id in allowed_ids
+                    for index in self.indices_by_id.get(scryfall_id, ())
+                ),
+                dtype=np.int64,
+            )
+        elif allowed_names:
+            eligible_indices = np.fromiter(
+                (
+                    index
+                    for name in allowed_names
+                    for index in self.indices_by_name.get(name, ())
+                ),
+                dtype=np.int64,
+            )
+        else:
+            eligible_indices = np.arange(len(self.references), dtype=np.int64)
+        if allowed_ids and allowed_names and len(eligible_indices):
+            eligible_indices = np.asarray(
+                [
+                    index
+                    for index in eligible_indices
+                    if self.references[index].name in allowed_names
+                ],
+                dtype=np.int64,
+            )
+        if ignored_source_ids and len(eligible_indices):
+            eligible_indices = np.asarray(
+                [
+                    index
+                    for index in eligible_indices
+                    if self.source_ids[index] not in ignored_source_ids
+                ],
+                dtype=np.int64,
+            )
         count = min(max(limit * 4, 0), len(eligible_indices))
         if count == 0:
             return []
-        eligible_scores = scores[eligible_indices]
-        indices = eligible_indices[np.argpartition(eligible_scores, -count)[-count:]]
-        indices = indices[np.argsort(scores[indices])[::-1]]
+        eligible_scores = self.matrix[eligible_indices] @ vector
+        selected = np.argpartition(eligible_scores, -count)[-count:]
+        selected = selected[np.argsort(eligible_scores[selected])[::-1]]
         matches: list[NeuralMatch] = []
         seen: set[str] = set()
-        for index in indices:
+        for selected_index in selected:
+            index = int(eligible_indices[selected_index])
             reference = self.references[index]
             if reference.scryfall_id in seen:
                 continue
-            matches.append(NeuralMatch(reference, float(scores[index]), self.source_kinds[index]))
+            matches.append(
+                NeuralMatch(
+                    reference,
+                    float(eligible_scores[selected_index]),
+                    self.source_kinds[index],
+                )
+            )
             seen.add(reference.scryfall_id)
             if len(matches) >= limit:
                 break
@@ -265,6 +312,10 @@ class NeuralRetriever:
     def warm(cls) -> int:
         index = cls._get_index()
         return len(index.references)
+
+    def warm_model(self) -> None:
+        if self.available:
+            self.embedder.warm()
 
     @classmethod
     def refresh_in_background(cls) -> None:
