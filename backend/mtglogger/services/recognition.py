@@ -443,6 +443,13 @@ class CardRecognizer:
             # set/card-sheet total and is not a single digit.
             if match and int(match.group(2)) >= 10:
                 number = match.group(1)
+                # The tiny footer's final ``1`` is frequently read as a
+                # lowercase L or uppercase I (``251/274`` -> ``25l/274``).
+                # Normalize only that terminal glyph in an otherwise numeric
+                # explicit numerator/denominator pair. Legitimate collector
+                # suffixes such as ``123a`` remain untouched.
+                if re.fullmatch(r"\d{2,3}[lI]", number):
+                    number = f"{number[:-1]}1"
                 break
         # Low-resolution OCR commonly drops the slash ("062/249" -> "02 249").
         # On a copyright line, the last two non-year numbers are still a strong

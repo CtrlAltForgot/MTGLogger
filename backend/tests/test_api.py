@@ -2040,6 +2040,19 @@ def test_ocr_hints_does_not_invent_core_set_from_unrelated_number():
     assert set_code is None
 
 
+def test_ocr_hints_repairs_one_like_glyph_in_explicit_collector_pair():
+    from mtglogger.services.recognition import CardRecognizer
+
+    title, number, set_code, year = CardRecognizer.hints(
+        "Plains\nBasic Land - Plains\n25l/274\nRTR · EN\n2012 Wizards of the Coast"
+    )
+
+    assert title == "Plains"
+    assert number == "251"
+    assert set_code == "rtr"
+    assert year == 2012
+
+
 def test_local_exact_footer_outvotes_damaged_title(monkeypatch):
     import asyncio
 
