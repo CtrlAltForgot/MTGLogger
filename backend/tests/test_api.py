@@ -1045,6 +1045,30 @@ def test_confirmed_camera_rerank_must_agree_with_observed_footer():
     )
 
 
+def test_exceptionally_close_confirmed_camera_scan_is_printing_safe():
+    from mtglogger.services.recognition import CardRecognizer
+
+    evidence = {
+        "source_kind": "correction",
+        "similarity": 0.94,
+        "identity_is_constrained": True,
+        "family_complete": True,
+        "title_score": 0.97,
+        "footer_contradiction": False,
+    }
+
+    assert CardRecognizer.confirmed_camera_printing_is_safe(**evidence)
+    assert not CardRecognizer.confirmed_camera_printing_is_safe(
+        **(evidence | {"similarity": 0.939})
+    )
+    assert not CardRecognizer.confirmed_camera_printing_is_safe(
+        **(evidence | {"source_kind": "canonical"})
+    )
+    assert not CardRecognizer.confirmed_camera_printing_is_safe(
+        **(evidence | {"footer_contradiction": True})
+    )
+
+
 def test_printed_artist_credit_is_exact_art_evidence():
     from mtglogger.services.recognition import CardRecognizer
 
