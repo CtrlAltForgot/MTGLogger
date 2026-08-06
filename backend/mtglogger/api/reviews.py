@@ -5,7 +5,7 @@ from pathlib import Path
 import cv2
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
@@ -35,6 +35,8 @@ from ..services.references import (
 router = APIRouter(prefix="/reviews", tags=["reviews"])
 provider = ScryfallProvider()
 logger = logging.getLogger(__name__)
+LOCAL_CATALOG_READY_MINIMUM = 90_000
+LOCAL_SEARCH_LIMIT = 250
 
 
 def serialize(item: ReviewItem) -> ReviewRead:
@@ -80,11 +82,61 @@ def list_reviews(status: ReviewStatus = ReviewStatus.pending, db: Session = Depe
     ]
 
 
+def local_card_search(db: Session, query: str, language: str) -> list[Candidate]:
+    """Search downloaded printings without involving the network."""
+    normalized = query.strip().casefold()
+    rows = db.scalars(
+        select(CardReference)
+        .where(
+            func.lower(CardReference.name).contains(normalized, autoescape=True),
+            CardReference.language == language,
+        )
+        .order_by(
+            case((func.lower(CardReference.name) == normalized, 0), else_=1),
+            func.length(CardReference.name),
+            CardReference.name,
+            CardReference.released_at.desc(),
+            CardReference.set_code,
+            CardReference.collector_number,
+        )
+        .limit(LOCAL_SEARCH_LIMIT)
+    ).all()
+    return [
+        Candidate(
+            scryfall_id=card.scryfall_id,
+            name=card.name,
+            set_code=card.set_code,
+            set_name=card.set_name,
+            collector_number=card.collector_number,
+            image_url=card.image_url,
+            market_price=card.market_price,
+            finishes=json.loads(card.finishes) if card.finishes else [],
+            language=card.language,
+            confidence=0,
+            oracle_id=card.oracle_id,
+            color_identity=card.color_identity,
+            rarity=card.rarity,
+            type_line=card.type_line,
+        )
+        for card in rows
+    ]
+
+
 @router.get("/search", response_model=list[Candidate])
 async def search_cards(
     q: str = Query(min_length=2, max_length=100),
     lang: str = Query("en", pattern=r"^[a-z]{2,3}$"),
+    db: Session = Depends(get_db),
 ):
+    local = local_card_search(db, q, lang)
+    if local:
+        return local
+    local_count = int(db.scalar(select(func.count()).select_from(CardReference)) or 0)
+    if local_count >= LOCAL_CATALOG_READY_MINIMUM:
+        # A complete local catalog is authoritative. Returning no results is
+        # both faster and clearer than turning an ordinary miss into a gateway
+        # timeout when Scryfall is slow or unavailable.
+        return []
     escaped = q.strip().replace('"', "")
     cards = await provider.search(f'name:"{escaped}"', language=lang)
     return [

@@ -39,6 +39,50 @@ def test_health(client):
     assert client.get("/api/health").json()["status"] == "ok"
 
 
+def test_manual_printing_search_uses_local_reference_catalog():
+    from datetime import date
+
+    from mtglogger.api.reviews import local_card_search
+    from mtglogger.database import Base, SessionLocal, engine
+    from mtglogger.models import CardReference
+
+    Base.metadata.drop_all(engine)
+    Base.metadata.create_all(engine)
+    with SessionLocal() as db:
+        db.add_all(
+            [
+                CardReference(
+                    scryfall_id=f"00000000-0000-0000-0000-{index:012d}",
+                    name=name,
+                    set_code=set_code,
+                    set_name=set_name,
+                    collector_number=collector_number,
+                    language="en",
+                    released_at=released_at,
+                    image_url=f"https://example.test/{set_code}.jpg",
+                    art_hash=f"{index:016x}",
+                    finishes='["nonfoil", "foil"]',
+                    color_identity="G",
+                )
+                for index, name, set_code, set_name, collector_number, released_at in (
+                    (1, "Elvish Mystic", "m14", "Magic 2014", "169", date(2013, 7, 19)),
+                    (2, "Elvish Mystic", "cmm", "Commander Masters", "284", date(2023, 8, 4)),
+                    (3, "Elvish Mystic Token", "tst", "Test", "1", date(2024, 1, 1)),
+                )
+            ]
+        )
+        db.commit()
+
+        results = local_card_search(db, "Elvish Mystic", "en")
+
+    assert [(card.name, card.set_code) for card in results] == [
+        ("Elvish Mystic", "cmm"),
+        ("Elvish Mystic", "m14"),
+        ("Elvish Mystic Token", "tst"),
+    ]
+    assert results[0].finishes == ["nonfoil", "foil"]
+
+
 def test_upload_check_consumes_camera_payload_without_persisting(client):
     payload = b"x" * (2 * 1024 * 1024)
     response = client.post(
