@@ -445,6 +445,47 @@ def test_deck_format_suggestions_require_legality_and_structure(monkeypatch):
     assert result.suggestions[-1].format == "Casual / Kitchen Table"
 
 
+def test_deck_format_suggestions_use_persisted_local_legalities(monkeypatch):
+    import asyncio
+    import json
+
+    from mtglogger.api import decks
+    from mtglogger.database import Base, SessionLocal, engine
+    from mtglogger.models import CardReference, Deck, DeckEntry, InventoryItem
+
+    Base.metadata.drop_all(engine)
+    Base.metadata.create_all(engine)
+    with SessionLocal() as db:
+        land = InventoryItem(**{**CARD, "type_line": "Basic Land — Swamp"}, quantity=60)
+        deck = Deck(name="Local deck")
+        reference = CardReference(
+            scryfall_id=land.scryfall_id,
+            name=land.card_name,
+            set_code=land.set_code,
+            set_name=land.set_name,
+            collector_number=land.collector_number,
+            language="en",
+            type_line="Basic Land — Swamp",
+            color_identity="B",
+            legalities=json.dumps({"standard": "legal", "pioneer": "legal"}),
+            image_url="https://example.test/card.jpg",
+            art_hash="0000000000000000",
+        )
+        db.add_all([land, deck, reference])
+        db.flush()
+        db.add(DeckEntry(deck_id=deck.id, inventory_id=land.id, quantity=60))
+        db.commit()
+
+        async def unexpected_remote_request(_provider, _ids):
+            raise AssertionError("locally cached legalities should avoid Scryfall")
+
+        monkeypatch.setattr(decks.ScryfallProvider, "get_cards", unexpected_remote_request)
+        result = asyncio.run(decks.format_suggestions(deck.id, db))
+
+    assert result.complete_deck is True
+    assert result.suggestions[0].format == "Standard"
+
+
 def test_recognition_reference_status(client):
     response = client.get("/api/references/status")
     assert response.status_code == 200

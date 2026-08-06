@@ -59,7 +59,7 @@ _LOCAL_CATALOG_READY_TTL_SECONDS = 60
 _LOCAL_CATALOG_READY_MINIMUM = 90_000
 
 
-@lru_cache(maxsize=512)
+@lru_cache(maxsize=4096)
 def _load_descriptor_bundle(
     descriptor_path: str, modified_ns: int, size: int
 ) -> dict[str, np.ndarray] | None:

@@ -1,3 +1,4 @@
+import json
 from decimal import Decimal
 
 import cv2
@@ -9,7 +10,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from ..config import get_settings
 from ..database import get_db
-from ..models import Deck, DeckEntry, InventoryItem, InventoryStatus
+from ..models import CardReference, Deck, DeckEntry, InventoryItem, InventoryStatus
 from ..providers import ScryfallProvider
 from ..schemas import (
     AvailableCard,
@@ -145,7 +146,34 @@ async def format_suggestions(deck_id: str, db: Session = Depends(get_db)):
     if not deck.entries:
         return DeckFormatSuggestions(complete_deck=False, card_count=0, suggestions=[])
     requested_ids = list(dict.fromkeys(entry.inventory.scryfall_id for entry in deck.entries))
-    cards = await ScryfallProvider().get_cards(requested_ids)
+    references = list(
+        db.scalars(select(CardReference).where(CardReference.scryfall_id.in_(requested_ids)))
+    )
+    local_cards = {
+        reference.scryfall_id: {
+            "id": reference.scryfall_id,
+            "name": reference.name,
+            "type_line": reference.type_line,
+            "color_identity": list(reference.color_identity or ""),
+            "legalities": json.loads(reference.legalities or "{}"),
+        }
+        for reference in references
+        if reference.legalities
+    }
+    missing_ids = [card_id for card_id in requested_ids if card_id not in local_cards]
+    remote_cards = await ScryfallProvider().get_cards(missing_ids) if missing_ids else []
+    remote_by_id = {card["id"]: card for card in remote_cards}
+    # Persist the small provider response so this deck and every deck sharing
+    # these printings analyze locally from now on. The exhaustive reference
+    # refresh fills the same column for the rest of the catalog over time.
+    for reference in references:
+        remote = remote_by_id.get(reference.scryfall_id)
+        if remote:
+            reference.legalities = json.dumps(remote.get("legalities") or {})
+    if remote_cards:
+        db.commit()
+    cards = [local_cards.get(card_id) or remote_by_id.get(card_id) for card_id in requested_ids]
+    cards = [card for card in cards if card]
     if len(cards) != len(requested_ids):
         raise HTTPException(503, "Could not verify every exact card in this deck")
     by_id = {card["id"]: card for card in cards}

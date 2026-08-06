@@ -559,6 +559,7 @@ def _reference_metadata(provider, card: dict, image_url: str | None = None) -> d
         "color_identity": "".join(card.get("color_identity") or []),
         "rarity": card.get("rarity"),
         "type_line": card.get("type_line"),
+        "legalities": json.dumps(card.get("legalities") or {}),
         "released_at": _released_at(card),
         "image_url": image_url or provider.image_url(card),
         "market_price": provider.market_price(card),

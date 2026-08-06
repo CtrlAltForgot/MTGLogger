@@ -53,6 +53,7 @@ def migrate_schema() -> None:
             "color_identity": "VARCHAR(16) DEFAULT ''",
             "rarity": "VARCHAR(32)",
             "type_line": "VARCHAR(255)",
+            "legalities": "TEXT",
         }
         for column_name, column_type in additive_reference_columns.items():
             if column_name not in reference_columns:

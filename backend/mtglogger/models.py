@@ -167,6 +167,7 @@ class CardReference(Base):
     color_identity: Mapped[str] = mapped_column(String(16), default="")
     rarity: Mapped[str | None] = mapped_column(String(32), nullable=True)
     type_line: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    legalities: Mapped[str | None] = mapped_column(Text, nullable=True)
     released_at: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
     image_url: Mapped[str] = mapped_column(Text)
     art_hash: Mapped[str] = mapped_column(String(16), index=True)
