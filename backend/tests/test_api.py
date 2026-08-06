@@ -2127,6 +2127,19 @@ def test_ocr_hints_recover_legacy_collector_pair_from_copyright_line():
     )
 
 
+def test_ocr_hints_recovers_collector_number_when_slash_is_dropped():
+    from mtglogger.services.recognition import CardRecognizer
+
+    title, number, set_code, year = CardRecognizer.hints(
+        "Forest\nVolkan Baga\nM&1993-2012 Wizards of the Coast LLC246249"
+    )
+
+    assert title == "Forest"
+    assert number == "246"
+    assert set_code is None
+    assert year == 2012
+
+
 def test_ocr_hints_recovers_embedded_core_set_symbol():
     from mtglogger.services.recognition import CardRecognizer
 

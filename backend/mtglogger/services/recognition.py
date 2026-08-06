@@ -536,6 +536,17 @@ class CardRecognizer:
         # On a copyright line, the last two non-year numbers are still a strong
         # collector/total pair; retain the leading zero as useful OCR evidence.
         if not number:
+            # Paddle can also remove every separator (``246/249`` ->
+            # ``246249``). Recover a plausible numerator plus three-digit set
+            # total only from the footer. Copyright ranges are eight digits and
+            # deliberately do not fit this pattern.
+            footer = "\n".join(lines[-6:])
+            for joined in reversed(re.findall(r"(?<!\d)(\d{5,7})(?!\d)", footer)):
+                numerator, denominator = joined[:-3], joined[-3:]
+                if 1 <= int(numerator) <= int(denominator) and int(denominator) >= 100:
+                    number = numerator
+                    break
+        if not number:
             # Modern footers print a zero-padded collector number immediately
             # beside a one-letter rarity. OCR commonly joins them ("005 R" ->
             # "005R"). The rarity is not a collector suffix.
