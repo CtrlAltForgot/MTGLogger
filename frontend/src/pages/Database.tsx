@@ -27,7 +27,13 @@ export default function Database(){
   const [search,setSearch]=useState('')
   const [page,setPage]=useState(1)
   const [error,setError]=useState('')
-  const databaseComplete=status?.state==='complete'
+  const indexedProfiles=status?.fingerprinted_cards||0
+  const variantProfiles=status?.variant_profiles||0
+  const updateTotal=status?.total||0
+  const updateCompleted=Math.min(updateTotal,status?.completed||0)
+  const updateRemaining=Math.max(0,updateTotal-updateCompleted)
+  const visualCatalogReady=Boolean(status?.catalog_total&&indexedProfiles>=status.catalog_total&&updateRemaining===0)
+  const databaseComplete=status?.state==='complete'||visualCatalogReady
   const databaseSyncing=status?.state==='running'&&!databaseComplete
   const activeCode=databaseComplete?undefined:status?.set_code?.replace('priority:','').toLowerCase()
   const selectedSet=sets.find(item=>item.set_code===selected)
@@ -53,11 +59,9 @@ export default function Database(){
   useEffect(()=>{void refreshOverview();const timer=setInterval(refreshOverview,2500);return()=>clearInterval(timer)},[refreshOverview])
   useEffect(()=>{setCards(undefined);void refreshCards();const timer=setInterval(refreshCards,5000);return()=>clearInterval(timer)},[refreshCards])
   const pages=Math.max(1,Math.ceil((cards?.total||0)/40))
-  const indexedProfiles=status?.fingerprinted_cards||0
-  const updateTotal=status?.total||0
-  const updateCompleted=Math.min(updateTotal,status?.completed||0)
-  const updateRemaining=Math.max(0,updateTotal-updateCompleted)
   const displayedProfileTotal=databaseComplete?indexedProfiles:indexedProfiles+updateRemaining
+  const readyVisualProfiles=indexedProfiles+variantProfiles
+  const availableVisualProfiles=displayedProfileTotal+variantProfiles
   const databaseProgress=databaseComplete?100:updateTotal?updateCompleted/updateTotal*100:0
 
   return <>
@@ -67,7 +71,7 @@ export default function Database(){
     </Stack>
     {(error||status?.state==='failed')&&<Alert severity="error" sx={{mb:2}}>{error||status?.error||'Catalog update was interrupted and will retry automatically.'}</Alert>}
     <Card><CardContent>
-      <Grid container spacing={3}><Grid size={{xs:6,md:3}}><Typography variant="h4">{indexedProfiles.toLocaleString()}</Typography><Typography color="text.secondary">ready printings</Typography></Grid><Grid size={{xs:6,md:3}}><Typography variant="h4">{displayedProfileTotal.toLocaleString()}</Typography><Typography color="text.secondary">available visual printings</Typography></Grid><Grid size={{xs:6,md:3}}><Typography variant="h4">{status?.indexed_sets||0}</Typography><Typography color="text.secondary">sets represented</Typography></Grid><Grid size={{xs:6,md:3}}><Typography variant="h4">{status?.errors||0}</Typography><Typography color="text.secondary">sync errors</Typography></Grid></Grid>
+      <Grid container spacing={3}><Grid size={{xs:12,md:6}}><Typography variant="h4">{readyVisualProfiles.toLocaleString()}<Typography component="span" color="text.secondary" fontSize="1rem"> / {availableVisualProfiles.toLocaleString()}</Typography></Typography><Typography color="text.secondary">visual printings ready</Typography></Grid><Grid size={{xs:6,md:3}}><Typography variant="h4">{status?.indexed_sets||0}</Typography><Typography color="text.secondary">sets represented</Typography></Grid><Grid size={{xs:6,md:3}}><Typography variant="h4">{status?.errors||0}</Typography><Typography color="text.secondary">sync errors</Typography></Grid></Grid>
       <LinearProgress variant={status?'determinate':'indeterminate'} value={databaseProgress} sx={{height:11,borderRadius:99,mt:2.5}}/>
       <Stack direction={{xs:'column',sm:'row'}} justifyContent="space-between" mt={1} spacing={.5}><Box><Typography fontWeight={800}>{databaseComplete?'100.00% of available visual printings indexed':updateTotal?`${updateCompleted.toLocaleString()} / ${updateTotal.toLocaleString()} profiles processed in this update`:'Discovering update size'}</Typography>{databaseSyncing&&<Typography variant="caption" color="text.secondary">{updateRemaining.toLocaleString()} profiles remaining in this update{activeCode?` · currently processing ${activeCode.toUpperCase()}`:''}</Typography>}</Box>{databaseSyncing&&status?.estimated_seconds_remaining!=null?<Typography color="primary.main" fontWeight={800}>ETA · about {duration(status.estimated_seconds_remaining)} · {status.estimated_completion_at&&new Date(status.estimated_completion_at).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})} <Typography component="span" color="text.secondary">({status.indexing_rate_per_second?.toFixed(1)}/sec)</Typography></Typography>:<Typography color="text.secondary">{status?.updated_at?`Updated ${new Date(status.updated_at).toLocaleString()}`:''}</Typography>}</Stack>
     </CardContent></Card>
