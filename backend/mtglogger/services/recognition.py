@@ -2055,11 +2055,21 @@ class CardRecognizer:
             with SessionLocal() as db:
                 rows = list(
                     db.scalars(
-                        select(CardReference).where(
-                            func.lower(CardReference.name) == title.casefold()
-                        )
+                        select(CardReference).where(CardReference.name == title)
                     )
                 )
+                # OCR normally arrives through a canonical catalog name, so
+                # use the existing indexed equality path first. Retain the
+                # case-insensitive behavior for manually supplied/localized
+                # text without making every normal scan walk the full catalog.
+                if not rows:
+                    rows = list(
+                        db.scalars(
+                            select(CardReference).where(
+                                func.lower(CardReference.name) == title.casefold()
+                            )
+                        )
+                    )
                 if not rows:
                     names = list(db.scalars(select(CardReference.name).distinct()))
                     closest = cls.closest_catalog_names(title, names, limit=1)
@@ -2126,7 +2136,7 @@ class CardRecognizer:
                     db.scalars(
                         select(CardReference)
                         .where(
-                            func.lower(CardReference.name) == name.casefold(),
+                            CardReference.name == name,
                             CardReference.language == language,
                         )
                         .order_by(
@@ -2136,6 +2146,21 @@ class CardRecognizer:
                         )
                     )
                 )
+                if not rows:
+                    rows = list(
+                        db.scalars(
+                            select(CardReference)
+                            .where(
+                                func.lower(CardReference.name) == name.casefold(),
+                                CardReference.language == language,
+                            )
+                            .order_by(
+                                CardReference.released_at.desc(),
+                                CardReference.set_code,
+                                CardReference.collector_number,
+                            )
+                        )
+                    )
         except SQLAlchemyError:
             return [], 0
         return [cls._reference_card(reference) for reference in rows], len(rows)
