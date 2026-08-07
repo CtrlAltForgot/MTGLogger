@@ -3478,7 +3478,16 @@ class CardRecognizer:
             exact_number_year_proof = bool(
                 identity_is_constrained
                 and family_complete
-                and title_score >= 0.93
+                and (
+                    title_score >= 0.93
+                    or (
+                        consensus_name
+                        and self.card_name_similarity(
+                            consensus_name, card["name"]
+                        )
+                        >= 0.99
+                    )
+                )
                 and exact_number_year_ids == {card["id"]}
             )
             if exact_number_year_proof:
