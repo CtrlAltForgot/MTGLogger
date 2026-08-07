@@ -652,7 +652,7 @@ class CardRecognizer:
                 # Tiny legacy slashes are commonly transcribed as ``L``
                 # (``172/175`` -> ``172L75``). Requiring digits on both sides
                 # keeps this repair out of ordinary words and artist credits.
-                r"(?<!\d)(\d{1,4}[a-z]?)\s*[/|\\Ll.]\s*(\d{1,4})(?!\d)", line, re.I
+                r"(?<!\d)(\d{1,4}[a-z]?)\s*[/|\\Ll.]+\s*(\d{1,4})(?!\d)", line, re.I
             )
             # Power/toughness (for example 5/4) is read far more reliably
             # than a tiny footer. A real collector denominator represents a

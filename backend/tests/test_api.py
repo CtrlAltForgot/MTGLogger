@@ -2501,6 +2501,7 @@ def test_ocr_hints_normalizes_full_width_collector_slash():
     from mtglogger.services.recognition import CardRecognizer
 
     assert CardRecognizer.hints("Mountain\n267／272")[1] == "267"
+    assert CardRecognizer.hints("Mountain\n267/／272")[1] == "267"
 
 
 def test_short_copyright_year_requires_credit_text():
