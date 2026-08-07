@@ -2403,7 +2403,10 @@ class CardRecognizer:
                     self.extract_set_symbol_text, corrected
                 )
                 _, _, symbol_set, _ = self.hints(symbol_text)
-                symbol_set = symbol_set or self.partial_family_set_code(symbol_text, cards)
+                if not symbol_set or not any(
+                    self.exact_set_code_match(symbol_set, card["set"]) for card in cards
+                ):
+                    symbol_set = self.partial_family_set_code(symbol_text, cards)
                 matching_sets = {
                     card["set"].casefold()
                     for card in cards
@@ -3212,6 +3215,26 @@ class CardRecognizer:
                 and neural_score >= 0.45
                 and neural_margin >= 0.04
             )
+            neural_visual_rank_agreement = bool(
+                identity_is_constrained
+                and card["id"] == neural_top_id
+                and neural_score >= 0.45
+                and (
+                    (
+                        card["id"] == descriptor_art_top_id
+                        and descriptor_art_scores.get(card["id"], 0) >= 65
+                    )
+                    or (
+                        card["id"] == visual_top_id
+                        and visual_scores.get(card["id"], 0) >= 55
+                    )
+                )
+            )
+            if neural_visual_rank_agreement:
+                # Two image comparators may rank an uncertain exact printing,
+                # but they are not independent physical proof. Put their shared
+                # winner first while retaining Review below the auto-add gate.
+                confidence = max(confidence, 97.8)
             if card["id"] == neural_top_id and (neural_score >= 0.62 or neural_is_decisive_rerank):
                 # Neural evidence is first used as an identity-scoped reranker.
                 # It cannot auto-add unless it also clears the independently
