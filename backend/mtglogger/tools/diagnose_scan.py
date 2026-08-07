@@ -82,6 +82,8 @@ async def diagnose(review_id: str) -> dict:
             "set_code": set_code,
             "copyright_year": year,
             "text": result.ocr_text,
+            "fixed_footer_lines": recognizer.extract_fixed_footer_lines(corrected),
+            "set_symbol_text": recognizer.extract_set_symbol_text(corrected),
         },
         "result": {
             "confidence": result.confidence,
