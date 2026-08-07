@@ -299,8 +299,8 @@ class CardRecognizer:
             logger.exception("PaddleOCR inference failed")
             return ""
 
-    def extract_identification_text(self, image: np.ndarray) -> str:
-        """Read the large title and enlarged printing footer, skipping rules text."""
+    def extract_focused_identification_text(self, image: np.ndarray) -> str:
+        """Read the large title and enlarged printing footer in one OCR pass."""
         height, width = image.shape[:2]
         title = image[int(height * 0.045) : int(height * 0.22)]
         footer = image[int(height * 0.80) : int(height * 0.995)]
@@ -312,7 +312,11 @@ class CardRecognizer:
         footer_left = self.scale_to_width(footer_left, 840)
         separator = np.zeros((18, 840, 3), dtype=np.uint8)
         focused_image = np.vstack((title, separator, footer_left))
-        focused = self.extract_text(focused_image)
+        return self.extract_text(focused_image)
+
+    def extract_identification_text(self, image: np.ndarray) -> str:
+        """Read focused identity fields, with a standalone full-card fallback."""
+        focused = self.extract_focused_identification_text(image)
         focused_title, focused_number, focused_set, focused_year = self.hints(focused)
         # Basic lands contain very little text. When glare hides their title,
         # the cleanest alphabetic line in this combined crop is commonly the
@@ -1892,7 +1896,9 @@ class CardRecognizer:
             )
             prepared = time.perf_counter()
             card_structure = await asyncio.to_thread(self.has_card_structure, analysis_image)
-            text = await asyncio.to_thread(self.extract_identification_text, analysis_image)
+            text = await asyncio.to_thread(
+                self.extract_focused_identification_text, analysis_image
+            )
             ocr_complete = time.perf_counter()
             title, number, printed_set_code, copyright_year = self.hints(text)
             repaired_family_set_code = False
@@ -1959,6 +1965,7 @@ class CardRecognizer:
             descriptor_image = corrected
             neural_vector = None
             neural_matches = []
+            neural_recovered_identity = False
             # The embedding is computed alongside OCR. Consult it before the
             # expensive full-frame OCR recovery so a decisive artwork identity
             # can fuse with an already-readable footer. This turns the common
@@ -2002,11 +2009,15 @@ class CardRecognizer:
                     if recovered_cards:
                         title = recovered_name
                         cards = recovered_cards
+                        neural_recovered_identity = True
                         # Artwork may recover identity, but only the independent
                         # footer can make the resulting exact printing auto-safe.
                         oracle_recovery = True
-            if not self.has_strong_lookup_evidence(
-                title, number, printed_set_code, copyright_year, cards
+            if (
+                not neural_recovered_identity
+                and not self.has_strong_lookup_evidence(
+                    title, number, printed_set_code, copyright_year, cards
+                )
             ):
                 recovery_used = True
                 focused_identity_is_strong = self.has_strong_card_identity(title, cards)

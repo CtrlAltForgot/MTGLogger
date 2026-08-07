@@ -1483,7 +1483,7 @@ def test_full_frame_land_title_fuses_with_focused_collector_footer():
     image = np.zeros((840, 600, 3), dtype=np.uint8)
     recognizer.decode = lambda _raw: image
     recognizer.rectify = lambda decoded: decoded
-    recognizer.extract_identification_text = lambda _image: "264/272L\nORI·EN IUNGPARK"
+    recognizer.extract_focused_identification_text = lambda _image: "264/272L\nORI·EN IUNGPARK"
     recognizer.extract_text = lambda _image: "Basic Land - Swamp\nORI"
     recognizer._visual_matches = lambda *_args: []
 
@@ -1897,7 +1897,7 @@ def test_weak_internal_crop_recovers_from_original_camera_frame():
     bad_crop = np.zeros((840, 600, 3), dtype=np.uint8)
     recognizer.decode = lambda _raw: original
     recognizer.rectify = lambda _decoded: bad_crop
-    recognizer.extract_identification_text = lambda _image: "Rerurnd entaur\n11/272\nORI·EN"
+    recognizer.extract_focused_identification_text = lambda _image: "Rerurnd entaur\n11/272\nORI·EN"
     recognizer.extract_text = lambda _image: (
         "Returned Centaur\n116/272 C\nORI·EN LUCAS GRACIANO\n2015"
     )
@@ -2082,7 +2082,7 @@ def test_full_frame_recovery_cannot_replace_a_proven_focused_title():
     image = np.zeros((840, 600, 3), dtype=np.uint8)
     recognizer.decode = lambda _raw: image
     recognizer.rectify = lambda decoded: decoded
-    recognizer.extract_identification_text = lambda _image: "Rite of the Serpent"
+    recognizer.extract_focused_identification_text = lambda _image: "Rite of the Serpent"
     recognizer.extract_text = lambda _image: "Sadistic Obsession\n86/269\nKTK·EN"
     recognizer.extract_recovery_footer_text = (
         lambda *_args: "Sadistic Obsession\n86/269\nKTK·EN"
@@ -2779,7 +2779,7 @@ def test_unique_copyright_year_disambiguates_reused_printing():
     image = np.zeros((840, 600, 3), dtype=np.uint8)
     recognizer.decode = lambda _raw: image
     recognizer.rectify = lambda decoded: decoded
-    recognizer.extract_identification_text = lambda _image: "Death'sApproach\nco13rdsofthCat2"
+    recognizer.extract_focused_identification_text = lambda _image: "Death'sApproach\nco13rdsofthCat2"
     recognizer.extract_set_symbol_text = lambda _image: ""
     recognizer._visual_matches = lambda _scan_hash, _set_code: []
 
