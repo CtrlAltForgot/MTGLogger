@@ -830,6 +830,37 @@ class CardRecognizer:
         return number_mismatch or set_mismatch
 
     @staticmethod
+    def observed_footer_is_reliable(
+        number: str | None,
+        printed_set_code: str | None,
+        observed_text: str,
+    ) -> bool:
+        """Require evidence that a parsed number actually came from the footer.
+
+        Short standalone numbers are common in mana costs and rules text. Keep
+        the final contradiction veto for an observed set code, a printed
+        numerator/denominator, or a collector number long enough to be unlikely
+        incidental OCR noise.
+        """
+        if printed_set_code:
+            return True
+        if not number:
+            return False
+        if re.search(rf"(?<!\d)0*{re.escape(number)}\s*/\s*\d{{2,4}}(?!\d)", observed_text):
+            return True
+        return len(re.sub(r"\D", "", number)) >= 3
+
+    @staticmethod
+    def neural_source_can_recover_identity(source_kind: str | None) -> bool:
+        """Allow reference artwork, but not learned corrections, to name a card.
+
+        Correction vectors are valuable once OCR has constrained the card
+        family. Before that point a visually similar prior scan can inject an
+        unrelated identity and prevent rules/title OCR recovery entirely.
+        """
+        return source_kind in {"canonical", "alternate"}
+
+    @staticmethod
     def normalized_name(value: str) -> str:
         decomposed = unicodedata.normalize("NFKD", value.casefold())
         return "".join(
@@ -1784,6 +1815,7 @@ class CardRecognizer:
             # once narrowed to singleton Cunning EXO #28 this way).
             raw_observed_number = number
             raw_observed_set_code = printed_set_code
+            raw_observed_text = text
             promo_type = self.promo_type_hint(text)
             lookup_task = asyncio.create_task(
                 self._lookup_cards(
@@ -1858,6 +1890,9 @@ class CardRecognizer:
                 )
                 if (
                     neural_matches
+                    and self.neural_source_can_recover_identity(
+                        neural_matches[0].source_kind
+                    )
                     and neural_matches[0].similarity >= 0.80
                     and neural_identity_margin >= 0.03
                 ):
@@ -2034,6 +2069,9 @@ class CardRecognizer:
                 )
                 if (
                     neural_matches
+                    and self.neural_source_can_recover_identity(
+                        neural_matches[0].source_kind
+                    )
                     and neural_matches[0].similarity >= 0.80
                     and neural_identity_margin >= 0.03
                 ):
@@ -3131,6 +3169,11 @@ class CardRecognizer:
                 safe_candidate_ids.add(top.scryfall_id)
             if (
                 not self.is_basic_land(top_card)
+                and self.observed_footer_is_reliable(
+                    raw_observed_number,
+                    raw_observed_set_code,
+                    raw_observed_text,
+                )
                 and self.observed_footer_contradicts_printing(
                     raw_observed_number,
                     raw_observed_set_code,

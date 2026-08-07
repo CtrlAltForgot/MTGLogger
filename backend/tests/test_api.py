@@ -1882,6 +1882,23 @@ def test_readable_footer_rejects_reused_art_promo_printing():
     assert CardRecognizer.observed_footer_contradicts_printing(None, "ZNC", "5", "pw23")
 
 
+def test_final_footer_veto_ignores_short_incidental_numbers():
+    from mtglogger.services.recognition import CardRecognizer
+
+    assert not CardRecognizer.observed_footer_is_reliable("21", None, "Market Festival\n21")
+    assert CardRecognizer.observed_footer_is_reliable("21", "JOU", "21 JOU")
+    assert CardRecognizer.observed_footer_is_reliable("21", None, "021/165")
+    assert CardRecognizer.observed_footer_is_reliable("150", None, "Cunning Strike\n150")
+
+
+def test_learned_camera_correction_cannot_invent_card_identity():
+    from mtglogger.services.recognition import CardRecognizer
+
+    assert CardRecognizer.neural_source_can_recover_identity("canonical")
+    assert CardRecognizer.neural_source_can_recover_identity("alternate")
+    assert not CardRecognizer.neural_source_can_recover_identity("correction")
+
+
 def test_power_toughness_does_not_replace_footer_collector_number():
     from mtglogger.services.recognition import CardRecognizer
 
