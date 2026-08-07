@@ -2012,12 +2012,17 @@ class CardRecognizer:
                 _, number, printed_set_code, copyright_year = self.hints(text)
                 cards = await self._lookup_cards(
                     title,
-                    number,
-                    printed_set_code,
+                    None,
+                    None,
                     box_set_code,
                     language,
                     None,
                 )
+                if printed_set_code and not any(
+                    self.exact_set_code_match(printed_set_code, card["set"])
+                    for card in cards
+                ):
+                    printed_set_code = None
                 if not printed_set_code:
                     printed_set_code = self.family_set_code_from_footer_text(text, cards)
                 number_is_plausible = bool(
@@ -2039,7 +2044,7 @@ class CardRecognizer:
                         )
                         number = raw_number or number
                         copyright_year = raw_year or copyright_year
-                if printed_set_code:
+                if printed_set_code or number_is_plausible:
                     if number and not any(
                         self.exact_set_code_match(printed_set_code, card["set"])
                         and self.collector_score(number, card["collector_number"]) >= 0.78
