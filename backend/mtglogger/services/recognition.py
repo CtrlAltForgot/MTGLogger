@@ -2207,7 +2207,19 @@ class CardRecognizer:
                         known_ids = {card["id"] for card in cards}
                         cards.extend(card for card in family_cards if card["id"] not in known_ids)
                         if family_complete:
-                            await ensure_reference_profiles(self.provider, family_cards)
+                            try:
+                                await ensure_reference_profiles(self.provider, family_cards)
+                            except (TimeoutError, httpx.HTTPError, RuntimeError, ValueError):
+                                # Reference-profile hydration is an optional
+                                # visual-cache operation. The local database
+                                # family is still exhaustive when hydration is
+                                # unavailable, and marking it incomplete here
+                                # disables safe footer/art proofs for common
+                                # names such as Mountain.
+                                logger.warning(
+                                    "Reference profile hydration unavailable for %s",
+                                    family_name,
+                                )
                 except (TimeoutError, httpx.HTTPError, RuntimeError, ValueError):
                     # The normal conservative path remains valid while offline.
                     family_complete = False
