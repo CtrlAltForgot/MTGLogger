@@ -3284,6 +3284,56 @@ def test_independent_visual_consensus_can_prove_footerless_nonbasic_printing():
     )
 
 
+def test_single_printing_accepts_long_exact_title_fragment_only():
+    from mtglogger.services.recognition import CardRecognizer
+
+    evidence = dict(
+        is_basic_land=False,
+        identity_is_constrained=True,
+        family_complete=True,
+        observed_title="lood Glutton",
+        candidate_name="Blood Glutton",
+    )
+    assert CardRecognizer.has_safe_single_printing_identity(**evidence)
+    assert not CardRecognizer.has_safe_single_printing_identity(
+        **{**evidence, "is_basic_land": True}
+    )
+    assert not CardRecognizer.has_safe_single_printing_identity(
+        **{**evidence, "observed_title": "Glut"}
+    )
+
+
+def test_exact_footer_and_neural_identity_prove_recovered_printing():
+    from mtglogger.services.recognition import CardRecognizer
+
+    evidence = dict(
+        is_basic_land=False,
+        identity_is_constrained=True,
+        family_complete=True,
+        number_score=1.0,
+        set_score=1.0,
+        candidate_name="Crash Through",
+        neural_top_name="Crash Through",
+        neural_score=0.799,
+        neural_margin=0.021,
+        footer_contradiction=False,
+    )
+    assert CardRecognizer.has_safe_recovered_exact_footer(**evidence)
+    assert CardRecognizer.has_safe_recovered_exact_footer(
+        **{
+            **evidence,
+            "identity_is_constrained": False,
+            "family_complete": False,
+        }
+    )
+    assert not CardRecognizer.has_safe_recovered_exact_footer(
+        **{**evidence, "set_score": 0.85}
+    )
+    assert not CardRecognizer.has_safe_recovered_exact_footer(
+        **{**evidence, "is_basic_land": True}
+    )
+
+
 def test_unique_symbol_consensus_does_not_require_a_scoring_lead():
     from mtglogger.services.recognition import CardRecognizer
 

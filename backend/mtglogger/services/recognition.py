@@ -2529,6 +2529,19 @@ class CardRecognizer:
                 and release_year_counts[copyright_year] == 1
             )
             copyright_art_printing_proof = False
+            single_printing_identity_proof = bool(
+                only_printing
+                and self.has_safe_single_printing_identity(
+                    is_basic_land=self.is_basic_land(card),
+                    identity_is_constrained=identity_is_constrained,
+                    family_complete=family_complete,
+                    observed_title=title,
+                    candidate_name=card["name"],
+                )
+            )
+            if single_printing_identity_proof:
+                confidence = max(confidence, 98.5)
+                safe_candidate_ids.add(card["id"])
             if title_score >= 0.93 and (only_printing or unique_release_year):
                 confidence = max(confidence, 98.5)
                 if number_score == 1.0 and unique_release_year:
@@ -2725,6 +2738,23 @@ class CardRecognizer:
                     or copyright_art_printing_proof
                 ),
             )
+            recovered_exact_footer_proof = self.has_safe_recovered_exact_footer(
+                is_basic_land=self.is_basic_land(card),
+                identity_is_constrained=identity_is_constrained,
+                family_complete=family_complete,
+                number_score=number_score,
+                set_score=set_score,
+                candidate_name=card["name"],
+                neural_top_name=(
+                    neural_matches[0].reference.name if neural_matches else None
+                ),
+                neural_score=neural_top_score,
+                neural_margin=neural_margin,
+                footer_contradiction=footer_contradiction,
+            )
+            if recovered_exact_footer_proof:
+                confidence = max(confidence, 98.5)
+                safe_candidate_ids.add(card["id"])
             neural_is_decisive_rerank = bool(
                 identity_is_constrained
                 and card["id"] == neural_top_id
@@ -2827,7 +2857,7 @@ class CardRecognizer:
             confidence = min(99.5, confidence)
             if self.oracle_recovery_requires_cap(
                 oracle_recovery,
-                exact_printed_identity,
+                exact_printed_identity or recovered_exact_footer_proof,
                 printing_signal,
                 visual_printing_proof,
                 title_art_symbol_proof,
@@ -3466,6 +3496,54 @@ class CardRecognizer:
             and visual_margin >= 0.5
         )
         return strong_neural or artwork_consensus or symbol_consensus
+
+    @classmethod
+    def has_safe_single_printing_identity(
+        cls,
+        *,
+        is_basic_land: bool,
+        identity_is_constrained: bool,
+        family_complete: bool,
+        observed_title: str | None,
+        candidate_name: str,
+    ) -> bool:
+        """Trust a long exact title fragment when the card has one printing."""
+        observed = cls.normalized_name(observed_title or "")
+        candidate = cls.normalized_name(candidate_name)
+        return bool(
+            not is_basic_land
+            and identity_is_constrained
+            and family_complete
+            and len(observed) >= 6
+            and observed in candidate
+        )
+
+    @classmethod
+    def has_safe_recovered_exact_footer(
+        cls,
+        *,
+        is_basic_land: bool,
+        identity_is_constrained: bool,
+        family_complete: bool,
+        number_score: float,
+        set_score: float,
+        candidate_name: str,
+        neural_top_name: str | None,
+        neural_score: float,
+        neural_margin: float,
+        footer_contradiction: bool,
+    ) -> bool:
+        """Anchor an exact footer pair to an independently recovered identity."""
+        return bool(
+            not is_basic_land
+            and number_score == 1.0
+            and set_score == 1.0
+            and cls.normalized_name(candidate_name)
+            == cls.normalized_name(neural_top_name or "")
+            and neural_score >= 0.79
+            and neural_margin >= 0.02
+            and not footer_contradiction
+        )
 
     @staticmethod
     def has_decisive_symbol_match(
