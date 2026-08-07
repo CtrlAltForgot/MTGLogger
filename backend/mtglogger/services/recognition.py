@@ -2738,6 +2738,19 @@ class CardRecognizer:
                             for part in (text, detected_footer_text)
                             if part.strip()
                         )
+                        # This detector reads the untouched camera footer at a
+                        # larger scale than the initial fixed-row pass. Once its
+                        # collector plus set/year intersection is unique inside
+                        # the complete family, it is the stronger raw physical
+                        # observation and may safely replace a disproven tiny-row
+                        # guess (Hornet Sting 181 was initially read as 132).
+                        raw_observed_number = detected_number
+                        raw_observed_set_code = detected_set or raw_observed_set_code
+                        raw_observed_text = "\n".join(
+                            part
+                            for part in (raw_observed_text, detected_footer_text)
+                            if part.strip()
+                        )
             family_complete_at = time.perf_counter()
             neural_vector = (
                 neural_vector
