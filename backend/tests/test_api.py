@@ -1133,6 +1133,37 @@ def test_exceptionally_close_confirmed_camera_scan_is_printing_safe():
     )
 
 
+def test_confirmed_camera_requires_two_exact_visual_regions_at_lower_similarity():
+    from mtglogger.services.recognition import CardRecognizer
+
+    evidence = {
+        "source_kind": "correction",
+        "similarity": 0.86,
+        "margin": 0.07,
+        "identity_is_constrained": True,
+        "family_complete": True,
+        "title_score": 1.0,
+        "candidate_id": "gtc-102",
+        "neural_top_id": "gtc-102",
+        "descriptor_top_id": "gtc-102",
+        "descriptor_score": 99.5,
+        "descriptor_margin": 1.3,
+        "art_top_id": "gtc-102",
+        "art_score": 99.5,
+        "art_margin": 2.3,
+        "footer_contradiction": False,
+    }
+
+    assert CardRecognizer.confirmed_camera_visual_consensus_is_safe(**evidence)
+    assert not CardRecognizer.confirmed_camera_visual_consensus_is_safe(
+        **(evidence | {"descriptor_top_id": "plst-gtc-102"})
+    )
+    assert not CardRecognizer.confirmed_camera_visual_consensus_is_safe(
+        **(evidence | {"art_margin": 0.9})
+    )
+    assert not CardRecognizer.confirmed_camera_visual_consensus_is_safe(
+        **(evidence | {"footer_contradiction": True})
+    )
 def test_printed_artist_credit_is_exact_art_evidence():
     from mtglogger.services.recognition import CardRecognizer
 

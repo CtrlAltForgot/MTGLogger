@@ -1428,6 +1428,41 @@ class CardRecognizer:
             and not footer_contradiction
         )
 
+    @staticmethod
+    def confirmed_camera_visual_consensus_is_safe(
+        *,
+        source_kind: str | None,
+        similarity: float,
+        margin: float,
+        identity_is_constrained: bool,
+        family_complete: bool,
+        title_score: float,
+        candidate_id: str,
+        neural_top_id: str | None,
+        descriptor_top_id: str | None,
+        descriptor_score: float,
+        descriptor_margin: float,
+        art_top_id: str | None,
+        art_score: float,
+        art_margin: float,
+        footer_contradiction: bool,
+    ) -> bool:
+        """Accept a confirmed camera printing when two profile regions agree."""
+        return bool(
+            source_kind == "correction"
+            and similarity >= 0.85
+            and margin >= 0.06
+            and identity_is_constrained
+            and family_complete
+            and title_score >= 0.93
+            and candidate_id == neural_top_id == descriptor_top_id == art_top_id
+            and descriptor_score >= 98
+            and descriptor_margin >= 1
+            and art_score >= 98
+            and art_margin >= 1
+            and not footer_contradiction
+        )
+
     @classmethod
     def has_unique_printing_signal(
         cls,
@@ -3072,6 +3107,44 @@ class CardRecognizer:
                 neural_candidate.confidence = max(neural_candidate.confidence, 98.4)
                 candidates.sort(key=lambda item: item.confidence, reverse=True)
         if candidates:
+            # Set-logo OCR is performed after the initial merged hints. Re-read
+            # the final text so an exact set plus its uniquely printed artist
+            # can promote the neural artwork winner even when database order
+            # initially placed another basic-land printing first.
+            final_observed_set = self.hints(text)[2]
+            neural_candidate = next(
+                (
+                    candidate
+                    for candidate in candidates
+                    if candidate.scryfall_id == neural_top_id
+                ),
+                None,
+            )
+            neural_card = next(
+                (card for card in cards if card["id"] == neural_top_id), None
+            )
+            if (
+                neural_candidate
+                and neural_card
+                and self.is_basic_land(neural_card)
+                and identity_is_constrained
+                and family_complete
+                and neural_top_score >= 0.80
+                and neural_margin >= 0.05
+                and self.exact_set_code_match(
+                    final_observed_set, neural_candidate.set_code
+                )
+                and self.has_unique_set_artist_evidence(
+                    text,
+                    neural_card,
+                    cards,
+                    final_observed_set,
+                    self.artist_text_score(text, neural_card.get("artist")),
+                )
+            ):
+                neural_candidate.confidence = 99.5
+                safe_candidate_ids.add(neural_candidate.scryfall_id)
+                candidates.sort(key=lambda item: item.confidence, reverse=True)
             top = candidates[0]
             top_card = next(
                 (card for card in cards if card["id"] == top.scryfall_id), None
@@ -3171,6 +3244,30 @@ class CardRecognizer:
                 # complete-family and clear candidate-lead requirements keep
                 # this path auditable; basic lands retain stricter safeguards.
                 top.confidence = max(top.confidence, 98.5)
+                safe_candidate_ids.add(top.scryfall_id)
+            if self.confirmed_camera_visual_consensus_is_safe(
+                source_kind=(neural_matches[0].source_kind if neural_matches else None),
+                similarity=neural_top_score,
+                margin=neural_margin,
+                identity_is_constrained=identity_is_constrained,
+                family_complete=family_complete,
+                title_score=self.card_name_similarity(title, top.name),
+                candidate_id=top.scryfall_id,
+                neural_top_id=neural_top_id,
+                descriptor_top_id=descriptor_top_id,
+                descriptor_score=descriptor_scores.get(top.scryfall_id, 0),
+                descriptor_margin=descriptor_margin,
+                art_top_id=descriptor_art_top_id,
+                art_score=descriptor_art_scores.get(top.scryfall_id, 0),
+                art_margin=descriptor_art_margin,
+                footer_contradiction=self.observed_footer_contradicts_printing(
+                    number,
+                    printed_set_code,
+                    top.collector_number,
+                    top.set_code,
+                ),
+            ):
+                top.confidence = 99.5
                 safe_candidate_ids.add(top.scryfall_id)
             if (
                 not self.is_basic_land(top_card)
