@@ -864,7 +864,7 @@ class CardRecognizer:
             None,
         ) or next((line for line in title_lines if plausible_title(line)), None)
         if re.search(
-            r"use\s+this\s+card\s+to\s+represent\s+a\s+double[- ]faced\s+card",
+            r"use\s+this\s+card\s+to\s+represent\s+a\s+double[- ]faced\s*card",
             " ".join(lines),
             re.I,
         ):

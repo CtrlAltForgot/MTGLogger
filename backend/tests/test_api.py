@@ -2632,6 +2632,22 @@ def test_ocr_hints_reads_rarity_prefixed_current_collector_number():
     )
 
 
+def test_ocr_hints_recognizes_blank_title_substitute_card():
+    from mtglogger.services.recognition import CardRecognizer
+
+    title, number, set_code, year = CardRecognizer.hints(
+        "You can use this card to represent a\n"
+        "double-facedcard\n0001 D\nECL·EN\n©2026 Wizards"
+    )
+
+    assert (title, number, set_code, year) == (
+        "Double-Faced Substitute Card",
+        "0001",
+        "ecl",
+        2026,
+    )
+
+
 def test_short_copyright_year_requires_credit_text():
     from mtglogger.services.recognition import CardRecognizer
 
