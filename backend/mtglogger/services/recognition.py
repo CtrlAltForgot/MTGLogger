@@ -869,6 +869,12 @@ class CardRecognizer:
             re.I,
         ):
             title = "Double-Faced Substitute Card"
+            if not number:
+                insert_number = re.search(
+                    r"(?<!\d)(0{2,3}\d)\s*[A-Z](?=\s|$)", text, re.I
+                )
+                if insert_number:
+                    number = insert_number.group(1)
         # A basic land's type line contains its actual card name after the dash.
         # This is the one safe case where a type line can recover identity when
         # glare or a dark frame hides the title. Keeping the allow-list narrow
