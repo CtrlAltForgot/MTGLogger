@@ -2193,6 +2193,28 @@ class CardRecognizer:
                 promo_type = None
                 text = await asyncio.to_thread(self.extract_fixed_footer_text, corrected)
                 _, number, printed_set_code, copyright_year = self.hints(text)
+                fixed_title_text = await asyncio.to_thread(
+                    self.extract_fixed_title_text, analysis_image
+                )
+                fixed_title = self.hints(fixed_title_text)[0]
+                if fixed_title:
+                    fixed_title_cards = await asyncio.to_thread(
+                        self._lookup_local_cards, fixed_title, None, None
+                    )
+                    exact_fixed_names = [
+                        card["name"]
+                        for card in fixed_title_cards
+                        if self.card_name_similarity(fixed_title, card["name"]) >= 0.90
+                    ]
+                    if exact_fixed_names:
+                        # A directly read printed title outranks agreement among
+                        # weak visual neighbors. This prevents repeated-art or
+                        # dark-frame embeddings from locking OCR onto the wrong
+                        # family before footer evidence is considered.
+                        title = exact_fixed_names[0]
+                        text = "\n".join(
+                            part for part in (fixed_title_text, text) if part.strip()
+                        )
                 cards = await self._lookup_cards(
                     title,
                     None,
