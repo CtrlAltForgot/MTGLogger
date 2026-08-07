@@ -2037,7 +2037,10 @@ class CardRecognizer:
                 scan_fingerprints = {}
                 visual_matches = []
             else:
-                scan_fingerprints = await asyncio.to_thread(visual_fingerprints, analysis_image)
+                # Exact-print frame hashes must use the physical camera colors;
+                # OCR contrast normalization can make one reused-art reprint's
+                # border resemble another (RTR Ogre Jailbreaker vs MM3).
+                scan_fingerprints = await asyncio.to_thread(visual_fingerprints, corrected)
                 # Do not search all ~100k fingerprints before OCR recovery has
                 # had a chance to establish the card name. Identity-scoped
                 # matching below compares the complete printing family without
