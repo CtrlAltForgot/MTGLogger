@@ -2948,7 +2948,11 @@ class CardRecognizer:
                 confidence = 99.5
                 safe_candidate_ids.add(card["id"])
             elif (
-                not recovered_exact_footer_proof
+                not (
+                    recovered_exact_footer_proof
+                    or number_scoped_art_proof
+                    or repeated_unique_year_proof
+                )
                 and not get_settings().neural_shadow_mode
                 and neural_top_score >= 0.70
                 and neural_margin >= 0.06
@@ -3012,6 +3016,7 @@ class CardRecognizer:
                     or unique_set_artist
                     or neural_is_safe
                     or structured_printing_proof
+                    or number_scoped_art_proof
                 ):
                     # Exact set plus a decisive illustration match is safer
                     # than a tiny collector-number crop. This specifically
@@ -3043,7 +3048,10 @@ class CardRecognizer:
                 # symbol, or artist evidence. A later generic oracle cap must
                 # not undo that stricter proof merely because OCR recovered the
                 # identity from an artist/rules fragment instead of the title.
-                printing_signal or safe_land_match,
+                printing_signal
+                or safe_land_match
+                or number_scoped_art_proof
+                or repeated_unique_year_proof,
                 visual_printing_proof,
                 title_art_symbol_proof,
             ):
