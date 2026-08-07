@@ -1862,7 +1862,12 @@ class CardRecognizer:
                 # rescue after recovery.
                 visual_matches = []
             initial_match_complete = time.perf_counter()
-            descriptor_image = analysis_image
+            # Low-light normalization is tuned for OCR and embeddings, but its
+            # local contrast amplification can deform the tiny set-symbol ORB
+            # keypoints. Reference descriptor bundles were built from ordinary
+            # card images, so compare them with the original rectified camera
+            # pixels. This reuses an existing frame and adds no processing pass.
+            descriptor_image = corrected
             neural_vector = None
             neural_matches = []
             # The embedding is computed alongside OCR. Consult it before the
