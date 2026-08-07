@@ -953,7 +953,12 @@ class CardRecognizer:
         return next(iter(matches)) if len(matches) == 1 else None
 
     @classmethod
-    def family_set_code_from_footer_text(cls, observed_text: str, cards: list[dict]) -> str | None:
+    def family_set_code_from_footer_text(
+        cls,
+        observed_text: str,
+        cards: list[dict],
+        observed_number: str | None = None,
+    ) -> str | None:
         """Recover a family set code immediately preceding the printed EN marker."""
         observed_codes = {
             match[-3:].casefold()
@@ -963,8 +968,19 @@ class CardRecognizer:
                 re.I,
             )
         }
+        number_scoped_cards = [
+            card
+            for card in cards
+            if observed_number
+            and (
+                cls.collector_score(observed_number, card["collector_number"]) >= 0.78
+                or card["collector_number"].casefold().endswith(
+                    f"-{observed_number.casefold()}"
+                )
+            )
+        ]
         scores: dict[str, float] = {}
-        for card in cards:
+        for card in number_scoped_cards or cards:
             code = card["set"].casefold()
             if code == "plst" or len(code) != 3:
                 continue
@@ -2029,7 +2045,7 @@ class CardRecognizer:
                     printed_set_code = None
                 if not printed_set_code:
                     printed_set_code = self.family_set_code_from_footer_text(
-                        text, footer_family_cards
+                        text, footer_family_cards, number
                     )
                 number_is_plausible = bool(
                     number
@@ -2046,7 +2062,7 @@ class CardRecognizer:
                         text = "\n".join((text, raw_footer_text))
                         _, raw_number, _raw_set, raw_year = self.hints(raw_footer_text)
                         printed_set_code = self.family_set_code_from_footer_text(
-                            raw_footer_text, footer_family_cards
+                            raw_footer_text, footer_family_cards, raw_number
                         )
                         number = raw_number or number
                         copyright_year = raw_year or copyright_year

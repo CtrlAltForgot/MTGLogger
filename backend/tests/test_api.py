@@ -2014,6 +2014,15 @@ def test_partial_set_logo_resolves_only_inside_one_card_family():
     assert CardRecognizer.family_set_code_from_footer_text(
         "WAORT-ENSCARLCRITCHLOW", footer_family
     ) == "ori"
+    assert CardRecognizer.family_set_code_from_footer_text(
+        "235/269C\nKIKENEYTANZA",
+        [
+            {"set": "iko", "collector_number": "169"},
+            {"set": "ktk", "collector_number": "235"},
+            {"set": "plst", "collector_number": "KTK-235"},
+        ],
+        "235",
+    ) == "ktk"
 
 
 def test_power_toughness_does_not_replace_footer_collector_number():
