@@ -2906,17 +2906,39 @@ class CardRecognizer:
             )
             set_art_evidence[code] = (set_art_top_id, set_art_score, set_art_margin)
             exact_set_counts[code] = exact_set_counts.get(code, 0) + 1
+        exact_number_year_ids = {
+            candidate["id"]
+            for candidate in cards
+            if number
+            and copyright_year
+            and self.collector_score(number, candidate["collector_number"]) == 1.0
+            and int(candidate.get("released_at", "0000")[:4]) == copyright_year
+        }
         # Reprints frequently share the same artist. Fuzzy footer matching is
         # substantially more expensive than a dictionary lookup, so score each
-        # distinct printed credit once instead of once per printing.
-        artist_score_by_name = {
-            artist: self.artist_text_score(text, artist)
-            for artist in {card.get("artist") for card in cards}
-        }
+        # distinct printed credit once instead of once per printing. When exact
+        # collector and copyright-year evidence already isolates one member of
+        # a complete family, artist OCR cannot change the proof or ordering and
+        # scanning hundreds of land artists only adds several seconds.
+        artist_score_by_name = (
+            {artist: 0.0 for artist in {card.get("artist") for card in cards}}
+            if identity_is_constrained
+            and family_complete
+            and len(exact_number_year_ids) == 1
+            else {
+                artist: self.artist_text_score(text, artist)
+                for artist in {card.get("artist") for card in cards}
+            }
+        )
         artist_scores = {
             card["id"]: artist_score_by_name[card.get("artist")] for card in cards
         }
         strong_artist_ids = {card_id for card_id, score in artist_scores.items() if score >= 0.9}
+        artist_supported_neural_id = (
+            max(strong_artist_ids, key=lambda card_id: neural_scores.get(card_id, 0.0))
+            if strong_artist_ids
+            else None
+        )
         structured_printing_ids = self.unique_number_year_artist_ids(
             cards, number, copyright_year, artist_scores
         )
@@ -3269,14 +3291,6 @@ class CardRecognizer:
                 # itself is not transcribed.
                 confidence = max(confidence, 98.5)
                 safe_candidate_ids.add(card["id"])
-            exact_number_year_ids = {
-                candidate["id"]
-                for candidate in cards
-                if number
-                and copyright_year
-                and self.collector_score(number, candidate["collector_number"]) == 1.0
-                and int(candidate.get("released_at", "0000")[:4]) == copyright_year
-            }
             exact_number_year_proof = bool(
                 identity_is_constrained
                 and family_complete
@@ -3386,6 +3400,11 @@ class CardRecognizer:
                 # It cannot auto-add unless it also clears the independently
                 # benchmarked zero-error threshold below.
                 confidence = max(confidence, 98.4 if neural_is_decisive_rerank else 97.8)
+            if card["id"] == artist_supported_neural_id and artist_score >= 0.9:
+                # When the footer clearly identifies an artist shared by a few
+                # reprints, use neural evidence only to order those supported
+                # printings. This remains below automatic-add confidence.
+                confidence = max(confidence, 97.0)
             if neural_is_safe or confirmed_camera_is_safe:
                 confidence = 99.5
                 safe_candidate_ids.add(card["id"])
@@ -3484,6 +3503,12 @@ class CardRecognizer:
                 # artwork path above; for other cards make score and safety agree.
                 confidence = max(confidence, 98.5)
                 safe_candidate_ids.add(card["id"])
+            if strong_artist_ids and artist_score < 0.9 and card.get("artist"):
+                # Apply the physical artist contradiction after neural boosts;
+                # otherwise an attractive but visibly different printing can
+                # overwrite the earlier penalty and lead the Review list.
+                confidence = min(confidence, 86.0)
+                safe_candidate_ids.discard(card["id"])
             # Reused artwork can make a promo descriptor look nearly perfect.
             # The physical footer remains authoritative for exact-printing
             # identity, so a contradicted candidate must neither lead nor add.
