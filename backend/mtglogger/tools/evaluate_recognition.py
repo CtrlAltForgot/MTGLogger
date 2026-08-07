@@ -170,12 +170,20 @@ async def evaluate(
         original_hash = artwork_hash(CardRecognizer.rectify(decoded))
         variants = stress_variants(decoded) if stress else [("original", decoded)]
         for variant_name, variant_image in variants:
-            encoded, buffer = cv2.imencode(
-                ".jpg", variant_image, [cv2.IMWRITE_JPEG_QUALITY, 92]
-            )
-            if not encoded:
-                continue
-            variant_raw = buffer.tobytes()
+            if variant_name == "original":
+                # Preserve the exact camera payload. Re-encoding the control
+                # sample at quality 92 erased tiny collector/set footer text
+                # and made the evaluator report reviews that production does
+                # not produce on the same bytes. Only synthetic stress
+                # variants should introduce another JPEG generation.
+                variant_raw = raw
+            else:
+                encoded, buffer = cv2.imencode(
+                    ".jpg", variant_image, [cv2.IMWRITE_JPEG_QUALITY, 92]
+                )
+                if not encoded:
+                    continue
+                variant_raw = buffer.tobytes()
             variant_hash = artwork_hash(CardRecognizer.rectify(variant_image))
             result = await recognizer.recognize(
                 variant_raw,
