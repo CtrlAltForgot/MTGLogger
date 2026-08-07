@@ -2608,6 +2608,21 @@ def test_ocr_hints_normalizes_full_width_collector_slash():
     assert CardRecognizer.hints("Mountain\n267/／272")[1] == "267"
 
 
+def test_ocr_hints_reads_rarity_prefixed_current_collector_number():
+    from mtglogger.services.recognition import CardRecognizer
+
+    title, number, set_code, year = CardRecognizer.hints(
+        "First-Time Flyer\nC0049\nTLA·EN MIZUTAMETORI\n©2025 Wizards"
+    )
+
+    assert (title, number, set_code, year) == (
+        "First-Time Flyer",
+        "0049",
+        "tla",
+        2025,
+    )
+
+
 def test_short_copyright_year_requires_credit_text():
     from mtglogger.services.recognition import CardRecognizer
 

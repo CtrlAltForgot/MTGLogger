@@ -648,6 +648,10 @@ class CardRecognizer:
                 if (
                     re.fullmatch(r"[A-Z2][A-Z0-9]{1,4}", token)
                     and token not in language_tokens
+                    # Current frames place the one-letter rarity before a
+                    # zero-padded collector number (for example ``C0049``).
+                    # That is printing evidence, not a five-character set.
+                    and not re.fullmatch(r"[CMRU]\d{3,4}", token)
                     and any(character.isalpha() for character in token)
                     and (any(character.isdigit() for character in token) or len(token) == 3)
                 ):
@@ -698,6 +702,14 @@ class CardRecognizer:
                 if 1 <= int(numerator) <= 9999 and int(denominator) >= 100:
                     number = numerator
                     break
+        if not number:
+            # Some current frames reverse the older joined layout above and
+            # print rarity before the zero-padded number (``C0049``). Keep the
+            # zero padding here; collector comparison normalizes it safely.
+            footer = "\n".join(lines[-6:])
+            rarity_prefixed = re.search(r"(?<![A-Z0-9])[CMRU](\d{3,4})(?!\d)", footer)
+            if rarity_prefixed:
+                number = rarity_prefixed.group(1)
         if not number:
             # Modern footers print a zero-padded collector number immediately
             # beside a one-letter rarity. OCR commonly joins them ("005 R" ->
