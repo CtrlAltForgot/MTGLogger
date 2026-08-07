@@ -3107,44 +3107,6 @@ class CardRecognizer:
                 neural_candidate.confidence = max(neural_candidate.confidence, 98.4)
                 candidates.sort(key=lambda item: item.confidence, reverse=True)
         if candidates:
-            # Set-logo OCR is performed after the initial merged hints. Re-read
-            # the final text so an exact set plus its uniquely printed artist
-            # can promote the neural artwork winner even when database order
-            # initially placed another basic-land printing first.
-            final_observed_set = self.hints(text)[2]
-            neural_candidate = next(
-                (
-                    candidate
-                    for candidate in candidates
-                    if candidate.scryfall_id == neural_top_id
-                ),
-                None,
-            )
-            neural_card = next(
-                (card for card in cards if card["id"] == neural_top_id), None
-            )
-            if (
-                neural_candidate
-                and neural_card
-                and self.is_basic_land(neural_card)
-                and identity_is_constrained
-                and family_complete
-                and neural_top_score >= 0.80
-                and neural_margin >= 0.05
-                and self.exact_set_code_match(
-                    final_observed_set, neural_candidate.set_code
-                )
-                and self.has_unique_set_artist_evidence(
-                    text,
-                    neural_card,
-                    cards,
-                    final_observed_set,
-                    self.artist_text_score(text, neural_card.get("artist")),
-                )
-            ):
-                neural_candidate.confidence = 99.5
-                safe_candidate_ids.add(neural_candidate.scryfall_id)
-                candidates.sort(key=lambda item: item.confidence, reverse=True)
             top = candidates[0]
             top_card = next(
                 (card for card in cards if card["id"] == top.scryfall_id), None
