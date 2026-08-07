@@ -393,7 +393,10 @@ class CardRecognizer:
         """Detect text only in the untouched physical footer band."""
         height = image.shape[0]
         footer = image[int(height * 0.84) : int(height * 0.995)]
-        return self.extract_text(self.scale_to_width(footer, 1000))
+        # The detector itself is capped at 840px. Enlarging beyond that is
+        # immediately downscaled again and costs ~300ms on difficult lands
+        # without improving collector/set transcription.
+        return self.extract_text(self.scale_to_width(footer, 840))
 
     def extract_set_symbol_text(self, image: np.ndarray) -> str:
         """Read an alphanumeric expansion/core-set logo from the type-line corner."""

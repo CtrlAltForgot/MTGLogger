@@ -2690,7 +2690,7 @@ def test_raw_footer_band_detector_preserves_the_untouched_bottom_rows():
     )
 
     assert text == "265/272 ORI EN"
-    assert observed == [(217, 1000, 3)]
+    assert observed == [(183, 840, 3)]
 
 
 def test_ocr_hints_recovers_embedded_core_set_symbol():
