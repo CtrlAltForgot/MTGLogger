@@ -21,6 +21,9 @@ const saveCameraRotation=(rotation:CameraRotation)=>{
   try{globalThis.localStorage?.setItem(CAMERA_ROTATION_STORAGE_KEY,String(rotation))}catch{/* Storage may be disabled. */}
 }
 export const pipelineHasCapacity=(inFlight:number,maxInFlight:number)=>inFlight<Math.max(1,maxInFlight)
+export const plausibleCardBounds=(bounds?:DetectionBounds)=>Boolean(
+  bounds&&bounds.height>=50&&bounds.width>=15&&bounds.width<=65&&bounds.height<=100,
+)
 export function preferredVideoConstraints(deviceId?:string):MediaTrackConstraints{
   return {
     width:{ideal:1920},height:{ideal:1080},frameRate:{ideal:30},
@@ -239,7 +242,16 @@ export function useAutoScanner(
       // A loaded Card Slinger never exposes an empty background. In that mode
       // the user-defined scan area itself is the card slot, so a detailed,
       // stable image is a valid first card even if calibration saw the stack.
-      const cardPresent=next.sceneDifference>=tuning.entryDifference||(tuning.slingerMode&&next.contrast>=10)
+      // Scene difference alone is not card presence. As daylight changes, a
+      // textured strip of carpet can drift differently from the wooden mat and
+      // form a small portrait-shaped mask. Requiring the normal tabletop card
+      // to occupy a plausible part of the feed lets that stable local lighting
+      // change fall through to baseline adaptation instead of latching forever.
+      // Slinger mode uses a user-defined card slot and intentionally retains
+      // its contrast-based presence rule.
+      const cardPresent=(
+        next.sceneDifference>=tuning.entryDifference&&plausibleCardBounds(next.bounds)
+      )||(tuning.slingerMode&&next.contrast>=10)
       if(removalGate.current.latched){
         const replacementDifference=capturedFrame.current?analyze(pixels,undefined,capturedFrame.current).sceneDifference:0
         // A direct swap produces consecutive frames that differ substantially

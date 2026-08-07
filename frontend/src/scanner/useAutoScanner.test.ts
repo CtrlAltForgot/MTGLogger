@@ -1,5 +1,5 @@
 import {describe,expect,it} from 'vitest'
-import {analyze,paddedCaptureBounds,parseCameraRotation,pipelineHasCapacity,preferredVideoConstraints,sourceAreaForRotation} from './useAutoScanner'
+import {analyze,paddedCaptureBounds,parseCameraRotation,pipelineHasCapacity,plausibleCardBounds,preferredVideoConstraints,sourceAreaForRotation} from './useAutoScanner'
 
 const width=160,height=120
 const frame=(value=20)=>new Uint8ClampedArray(width*height*4).map((_,index)=>index%4===3?255:value)
@@ -82,6 +82,11 @@ describe('wide scanner presence analysis',()=>{
     expect(bounds!.left).toBeLessThan(12)
     expect(bounds!.width).toBeLessThan(40)
     expect(bounds!.height).toBeGreaterThan(70)
+  })
+
+  it('rejects a small portrait-shaped lighting patch as card presence',()=>{
+    expect(plausibleCardBounds({left:2,top:4,width:15,height:38})).toBe(false)
+    expect(plausibleCardBounds({left:18,top:8,width:34,height:82})).toBe(true)
   })
 })
 
