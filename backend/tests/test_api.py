@@ -1964,6 +1964,43 @@ def test_learned_camera_correction_cannot_invent_card_identity():
     assert not CardRecognizer.neural_source_can_recover_identity("correction")
 
 
+def test_two_neural_printings_can_recover_only_the_shared_card_name():
+    from types import SimpleNamespace
+
+    from mtglogger.services.recognition import CardRecognizer
+
+    def match(name, similarity=0.48, source_kind="canonical"):
+        return SimpleNamespace(
+            similarity=similarity,
+            source_kind=source_kind,
+            reference=SimpleNamespace(name=name),
+        )
+
+    assert CardRecognizer.neural_name_consensus(
+        [match("Ogre Jailbreaker"), match("Ogre Jailbreaker", 0.45)]
+    ) == "Ogre Jailbreaker"
+    assert CardRecognizer.neural_name_consensus(
+        [match("Forest"), match("Mountain", 0.47)]
+    ) is None
+    assert CardRecognizer.neural_name_consensus(
+        [match("Ogre Jailbreaker"), match("Ogre Jailbreaker", source_kind="correction")]
+    ) is None
+
+
+def test_partial_set_logo_resolves_only_inside_one_card_family():
+    from mtglogger.services.recognition import CardRecognizer
+
+    hornet_printings = [
+        {"set": "m11"},
+        {"set": "plst"},
+        {"set": "ddm"},
+    ]
+    assert CardRecognizer.partial_family_set_code("M1", hornet_printings) == "m11"
+    assert CardRecognizer.partial_family_set_code(
+        "M1", [{"set": "m11"}, {"set": "m12"}]
+    ) is None
+
+
 def test_power_toughness_does_not_replace_footer_collector_number():
     from mtglogger.services.recognition import CardRecognizer
 

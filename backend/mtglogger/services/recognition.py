@@ -900,6 +900,36 @@ class CardRecognizer:
         """
         return source_kind in {"canonical", "alternate"}
 
+    @classmethod
+    def neural_name_consensus(cls, matches: list, minimum_similarity: float = 0.44) -> str | None:
+        """Recover only a card name when leading artwork references agree."""
+        usable = [
+            match
+            for match in matches[:2]
+            if cls.neural_source_can_recover_identity(match.source_kind)
+            and match.similarity >= minimum_similarity
+        ]
+        if len(usable) < 2:
+            return None
+        names = {cls.normalized_name(match.reference.name) for match in usable}
+        return usable[0].reference.name if len(names) == 1 else None
+
+    @staticmethod
+    def partial_family_set_code(observed_text: str, cards: list[dict]) -> str | None:
+        """Resolve a clipped two-character set logo only inside one card family."""
+        tokens = {
+            token.casefold()
+            for token in re.findall(r"[A-Za-z0-9]+", observed_text)
+            if 2 <= len(token) <= 4 and any(character.isdigit() for character in token)
+        }
+        matches = {
+            card["set"].casefold()
+            for card in cards
+            for token in tokens
+            if card["set"].casefold().startswith(token)
+        }
+        return next(iter(matches)) if len(matches) == 1 else None
+
     @staticmethod
     def normalized_name(value: str) -> str:
         decomposed = unicodedata.normalize("NFKD", value.casefold())
@@ -1920,12 +1950,15 @@ class CardRecognizer:
                 and neural_matches[0].similarity >= 0.82
                 and preliminary_neural_margin >= 0.06
             )
+            consensus_name = self.neural_name_consensus(neural_matches)
+            if consensus_name:
+                neural_fast_identity = True
             if neural_fast_identity:
                 # A clear canonical embedding establishes only the card name.
                 # Exact-printing authorization remains downstream and still
                 # requires complete-family descriptor/frame corroboration.
                 text = ""
-                title = neural_matches[0].reference.name
+                title = consensus_name or neural_matches[0].reference.name
                 number = printed_set_code = copyright_year = None
                 promo_type = None
                 cards = await self._lookup_cards(
@@ -2310,10 +2343,10 @@ class CardRecognizer:
             if (
                 identity_is_constrained
                 and any(self.is_basic_land(card) for card in cards)
-                and len(re.sub(r"\D", "", number or "")) == 1
+                and len(re.sub(r"\D", "", number or "")) < 3
                 and not printed_set_code
             ):
-                # One isolated digit on a legacy land is overwhelmingly a
+                # A short isolated number on a legacy land is overwhelmingly a
                 # clipped collector numerator, not authoritative printing
                 # evidence. Let exhaustive art/artist ranking decide while the
                 # card remains reviewable if no independent proof is decisive.
@@ -2332,6 +2365,7 @@ class CardRecognizer:
                     self.extract_set_symbol_text, analysis_image
                 )
                 _, _, symbol_set, _ = self.hints(symbol_text)
+                symbol_set = symbol_set or self.partial_family_set_code(symbol_text, cards)
                 matching_sets = {
                     card["set"].casefold()
                     for card in cards
@@ -2859,13 +2893,23 @@ class CardRecognizer:
                 and set_art_score >= 65
                 and set_art_margin >= 12
             )
+            exact_set_art_proof = bool(
+                identity_is_constrained
+                and family_complete
+                and title_score >= 0.93
+                and printed_set_code
+                and self.exact_set_code_match(printed_set_code, card["set"])
+                and card["id"] == set_art_top_id
+                and set_art_score >= 65
+                and set_art_margin >= 12
+            )
             if number_scoped_art_proof:
                 # Collector number and artwork are independent physical fields.
                 # Restricting the comparison to the exact-number subset avoids
                 # unrelated same-art reprints diluting a decisive printing win.
                 confidence = max(confidence, 98.5)
                 safe_candidate_ids.add(card["id"])
-            if repaired_set_art_proof:
+            if repaired_set_art_proof or exact_set_art_proof:
                 # A damaged footer prefix (``FOORI``) can retain an exact real
                 # set suffix.  For lands, accept that recovery only when the
                 # exact collector number and the exhaustive within-set artwork
@@ -3094,6 +3138,7 @@ class CardRecognizer:
                     recovered_exact_footer_proof
                     or number_scoped_art_proof
                     or repaired_set_art_proof
+                    or exact_set_art_proof
                     or repeated_unique_year_proof
                 )
                 and not get_settings().neural_shadow_mode
@@ -3161,6 +3206,7 @@ class CardRecognizer:
                     or structured_printing_proof
                     or number_scoped_art_proof
                     or repaired_set_art_proof
+                    or exact_set_art_proof
                 ):
                     # Exact set plus a decisive illustration match is safer
                     # than a tiny collector-number crop. This specifically
@@ -3196,6 +3242,7 @@ class CardRecognizer:
                 or safe_land_match
                 or number_scoped_art_proof
                 or repaired_set_art_proof
+                or exact_set_art_proof
                 or repeated_unique_year_proof,
                 visual_printing_proof,
                 title_art_symbol_proof,
