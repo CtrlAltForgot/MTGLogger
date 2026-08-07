@@ -87,6 +87,7 @@ async def diagnose(review_id: str) -> dict:
         },
         "result": {
             "confidence": result.confidence,
+            "auto_add_safe": result.auto_add_safe,
             "processing_ms": result.processing_ms,
             "timings_ms": result.timings_ms,
             "candidates": [

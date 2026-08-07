@@ -2794,6 +2794,7 @@ class CardRecognizer:
                     text = "\n".join(
                         part for part in (text, symbol_text) if part.strip()
                     )
+            repeated_exact_footer_ids: set[str] = set()
             if identity_is_constrained and family_complete:
                 # Treat OCR fields as contradictory only when they plausibly
                 # describe at least one member of the complete card family.
@@ -2861,9 +2862,18 @@ class CardRecognizer:
                         )
                     )
                 }
+                needs_independent_land_footer = bool(
+                    len(existing_footer_ids) == 1
+                    and number
+                    and printed_set_code
+                    and any(
+                        card["id"] in existing_footer_ids and self.is_basic_land(card)
+                        for card in cards
+                    )
+                )
                 decoded_height, decoded_width = decoded.shape[:2]
                 if (
-                    len(existing_footer_ids) != 1
+                    (len(existing_footer_ids) != 1 or needs_independent_land_footer)
                     and decoded_height > decoded_width
                     and 0.68
                     <= decoded_width / max(1, decoded_height)
@@ -2910,6 +2920,11 @@ class CardRecognizer:
                         )
                     }
                     if len(detected_ids) == 1:
+                        if (
+                            needs_independent_land_footer
+                            and detected_ids == existing_footer_ids
+                        ):
+                            repeated_exact_footer_ids = detected_ids
                         number = detected_number
                         printed_set_code = detected_set or printed_set_code
                         copyright_year = detected_year or copyright_year
@@ -3020,6 +3035,10 @@ class CardRecognizer:
                     card["id"]
                     for card in cards
                     if self.collector_score(number, card["collector_number"]) == 1.0
+                    and (
+                        not printed_set_code
+                        or self.exact_set_code_match(printed_set_code, card["set"])
+                    )
                 }
                 allowed_descriptor_ids = (
                     descriptor_shortlist
@@ -3491,6 +3510,22 @@ class CardRecognizer:
                 # exact collector number and the exhaustive within-set artwork
                 # comparison independently select the same illustration.
                 confidence = max(confidence, 98.5)
+                safe_candidate_ids.add(card["id"])
+            repeated_physical_footer_proof = bool(
+                identity_is_constrained
+                and family_complete
+                and title_score >= 0.93
+                and card["id"] in repeated_exact_footer_ids
+                and number_score == 1.0
+                and set_score == 1.0
+            )
+            if repeated_physical_footer_proof:
+                # Two independent OCR geometries—the rectified identity crop
+                # and untouched camera footer—read the same globally unique
+                # set/collector pair. This is safer than trusting a single land
+                # digit and avoids an exhaustive artwork sweep when foil glare
+                # makes canonical descriptors unreliable.
+                confidence = max(confidence, 99.5)
                 safe_candidate_ids.add(card["id"])
             repeated_unique_year_proof = bool(
                 identity_is_constrained
