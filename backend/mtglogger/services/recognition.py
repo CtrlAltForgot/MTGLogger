@@ -1889,6 +1889,7 @@ class CardRecognizer:
             text = await asyncio.to_thread(self.extract_identification_text, analysis_image)
             ocr_complete = time.perf_counter()
             title, number, printed_set_code, copyright_year = self.hints(text)
+            repaired_family_set_code = False
             # Keep the camera's original footer observation separate from the
             # family-scoped lookup hints. Later recovery deliberately discards
             # numbers/codes impossible for the assumed title family; that is
@@ -2304,9 +2305,12 @@ class CardRecognizer:
                     self.set_code_score(printed_set_code, card["set"]) >= 0.78
                     for card in cards
                 ):
-                    printed_set_code = self.repair_family_set_code(
+                    repaired_set_code = self.repair_family_set_code(
                         printed_set_code, number, cards
                     )
+                    if repaired_set_code:
+                        printed_set_code = repaired_set_code
+                        repaired_family_set_code = True
             family_complete_at = time.perf_counter()
             neural_vector = (
                 neural_vector
@@ -2764,10 +2768,28 @@ class CardRecognizer:
                 )
                 and number_art_margin >= 12
             )
+            repaired_set_art_proof = bool(
+                repaired_family_set_code
+                and identity_is_constrained
+                and family_complete
+                and title_score >= 0.93
+                and number_score == 1.0
+                and set_score == 1.0
+                and card["id"] == set_art_top_id
+                and set_art_score >= 65
+                and set_art_margin >= 12
+            )
             if number_scoped_art_proof:
                 # Collector number and artwork are independent physical fields.
                 # Restricting the comparison to the exact-number subset avoids
                 # unrelated same-art reprints diluting a decisive printing win.
+                confidence = max(confidence, 98.5)
+                safe_candidate_ids.add(card["id"])
+            if repaired_set_art_proof:
+                # A damaged footer prefix (``FOORI``) can retain an exact real
+                # set suffix.  For lands, accept that recovery only when the
+                # exact collector number and the exhaustive within-set artwork
+                # comparison independently select the same illustration.
                 confidence = max(confidence, 98.5)
                 safe_candidate_ids.add(card["id"])
             repeated_unique_year_proof = bool(
@@ -2991,6 +3013,7 @@ class CardRecognizer:
                 not (
                     recovered_exact_footer_proof
                     or number_scoped_art_proof
+                    or repaired_set_art_proof
                     or repeated_unique_year_proof
                 )
                 and not get_settings().neural_shadow_mode
@@ -3057,6 +3080,7 @@ class CardRecognizer:
                     or neural_is_safe
                     or structured_printing_proof
                     or number_scoped_art_proof
+                    or repaired_set_art_proof
                 ):
                     # Exact set plus a decisive illustration match is safer
                     # than a tiny collector-number crop. This specifically
@@ -3091,6 +3115,7 @@ class CardRecognizer:
                 printing_signal
                 or safe_land_match
                 or number_scoped_art_proof
+                or repaired_set_art_proof
                 or repeated_unique_year_proof,
                 visual_printing_proof,
                 title_art_symbol_proof,
