@@ -2313,12 +2313,18 @@ class CardRecognizer:
                     for card in number_family
                 ):
                     number = None
-                if printed_set_code and not any(
-                    self.set_code_score(printed_set_code, card["set"]) >= 0.78
-                    for card in cards
-                ):
-                    repaired_set_code = self.repair_family_set_code(
-                        printed_set_code, number, cards
+                current_set_is_plausible = bool(
+                    printed_set_code
+                    and any(
+                        self.set_code_score(printed_set_code, card["set"]) >= 0.78
+                        for card in cards
+                    )
+                )
+                if not current_set_is_plausible:
+                    repaired_set_code = (
+                        self.repair_family_set_code(printed_set_code, number, cards)
+                        if printed_set_code
+                        else None
                     )
                     if not repaired_set_code:
                         # Broad recovery OCR can replace a useful damaged set
