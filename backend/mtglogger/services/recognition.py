@@ -185,15 +185,6 @@ class CardRecognizer:
 
     @staticmethod
     def rectify(image: np.ndarray) -> np.ndarray:
-        height, width = image.shape[:2]
-        portrait_ratio = width / max(1, height)
-        if height > width and 0.68 <= portrait_ratio <= 0.75:
-            # The browser detector uploads an already localized MTG-card crop
-            # at the physical 63:88 aspect ratio. Running contour selection a
-            # second time can mistake the art, rules, or mana panel for a new
-            # outer edge and discard the real collector footer. Preserve every
-            # photographed pixel and only normalize its dimensions.
-            return cv2.resize(image, (600, 840), interpolation=cv2.INTER_AREA)
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         edges = cv2.Canny(cv2.GaussianBlur(gray, (5, 5), 0), 50, 140)
         contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
@@ -255,6 +246,7 @@ class CardRecognizer:
             return max(candidates, key=lambda item: item[0])[1]
         # If no plausible card boundary exists, retain the old centered fallback
         # for very low-contrast sleeves.
+        height, width = image.shape[:2]
         crop_height = int(height * 0.98)
         crop_width = min(int(width * 0.52), int(crop_height * 63 / 88))
         x1, y1 = (width - crop_width) // 2, (height - crop_height) // 2
@@ -1004,6 +996,31 @@ class CardRecognizer:
         if len(ranked) > 1 and ranked[0][1] - ranked[1][1] < 0.2:
             return None
         return ranked[0][0]
+
+    @staticmethod
+    def exact_family_set_code_from_footer_text(
+        observed_text: str, cards: list[dict]
+    ) -> str | None:
+        """Return one literally printed family code before a language marker.
+
+        This deliberately performs no fuzzy repair. Untouched camera footers
+        can prefix a clean token with garbage (``WAORI-EN``), while a damaged
+        token such as ``WAORT-EN`` must remain unusable rather than being
+        guessed into an exact-printing authorization.
+        """
+        compact = unicodedata.normalize("NFKC", observed_text).upper()
+        languages = "EN|ES|FR|DE|IT|PT|JA|KO|RU|ZHS|ZHT|HE|LA|GRC|AR|SA|PHY"
+        matches = {
+            str(card.get("set") or "").casefold()
+            for card in cards
+            if str(card.get("set") or "").casefold() != "plst"
+            and re.search(
+                rf"{re.escape(str(card.get('set') or '').upper())}"
+                rf"[\s·•.+\-:]+(?:{languages})(?=\s|$|[A-Z])",
+                compact,
+            )
+        }
+        return next(iter(matches)) if len(matches) == 1 else None
 
     @staticmethod
     def normalized_name(value: str) -> str:
@@ -2053,6 +2070,27 @@ class CardRecognizer:
                     for card in footer_family_cards
                 ):
                     printed_set_code = None
+                if not printed_set_code:
+                    decoded_height, decoded_width = decoded.shape[:2]
+                    if (
+                        decoded_height > decoded_width
+                        and 0.68
+                        <= decoded_width / max(1, decoded_height)
+                        <= 0.75
+                    ):
+                        raw_footer_text = await asyncio.to_thread(
+                            self.extract_fixed_footer_text, decoded
+                        )
+                        raw_exact_set = self.exact_family_set_code_from_footer_text(
+                            raw_footer_text, footer_family_cards
+                        )
+                        if raw_exact_set:
+                            printed_set_code = raw_exact_set
+                            text = "\n".join(
+                                part
+                                for part in (text, raw_footer_text)
+                                if part.strip()
+                            )
                 if not printed_set_code:
                     printed_set_code = self.family_set_code_from_footer_text(
                         text, footer_family_cards, number
