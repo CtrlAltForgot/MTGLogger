@@ -2007,6 +2007,13 @@ def test_partial_set_logo_resolves_only_inside_one_card_family():
     assert CardRecognizer.partial_family_set_code(
         "M1", [{"set": "m11"}, {"set": "m12"}]
     ) is None
+    footer_family = [{"set": "ori"}, {"set": "c17"}, {"set": "plst"}]
+    assert CardRecognizer.family_set_code_from_footer_text(
+        "ORIENMATTSTEWART", footer_family
+    ) == "ori"
+    assert CardRecognizer.family_set_code_from_footer_text(
+        "WAORT-ENSCARLCRITCHLOW", footer_family
+    ) == "ori"
 
 
 def test_power_toughness_does_not_replace_footer_collector_number():

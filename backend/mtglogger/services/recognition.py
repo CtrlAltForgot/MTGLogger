@@ -952,6 +952,33 @@ class CardRecognizer:
         }
         return next(iter(matches)) if len(matches) == 1 else None
 
+    @classmethod
+    def family_set_code_from_footer_text(cls, observed_text: str, cards: list[dict]) -> str | None:
+        """Recover a family set code immediately preceding the printed EN marker."""
+        observed_codes = {
+            match[-3:].casefold()
+            for match in re.findall(
+                r"[A-Za-z0-9]{3,5}(?=[\-·•.]?EN(?:[A-Z]|\b))",
+                observed_text,
+                re.I,
+            )
+        }
+        scores: dict[str, float] = {}
+        for card in cards:
+            code = card["set"].casefold()
+            if code == "plst" or len(code) != 3:
+                continue
+            scores[code] = max(
+                scores.get(code, 0),
+                *(SequenceMatcher(None, observed, code).ratio() for observed in observed_codes),
+            )
+        ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+        if not ranked or ranked[0][1] < 2 / 3:
+            return None
+        if len(ranked) > 1 and ranked[0][1] - ranked[1][1] < 0.2:
+            return None
+        return ranked[0][0]
+
     @staticmethod
     def normalized_name(value: str) -> str:
         decomposed = unicodedata.normalize("NFKD", value.casefold())
@@ -1991,6 +2018,42 @@ class CardRecognizer:
                     language,
                     None,
                 )
+                if not printed_set_code:
+                    printed_set_code = self.family_set_code_from_footer_text(text, cards)
+                number_is_plausible = bool(
+                    number
+                    and any(
+                        self.collector_score(number, card["collector_number"]) >= 0.78
+                        for card in cards
+                    )
+                )
+                if not printed_set_code and not number_is_plausible:
+                    raw_footer_text = await asyncio.to_thread(
+                        self.extract_fixed_footer_text, decoded
+                    )
+                    if raw_footer_text.strip():
+                        text = "\n".join((text, raw_footer_text))
+                        _, raw_number, _raw_set, raw_year = self.hints(raw_footer_text)
+                        printed_set_code = self.family_set_code_from_footer_text(
+                            raw_footer_text, cards
+                        )
+                        number = raw_number or number
+                        copyright_year = raw_year or copyright_year
+                if printed_set_code:
+                    if number and not any(
+                        self.exact_set_code_match(printed_set_code, card["set"])
+                        and self.collector_score(number, card["collector_number"]) >= 0.78
+                        for card in cards
+                    ):
+                        number = None
+                    cards = await self._lookup_cards(
+                        title,
+                        number,
+                        printed_set_code,
+                        box_set_code,
+                        language,
+                        None,
+                    )
                 oracle_recovery = True
             else:
                 text = await asyncio.to_thread(
@@ -3189,6 +3252,23 @@ class CardRecognizer:
                 # itself is not transcribed.
                 confidence = max(confidence, 98.5)
                 safe_candidate_ids.add(card["id"])
+            exact_number_year_ids = {
+                candidate["id"]
+                for candidate in cards
+                if number
+                and copyright_year
+                and self.collector_score(number, candidate["collector_number"]) == 1.0
+                and int(candidate.get("released_at", "0000")[:4]) == copyright_year
+            }
+            exact_number_year_proof = bool(
+                identity_is_constrained
+                and family_complete
+                and title_score >= 0.93
+                and exact_number_year_ids == {card["id"]}
+            )
+            if exact_number_year_proof:
+                confidence = max(confidence, 98.5)
+                safe_candidate_ids.add(card["id"])
             neural_score = neural_scores.get(card["id"], 0.0)
             footer_contradiction = self.observed_footer_contradicts_printing(
                 number,
@@ -3300,6 +3380,7 @@ class CardRecognizer:
                     or exact_set_art_proof
                     or normal_list_twin_proof
                     or frame_footer_visual_proof
+                    or exact_number_year_proof
                     or repeated_unique_year_proof
                 )
                 and not get_settings().neural_shadow_mode
@@ -3369,6 +3450,7 @@ class CardRecognizer:
                     or repaired_set_art_proof
                     or exact_set_art_proof
                     or frame_footer_visual_proof
+                    or exact_number_year_proof
                 ):
                     # Exact set plus a decisive illustration match is safer
                     # than a tiny collector-number crop. This specifically
@@ -3407,6 +3489,7 @@ class CardRecognizer:
                 or exact_set_art_proof
                 or normal_list_twin_proof
                 or frame_footer_visual_proof
+                or exact_number_year_proof
                 or repeated_unique_year_proof,
                 visual_printing_proof,
                 title_art_symbol_proof,
