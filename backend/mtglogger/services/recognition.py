@@ -2186,7 +2186,11 @@ class CardRecognizer:
                 and preliminary_neural_margin >= 0.06
             )
             consensus_name = self.neural_name_consensus(neural_matches)
-            if consensus_name:
+            if (
+                consensus_name
+                and neural_matches
+                and neural_matches[0].similarity >= 0.72
+            ):
                 neural_fast_identity = True
             if neural_fast_identity:
                 # A clear canonical embedding establishes only the card name.
