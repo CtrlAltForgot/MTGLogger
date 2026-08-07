@@ -126,7 +126,15 @@ async def recognize_card(
             # camera frame; saving the rectified card caused audit replays to
             # rectify it a second time and invalidated both OCR and timing.
             save_scan(result.source, audit_path)
-            preserve_auto_added_scan(audit_path, timestamp, top, defaults.language)
+            preserve_auto_added_scan(
+                audit_path,
+                timestamp,
+                top,
+                defaults.language,
+                result.processing_ms,
+                result.confidence,
+                result.auto_add_safe,
+            )
         except (OSError, ValueError, json.JSONDecodeError):
             logger.exception("Could not archive automatic scan %s", timestamp)
         return ScanResult(

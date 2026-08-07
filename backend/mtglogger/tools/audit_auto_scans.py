@@ -59,6 +59,9 @@ async def audit(since: str | None, limit: int | None) -> dict:
 
     available = [item for item in results if not item.get("missing_image")]
     latencies = [item["processing_ms"] for item in available]
+    recorded_latencies = [
+        record["processing_ms"] for record in records if record.get("processing_ms") is not None
+    ]
     return {
         "requested_records": len(records),
         "available_records": len(available),
@@ -71,6 +74,13 @@ async def audit(since: str | None, limit: int | None) -> dict:
         ),
         "latency_ms_mean": round(statistics.mean(latencies), 1) if latencies else None,
         "latency_ms_median": round(statistics.median(latencies), 1) if latencies else None,
+        "recorded_live_latency_count": len(recorded_latencies),
+        "recorded_live_latency_ms_mean": (
+            round(statistics.mean(recorded_latencies), 1) if recorded_latencies else None
+        ),
+        "recorded_live_latency_ms_median": (
+            round(statistics.median(recorded_latencies), 1) if recorded_latencies else None
+        ),
         "results": results,
     }
 

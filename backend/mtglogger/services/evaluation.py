@@ -66,6 +66,9 @@ def preserve_auto_added_scan(
     scan_id: str,
     candidate: Candidate,
     language: str,
+    processing_ms: int,
+    confidence: float,
+    auto_add_safe: bool,
 ) -> Path:
     """Retain an automatic decision as audit evidence, never as a training label.
 
@@ -87,6 +90,9 @@ def preserve_auto_added_scan(
         "predicted_collector_number": candidate.collector_number,
         "language": language,
         "image_kind": "camera_source",
+        "processing_ms": processing_ms,
+        "confidence": confidence,
+        "auto_add_safe": auto_add_safe,
     }
     manifest = root / "manifest.json"
     with _manifest_lock:

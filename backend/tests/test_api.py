@@ -3147,7 +3147,9 @@ def test_auto_added_scan_is_auditable_but_not_labeled_for_training(tmp_path, mon
         confidence=99.5,
     )
 
-    preserved = evaluation.preserve_auto_added_scan(source, "scan-107", candidate, "en")
+    preserved = evaluation.preserve_auto_added_scan(
+        source, "scan-107", candidate, "en", 1840, 99.5, True
+    )
 
     assert preserved.read_bytes() == source.read_bytes()
     assert not (corpus / "manifest.json").exists()
@@ -3161,6 +3163,9 @@ def test_auto_added_scan_is_auditable_but_not_labeled_for_training(tmp_path, mon
             "predicted_collector_number": "107",
             "language": "en",
             "image_kind": "camera_source",
+            "processing_ms": 1840,
+            "confidence": 99.5,
+            "auto_add_safe": True,
         }
     ]
 
