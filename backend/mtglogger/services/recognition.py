@@ -626,7 +626,7 @@ class CardRecognizer:
         if not set_code:
             for line in reversed(lines):
                 match = re.match(
-                    rf"^\s*([A-Z2][A-Z0-9]{{1,5}}?)(?:{languages})(?=\s|$|[A-Z])",
+                    rf"^\s*([A-Z2][A-Z0-9]{{1,5}}?)(?:{languages})(?=[^A-Z0-9]|$|[A-Z])",
                     line,
                 )
                 if match:
@@ -651,7 +651,10 @@ class CardRecognizer:
                     # Current frames place the one-letter rarity before a
                     # zero-padded collector number (for example ``C0049``).
                     # That is printing evidence, not a five-character set.
-                    and not re.fullmatch(r"[CMRU]\d{3,4}", token)
+                    and not (
+                        re.fullmatch(r"[CMRU][0-9O]{3,4}", token)
+                        and any(character.isdigit() for character in token[1:])
+                    )
                     and any(character.isalpha() for character in token)
                     and (any(character.isdigit() for character in token) or len(token) == 3)
                 ):
@@ -707,9 +710,15 @@ class CardRecognizer:
             # print rarity before the zero-padded number (``C0049``). Keep the
             # zero padding here; collector comparison normalizes it safely.
             footer = "\n".join(lines[-6:])
-            rarity_prefixed = re.search(r"(?<![A-Z0-9])[CMRU](\d{3,4})(?!\d)", footer)
+            rarity_prefixed = re.search(
+                r"(?<![A-Z0-9])[CMRU]([0-9O]{3,4})(?![A-Z0-9])", footer
+            )
             if rarity_prefixed:
-                number = rarity_prefixed.group(1)
+                observed = rarity_prefixed.group(1)
+                # Round O back to zero only inside this rigid current-frame
+                # field. Requiring a real digit keeps words and set codes out.
+                if any(character.isdigit() for character in observed):
+                    number = observed.replace("O", "0")
         if not number:
             # Modern footers print a zero-padded collector number immediately
             # beside a one-letter rarity. OCR commonly joins them ("005 R" ->
