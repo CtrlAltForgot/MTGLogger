@@ -185,6 +185,15 @@ class CardRecognizer:
 
     @staticmethod
     def rectify(image: np.ndarray) -> np.ndarray:
+        height, width = image.shape[:2]
+        portrait_ratio = width / max(1, height)
+        if height > width and 0.68 <= portrait_ratio <= 0.75:
+            # The browser detector uploads an already localized MTG-card crop
+            # at the physical 63:88 aspect ratio. Running contour selection a
+            # second time can mistake the art, rules, or mana panel for a new
+            # outer edge and discard the real collector footer. Preserve every
+            # photographed pixel and only normalize its dimensions.
+            return cv2.resize(image, (600, 840), interpolation=cv2.INTER_AREA)
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         edges = cv2.Canny(cv2.GaussianBlur(gray, (5, 5), 0), 50, 140)
         contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
@@ -246,7 +255,6 @@ class CardRecognizer:
             return max(candidates, key=lambda item: item[0])[1]
         # If no plausible card boundary exists, retain the old centered fallback
         # for very low-contrast sleeves.
-        height, width = image.shape[:2]
         crop_height = int(height * 0.98)
         crop_width = min(int(width * 0.52), int(crop_height * 63 / 88))
         x1, y1 = (width - crop_width) // 2, (height - crop_height) // 2

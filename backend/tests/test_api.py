@@ -751,6 +751,23 @@ def test_rectify_finds_a_small_card_away_from_frame_center():
     assert corrected.mean() > 70
 
 
+def test_rectify_preserves_an_already_localized_card_portrait():
+    import cv2
+    import numpy as np
+
+    from mtglogger.services.recognition import CardRecognizer
+
+    portrait = np.zeros((720, 515, 3), dtype=np.uint8)
+    portrait[:90] = (180, 40, 20)
+    portrait[625:] = (15, 210, 80)
+
+    corrected = CardRecognizer.rectify(portrait)
+
+    expected = cv2.resize(portrait, (600, 840), interpolation=cv2.INTER_AREA)
+    assert np.array_equal(corrected, expected)
+    assert corrected[-100:, :, 1].mean() > 200
+
+
 def test_rectify_joins_disconnected_off_center_sleeved_card_edges():
     import cv2
     import numpy as np
