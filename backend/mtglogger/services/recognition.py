@@ -2056,18 +2056,6 @@ class CardRecognizer:
                         for card in footer_family_cards
                     )
                 )
-                if not printed_set_code and not number_is_plausible:
-                    raw_footer_text = await asyncio.to_thread(
-                        self.extract_fixed_footer_text, decoded
-                    )
-                    if raw_footer_text.strip():
-                        text = "\n".join((text, raw_footer_text))
-                        _, raw_number, _raw_set, raw_year = self.hints(raw_footer_text)
-                        printed_set_code = self.family_set_code_from_footer_text(
-                            raw_footer_text, footer_family_cards, raw_number
-                        )
-                        number = raw_number or number
-                        copyright_year = raw_year or copyright_year
                 if printed_set_code or number_is_plausible:
                     if number and not any(
                         self.exact_set_code_match(printed_set_code, card["set"])
