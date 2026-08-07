@@ -2084,13 +2084,19 @@ class CardRecognizer:
                         raw_exact_set = self.exact_family_set_code_from_footer_text(
                             raw_footer_text, footer_family_cards
                         )
+                        if not raw_exact_set:
+                            # Recognition-only OCR can confuse the final set
+                            # glyph (ORI -> ORT). Repair it only inside the
+                            # already established card family, and deliberately
+                            # discard every collector-number guess from this
+                            # raw pass. This prevents a damaged ``62`` from
+                            # competing with the rectified physical evidence as
+                            # the real 10E #162 printing.
+                            raw_exact_set = self.family_set_code_from_footer_text(
+                                raw_footer_text, footer_family_cards, None
+                            )
                         if raw_exact_set:
                             printed_set_code = raw_exact_set
-                            text = "\n".join(
-                                part
-                                for part in (text, raw_footer_text)
-                                if part.strip()
-                            )
                 if not printed_set_code:
                     printed_set_code = self.family_set_code_from_footer_text(
                         text, footer_family_cards, number
