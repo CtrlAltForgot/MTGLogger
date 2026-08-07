@@ -1464,7 +1464,7 @@ class CardRecognizer:
         """Accept a confirmed camera printing when two profile regions agree."""
         return bool(
             source_kind == "correction"
-            and similarity >= 0.85
+            and similarity >= 0.84
             and margin >= 0.06
             and identity_is_constrained
             and family_complete
@@ -2486,6 +2486,18 @@ class CardRecognizer:
             if len(descriptor_art_matches) > 1
             else (descriptor_art_matches[0][1] if descriptor_art_matches else 0)
         )
+        number_art_matches = [
+            (reference.scryfall_id, score)
+            for reference, score in descriptor_art_matches
+            if number and self.collector_score(number, reference.collector_number) == 1.0
+        ]
+        number_art_top_id = number_art_matches[0][0] if number_art_matches else None
+        number_art_score = number_art_matches[0][1] if number_art_matches else 0
+        number_art_margin = (
+            number_art_matches[0][1] - number_art_matches[1][1]
+            if len(number_art_matches) > 1
+            else number_art_score
+        )
         descriptor_symbol_scores = {
             reference.scryfall_id: score for reference, score in descriptor_symbol_matches
         }
@@ -2701,6 +2713,41 @@ class CardRecognizer:
                 exact_set_counts[card["set"].casefold()],
             )
             if printing_signal:
+                confidence = max(confidence, 98.5)
+                safe_candidate_ids.add(card["id"])
+            number_scoped_art_proof = bool(
+                identity_is_constrained
+                and family_complete
+                and title_score >= 0.93
+                and number_score == 1.0
+                and card["id"] == number_art_top_id
+                and number_art_score >= (84 if self.is_basic_land(card) else 88)
+                and number_art_margin >= 12
+            )
+            if number_scoped_art_proof:
+                # Collector number and artwork are independent physical fields.
+                # Restricting the comparison to the exact-number subset avoids
+                # unrelated same-art reprints diluting a decisive printing win.
+                confidence = max(confidence, 98.5)
+                safe_candidate_ids.add(card["id"])
+            repeated_unique_year_proof = bool(
+                identity_is_constrained
+                and family_complete
+                and title_score >= 0.93
+                and unique_release_year
+                and copyright_year
+                and len(
+                    re.findall(
+                        rf"(?<!\d){copyright_year}(?!\d)",
+                        unicodedata.normalize("NFKC", text),
+                    )
+                )
+                >= 2
+            )
+            if repeated_unique_year_proof:
+                # Recognition-only footer rows independently read the same full
+                # copyright year twice; when only one family printing has that
+                # year, this is printing-specific without relying on artwork.
                 confidence = max(confidence, 98.5)
                 safe_candidate_ids.add(card["id"])
             descriptor_score = descriptor_scores.get(card["id"], 0)

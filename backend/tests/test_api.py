@@ -1155,6 +1155,12 @@ def test_confirmed_camera_requires_two_exact_visual_regions_at_lower_similarity(
     }
 
     assert CardRecognizer.confirmed_camera_visual_consensus_is_safe(**evidence)
+    assert CardRecognizer.confirmed_camera_visual_consensus_is_safe(
+        **(evidence | {"similarity": 0.84})
+    )
+    assert not CardRecognizer.confirmed_camera_visual_consensus_is_safe(
+        **(evidence | {"similarity": 0.839})
+    )
     assert not CardRecognizer.confirmed_camera_visual_consensus_is_safe(
         **(evidence | {"descriptor_top_id": "plst-gtc-102"})
     )
