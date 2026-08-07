@@ -2595,6 +2595,14 @@ def test_ocr_hints_recovers_collector_number_when_slash_is_dropped():
     assert year == 2012
 
 
+def test_ocr_hints_rejects_implausible_concatenated_collector_pair():
+    from mtglogger.services.recognition import CardRecognizer
+
+    assert CardRecognizer.hints(
+        "Faithless Looting\nGabor Szikszai\n4093122"
+    )[1] is None
+
+
 def test_ocr_hints_recovers_collector_pair_with_dot_separator():
     from mtglogger.services.recognition import CardRecognizer
 

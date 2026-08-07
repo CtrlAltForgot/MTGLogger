@@ -760,7 +760,15 @@ class CardRecognizer:
                 # exceed the printed denominator, and tiny denominator digits
                 # are often wrong (``236/249`` -> ``236219``). The numerator is
                 # still useful when title/year/artist independently agree.
-                if 1 <= int(numerator) <= 9999 and int(denominator) >= 100:
+                # Bonus sheets can exceed the printed set total, but a
+                # numerator dozens of times larger than the denominator is
+                # concatenated copyright/artist noise, not a collector pair
+                # (for example ``4093122`` -> bogus 4093/122).
+                if (
+                    1 <= int(numerator) <= 9999
+                    and int(denominator) >= 100
+                    and int(numerator) <= int(denominator) * 5
+                ):
                     number = numerator
                     break
         if not number:
@@ -4314,6 +4322,13 @@ class CardRecognizer:
                 # digit is common and those rules explicitly resolve it.
                 top.confidence = min(top.confidence, 98.4)
                 safe_candidate_ids.discard(top.scryfall_id)
+            # ``safe_candidate_ids`` is populated only by independent
+            # exact-printing verifiers above and every footer contradiction
+            # gets a final veto immediately before this point. A later generic
+            # oracle/visual cap must not leave an otherwise authorized top
+            # candidate below the API's auto-add confidence threshold.
+            if top.scryfall_id in safe_candidate_ids:
+                top.confidence = max(top.confidence, 98.5)
         finished = time.perf_counter()
         logger.info(
             "Recognition timings frame=%dx%d recovery=%s prep=%dms ocr=%dms "
