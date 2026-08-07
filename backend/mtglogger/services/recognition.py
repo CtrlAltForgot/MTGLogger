@@ -389,6 +389,12 @@ class CardRecognizer:
         """Read normalized collector and set rows without text detection."""
         return "\n".join(self.extract_fixed_footer_lines(image))
 
+    def extract_raw_footer_band_text(self, image: np.ndarray) -> str:
+        """Detect text only in the untouched physical footer band."""
+        height = image.shape[0]
+        footer = image[int(height * 0.84) : int(height * 0.995)]
+        return self.extract_text(self.scale_to_width(footer, 1000))
+
     def extract_set_symbol_text(self, image: np.ndarray) -> str:
         """Read an alphanumeric expansion/core-set logo from the type-line corner."""
         height, width = image.shape[:2]
@@ -2097,6 +2103,49 @@ class CardRecognizer:
                             )
                         if raw_exact_set:
                             printed_set_code = raw_exact_set
+                        if not raw_exact_set:
+                            detected_footer_text = await asyncio.to_thread(
+                                self.extract_raw_footer_band_text, decoded
+                            )
+                            _, detected_number, detected_set, detected_year = self.hints(
+                                detected_footer_text
+                            )
+                            if not detected_set or not any(
+                                self.exact_set_code_match(detected_set, card["set"])
+                                for card in footer_family_cards
+                            ):
+                                detected_set = self.family_set_code_from_footer_text(
+                                    detected_footer_text,
+                                    footer_family_cards,
+                                    detected_number,
+                                )
+                            detected_matches = [
+                                card
+                                for card in footer_family_cards
+                                if detected_number
+                                and detected_set
+                                and self.collector_score(
+                                    detected_number, card["collector_number"]
+                                )
+                                == 1.0
+                                and self.exact_set_code_match(
+                                    detected_set, card["set"]
+                                )
+                                and (
+                                    not detected_year
+                                    or int(card.get("released_at", "0000")[:4])
+                                    == detected_year
+                                )
+                            ]
+                            if len(detected_matches) == 1:
+                                number = detected_number
+                                printed_set_code = detected_set
+                                copyright_year = detected_year or copyright_year
+                                text = "\n".join(
+                                    part
+                                    for part in (text, detected_footer_text)
+                                    if part.strip()
+                                )
                 if not printed_set_code:
                     printed_set_code = self.family_set_code_from_footer_text(
                         text, footer_family_cards, number

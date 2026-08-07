@@ -2676,6 +2676,23 @@ def test_fixed_footer_reader_uses_normalized_collector_and_set_rows():
     assert CardRecognizer.hints(text)[1:3] == ("017", "ori")
 
 
+def test_raw_footer_band_detector_preserves_the_untouched_bottom_rows():
+    import numpy as np
+
+    from mtglogger.services.recognition import CardRecognizer
+
+    recognizer = CardRecognizer.__new__(CardRecognizer)
+    observed = []
+    recognizer.extract_text = lambda image: observed.append(image.shape) or "265/272 ORI EN"
+
+    text = recognizer.extract_raw_footer_band_text(
+        np.zeros((720, 515, 3), dtype=np.uint8)
+    )
+
+    assert text == "265/272 ORI EN"
+    assert observed == [(217, 1000, 3)]
+
+
 def test_ocr_hints_recovers_embedded_core_set_symbol():
     from mtglogger.services.recognition import CardRecognizer
 
