@@ -1896,11 +1896,57 @@ class CardRecognizer:
             )
             prepared = time.perf_counter()
             card_structure = await asyncio.to_thread(self.has_card_structure, analysis_image)
-            text = await asyncio.to_thread(
-                self.extract_focused_identification_text, analysis_image
+            neural_vector = await neural_task if neural_task is not None else None
+            neural_matches = (
+                await asyncio.to_thread(
+                    neural.search_vector,
+                    neural_vector,
+                    10,
+                    ignored_source_ids=ignored_example_review_ids,
+                )
+                if neural_live
+                else []
             )
+            preliminary_neural_margin = (
+                neural_matches[0].similarity - neural_matches[1].similarity
+                if len(neural_matches) > 1
+                else (neural_matches[0].similarity if neural_matches else 0.0)
+            )
+            neural_fast_identity = bool(
+                neural_matches
+                and self.neural_source_can_recover_identity(
+                    neural_matches[0].source_kind
+                )
+                and neural_matches[0].similarity >= 0.82
+                and preliminary_neural_margin >= 0.06
+            )
+            if neural_fast_identity:
+                # A clear canonical embedding establishes only the card name.
+                # Exact-printing authorization remains downstream and still
+                # requires complete-family descriptor/frame corroboration.
+                text = ""
+                title = neural_matches[0].reference.name
+                number = printed_set_code = copyright_year = None
+                promo_type = None
+                cards = await self._lookup_cards(
+                    title, None, None, box_set_code, language, None
+                )
+                oracle_recovery = True
+            else:
+                text = await asyncio.to_thread(
+                    self.extract_focused_identification_text, analysis_image
+                )
+                title, number, printed_set_code, copyright_year = self.hints(text)
+                promo_type = self.promo_type_hint(text)
+                cards = await self._lookup_cards(
+                    title,
+                    number,
+                    printed_set_code,
+                    box_set_code,
+                    language,
+                    promo_type,
+                )
             ocr_complete = time.perf_counter()
-            title, number, printed_set_code, copyright_year = self.hints(text)
             repaired_family_set_code = False
             # Keep the camera's original footer observation separate from the
             # family-scoped lookup hints. Later recovery deliberately discards
@@ -1911,18 +1957,6 @@ class CardRecognizer:
             raw_observed_number = number
             raw_observed_set_code = printed_set_code
             raw_observed_text = text
-            promo_type = self.promo_type_hint(text)
-            lookup_task = asyncio.create_task(
-                self._lookup_cards(
-                    title,
-                    number,
-                    printed_set_code,
-                    box_set_code,
-                    language,
-                    promo_type,
-                )
-            )
-            cards = await lookup_task
             exact_footer_card = self.unique_exact_footer_card(number, printed_set_code, cards)
             if exact_footer_card and (
                 title is None
@@ -1963,9 +1997,7 @@ class CardRecognizer:
             # card images, so compare them with the original rectified camera
             # pixels. This reuses an existing frame and adds no processing pass.
             descriptor_image = corrected
-            neural_vector = None
-            neural_matches = []
-            neural_recovered_identity = False
+            neural_recovered_identity = neural_fast_identity
             # The embedding is computed alongside OCR. Consult it before the
             # expensive full-frame OCR recovery so a decisive artwork identity
             # can fuse with an already-readable footer. This turns the common
@@ -1977,13 +2009,14 @@ class CardRecognizer:
                     title, number, printed_set_code, copyright_year, cards
                 )
             ):
-                neural_vector = await neural_task if neural_task is not None else None
-                neural_matches = await asyncio.to_thread(
-                    neural.search_vector,
-                    neural_vector,
-                    10,
-                    ignored_source_ids=ignored_example_review_ids,
-                )
+                if not neural_matches:
+                    neural_vector = await neural_task if neural_task is not None else None
+                    neural_matches = await asyncio.to_thread(
+                        neural.search_vector,
+                        neural_vector,
+                        10,
+                        ignored_source_ids=ignored_example_review_ids,
+                    )
                 neural_identity_margin = (
                     neural_matches[0].similarity - neural_matches[1].similarity
                     if len(neural_matches) > 1
