@@ -1942,6 +1942,20 @@ def test_final_footer_veto_ignores_short_incidental_numbers():
     assert CardRecognizer.observed_footer_is_reliable("150", None, "Cunning Strike\n150")
 
 
+def test_damaged_set_prefix_repairs_only_with_exact_family_collector():
+    from mtglogger.services.recognition import CardRecognizer
+
+    cards = [
+        {"set": "ori", "collector_number": "267"},
+        {"set": "rtr", "collector_number": "267"},
+        {"set": "mom", "collector_number": "280"},
+    ]
+
+    assert CardRecognizer.repair_family_set_code("foori", "267", cards) == "ori"
+    assert CardRecognizer.repair_family_set_code("foori", "268", cards) is None
+    assert CardRecognizer.repair_family_set_code("xxrtr", "267", cards) == "rtr"
+
+
 def test_learned_camera_correction_cannot_invent_card_identity():
     from mtglogger.services.recognition import CardRecognizer
 

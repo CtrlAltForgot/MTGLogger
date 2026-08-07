@@ -866,6 +866,26 @@ class CardRecognizer:
             return True
         return len(re.sub(r"\D", "", number)) >= 3
 
+    @classmethod
+    def repair_family_set_code(
+        cls,
+        observed_set: str | None,
+        observed_number: str | None,
+        cards: list[dict],
+    ) -> str | None:
+        """Recover a real set suffix from a slightly damaged footer token."""
+        if not observed_set or not observed_number:
+            return None
+        observed = observed_set.casefold()
+        matches = {
+            card["set"].casefold()
+            for card in cards
+            if 0 <= len(observed) - len(card["set"]) <= 2
+            and observed.endswith(card["set"].casefold())
+            and cls.collector_score(observed_number, card["collector_number"]) == 1.0
+        }
+        return next(iter(matches)) if len(matches) == 1 else None
+
     @staticmethod
     def neural_source_can_recover_identity(source_kind: str | None) -> bool:
         """Allow reference artwork, but not learned corrections, to name a card.
@@ -2284,7 +2304,9 @@ class CardRecognizer:
                     self.set_code_score(printed_set_code, card["set"]) >= 0.78
                     for card in cards
                 ):
-                    printed_set_code = None
+                    printed_set_code = self.repair_family_set_code(
+                        printed_set_code, number, cards
+                    )
             family_complete_at = time.perf_counter()
             neural_vector = (
                 neural_vector
@@ -2734,7 +2756,12 @@ class CardRecognizer:
                 and title_score >= 0.93
                 and number_score == 1.0
                 and card["id"] == number_art_top_id
-                and number_art_score >= (84 if self.is_basic_land(card) else 88)
+                and number_art_score
+                >= (
+                    65
+                    if self.is_basic_land(card) and set_score == 1.0
+                    else (84 if self.is_basic_land(card) else 88)
+                )
                 and number_art_margin >= 12
             )
             if number_scoped_art_proof:
