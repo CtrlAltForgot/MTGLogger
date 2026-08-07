@@ -392,7 +392,7 @@ class CardRecognizer:
     def extract_raw_footer_band_text(self, image: np.ndarray) -> str:
         """Detect text only in the untouched physical footer band."""
         height = image.shape[0]
-        footer = image[int(height * 0.84) : int(height * 0.995)]
+        footer = image[int(height * 0.78) : int(height * 0.995)]
         # The detector itself is capped at 840px. Enlarging beyond that is
         # immediately downscaled again and costs ~300ms on difficult lands
         # without improving collector/set transcription.
@@ -2662,6 +2662,82 @@ class CardRecognizer:
                     if repaired_set_code:
                         printed_set_code = repaired_set_code
                         repaired_family_set_code = True
+                existing_footer_ids = {
+                    card["id"]
+                    for card in cards
+                    if number
+                    and self.collector_score(number, card["collector_number"]) == 1.0
+                    and (
+                        (
+                            printed_set_code
+                            and self.exact_set_code_match(
+                                printed_set_code, card["set"]
+                            )
+                        )
+                        or (
+                            copyright_year
+                            and int(card.get("released_at", "0000")[:4])
+                            == copyright_year
+                        )
+                    )
+                }
+                decoded_height, decoded_width = decoded.shape[:2]
+                if (
+                    len(existing_footer_ids) != 1
+                    and decoded_height > decoded_width
+                    and 0.68
+                    <= decoded_width / max(1, decoded_height)
+                    <= 0.75
+                ):
+                    # The identity is complete but exact-print evidence is not.
+                    # Read only the untouched physical footer and accept it
+                    # only when collector+set or collector+year intersects at
+                    # exactly one family printing. This resolves normal/List
+                    # twins without making image similarity an auto-add proof.
+                    detected_footer_text = await asyncio.to_thread(
+                        self.extract_raw_footer_band_text, decoded
+                    )
+                    _, detected_number, detected_set, detected_year = self.hints(
+                        detected_footer_text
+                    )
+                    if not detected_set or not any(
+                        self.exact_set_code_match(detected_set, card["set"])
+                        for card in cards
+                    ):
+                        detected_set = self.family_set_code_from_footer_text(
+                            detected_footer_text, cards, detected_number
+                        )
+                    detected_ids = {
+                        card["id"]
+                        for card in cards
+                        if detected_number
+                        and self.collector_score(
+                            detected_number, card["collector_number"]
+                        )
+                        == 1.0
+                        and (
+                            (
+                                detected_set
+                                and self.exact_set_code_match(
+                                    detected_set, card["set"]
+                                )
+                            )
+                            or (
+                                detected_year
+                                and int(card.get("released_at", "0000")[:4])
+                                == detected_year
+                            )
+                        )
+                    }
+                    if len(detected_ids) == 1:
+                        number = detected_number
+                        printed_set_code = detected_set or printed_set_code
+                        copyright_year = detected_year or copyright_year
+                        text = "\n".join(
+                            part
+                            for part in (text, detected_footer_text)
+                            if part.strip()
+                        )
             family_complete_at = time.perf_counter()
             neural_vector = (
                 neural_vector
