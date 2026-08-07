@@ -2080,6 +2080,14 @@ class CardRecognizer:
                 ):
                     printed_set_code = None
                 if not printed_set_code:
+                    # The rectified footer is already in memory and commonly
+                    # retains enough set/language structure for a safe
+                    # family-scoped repair. Exhaust it before invoking any raw
+                    # camera OCR fallback.
+                    printed_set_code = self.family_set_code_from_footer_text(
+                        text, footer_family_cards, number
+                    )
+                if not printed_set_code:
                     decoded_height, decoded_width = decoded.shape[:2]
                     if (
                         decoded_height > decoded_width
@@ -2149,10 +2157,6 @@ class CardRecognizer:
                                     for part in (text, detected_footer_text)
                                     if part.strip()
                                 )
-                if not printed_set_code:
-                    printed_set_code = self.family_set_code_from_footer_text(
-                        text, footer_family_cards, number
-                    )
                 number_is_plausible = bool(
                     number
                     and any(
