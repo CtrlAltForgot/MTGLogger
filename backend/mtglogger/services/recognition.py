@@ -2018,18 +2018,24 @@ class CardRecognizer:
                     language,
                     None,
                 )
+                footer_family_cards, _footer_family_total = await asyncio.to_thread(
+                    self._lookup_local_printing_family, title, language
+                )
+                footer_family_cards = footer_family_cards or cards
                 if printed_set_code and not any(
                     self.exact_set_code_match(printed_set_code, card["set"])
-                    for card in cards
+                    for card in footer_family_cards
                 ):
                     printed_set_code = None
                 if not printed_set_code:
-                    printed_set_code = self.family_set_code_from_footer_text(text, cards)
+                    printed_set_code = self.family_set_code_from_footer_text(
+                        text, footer_family_cards
+                    )
                 number_is_plausible = bool(
                     number
                     and any(
                         self.collector_score(number, card["collector_number"]) >= 0.78
-                        for card in cards
+                        for card in footer_family_cards
                     )
                 )
                 if not printed_set_code and not number_is_plausible:
@@ -2040,7 +2046,7 @@ class CardRecognizer:
                         text = "\n".join((text, raw_footer_text))
                         _, raw_number, _raw_set, raw_year = self.hints(raw_footer_text)
                         printed_set_code = self.family_set_code_from_footer_text(
-                            raw_footer_text, cards
+                            raw_footer_text, footer_family_cards
                         )
                         number = raw_number or number
                         copyright_year = raw_year or copyright_year
@@ -2048,7 +2054,7 @@ class CardRecognizer:
                     if number and not any(
                         self.exact_set_code_match(printed_set_code, card["set"])
                         and self.collector_score(number, card["collector_number"]) >= 0.78
-                        for card in cards
+                        for card in footer_family_cards
                     ):
                         number = None
                     cards = await self._lookup_cards(
