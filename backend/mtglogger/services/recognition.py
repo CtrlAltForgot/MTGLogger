@@ -3031,6 +3031,48 @@ class CardRecognizer:
                 safe_candidate_ids.add(card["id"])
             descriptor_score = descriptor_scores.get(card["id"], 0)
             descriptor_symbol_score = descriptor_symbol_scores.get(card["id"], 0)
+            normal_list_twin_proof = False
+            if len(neural_matches) >= 2 and card["id"] == neural_top_id:
+                normal_match, list_match = neural_matches[:2]
+                normal_number = normal_match.reference.collector_number.casefold()
+                list_number = list_match.reference.collector_number.casefold()
+                normal_list_twin_proof = bool(
+                    normal_match.source_kind in {"canonical", "alternate"}
+                    and list_match.source_kind in {"canonical", "alternate"}
+                    and normal_match.reference.set_code.casefold() != "plst"
+                    and list_match.reference.set_code.casefold() == "plst"
+                    and self.normalized_name(normal_match.reference.name)
+                    == self.normalized_name(list_match.reference.name)
+                    and normal_match.similarity >= 0.78
+                    and list_match.similarity >= 0.78
+                    and normal_match.similarity - list_match.similarity >= 0.0005
+                    and list_number.endswith(
+                        f"{normal_match.reference.set_code.casefold()}-{normal_number}"
+                    )
+                    and descriptor_scores.get(normal_match.reference.scryfall_id, 0) >= 95
+                    and descriptor_scores.get(list_match.reference.scryfall_id, 0) >= 95
+                    and abs(
+                        descriptor_scores.get(normal_match.reference.scryfall_id, 0)
+                        - descriptor_scores.get(list_match.reference.scryfall_id, 0)
+                    )
+                    <= 1
+                )
+            frame_footer_visual_proof = bool(
+                self.is_basic_land(card)
+                and descriptor_catalog_complete
+                and card["id"] == descriptor_top_id == visual_top_id
+                and descriptor_score >= 99
+                and descriptor_margin >= 10
+                and visual_scores.get(card["id"], 0) >= 75
+            )
+            if normal_list_twin_proof or frame_footer_visual_proof:
+                # The List copy is distinguished by its physical lower-left
+                # stamp; canonical neural images retain that mark even though
+                # art/full ORB features otherwise tie. For lands, a decisive
+                # full footer/frame match plus the independent frame hash may
+                # veto one damaged OCR digit.
+                confidence = max(confidence, 98.5)
+                safe_candidate_ids.add(card["id"])
             visual_printing_proof = bool(
                 not self.is_basic_land(card)
                 and title_score >= 0.72
@@ -3339,7 +3381,7 @@ class CardRecognizer:
             # Reused artwork can make a promo descriptor look nearly perfect.
             # The physical footer remains authoritative for exact-printing
             # identity, so a contradicted candidate must neither lead nor add.
-            if footer_contradiction:
+            if footer_contradiction and not frame_footer_visual_proof:
                 confidence = min(confidence, 90.0)
                 safe_candidate_ids.discard(card["id"])
             confidence = min(99.5, confidence)
