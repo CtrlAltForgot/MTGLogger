@@ -1759,6 +1759,14 @@ class CardRecognizer:
             text = await asyncio.to_thread(self.extract_identification_text, analysis_image)
             ocr_complete = time.perf_counter()
             title, number, printed_set_code, copyright_year = self.hints(text)
+            # Keep the camera's original footer observation separate from the
+            # family-scoped lookup hints. Later recovery deliberately discards
+            # numbers/codes impossible for the assumed title family; that is
+            # useful for ranking but must not erase physical evidence that
+            # disproves a truncated-title candidate (Cunning Strike #150 was
+            # once narrowed to singleton Cunning EXO #28 this way).
+            raw_observed_number = number
+            raw_observed_set_code = printed_set_code
             promo_type = self.promo_type_hint(text)
             lookup_task = asyncio.create_task(
                 self._lookup_cards(
@@ -3040,7 +3048,17 @@ class CardRecognizer:
                 runner_up_confidence,
                 self.card_name_similarity(title, top.name),
                 descriptor_agrees or artwork_agrees or unique_artist_agrees,
+            ) and not self.observed_footer_contradicts_printing(
+                number,
+                printed_set_code,
+                top.collector_number,
+                top.set_code,
             ):
+                # A candidate lead can corroborate weak/missing footer text,
+                # but it must never overrule a clearly different collector or
+                # set observation. ``Cunning Strike`` split across OCR lines
+                # once retrieved singleton ``Cunning``; its visible #150 had
+                # already disproved EXO #28 before this shortcut re-added it.
                 top.confidence = max(top.confidence, 98.5)
                 safe_candidate_ids.add(top.scryfall_id)
             if self.has_safe_multimodal_printing_consensus(
@@ -3076,6 +3094,23 @@ class CardRecognizer:
                 # this path auditable; basic lands retain stricter safeguards.
                 top.confidence = max(top.confidence, 98.5)
                 safe_candidate_ids.add(top.scryfall_id)
+            if (
+                not self.is_basic_land(top_card)
+                and self.observed_footer_contradicts_printing(
+                    raw_observed_number,
+                    raw_observed_set_code,
+                    top.collector_number,
+                    top.set_code,
+                )
+            ):
+                # This is the final automatic-write invariant. Earlier gates
+                # may accumulate safety evidence independently, but none may
+                # authorize a non-land printing that a readable physical
+                # collector/set footer disproves. Basic lands retain their
+                # stricter set-scoped artwork rules because one noisy collector
+                # digit is common and those rules explicitly resolve it.
+                top.confidence = min(top.confidence, 98.4)
+                safe_candidate_ids.discard(top.scryfall_id)
         finished = time.perf_counter()
         logger.info(
             "Recognition timings frame=%dx%d recovery=%s prep=%dms ocr=%dms "
