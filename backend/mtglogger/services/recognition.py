@@ -2313,7 +2313,7 @@ class CardRecognizer:
                 oracle_recovery = True
             else:
                 text = await asyncio.to_thread(
-                    self.extract_focused_identification_text, analysis_image
+                    self.extract_identification_text, analysis_image
                 )
                 title, number, printed_set_code, copyright_year = self.hints(text)
                 promo_type = self.promo_type_hint(text)
