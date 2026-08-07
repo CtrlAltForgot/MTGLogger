@@ -99,12 +99,14 @@ describe('bounded recognition pipeline',()=>{
     expect(constraints.advanced).toContainEqual({focusMode:'continuous'})
   })
 
-  it('crops a detected portrait card with a small margin',()=>{
+  it('keeps the full scan area when a generous card crop reaches most of the feed',()=>{
     const crop=paddedCaptureBounds({left:18,top:8,width:34,height:82},1280,720)
-    expect(crop).toBeDefined()
-    expect(crop!.width).toBeLessThan(1280)
-    expect(crop!.height).toBeLessThan(720)
-    expect(crop!.x).toBeGreaterThan(0)
+    expect(crop).toBeUndefined()
+  })
+
+  it('does not upload an internal artwork or rules-box crop',()=>{
+    const crop=paddedCaptureBounds({left:30,top:25,width:30,height:50},1280,720)
+    expect(crop).toBeUndefined()
   })
 
   it('uses the fitted card rectangle for an edge-touching capture',()=>{
@@ -112,7 +114,9 @@ describe('bounded recognition pipeline',()=>{
     const crop=paddedCaptureBounds(result.bounds!,1280,720)
     expect(crop).toBeDefined()
     expect(crop!.x).toBe(0)
-    expect(crop!.width/crop!.height).toBeCloseTo(63/88,1)
+    expect(crop!.width/crop!.height).toBeGreaterThan(.48)
+    expect(crop!.width/crop!.height).toBeLessThan(.92)
+    expect(crop!.height).toBeGreaterThan(650)
   })
 
   it('does not crop a wide table-region false positive',()=>{

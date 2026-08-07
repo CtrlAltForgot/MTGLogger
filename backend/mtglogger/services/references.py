@@ -329,17 +329,33 @@ async def sync_all() -> None:
         _state.error = None
         _rate_last_count = _rate_last_at = _rate_ema = None
     try:
-        catalog_total = await provider.paper_printing_count()
-        with _state_lock:
-            _state.catalog_total = catalog_total
         # Visual profiles and catalog metadata have independent lifecycles.
         # Older/precompiled databases can have complete fingerprints but sparse
         # text metadata, so never let visual readiness skip the inexpensive
         # page-sized metadata refresh below.
         with SessionLocal() as db:
             # Make the catalog useful quickly for the user's active collection,
-            # then continue exhaustively through every paper printing.
-            for set_code in get_settings().priority_reference_sets:
+            # then continue exhaustively through every paper printing. Missing
+            # priority sets go first: after a restart, repeatedly refreshing
+            # already-ready sets can consume Scryfall's request budget before
+            # JOU/M13 (or another later priority) receives its first profile.
+            ready_priority_sets = set(
+                db.scalars(
+                    select(CardReference.set_code)
+                    .join(
+                        CardVisualFingerprint,
+                        CardVisualFingerprint.scryfall_id == CardReference.scryfall_id,
+                    )
+                    .where(CardVisualFingerprint.descriptor_path.like("%/v3/%"))
+                    .distinct()
+                )
+            )
+            priority_sets = get_settings().priority_reference_sets
+            ordered_priority_sets = [
+                *[code for code in priority_sets if code not in ready_priority_sets],
+                *[code for code in priority_sets if code in ready_priority_sets],
+            ]
+            for set_code in ordered_priority_sets:
                 cards = await provider.cards_for_set(set_code)
                 with _state_lock:
                     _state.set_code = f"priority:{set_code}"
@@ -357,6 +373,12 @@ async def sync_all() -> None:
                             _state.completed += 1
                     if downloaded:
                         await asyncio.sleep(0.1)
+            # A rate-limited aggregate count is useful only for progress UI; it
+            # must never prevent priority exact-print profiles from becoming
+            # usable by the scanner.
+            catalog_total = await provider.paper_printing_count()
+            with _state_lock:
+                _state.catalog_total = catalog_total
             with _state_lock:
                 _state.set_code = "all-paper"
             async for cards in provider.paper_printing_pages():

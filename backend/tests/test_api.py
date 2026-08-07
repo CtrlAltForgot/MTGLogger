@@ -1367,6 +1367,27 @@ def test_footer_artist_line_is_not_invented_as_a_card_title():
     assert set_code == "ori"
 
 
+def test_footer_artist_credit_does_not_suppress_full_card_land_recovery():
+    import numpy as np
+
+    from mtglogger.services.recognition import CardRecognizer
+
+    recognizer = CardRecognizer.__new__(CardRecognizer)
+    image = np.zeros((840, 600, 3), dtype=np.uint8)
+    observations = iter(
+        (
+            "264/272L\nORI · EN\nJUNG PARK",
+            "Basic Land - Swamp\nORI",
+        )
+    )
+    recognizer.extract_text = lambda _image: next(observations)
+
+    text = recognizer.extract_identification_text(image)
+
+    assert "Basic Land - Swamp" in text
+    assert CardRecognizer.hints(text)[:3] == ("Swamp", "264", "ori")
+
+
 def test_full_frame_land_title_fuses_with_focused_collector_footer():
     import asyncio
 
@@ -2131,6 +2152,16 @@ def test_ocr_hints_recovers_basic_land_name_from_type_line():
     assert number is None
     assert set_code == "ori"
     assert year is None
+
+
+def test_ocr_hints_basic_land_type_line_overrides_footer_artist_credit():
+    from mtglogger.services.recognition import CardRecognizer
+
+    title, number, set_code, _ = CardRecognizer.hints(
+        "264/272L\nORI · EN\nJUNG PARK\nBasic Land - Swamp\nORI"
+    )
+
+    assert (title, number, set_code) == ("Swamp", "264", "ori")
 
 
 def test_printing_descriptors_require_one_ocr_established_card_identity():

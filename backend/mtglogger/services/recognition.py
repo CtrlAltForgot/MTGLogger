@@ -313,8 +313,20 @@ class CardRecognizer:
         separator = np.zeros((18, 840, 3), dtype=np.uint8)
         focused_image = np.vstack((title, separator, footer_left))
         focused = self.extract_text(focused_image)
-        focused_title, _, _, _ = self.hints(focused)
-        if focused_title:
+        focused_title, focused_number, focused_set, focused_year = self.hints(focused)
+        # Basic lands contain very little text. When glare hides their title,
+        # the cleanest alphabetic line in this combined crop is commonly the
+        # all-caps artist credit from the footer (for example ``JUNG PARK``).
+        # That is not a credible title observation and must not suppress the
+        # full-card pass which can recover ``Basic Land - Swamp`` from the type
+        # line. Keep genuine all-caps titles on the fast path when another
+        # printing field was not what caused the footer to dominate the crop.
+        focused_title_is_footer_credit = bool(
+            focused_title
+            and re.fullmatch(r"[A-Z][A-Z'\-.]+(?:\s+[A-Z][A-Z'\-.]+){1,3}", focused_title)
+            and (focused_number or focused_set or focused_year)
+        )
+        if focused_title and not focused_title_is_footer_credit:
             return focused
         # Showcase frames and older layouts occasionally place the title outside
         # the normal band. Preserve reliability with a full-card fallback only
@@ -761,7 +773,7 @@ class CardRecognizer:
         # This is the one safe case where a type line can recover identity when
         # glare or a dark frame hides the title. Keeping the allow-list narrow
         # avoids turning ordinary subtype text into a fabricated card name.
-        if title is None and type_line_index is not None:
+        if type_line_index is not None:
             type_line = lines[type_line_index]
             basic_land = re.match(
                 r"^basic\s+land\s*[-—–:]\s*(plains|island|swamp|mountain|forest|wastes)\b",
@@ -769,6 +781,11 @@ class CardRecognizer:
                 re.I,
             )
             if basic_land:
+                # This closed vocabulary is more authoritative than any other
+                # alphabetic line in the focused footer. In particular, merged
+                # recovery text may place an artist credit before the full-card
+                # type line; keeping that earlier guess made ``JUNG PARK`` win
+                # over the explicitly printed ``Basic Land - Swamp``.
                 title = basic_land.group(1).title()
         return title, number, set_code, copyright_year
 

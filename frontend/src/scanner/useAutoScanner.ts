@@ -32,9 +32,15 @@ export function preferredVideoConstraints(deviceId?:string):MediaTrackConstraint
   }
 }
 export function paddedCaptureBounds(bounds:DetectionBounds,videoWidth:number,videoHeight:number){
-  // Preserve the physical edge so perspective correction never clips the tiny
-  // collector line when the motion mask ends at the printed black border.
-  const padding=3
+  // The motion mask is a presence detector, not a trustworthy card-edge
+  // detector. On real captures the high-contrast artwork or rules box can be
+  // denser than the physical border and therefore win the fitted window. A
+  // small margin then permanently discards the title, footer, or both before
+  // recognition sees the frame. Keep a generous safety region; if expanding
+  // it no longer resembles a portrait card, return undefined so the caller
+  // submits the complete scan area and backend perspective correction finds
+  // the physical edge from the high-resolution image.
+  const padding=12
   const left=Math.max(0,bounds.left-padding),top=Math.max(0,bounds.top-padding)
   const right=Math.min(100,bounds.left+bounds.width+padding),bottom=Math.min(100,bounds.top+bounds.height+padding)
   const width=right-left,height=bottom-top,aspect=(width*videoWidth)/(height*videoHeight)
