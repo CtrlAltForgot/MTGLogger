@@ -1873,6 +1873,12 @@ class CardRecognizer:
             recovery_used = False
             oracle_recovery = False
             decoded = self.decode(raw)
+            logger.info(
+                "Scanner input frame: %dx%d (%d bytes)",
+                decoded.shape[1],
+                decoded.shape[0],
+                len(raw),
+            )
             corrected = await asyncio.to_thread(lambda: self.rectify(decoded))
             analysis_image, low_light_normalized = await asyncio.to_thread(
                 self.normalize_low_light, corrected
