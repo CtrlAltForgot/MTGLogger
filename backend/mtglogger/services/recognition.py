@@ -2165,7 +2165,44 @@ class CardRecognizer:
                     if len(neural_matches) > 1
                     else (neural_matches[0].similarity if neural_matches else 0.0)
                 )
+                correction_footer_card = None
                 if (
+                    neural_matches
+                    and neural_matches[0].source_kind == "correction"
+                    and neural_matches[0].similarity >= 0.90
+                    and neural_identity_margin >= 0.15
+                    and number
+                    and copyright_year
+                ):
+                    proposed = self._reference_card(neural_matches[0].reference)
+                    if (
+                        self.collector_score(number, proposed["collector_number"]) == 1.0
+                        and int(proposed.get("released_at", "0000")[:4])
+                        == copyright_year
+                    ):
+                        correction_footer_card = proposed
+                if correction_footer_card:
+                    # A learned camera vector cannot name a card by itself. A
+                    # decisive correction plus independently read collector and
+                    # copyright year can, and avoids repeating broad OCR for a
+                    # printing the same camera has already confirmed.
+                    recovered_name = correction_footer_card["name"]
+                    recovered_cards = await self._lookup_cards(
+                        recovered_name,
+                        number,
+                        None,
+                        box_set_code,
+                        language,
+                        promo_type,
+                    )
+                    if recovered_cards:
+                        title = recovered_name
+                        cards = recovered_cards
+                        neural_recovered_identity = True
+                        oracle_recovery = True
+                if (
+                    not neural_recovered_identity
+                    and
                     neural_matches
                     and self.neural_source_can_recover_identity(
                         neural_matches[0].source_kind
@@ -3588,6 +3625,43 @@ class CardRecognizer:
                 confidence=round(self.visual_only_score(score), 1),
             )
         candidates = sorted(ranked.values(), key=lambda item: item.confidence, reverse=True)
+        # A normal printing and its List copy share art, so full/art descriptors
+        # can tie. When the normal frame wins both the camera hash and neural
+        # comparison, put it first for Review without authorizing an auto-add.
+        # This is especially useful when an unreadable footer leaves another
+        # same-artist reprint as the raw neural leader.
+        for normal in candidates:
+            if normal.set_code.casefold() == "plst":
+                continue
+            list_twin = next(
+                (
+                    candidate
+                    for candidate in candidates
+                    if candidate.set_code.casefold() == "plst"
+                    and candidate.collector_number.casefold().endswith(
+                        f"{normal.set_code.casefold()}-{normal.collector_number.casefold()}"
+                    )
+                ),
+                None,
+            )
+            if (
+                list_twin
+                and descriptor_scores.get(normal.scryfall_id, 0) >= 70
+                and descriptor_scores.get(list_twin.scryfall_id, 0) >= 70
+                and abs(
+                    descriptor_scores.get(normal.scryfall_id, 0)
+                    - descriptor_scores.get(list_twin.scryfall_id, 0)
+                )
+                <= 3
+                and visual_scores.get(normal.scryfall_id, 0) >= 55
+                and visual_scores.get(normal.scryfall_id, 0)
+                >= visual_scores.get(list_twin.scryfall_id, 0)
+                and neural_scores.get(normal.scryfall_id, 0)
+                > neural_scores.get(list_twin.scryfall_id, 0)
+            ):
+                normal.confidence = max(normal.confidence, 98.4)
+                candidates.sort(key=lambda item: item.confidence, reverse=True)
+                break
         if neural_matches and neural_matches[0].source_kind == "correction":
             camera_candidate = next(
                 (
