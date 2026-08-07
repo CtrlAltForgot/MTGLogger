@@ -3294,6 +3294,8 @@ class CardRecognizer:
                     or number_scoped_art_proof
                     or repaired_set_art_proof
                     or exact_set_art_proof
+                    or normal_list_twin_proof
+                    or frame_footer_visual_proof
                     or repeated_unique_year_proof
                 )
                 and not get_settings().neural_shadow_mode
@@ -3362,6 +3364,7 @@ class CardRecognizer:
                     or number_scoped_art_proof
                     or repaired_set_art_proof
                     or exact_set_art_proof
+                    or frame_footer_visual_proof
                 ):
                     # Exact set plus a decisive illustration match is safer
                     # than a tiny collector-number crop. This specifically
@@ -3398,6 +3401,8 @@ class CardRecognizer:
                 or number_scoped_art_proof
                 or repaired_set_art_proof
                 or exact_set_art_proof
+                or normal_list_twin_proof
+                or frame_footer_visual_proof
                 or repeated_unique_year_proof,
                 visual_printing_proof,
                 title_art_symbol_proof,
