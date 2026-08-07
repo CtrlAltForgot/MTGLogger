@@ -4,6 +4,10 @@ services:
       - /mnt/user/appdata/mtglogger/postgres:/var/lib/postgresql/data
   api:
     volumes:
+      # Run the exact committed backend checked out by the Unraid deploy. This
+      # also keeps Python-only scanner fixes durable if Docker's local build
+      # cache is unavailable; dependency changes still use the normal image.
+      - /mnt/user/appdata/mtglogger-src/backend/mtglogger:/app/mtglogger:ro
       - /mnt/user/appdata/mtglogger/data:/app/data
       - /mnt/user/appdata/mtglogger/paddlex:/root/.paddlex
       # Compact ORB descriptors live on the array, not the cache-backed appdata share.
