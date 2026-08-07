@@ -502,6 +502,11 @@ class CardRecognizer:
 
     @staticmethod
     def hints(text: str) -> tuple[str | None, str | None, str | None, int | None]:
+        # OCR frequently emits full-width punctuation from tiny collector
+        # footers (for example ``267／272``). Compatibility normalization turns
+        # those glyphs into their ASCII equivalents before the deliberately
+        # strict footer patterns run.
+        text = unicodedata.normalize("NFKC", text)
         lines = [line.strip() for line in text.splitlines() if len(line.strip()) > 1]
         # Copyright footers commonly contain a range (for example
         # "© 1993-2011 Wizards").  The final/latest year identifies the

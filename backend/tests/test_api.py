@@ -2497,6 +2497,12 @@ def test_ocr_hints_recovers_collector_pair_with_dot_separator():
     assert CardRecognizer.hints("Island\n2012 Wizards\n255.274")[1] == "255"
 
 
+def test_ocr_hints_normalizes_full_width_collector_slash():
+    from mtglogger.services.recognition import CardRecognizer
+
+    assert CardRecognizer.hints("Mountain\n267／272")[1] == "267"
+
+
 def test_recovery_footer_does_not_repeat_general_detection_when_fixed_reader_is_unavailable():
     import numpy as np
 
