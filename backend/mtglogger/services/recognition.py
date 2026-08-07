@@ -704,6 +704,20 @@ class CardRecognizer:
                 ):
                     set_code = token.lower()
                     break
+        # Physical token footers use the parent expansion code (for example
+        # M21), while Scryfall stores those printings in the corresponding
+        # token set (TM21). The printed type line is independent evidence that
+        # this is a token, so translate the set only when OCR actually read a
+        # token layout. Without this, a perfectly legible Goblin Wizard token
+        # is looked up among ordinary M21 cards and can never reach its exact
+        # TM21 printing.
+        if set_code and re.search(
+            r"\btoken\s+(?:artifact|creature|enchantment|land)\b",
+            "\n".join(lines),
+            re.I,
+        ):
+            if not set_code.casefold().startswith("t"):
+                set_code = f"t{set_code}"
         number = None
         # Collector numbers often share the copyright line. Prefer an explicit
         # numerator/denominator pair before filtering copyright years.
@@ -824,6 +838,7 @@ class CardRecognizer:
             "planeswalker",
             "scheme",
             "sorcery",
+            "token",
             "tribal",
             "vanguard",
         )

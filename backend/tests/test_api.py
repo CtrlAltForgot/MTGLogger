@@ -2648,6 +2648,29 @@ def test_ocr_hints_recognizes_blank_title_substitute_card():
     )
 
 
+def test_ocr_hints_maps_physical_parent_set_to_token_reference_set():
+    from mtglogger.services.recognition import CardRecognizer
+
+    title, number, set_code, year = CardRecognizer.hints(
+        "Goblin Wizard\nToken Creature — Goblin Wizard\n008/018 T\nM21 · EN\n©2020 Wizards"
+    )
+
+    assert (title, number, set_code, year) == (
+        "Goblin Wizard",
+        "008",
+        "tm21",
+        2020,
+    )
+
+
+def test_ocr_hints_does_not_map_ordinary_card_to_token_set():
+    from mtglogger.services.recognition import CardRecognizer
+
+    assert CardRecognizer.hints(
+        "Capture Sphere\nEnchantment — Aura\n047/274 C\nM21 · EN"
+    )[2] == "m21"
+
+
 def test_short_copyright_year_requires_credit_text():
     from mtglogger.services.recognition import CardRecognizer
 
