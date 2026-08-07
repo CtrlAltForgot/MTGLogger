@@ -2171,21 +2171,30 @@ class CardRecognizer:
                     and neural_matches[0].source_kind == "correction"
                     and neural_matches[0].similarity >= 0.90
                     and neural_identity_margin >= 0.15
-                    and number
-                    and copyright_year
                 ):
                     proposed = self._reference_card(neural_matches[0].reference)
-                    if (
-                        self.collector_score(number, proposed["collector_number"]) == 1.0
+                    footer_agrees = bool(
+                        number
+                        and copyright_year
+                        and self.collector_score(
+                            number, proposed["collector_number"]
+                        )
+                        == 1.0
                         and int(proposed.get("released_at", "0000")[:4])
                         == copyright_year
-                    ):
+                    )
+                    visible_title_agrees = bool(
+                        title
+                        and self.card_name_similarity(title, proposed["name"])
+                        >= 0.93
+                    )
+                    if footer_agrees or visible_title_agrees:
                         correction_footer_card = proposed
                 if correction_footer_card:
                     # A learned camera vector cannot name a card by itself. A
-                    # decisive correction plus independently read collector and
-                    # copyright year can, and avoids repeating broad OCR for a
-                    # printing the same camera has already confirmed.
+                    # decisive correction plus an independently read title or
+                    # collector/year pair can, avoiding repeated broad OCR for
+                    # a card this camera has already confirmed.
                     recovered_name = correction_footer_card["name"]
                     recovered_cards = await self._lookup_cards(
                         recovered_name,
@@ -3653,9 +3662,17 @@ class CardRecognizer:
                     - descriptor_scores.get(list_twin.scryfall_id, 0)
                 )
                 <= 3
-                and visual_scores.get(normal.scryfall_id, 0) >= 55
-                and visual_scores.get(normal.scryfall_id, 0)
-                >= visual_scores.get(list_twin.scryfall_id, 0)
+                and (
+                    (
+                        visual_scores.get(normal.scryfall_id, 0) >= 55
+                        and visual_scores.get(normal.scryfall_id, 0)
+                        >= visual_scores.get(list_twin.scryfall_id, 0)
+                    )
+                    or (
+                        descriptor_top_id == list_twin.scryfall_id
+                        and descriptor_art_top_id == normal.scryfall_id
+                    )
+                )
                 and neural_scores.get(normal.scryfall_id, 0)
                 > neural_scores.get(list_twin.scryfall_id, 0)
             ):
