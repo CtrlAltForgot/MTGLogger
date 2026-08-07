@@ -2757,6 +2757,12 @@ class CardRecognizer:
                 neural_margin=neural_margin,
                 footer_contradiction=footer_contradiction,
             )
+            recovered_exact_footer_proof = recovered_exact_footer_proof or bool(
+                not self.is_basic_land(card)
+                and exact_footer_card
+                and card["id"] == exact_footer_card["id"]
+                and not footer_contradiction
+            )
             if recovered_exact_footer_proof:
                 confidence = max(confidence, 98.5)
                 safe_candidate_ids.add(card["id"])
@@ -2775,7 +2781,8 @@ class CardRecognizer:
                 confidence = 99.5
                 safe_candidate_ids.add(card["id"])
             elif (
-                not get_settings().neural_shadow_mode
+                not recovered_exact_footer_proof
+                and not get_settings().neural_shadow_mode
                 and neural_top_score >= 0.70
                 and neural_margin >= 0.06
             ):
