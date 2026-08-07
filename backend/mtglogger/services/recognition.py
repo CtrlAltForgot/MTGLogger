@@ -545,6 +545,18 @@ class CardRecognizer:
                 copyright_year = max(joined_years)
         set_code = None
         languages = "EN|ES|FR|DE|IT|PT|JA|KO|RU|ZHS|ZHT|HE|LA|GRC|AR|SA|PHY"
+        # A standalone modern core-set token is substantially less ambiguous
+        # than the permissive joined footer parser below. Artist fragments such
+        # as ``LONAS DE RO`` can otherwise become a fabricated ``LONAS · DE``
+        # pair even when OCR also read ``M21`` cleanly. Prefer only the closed
+        # set of real M10-M21 codes here; arbitrary tokens remain conservative.
+        core_set_match = re.search(
+            r"(?<![A-Z0-9])M(?:1[0-9]|2[01])(?![A-Z0-9])",
+            "\n".join(lines),
+            re.I,
+        )
+        if core_set_match:
+            set_code = core_set_match.group(0).lower()
         # Core-set footers frequently lose their separator to a letter-like
         # glyph (``M21 · EN`` -> ``M21AEN`` or ``M21^EN``). Prefer the real
         # core-set token before the general joined parser can manufacture the
@@ -554,7 +566,7 @@ class CardRecognizer:
             "\n".join(lines),
             re.I,
         )
-        if core_language_match:
+        if not set_code and core_language_match:
             set_code = core_language_match.group(1).lower()
         # Prefer a footer with a visible separator. A permissive joined-footer
         # match is useful for tiny text, but can hallucinate a language inside
@@ -600,21 +612,6 @@ class CardRecognizer:
                 ):
                     set_code = token.lower()
                     break
-        if not set_code:
-            # Core-set symbols are unusually OCR-friendly even when Paddle
-            # returns them on the same line as the type, artist, or card name
-            # (``Basic Land - Forest M14 Volkan Baga``).  The previous parser
-            # only accepted a standalone token, throwing away exact M10-M21
-            # evidence and leaving artwork-identical lands tied across sets.
-            # Restrict this rescue to real modern core-set codes so a mana cost
-            # or arbitrary rules-text token cannot become a fabricated set.
-            core_set_match = re.search(
-                r"(?<![A-Z0-9])M(?:1[0-9]|2[01])(?![A-Z0-9])",
-                "\n".join(lines),
-                re.I,
-            )
-            if core_set_match:
-                set_code = core_set_match.group(0).lower()
         number = None
         # Collector numbers often share the copyright line. Prefer an explicit
         # numerator/denominator pair before filtering copyright years.
@@ -2786,6 +2783,7 @@ class CardRecognizer:
             # Keep these below the automatic-add threshold unless the local
             # exhaustive visual catalogue independently agrees with a clear
             # margin.  They remain first-class suggestions for quick review.
+            safe_land_match = False
             if self.is_basic_land(card):
                 repeated_footer_number = self.has_repeated_footer_printing_evidence(
                     text,
@@ -2858,7 +2856,12 @@ class CardRecognizer:
             if self.oracle_recovery_requires_cap(
                 oracle_recovery,
                 exact_printed_identity or recovered_exact_footer_proof,
-                printing_signal,
+                # The basic-land gate already requires complete-catalog,
+                # printing-specific artwork plus independent footer, set,
+                # symbol, or artist evidence. A later generic oracle cap must
+                # not undo that stricter proof merely because OCR recovered the
+                # identity from an artist/rules fragment instead of the title.
+                printing_signal or safe_land_match,
                 visual_printing_proof,
                 title_art_symbol_proof,
             ):

@@ -2252,6 +2252,16 @@ def test_ocr_hints_repair_core_set_separator_and_split_collector_pair():
     )[1] == "172"
 
 
+def test_ocr_hints_prefers_real_core_set_over_artist_language_false_positive():
+    from mtglogger.services.recognition import CardRecognizer
+
+    _title, _number, set_code, _year = CardRecognizer.hints(
+        "Plains\nM21\nBasic Land - Plains\n509\nEN\nLONAS DE RO"
+    )
+
+    assert set_code == "m21"
+
+
 def test_ocr_hints_do_not_treat_split_denominator_as_set_code():
     from mtglogger.services.recognition import CardRecognizer
 
