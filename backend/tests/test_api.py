@@ -2651,7 +2651,8 @@ def test_fixed_footer_reader_uses_normalized_collector_and_set_rows():
     class FooterOcr:
         def predict(self, rows):
             assert len(rows) == 4
-            assert all(row.shape[1] == 270 for row in rows)
+            assert [row.shape[1] for row in rows] == [408, 432, 270, 270]
+            assert [row.shape[0] for row in rows] == [59, 59, 42, 46]
             return [
                 Result("017/272 C"),
                 Result("ORI EN"),

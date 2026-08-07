@@ -409,8 +409,11 @@ class CardRecognizer:
         # Read the layouts independently so the recognizer is never forced to
         # transcribe an entire tiny copyright line just to recover three digits.
         rows = (
-            image[int(height * 0.90) : int(height * 0.95), : int(width * 0.45)],
-            image[int(height * 0.94) : int(height * 0.995), : int(width * 0.45)],
+            # Modern collector numerators sit higher than the artist/copyright
+            # baseline. Starting at 90% clipped the tops of digits that are
+            # plainly present in camera captures (ORI 109/272 became ``53``).
+            image[int(height * 0.855) : int(height * 0.925), : int(width * 0.68)],
+            image[int(height * 0.90) : int(height * 0.97), : int(width * 0.72)],
             image[int(height * 0.93) : int(height * 0.98), int(width * 0.55) :],
             image[int(height * 0.94) : int(height * 0.995), int(width * 0.55) :],
         )
