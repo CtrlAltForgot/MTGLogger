@@ -4,8 +4,10 @@ import logging
 import re
 import time
 import unicodedata
+import uuid
 from collections import Counter
 from dataclasses import dataclass
+from datetime import date
 from difflib import SequenceMatcher
 from functools import lru_cache
 from pathlib import Path
@@ -858,6 +860,12 @@ class CardRecognizer:
             (line.title() for line in lines if line.casefold() in basic_names),
             None,
         ) or next((line for line in title_lines if plausible_title(line)), None)
+        if re.search(
+            r"use\s+this\s+card\s+to\s+represent\s+a\s+double[- ]faced\s+card",
+            " ".join(lines),
+            re.I,
+        ):
+            title = "Double-Faced Substitute Card"
         # A basic land's type line contains its actual card name after the dash.
         # This is the one safe case where a type line can recover identity when
         # glare or a dark frame hides the title. Keeping the allow-list narrow
@@ -1798,6 +1806,25 @@ class CardRecognizer:
             return []
         preferred_set = printed_set_code or box_set_code
 
+        # Wizards occasionally ships a physical substitute/helper card before
+        # Scryfall publishes that exact set-specific insert. Its printed phrase
+        # plus set, collector number, and year are still a complete physical
+        # identity. Seed a deterministic local-only reference so the scanner
+        # can inventory the item without relabeling it as an unrelated card.
+        if (
+            title == "Double-Faced Substitute Card"
+            and number
+            and printed_set_code
+            and language.casefold() == "en"
+        ):
+            await asyncio.to_thread(
+                self._ensure_pack_insert_reference,
+                printed_set_code,
+                number,
+                None,
+                language,
+            )
+
         # The growing local reference catalog is authoritative enough for card
         # identity and avoids putting every physical scan behind Scryfall's
         # network latency. Remote lookup remains the fallback for new/unindexed
@@ -1941,6 +1968,50 @@ class CardRecognizer:
         except (TimeoutError, httpx.HTTPError, RuntimeError, ValueError) as exc:
             logger.warning("Scryfall lookup unavailable; preserving scan for Review: %s", exc)
             return []
+
+    @classmethod
+    def _ensure_pack_insert_reference(
+        cls,
+        set_code: str,
+        collector_number: str,
+        released_year: int | None,
+        language: str,
+    ) -> None:
+        normalized_set = set_code.casefold()
+        normalized_number = collector_number.lstrip("0") or "0"
+        reference_id = str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"mtglogger:pack-insert:{normalized_set}:{normalized_number}:{language}",
+            )
+        )
+        try:
+            with SessionLocal() as db:
+                if db.get(CardReference, reference_id):
+                    return
+                db.add(
+                    CardReference(
+                        scryfall_id=reference_id,
+                        name="Double-Faced Substitute Card",
+                        set_code=normalized_set,
+                        set_name=f"{normalized_set.upper()} Pack Inserts",
+                        collector_number=normalized_number,
+                        language=language,
+                        oracle_text="You can use this card to represent a double-faced card.",
+                        promo_types="[]",
+                        finishes='["nonfoil"]',
+                        color_identity="",
+                        rarity="common",
+                        type_line="Card",
+                        legalities="{}",
+                        released_at=(date(released_year, 1, 1) if released_year else None),
+                        image_url="",
+                        art_hash="pack-insert",
+                    )
+                )
+                db.commit()
+        except SQLAlchemyError:
+            logger.exception("Could not seed physical pack-insert reference")
 
     @classmethod
     def _lookup_local_cards(

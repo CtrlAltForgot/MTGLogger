@@ -256,7 +256,7 @@ class ScryfallProvider:
         """Stream physical tokens, emblems, helper cards, and pack inserts."""
         url = f"{self.base_url}/cards/search"
         params = {
-            "q": "is:token game:paper",
+            "q": "is:extra game:paper",
             "unique": "prints",
             "order": "set",
         }
@@ -271,7 +271,7 @@ class ScryfallProvider:
     async def pack_extra_count(self) -> int:
         response = await scryfall_api_get(
             f"{self.base_url}/cards/search",
-            params={"q": "is:token game:paper", "unique": "prints", "page": 1},
+            params={"q": "is:extra game:paper", "unique": "prints", "page": 1},
         )
         response.raise_for_status()
         return int(response.json().get("total_cards") or 0)
