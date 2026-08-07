@@ -32,18 +32,25 @@ export function preferredVideoConstraints(deviceId?:string):MediaTrackConstraint
   }
 }
 export function paddedCaptureBounds(bounds:DetectionBounds,videoWidth:number,videoHeight:number){
-  // The fitted motion window already has the physical card's portrait aspect.
-  // Keep a small border margin for perspective correction without expanding a
-  // normal card into an invalid landscape crop and silently uploading the
-  // entire camera feed. Background rejection is handled independently by
-  // plausibleCardBounds, so preserving this focused crop does not reintroduce
-  // empty-table captures.
+  if(!plausibleCardBounds(bounds))return undefined
+  // Detection is deliberately tolerant of glare and low-contrast borders, so
+  // its raw box can be too wide or too short even though it represents a real
+  // card. Never answer that uncertainty by uploading the entire 16:9 feed:
+  // expand the box around its center to physical MTG proportions instead.
   const padding=3
-  const left=Math.max(0,bounds.left-padding),top=Math.max(0,bounds.top-padding)
-  const right=Math.min(100,bounds.left+bounds.width+padding),bottom=Math.min(100,bounds.top+bounds.height+padding)
-  const width=right-left,height=bottom-top,aspect=(width*videoWidth)/(height*videoHeight)
-  if(aspect<.48||aspect>.92)return undefined
-  return {x:Math.round(left/100*videoWidth),y:Math.round(top/100*videoHeight),width:Math.round(width/100*videoWidth),height:Math.round(height/100*videoHeight)}
+  const left=Math.max(0,bounds.left-padding)/100*videoWidth
+  const top=Math.max(0,bounds.top-padding)/100*videoHeight
+  const right=Math.min(100,bounds.left+bounds.width+padding)/100*videoWidth
+  const bottom=Math.min(100,bounds.top+bounds.height+padding)/100*videoHeight
+  const centerX=(left+right)/2,centerY=(top+bottom)/2,targetAspect=63/88
+  let width=right-left,height=bottom-top
+  if(width/height>targetAspect)height=width/targetAspect
+  else width=height*targetAspect
+  if(height>videoHeight){height=videoHeight;width=height*targetAspect}
+  if(width>videoWidth){width=videoWidth;height=width/targetAspect}
+  const x=Math.max(0,Math.min(videoWidth-width,centerX-width/2))
+  const y=Math.max(0,Math.min(videoHeight-height,centerY-height/2))
+  return {x:Math.round(x),y:Math.round(y),width:Math.round(width),height:Math.round(height)}
 }
 
 const FRAME_WIDTH=160,FRAME_HEIGHT=120,CALIBRATION_FRAMES=12
