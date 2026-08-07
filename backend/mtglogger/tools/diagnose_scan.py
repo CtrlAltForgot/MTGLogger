@@ -98,6 +98,15 @@ async def diagnose(review_id: str) -> dict:
             }
             for reference, score in visual[:12]
         ],
+        "full_descriptor_matches": [
+            {
+                "name": reference.name,
+                "set_code": reference.set_code,
+                "collector_number": reference.collector_number,
+                "score": score,
+            }
+            for reference, score in descriptors[:12]
+        ],
         "artwork_descriptor_matches": [
             {
                 "name": reference.name,
