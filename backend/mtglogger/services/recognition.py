@@ -2984,7 +2984,11 @@ class CardRecognizer:
                 else None
             )
             descriptor_search_complete = True
-            if identity_is_constrained and not confirmed_footer_neural_id:
+            if (
+                identity_is_constrained
+                and not confirmed_footer_neural_id
+                and not repeated_exact_footer_ids
+            ):
                 # A shortlist is safe and valuable for basic lands only when
                 # the observed collector number names at least one printing in
                 # the complete local family.  Cards without a trustworthy
@@ -3906,6 +3910,7 @@ class CardRecognizer:
                     or number_scoped_art_proof
                     or repaired_set_art_proof
                     or exact_set_art_proof
+                    or repeated_physical_footer_proof
                     or frame_footer_visual_proof
                     or exact_number_year_proof
                 ):
