@@ -1040,7 +1040,7 @@ def test_printing_verifier_consensus_requires_complete_constrained_family():
         "footer_contradiction": False,
     }
 
-    assert CardRecognizer.printing_verifiers_agree(**evidence)
+    assert not CardRecognizer.printing_verifiers_agree(**evidence)
     assert not CardRecognizer.printing_verifiers_agree(
         **(evidence | {"has_observed_footer_identity": False})
     )
@@ -1053,7 +1053,7 @@ def test_printing_verifier_consensus_requires_complete_constrained_family():
     assert CardRecognizer.printing_verifiers_agree(
         **(evidence | {"neural_margin": 0.015, "collector_number_exact": True})
     )
-    assert CardRecognizer.printing_verifiers_agree(
+    assert not CardRecognizer.printing_verifiers_agree(
         **(
             evidence
             | {"is_basic_land": True, "has_observed_footer_identity": True}

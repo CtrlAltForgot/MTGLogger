@@ -1355,10 +1355,8 @@ class CardRecognizer:
             and family_complete
             and title_score >= 0.93
             and candidate_id == neural_top_id
-            and (
-                neural_margin >= 0.02
-                or (collector_number_exact and neural_margin >= 0.01)
-            )
+            and collector_number_exact
+            and neural_margin >= 0.01
             # Reused artwork can make both the full-card embedding and title
             # agree with the wrong physical printing. Consensus is auto-safe
             # only when the camera also supplied printing-specific footer data,
