@@ -3065,6 +3065,18 @@ class CardRecognizer:
                 and descriptor_margin >= 10
                 and visual_scores.get(card["id"], 0) >= 75
             )
+            if self.is_basic_land(card) and card["id"] in {descriptor_top_id, visual_top_id}:
+                logger.info(
+                    "Land frame proof candidate=%s family_complete=%s descriptor_top=%s "
+                    "descriptor_score=%.3f descriptor_margin=%.3f visual_top=%s visual_score=%.3f",
+                    card["id"],
+                    family_complete,
+                    descriptor_top_id,
+                    descriptor_score,
+                    descriptor_margin,
+                    visual_top_id,
+                    visual_scores.get(card["id"], 0),
+                )
             if normal_list_twin_proof or frame_footer_visual_proof:
                 # The List copy is distinguished by its physical lower-left
                 # stamp; canonical neural images retain that mark even though
