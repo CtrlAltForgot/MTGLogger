@@ -368,6 +368,12 @@ class CardRecognizer:
                     matching_lines.append(line)
             if matching_lines:
                 return "\n".join(matching_lines)
+            fixed_text = "\n".join(fixed_lines)
+            if self.hints(fixed_text)[3]:
+                # A complete copyright year is useful printing evidence even
+                # when this pass misses collector/set glyphs. Downstream safety
+                # still requires a unique family year plus corroborating art.
+                return fixed_text
         # The general detector costs multiple seconds and, after the first two
         # OCR passes already failed, mostly repeats noisy evidence. Preserve the
         # initial observation and let exhaustive visual/neural ranking decide;
@@ -540,7 +546,12 @@ class CardRecognizer:
             # Tiny copyright text often loses "20" while retaining a marker
             # and the final two digits (for example ©2013 -> "co13").
             footer = "\n".join(lines[-5:])
-            short_year = re.search(r"(?:©|&|co|c|o)[^0-9\n]{0,2}([0-2]\d)(?!\d)", footer, re.I)
+            short_year = re.search(
+                r"(?:©|&|co|c|o)[^0-9\n]{0,2}([0-2]\d)(?!\d)"
+                r"(?=[^0-9\n]*(?:w(?:izards?)?|rds|coa?st|cat))",
+                footer,
+                re.I,
+            )
             if short_year:
                 inferred = 2000 + int(short_year.group(1))
                 if 1993 <= inferred <= 2030:

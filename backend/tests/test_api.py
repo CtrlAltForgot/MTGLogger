@@ -2503,6 +2503,25 @@ def test_ocr_hints_normalizes_full_width_collector_slash():
     assert CardRecognizer.hints("Mountain\n267／272")[1] == "267"
 
 
+def test_short_copyright_year_requires_credit_text():
+    from mtglogger.services.recognition import CardRecognizer
+
+    assert CardRecognizer.hints("Formless Nurturing\nIM&C20\n129/185c")[3] is None
+    assert CardRecognizer.hints("Death's Approach\nco13rdsofthCat2")[3] == 2013
+
+
+def test_recovery_footer_retains_explicit_copyright_year():
+    from mtglogger.services.recognition import CardRecognizer
+
+    recognizer = CardRecognizer.__new__(CardRecognizer)
+    recognizer.extract_fixed_footer_lines = lambda _image: [
+        "three basic Forest",
+        "m&C2015Wiards of teCost",
+    ]
+
+    assert "2015" in recognizer.extract_recovery_footer_text(object(), {"190"}, {"ori"})
+
+
 def test_recovery_footer_does_not_repeat_general_detection_when_fixed_reader_is_unavailable():
     import numpy as np
 
