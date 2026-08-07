@@ -2011,7 +2011,14 @@ class CardRecognizer:
         )
         try:
             with SessionLocal() as db:
-                if db.get(CardReference, reference_id):
+                existing = db.get(CardReference, reference_id)
+                if existing:
+                    # Early locally-seeded inserts used a descriptive sentinel
+                    # here. Keep persisted rows compatible with the visual
+                    # catalog's hexadecimal hash contract when they are seen
+                    # again after an upgrade.
+                    existing.art_hash = "0000000000000000"
+                    db.commit()
                     return
                 db.add(
                     CardReference(
@@ -2030,7 +2037,10 @@ class CardRecognizer:
                         legalities="{}",
                         released_at=(date(released_year, 1, 1) if released_year else None),
                         image_url="",
-                        art_hash="pack-insert",
+                        # The insert has no canonical image yet, so this value
+                        # only satisfies the storage contract. Blank-image
+                        # references are excluded from visual retrieval below.
+                        art_hash="0000000000000000",
                     )
                 )
                 db.commit()
@@ -5155,6 +5165,12 @@ class CardRecognizer:
             global_row_indices: list[int] = []
             global_hash_is_example: list[bool] = []
             for index, (reference, _fingerprint) in enumerate(rows):
+                # Locally seeded unpublished pack inserts intentionally have no
+                # canonical image. They remain fully searchable through their
+                # printed title/set/collector evidence, but must not enter the
+                # perceptual-hash catalog with a fabricated visual identity.
+                if not reference.image_url:
+                    continue
                 global_hashes.append(int(reference.art_hash, 16))
                 global_row_indices.append(index)
                 global_hash_is_example.append(False)
