@@ -3438,6 +3438,28 @@ class CardRecognizer:
                 ),
                 None,
             )
+            rank_only_visual_agreement = bool(
+                neural_candidate
+                and neural_top_score >= 0.45
+                and (
+                    (
+                        neural_top_id == descriptor_art_top_id
+                        and descriptor_art_scores.get(neural_top_id, 0) >= 65
+                    )
+                    or (
+                        neural_top_id == visual_top_id
+                        and visual_scores.get(neural_top_id, 0) >= 55
+                    )
+                )
+            )
+            if rank_only_visual_agreement and candidates[0] is not neural_candidate:
+                # Oracle recovery caps intentionally flatten uncertain reprints.
+                # Preserve that Review disposition while breaking the resulting
+                # tie with the printing selected by two visual comparators.
+                neural_candidate.confidence = min(
+                    98.4, max(neural_candidate.confidence, candidates[0].confidence + 0.1)
+                )
+                candidates.sort(key=lambda item: item.confidence, reverse=True)
             if (
                 neural_candidate
                 and identity_is_constrained
