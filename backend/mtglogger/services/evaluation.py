@@ -86,6 +86,7 @@ def preserve_auto_added_scan(
         "predicted_set_code": candidate.set_code,
         "predicted_collector_number": candidate.collector_number,
         "language": language,
+        "image_kind": "camera_source",
     }
     manifest = root / "manifest.json"
     with _manifest_lock:

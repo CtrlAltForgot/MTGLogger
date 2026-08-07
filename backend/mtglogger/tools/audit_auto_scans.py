@@ -30,7 +30,14 @@ async def audit(since: str | None, limit: int | None) -> dict:
         if not path.is_file():
             results.append({"scan_id": record["scan_id"], "missing_image": True})
             continue
-        result = await recognizer.recognize(path.read_bytes(), language=record["language"])
+        # Archives created before untouched-source preservation contain the
+        # recognizer's already-rectified output. New records declare their
+        # source format explicitly in the manifest.
+        result = await recognizer.recognize(
+            path.read_bytes(),
+            language=record["language"],
+            already_rectified=record.get("image_kind") != "camera_source",
+        )
         top = result.candidates[0] if result.candidates else None
         auto_add = bool(top and result.confidence >= 98.5 and result.auto_add_safe)
         results.append(

@@ -3160,6 +3160,7 @@ def test_auto_added_scan_is_auditable_but_not_labeled_for_training(tmp_path, mon
             "predicted_set_code": "eld",
             "predicted_collector_number": "107",
             "language": "en",
+            "image_kind": "camera_source",
         }
     ]
 

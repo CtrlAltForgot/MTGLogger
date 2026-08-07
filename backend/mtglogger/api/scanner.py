@@ -122,7 +122,10 @@ async def recognize_card(
         timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S-%f")
         audit_path = get_settings().image_dir / f"auto-{timestamp}.jpg"
         try:
-            save_scan(result.corrected, audit_path)
+            # Automatic scans are replay evidence. Preserve the untouched
+            # camera frame; saving the rectified card caused audit replays to
+            # rectify it a second time and invalidated both OCR and timing.
+            save_scan(result.source, audit_path)
             preserve_auto_added_scan(audit_path, timestamp, top, defaults.language)
         except (OSError, ValueError, json.JSONDecodeError):
             logger.exception("Could not archive automatic scan %s", timestamp)

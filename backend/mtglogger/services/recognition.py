@@ -91,6 +91,7 @@ class Recognition:
     confidence: float
     ocr_text: str
     candidates: list[Candidate]
+    source: np.ndarray
     corrected: np.ndarray
     processing_ms: int
     card_structure: bool
@@ -2200,6 +2201,7 @@ class CardRecognizer:
         language: str = "en",
         ignored_visual_hashes: set[str] | None = None,
         ignored_example_review_ids: set[str] | None = None,
+        already_rectified: bool = False,
     ) -> Recognition:
         async with self._recognition_lock:
             started = time.perf_counter()
@@ -2212,7 +2214,11 @@ class CardRecognizer:
                 decoded.shape[0],
                 len(raw),
             )
-            corrected = await asyncio.to_thread(lambda: self.rectify(decoded))
+            corrected = (
+                decoded
+                if already_rectified
+                else await asyncio.to_thread(lambda: self.rectify(decoded))
+            )
             analysis_image, low_light_normalized = await asyncio.to_thread(
                 self.normalize_low_light, corrected
             )
@@ -4352,6 +4358,7 @@ class CardRecognizer:
             confidence=final_confidence,
             ocr_text=text,
             candidates=candidates[:5],
+            source=decoded,
             corrected=review_image,
             processing_ms=round((finished - started) * 1000),
             card_structure=card_structure,
