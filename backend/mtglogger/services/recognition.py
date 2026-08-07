@@ -1462,7 +1462,7 @@ class CardRecognizer:
         footer_contradiction: bool,
     ) -> bool:
         """Accept a confirmed camera printing when two profile regions agree."""
-        return bool(
+        regional_consensus = bool(
             source_kind == "correction"
             and similarity >= 0.84
             and margin >= 0.06
@@ -1476,6 +1476,19 @@ class CardRecognizer:
             and art_margin >= 1
             and not footer_contradiction
         )
+        frame_consensus = bool(
+            source_kind == "correction"
+            and similarity >= 0.90
+            and margin >= 0.08
+            and identity_is_constrained
+            and family_complete
+            and title_score >= 0.93
+            and candidate_id == neural_top_id == descriptor_top_id
+            and descriptor_score >= 99
+            and descriptor_margin >= 3
+            and not footer_contradiction
+        )
+        return regional_consensus or frame_consensus
 
     @classmethod
     def has_unique_printing_signal(

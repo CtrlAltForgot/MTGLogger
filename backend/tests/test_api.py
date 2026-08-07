@@ -1170,6 +1170,20 @@ def test_confirmed_camera_requires_two_exact_visual_regions_at_lower_similarity(
     assert not CardRecognizer.confirmed_camera_visual_consensus_is_safe(
         **(evidence | {"footer_contradiction": True})
     )
+    assert CardRecognizer.confirmed_camera_visual_consensus_is_safe(
+        **(
+            evidence
+            | {
+                "similarity": 0.90,
+                "margin": 0.08,
+                "descriptor_score": 99.0,
+                "descriptor_margin": 3.0,
+                "art_top_id": "reused-art-printing",
+                "art_score": 0,
+                "art_margin": 0,
+            }
+        )
+    )
 def test_printed_artist_credit_is_exact_art_evidence():
     from mtglogger.services.recognition import CardRecognizer
 
