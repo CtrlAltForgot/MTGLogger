@@ -332,6 +332,13 @@ class CardRecognizer:
         )
         if focused_title and not focused_title_is_footer_credit:
             return focused
+        # The detector can skip a perfectly sharp title on dark/showcase art
+        # while still finding the much smaller footer. Read the stable title
+        # row directly with the lightweight recognition model before paying for
+        # another full-card detection pass.
+        fixed_title = self.extract_fixed_title_text(image)
+        if self.hints(fixed_title)[0]:
+            return "\n".join(part for part in (fixed_title, focused) if part.strip())
         # Showcase frames and older layouts occasionally place the title outside
         # the normal band. Preserve reliability with a full-card fallback only
         # when the fast title pass produced no usable text.
@@ -339,6 +346,33 @@ class CardRecognizer:
         # The full-card pass can recover a title from a type line while losing
         # the tiny collector footer. Preserve both independent observations.
         return "\n".join(part for part in (focused, full_text) if part.strip())
+
+    def extract_fixed_title_text(self, image: np.ndarray) -> str:
+        """Recognize the rectified title row without running text detection."""
+        if getattr(self, "_footer_ocr", None) is None:
+            return ""
+        height, width = image.shape[:2]
+        # Exclude the expansion/frame icon at left and mana cost at right. The
+        # remaining band is shared by conventional and showcase portrait cards.
+        title = image[
+            int(height * 0.025) : int(height * 0.115),
+            int(width * 0.075) : int(width * 0.82),
+        ]
+        title = self.scale_to_width(title, 720)
+        try:
+            result = self._footer_ocr.predict([title])
+            texts = []
+            for item in result:
+                data = item.json if hasattr(item, "json") else {}
+                if callable(data):
+                    data = data()
+                value = (data.get("res") or {}).get("rec_text", "")
+                if value.strip():
+                    texts.append(value.strip())
+            return "\n".join(texts)
+        except Exception:
+            logger.exception("Fixed title OCR inference failed")
+            return ""
 
     def extract_recovery_footer_text(
         self,
