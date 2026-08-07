@@ -2320,6 +2320,15 @@ class CardRecognizer:
                     repaired_set_code = self.repair_family_set_code(
                         printed_set_code, number, cards
                     )
+                    if not repaired_set_code:
+                        # Broad recovery OCR can replace a useful damaged set
+                        # suffix (``FOORI``) with adjacent collector digits
+                        # (``267722``). The original camera token was retained
+                        # specifically so later family verification can recover
+                        # evidence lost during OCR fusion.
+                        repaired_set_code = self.repair_family_set_code(
+                            raw_observed_set_code, number, cards
+                        )
                     if repaired_set_code:
                         printed_set_code = repaired_set_code
                         repaired_family_set_code = True
