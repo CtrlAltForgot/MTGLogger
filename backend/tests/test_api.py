@@ -1985,6 +1985,14 @@ def test_two_neural_printings_can_recover_only_the_shared_card_name():
     assert CardRecognizer.neural_name_consensus(
         [match("Ogre Jailbreaker"), match("Ogre Jailbreaker", source_kind="correction")]
     ) is None
+    assert CardRecognizer.neural_title_fragment_identity(
+        "iibreaker",
+        [match("Bloodgift Demon", 0.55), match("Ogre Jailbreaker", 0.48)],
+    ) == "Ogre Jailbreaker"
+    assert CardRecognizer.neural_title_fragment_identity(
+        "breaker",
+        [match("Ogre Jailbreaker", 0.48), match("Wallbreaker", 0.47)],
+    ) is None
 
 
 def test_partial_set_logo_resolves_only_inside_one_card_family():

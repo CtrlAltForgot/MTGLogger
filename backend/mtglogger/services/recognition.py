@@ -921,6 +921,21 @@ class CardRecognizer:
         ]
         return leader.reference.name if corroborating else None
 
+    @classmethod
+    def neural_title_fragment_identity(cls, title: str | None, matches: list) -> str | None:
+        """Fuse a damaged title fragment with one canonical artwork identity."""
+        if not title or len(cls.normalized_name(title)) < 6:
+            return None
+        qualifying = [
+            match
+            for match in matches[:10]
+            if cls.neural_source_can_recover_identity(match.source_kind)
+            and match.similarity >= 0.45
+            and cls.card_name_similarity(title, match.reference.name) >= 0.62
+        ]
+        names = {cls.normalized_name(match.reference.name) for match in qualifying}
+        return qualifying[0].reference.name if len(names) == 1 else None
+
     @staticmethod
     def partial_family_set_code(observed_text: str, cards: list[dict]) -> str | None:
         """Resolve a clipped two-character set logo only inside one card family."""
@@ -2086,6 +2101,22 @@ class CardRecognizer:
                         # Artwork may recover identity, but only the independent
                         # footer can make the resulting exact printing auto-safe.
                         oracle_recovery = True
+                if not neural_recovered_identity:
+                    fragment_name = self.neural_title_fragment_identity(title, neural_matches)
+                    if fragment_name:
+                        recovered_cards = await self._lookup_cards(
+                            fragment_name,
+                            number,
+                            printed_set_code,
+                            box_set_code,
+                            language,
+                            promo_type,
+                        )
+                        if recovered_cards:
+                            title = fragment_name
+                            cards = recovered_cards
+                            neural_recovered_identity = True
+                            oracle_recovery = True
             if (
                 not neural_recovered_identity
                 and not self.has_strong_lookup_evidence(
@@ -2469,6 +2500,7 @@ class CardRecognizer:
                 )
                 else None
             )
+            descriptor_search_complete = True
             if identity_is_constrained and not confirmed_footer_neural_id:
                 # A shortlist is safe and valuable for basic lands only when
                 # the observed collector number names at least one printing in
@@ -2486,6 +2518,21 @@ class CardRecognizer:
                         for card in cards
                     )
                 )
+                basic_land_identity = any(self.is_basic_land(card) for card in cards)
+                exact_set_shortlist = {
+                    card["id"]
+                    for card in cards
+                    if printed_set_code
+                    and self.exact_set_code_match(printed_set_code, card["set"])
+                }
+                neural_land_shortlist = {
+                    match.reference.scryfall_id
+                    for match in neural_matches
+                    if basic_land_identity
+                    and not number
+                    and not printed_set_code
+                    and match.reference.scryfall_id in {card["id"] for card in cards}
+                }
                 # Scoring every regional hash for a basic land means walking
                 # hundreds of near-identical printings. Once an exact catalogued
                 # numerator exists, the adaptive artwork pass below supplies the
@@ -2493,6 +2540,8 @@ class CardRecognizer:
                 identity_visual_matches = (
                     []
                     if basic_number_is_catalogued
+                    or exact_set_shortlist
+                    or neural_land_shortlist
                     else await asyncio.to_thread(
                         self._identity_visual_matches,
                         scan_fingerprints,
@@ -2505,6 +2554,16 @@ class CardRecognizer:
                     for card in cards
                     if self.collector_score(number, card["collector_number"]) == 1.0
                 }
+                allowed_descriptor_ids = (
+                    descriptor_shortlist
+                    if family_complete and basic_number_is_catalogued
+                    else (
+                        exact_set_shortlist
+                        if family_complete and exact_set_shortlist
+                        else (neural_land_shortlist or None)
+                    )
+                )
+                descriptor_search_complete = allowed_descriptor_ids is None
                 descriptor_evidence = await asyncio.to_thread(
                     self._descriptor_matches_with_art,
                     descriptor_image,
@@ -2514,12 +2573,8 @@ class CardRecognizer:
                     # from another set before any automatic add is considered.
                     box_set_code,
                     ignored_example_review_ids,
-                    (
-                        descriptor_shortlist
-                        if family_complete and basic_number_is_catalogued
-                        else None
-                    ),
-                    bool(family_complete and basic_number_is_catalogued),
+                    allowed_descriptor_ids,
+                    allowed_descriptor_ids is not None,
                 )
                 # A correct land numerator normally leaves fewer than a dozen
                 # plausible profiles. If none supplies strong artwork evidence,
@@ -2543,6 +2598,27 @@ class CardRecognizer:
                         None,
                         False,
                     )
+                    descriptor_search_complete = True
+                elif (
+                    neural_land_shortlist
+                    and (
+                        not descriptor_evidence[1]
+                        or not neural_matches
+                        or descriptor_evidence[1][0][0].scryfall_id
+                        != neural_matches[0].reference.scryfall_id
+                        or descriptor_evidence[1][0][1] < 65
+                    )
+                ):
+                    descriptor_evidence = await asyncio.to_thread(
+                        self._descriptor_matches_with_art,
+                        descriptor_image,
+                        identity_names,
+                        box_set_code,
+                        ignored_example_review_ids,
+                        None,
+                        False,
+                    )
+                    descriptor_search_complete = True
                 (
                     descriptor_matches,
                     descriptor_art_matches,
@@ -2692,7 +2768,11 @@ class CardRecognizer:
         candidate_descriptor_catalog_complete = self._descriptor_catalog_complete(
             {card["id"] for card in cards}
         )
-        descriptor_catalog_complete = family_complete and candidate_descriptor_catalog_complete
+        descriptor_catalog_complete = (
+            family_complete
+            and candidate_descriptor_catalog_complete
+            and descriptor_search_complete
+        )
         neural_scores = {match.reference.scryfall_id: match.similarity for match in neural_matches}
         neural_top_id = neural_matches[0].reference.scryfall_id if neural_matches else None
         neural_top_score = neural_matches[0].similarity if neural_matches else 0.0
