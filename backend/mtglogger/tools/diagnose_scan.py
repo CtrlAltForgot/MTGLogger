@@ -6,11 +6,12 @@ import json
 from pathlib import Path
 
 import cv2
+from sqlalchemy import select
 
 from ..database import SessionLocal
-from ..models import ReviewItem
+from ..models import CardVisualFingerprint, ReviewItem
 from ..services.recognition import CardRecognizer
-from ..services.references import visual_fingerprints
+from ..services.references import hash_distance, visual_fingerprints
 
 
 def region_sharpness(image, top: float, bottom: float) -> float:
@@ -54,6 +55,15 @@ async def diagnose(review_id: str) -> dict:
     )
     title, number, set_code, year = recognizer.hints(result.ocr_text)
     candidate_ids = {candidate.scryfall_id for candidate in result.candidates}
+    with SessionLocal() as db:
+        candidate_fingerprints = {
+            fingerprint.scryfall_id: fingerprint
+            for fingerprint in db.scalars(
+                select(CardVisualFingerprint).where(
+                    CardVisualFingerprint.scryfall_id.in_(candidate_ids)
+                )
+            )
+        }
 
     return {
         "review_id": review_id,
@@ -97,6 +107,27 @@ async def diagnose(review_id: str) -> dict:
                 "is_result_candidate": reference.scryfall_id in candidate_ids,
             }
             for reference, score in visual[:12]
+        ],
+        "candidate_hash_distances": [
+            {
+                "name": candidate.name,
+                "set_code": candidate.set_code,
+                "collector_number": candidate.collector_number,
+                **{
+                    field: hash_distance(fingerprints[field], getattr(profile, field))
+                    for field in (
+                        "full_hash",
+                        "art_hash",
+                        "title_hash",
+                        "footer_hash",
+                        "symbol_hash",
+                        "frame_hash",
+                    )
+                    if field in fingerprints and getattr(profile, field, None)
+                },
+            }
+            for candidate in result.candidates
+            if (profile := candidate_fingerprints.get(candidate.scryfall_id)) is not None
         ],
         "full_descriptor_matches": [
             {
