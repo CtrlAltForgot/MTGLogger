@@ -1664,6 +1664,28 @@ def test_land_art_and_printed_artist_can_recover_a_glare_reduced_margin():
     )
 
 
+def test_exact_set_year_and_scoped_art_prove_basic_land_printing():
+    from mtglogger.services.recognition import CardRecognizer
+
+    assert CardRecognizer.has_safe_basic_land_match(
+        card_id="ori-plains-254",
+        descriptor_top_id="other-printing",
+        catalog_complete=True,
+        descriptor_score=90,
+        descriptor_margin=2,
+        collector_number=None,
+        printed_set_code="ori",
+        number_score=0.45,
+        set_score=1.0,
+        card_set="ori",
+        set_art_top_id="ori-plains-254",
+        set_art_score=90.2,
+        set_art_margin=14,
+        set_art_catalog_complete=True,
+        release_year_matches=True,
+    )
+
+
 def test_ocr_hints_recovers_joined_rarity_and_confused_znc_code():
     from mtglogger.services.recognition import CardRecognizer
 
@@ -2378,6 +2400,12 @@ def test_ocr_hints_recovers_collector_number_when_slash_is_dropped():
     assert number == "246"
     assert set_code is None
     assert year == 2012
+
+
+def test_ocr_hints_recovers_collector_pair_with_dot_separator():
+    from mtglogger.services.recognition import CardRecognizer
+
+    assert CardRecognizer.hints("Island\n2012 Wizards\n255.274")[1] == "255"
 
 
 def test_recovery_footer_does_not_repeat_general_detection_when_fixed_reader_is_unavailable():

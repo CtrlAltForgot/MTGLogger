@@ -627,7 +627,7 @@ class CardRecognizer:
                 # Tiny legacy slashes are commonly transcribed as ``L``
                 # (``172/175`` -> ``172L75``). Requiring digits on both sides
                 # keeps this repair out of ordinary words and artist credits.
-                r"(?<!\d)(\d{1,4}[a-z]?)\s*[/|\\Ll]\s*(\d{1,4})(?!\d)", line, re.I
+                r"(?<!\d)(\d{1,4}[a-z]?)\s*[/|\\Ll.]\s*(\d{1,4})(?!\d)", line, re.I
             )
             # Power/toughness (for example 5/4) is read far more reliably
             # than a tiny footer. A real collector denominator represents a
@@ -2139,9 +2139,18 @@ class CardRecognizer:
                 # Rules/flavor text and damaged logos otherwise manufacture
                 # values such as Wild Guess #8993 or DTK -> OTK, which match
                 # no real printing and used to veto strong independent proof.
+                number_family = cards
+                if printed_set_code:
+                    exact_set_family = [
+                        card
+                        for card in cards
+                        if self.exact_set_code_match(printed_set_code, card["set"])
+                    ]
+                    if exact_set_family:
+                        number_family = exact_set_family
                 if number and not any(
                     self.collector_score(number, card["collector_number"]) >= 0.78
-                    for card in cards
+                    for card in number_family
                 ):
                     number = None
                 if printed_set_code and not any(
@@ -2785,6 +2794,7 @@ class CardRecognizer:
                     set_art_margin,
                     artist_score,
                     descriptor_catalog_complete,
+                    year_score == 1.0,
                 )
                 if (
                     safe_land_match
@@ -3611,6 +3621,7 @@ class CardRecognizer:
         set_art_margin: float = 0,
         artist_score: float = 0,
         set_art_catalog_complete: bool = False,
+        release_year_matches: bool = False,
     ) -> bool:
         """Require decisive artwork plus exact set text or symbol evidence.
 
@@ -3682,14 +3693,14 @@ class CardRecognizer:
         )
         footer_set_scoped_evidence = (
             set_art_catalog_complete
-            and bool(collector_number and printed_set_code)
-            and number_score >= 0.78
+            and bool(printed_set_code)
+            and (number_score >= 0.78 or release_year_matches)
             and CardRecognizer.exact_set_code_match(
                 printed_set_code, card_set or ""
             )
             and card_id == set_art_top_id
-            and set_art_score >= 85
-            and set_art_margin >= 8
+            and set_art_score >= 88
+            and set_art_margin >= 12
         )
         return bool(global_evidence or set_scoped_evidence or footer_set_scoped_evidence)
 
