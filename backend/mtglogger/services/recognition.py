@@ -968,6 +968,8 @@ class CardRecognizer:
                 re.I,
             )
         }
+        if not observed_codes:
+            return None
         number_scoped_cards = [
             card
             for card in cards
@@ -985,8 +987,8 @@ class CardRecognizer:
             if code == "plst" or len(code) != 3:
                 continue
             scores[code] = max(
-                scores.get(code, 0),
-                *(SequenceMatcher(None, observed, code).ratio() for observed in observed_codes),
+                [scores.get(code, 0)]
+                + [SequenceMatcher(None, observed, code).ratio() for observed in observed_codes]
             )
         ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
         if not ranked or ranked[0][1] < 2 / 3:

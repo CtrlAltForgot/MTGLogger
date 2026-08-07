@@ -2023,6 +2023,9 @@ def test_partial_set_logo_resolves_only_inside_one_card_family():
         ],
         "235",
     ) == "ktk"
+    assert CardRecognizer.family_set_code_from_footer_text(
+        "ARL CRITCHLOW\n53\nBH", footer_family
+    ) is None
 
 
 def test_power_toughness_does_not_replace_footer_collector_number():
