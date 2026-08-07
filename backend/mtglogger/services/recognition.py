@@ -2763,6 +2763,17 @@ class CardRecognizer:
                 and card["id"] == exact_footer_card["id"]
                 and not footer_contradiction
             )
+            recovered_exact_footer_proof = recovered_exact_footer_proof or bool(
+                not self.is_basic_land(card)
+                and title_score >= 0.93
+                and number_score >= 0.78
+                and year_score == 1.0
+                and artist_score >= 0.9
+                and card["id"] == neural_top_id
+                and neural_top_score >= 0.80
+                and neural_margin >= 0.04
+                and not footer_contradiction
+            )
             if recovered_exact_footer_proof:
                 confidence = max(confidence, 98.5)
                 safe_candidate_ids.add(card["id"])
