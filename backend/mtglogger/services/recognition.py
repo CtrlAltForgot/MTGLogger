@@ -799,7 +799,7 @@ class CardRecognizer:
             # card name; keep its set/collector evidence available for fusion
             # with the full-frame title pass below.
             if re.match(
-                rf"^\s*[A-Z][A-Z0-9]{{1,5}}?[\s·•.+\-:]*(?:{languages})(?=\s|$|[A-Z])",
+                rf"^\s*[A-Z][A-Z0-9]{{1,5}}?[\s·•.+\-:]*(?:{languages})(?=[^A-Z0-9]|$|[A-Z])",
                 line,
             ):
                 return False
