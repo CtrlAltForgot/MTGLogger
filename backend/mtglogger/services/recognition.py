@@ -2450,19 +2450,46 @@ class CardRecognizer:
             # still using stale set/collector variables from the first pass.
             merged_title, merged_number, merged_set, merged_year = self.hints(text)
             if merged_number and merged_set:
-                merged_cards = await self._lookup_cards(
-                    merged_title or title,
-                    merged_number,
-                    merged_set,
-                    box_set_code,
-                    language,
-                    promo_type,
+                exact_footer_year_cards = []
+                if not merged_title and merged_year and not promo_type:
+                    footer_cards = await asyncio.to_thread(
+                        self._lookup_local_cards_by_number, merged_number, merged_set
+                    )
+                    exact_footer_year_cards = [
+                        card
+                        for card in footer_cards
+                        if self.collector_score(
+                            merged_number, card["collector_number"]
+                        )
+                        == 1.0
+                        and self.exact_set_code_match(merged_set, card["set"])
+                        and int(card.get("released_at", "0000")[:4]) == merged_year
+                        and not self.is_basic_land(card)
+                    ]
+                # A weak visual recovery must not hide a unique physical
+                # set/collector/year footer. This is especially important for
+                # current frames whose title can vanish under foil treatment.
+                # Basic lands remain excluded because their within-set artwork
+                # still requires independent visual proof.
+                merged_cards = (
+                    exact_footer_year_cards
+                    if len(exact_footer_year_cards) == 1
+                    else await self._lookup_cards(
+                        merged_title or title,
+                        merged_number,
+                        merged_set,
+                        box_set_code,
+                        language,
+                        promo_type,
+                    )
                 )
                 merged_exact = self.unique_exact_footer_card(
                     merged_number, merged_set, merged_cards
                 )
                 merged_identity = merged_title or title
                 if merged_exact and (
+                    len(exact_footer_year_cards) == 1
+                    or
                     not merged_identity
                     or self.card_name_similarity(
                         merged_identity, merged_exact["name"]
