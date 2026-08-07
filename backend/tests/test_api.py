@@ -2642,7 +2642,7 @@ def test_ocr_hints_recognizes_blank_title_substitute_card():
 
     assert (title, number, set_code, year) == (
         "Double-Faced Substitute Card",
-        "0001",
+        "0001d",
         "ecl",
         2026,
     )
