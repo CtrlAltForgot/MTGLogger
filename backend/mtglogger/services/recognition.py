@@ -330,7 +330,12 @@ class CardRecognizer:
             and re.fullmatch(r"[A-Z][A-Z'\-.]+(?:\s+[A-Z][A-Z'\-.]+){1,3}", focused_title)
             and (focused_number or focused_set or focused_year)
         )
-        if focused_title and not focused_title_is_footer_credit:
+        focused_title_letters = sum(character.isalpha() for character in (focused_title or ""))
+        if (
+            focused_title
+            and not focused_title_is_footer_credit
+            and focused_title_letters > 3
+        ):
             return focused
         # The detector can skip a perfectly sharp title on dark/showcase art
         # while still finding the much smaller footer. Read the stable title
@@ -355,8 +360,8 @@ class CardRecognizer:
         # Exclude the expansion/frame icon at left and mana cost at right. The
         # remaining band is shared by conventional and showcase portrait cards.
         title = image[
-            int(height * 0.025) : int(height * 0.115),
-            int(width * 0.075) : int(width * 0.82),
+            int(height * 0.01) : int(height * 0.09),
+            int(width * 0.04) : int(width * 0.90),
         ]
         title = self.scale_to_width(title, 720)
         try:

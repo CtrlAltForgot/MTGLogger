@@ -411,6 +411,11 @@ async def sync_all() -> None:
                             _state.completed += 1
                     if downloaded:
                         await asyncio.sleep(0.1)
+            # Scryfall intentionally omits non-playable physical cards from a
+            # normal paper search. Index both classes explicitly so everything
+            # that can come out of a booster is scannable.
+            await _sync_art_series(provider)
+            await _sync_pack_extras(provider)
         with _state_lock:
             _state.state = "complete"
     except Exception as exc:
@@ -460,6 +465,46 @@ async def _sync_art_series(provider: ScryfallProvider) -> None:
             _state.completed = 0
             _state.total = art_total
         async for cards in provider.art_series_pages():
+            for card in cards:
+                downloaded = False
+                try:
+                    downloaded = await _index_card(db, provider, card)
+                except Exception:
+                    db.rollback()
+                    with _state_lock:
+                        _state.errors += 1
+                if downloaded:
+                    await asyncio.sleep(0.1)
+                with _state_lock:
+                    _state.completed += 1
+
+
+async def _sync_pack_extras(provider: ScryfallProvider) -> None:
+    """Resumably index tokens, emblems, helper cards, and other pack inserts."""
+    extra_total = await provider.pack_extra_count()
+    with _state_lock:
+        _state.catalog_total = (_state.catalog_total or 0) + extra_total
+    with SessionLocal() as db:
+        ready = int(
+            db.scalar(
+                select(func.count())
+                .select_from(CardVisualFingerprint)
+                .where(
+                    CardVisualFingerprint.layout.in_(
+                        ("token", "double_faced_token", "emblem")
+                    )
+                )
+                .where(CardVisualFingerprint.descriptor_path.like("%/v3/%"))
+            )
+            or 0
+        )
+        if extra_total and ready >= extra_total:
+            return
+        with _state_lock:
+            _state.set_code = "pack-extras"
+            _state.completed = 0
+            _state.total = extra_total
+        async for cards in provider.pack_extra_pages():
             for card in cards:
                 downloaded = False
                 try:

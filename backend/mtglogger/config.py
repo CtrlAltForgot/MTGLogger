@@ -24,7 +24,9 @@ class Settings(BaseSettings):
     reference_image_cache: str = "compact"
     reference_refresh_hours: int = 24
     reference_auto_sync: bool = True
-    reference_priority_sets: str = "ori,ktk,m15,isd,gtc,jou,m13"
+    # Keep currently opened booster products and their physical insert sets at
+    # the front of the resumable catalog queue.
+    reference_priority_sets: str = "tla,tm21,tecl,ori,ktk,m15,isd,gtc,jou,m13"
     request_timeout: float = 8.0
     price_refresh_hours: int = 1
 
