@@ -2626,6 +2626,10 @@ def test_ocr_hints_reads_rarity_prefixed_current_collector_number():
         "COOO3\nTLAEN金田栄路/UI KANDA\n©2025 Wizards"
     )
     assert (noisy_title, noisy_number, noisy_set) == (None, "0003", "tla")
+    assert CardRecognizer.hints("Mountain\nL0282\nECL·EN")[1:3] == (
+        "0282",
+        "ecl",
+    )
 
 
 def test_short_copyright_year_requires_credit_text():

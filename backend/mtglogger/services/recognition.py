@@ -459,6 +459,9 @@ class CardRecognizer:
         # Read the layouts independently so the recognizer is never forced to
         # transcribe an entire tiny copyright line just to recover three digits.
         rows = (
+            # Current frames place the rarity/land marker and zero-padded
+            # collector number above the language/artist row.
+            image[int(height * 0.86) : int(height * 0.92), : int(width * 0.55)],
             image[int(height * 0.90) : int(height * 0.95), : int(width * 0.45)],
             image[int(height * 0.94) : int(height * 0.995), : int(width * 0.45)],
             image[int(height * 0.93) : int(height * 0.98), int(width * 0.55) :],
@@ -693,7 +696,7 @@ class CardRecognizer:
                     # zero-padded collector number (for example ``C0049``).
                     # That is printing evidence, not a five-character set.
                     and not (
-                        re.fullmatch(r"[CMRU][0-9O]{3,4}", token)
+                        re.fullmatch(r"[LCMRU][0-9O]{3,4}", token)
                         and any(character.isdigit() for character in token[1:])
                     )
                     and any(character.isalpha() for character in token)
@@ -752,7 +755,7 @@ class CardRecognizer:
             # zero padding here; collector comparison normalizes it safely.
             footer = "\n".join(lines[-6:])
             rarity_prefixed = re.search(
-                r"(?<![A-Z0-9])[CMRU]([0-9O]{3,4})(?![A-Z0-9])", footer
+                r"(?<![A-Z0-9])[LCMRU]([0-9O]{3,4})(?![A-Z0-9])", footer
             )
             if rarity_prefixed:
                 observed = rarity_prefixed.group(1)
