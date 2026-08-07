@@ -3059,7 +3059,7 @@ class CardRecognizer:
                 )
             frame_footer_visual_proof = bool(
                 self.is_basic_land(card)
-                and descriptor_catalog_complete
+                and family_complete
                 and card["id"] == descriptor_top_id == visual_top_id
                 and descriptor_score >= 99
                 and descriptor_margin >= 10
