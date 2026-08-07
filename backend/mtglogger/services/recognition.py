@@ -903,16 +903,23 @@ class CardRecognizer:
     @classmethod
     def neural_name_consensus(cls, matches: list, minimum_similarity: float = 0.44) -> str | None:
         """Recover only a card name when leading artwork references agree."""
-        usable = [
+        if not matches:
+            return None
+        leader = matches[0]
+        if (
+            not cls.neural_source_can_recover_identity(leader.source_kind)
+            or leader.similarity < minimum_similarity
+        ):
+            return None
+        leader_name = cls.normalized_name(leader.reference.name)
+        corroborating = [
             match
-            for match in matches[:2]
+            for match in matches[1:10]
             if cls.neural_source_can_recover_identity(match.source_kind)
             and match.similarity >= minimum_similarity
+            and cls.normalized_name(match.reference.name) == leader_name
         ]
-        if len(usable) < 2:
-            return None
-        names = {cls.normalized_name(match.reference.name) for match in usable}
-        return usable[0].reference.name if len(names) == 1 else None
+        return leader.reference.name if corroborating else None
 
     @staticmethod
     def partial_family_set_code(observed_text: str, cards: list[dict]) -> str | None:
@@ -2362,7 +2369,7 @@ class CardRecognizer:
                 # Only admit an exact set already present in this constrained
                 # card family, so arbitrary OCR cannot inject a candidate.
                 symbol_text = await asyncio.to_thread(
-                    self.extract_set_symbol_text, analysis_image
+                    self.extract_set_symbol_text, corrected
                 )
                 _, _, symbol_set, _ = self.hints(symbol_text)
                 symbol_set = symbol_set or self.partial_family_set_code(symbol_text, cards)
