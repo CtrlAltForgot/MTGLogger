@@ -1979,12 +1979,17 @@ class CardRecognizer:
                 # A clear canonical embedding establishes only the card name.
                 # Exact-printing authorization remains downstream and still
                 # requires complete-family descriptor/frame corroboration.
-                text = ""
                 title = consensus_name or neural_matches[0].reference.name
-                number = printed_set_code = copyright_year = None
                 promo_type = None
+                text = await asyncio.to_thread(self.extract_fixed_footer_text, corrected)
+                _, number, printed_set_code, copyright_year = self.hints(text)
                 cards = await self._lookup_cards(
-                    title, None, None, box_set_code, language, None
+                    title,
+                    number,
+                    printed_set_code,
+                    box_set_code,
+                    language,
+                    None,
                 )
                 oracle_recovery = True
             else:
