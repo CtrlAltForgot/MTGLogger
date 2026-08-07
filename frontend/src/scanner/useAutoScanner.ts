@@ -32,15 +32,13 @@ export function preferredVideoConstraints(deviceId?:string):MediaTrackConstraint
   }
 }
 export function paddedCaptureBounds(bounds:DetectionBounds,videoWidth:number,videoHeight:number){
-  // The motion mask is a presence detector, not a trustworthy card-edge
-  // detector. On real captures the high-contrast artwork or rules box can be
-  // denser than the physical border and therefore win the fitted window. A
-  // small margin then permanently discards the title, footer, or both before
-  // recognition sees the frame. Keep a generous safety region; if expanding
-  // it no longer resembles a portrait card, return undefined so the caller
-  // submits the complete scan area and backend perspective correction finds
-  // the physical edge from the high-resolution image.
-  const padding=12
+  // The fitted motion window already has the physical card's portrait aspect.
+  // Keep a small border margin for perspective correction without expanding a
+  // normal card into an invalid landscape crop and silently uploading the
+  // entire camera feed. Background rejection is handled independently by
+  // plausibleCardBounds, so preserving this focused crop does not reintroduce
+  // empty-table captures.
+  const padding=3
   const left=Math.max(0,bounds.left-padding),top=Math.max(0,bounds.top-padding)
   const right=Math.min(100,bounds.left+bounds.width+padding),bottom=Math.min(100,bounds.top+bounds.height+padding)
   const width=right-left,height=bottom-top,aspect=(width*videoWidth)/(height*videoHeight)

@@ -99,9 +99,12 @@ describe('bounded recognition pipeline',()=>{
     expect(constraints.advanced).toContainEqual({focusMode:'continuous'})
   })
 
-  it('keeps the full scan area when a generous card crop reaches most of the feed',()=>{
+  it('uploads a focused portrait crop for a normally detected card',()=>{
     const crop=paddedCaptureBounds({left:18,top:8,width:34,height:82},1280,720)
-    expect(crop).toBeUndefined()
+    expect(crop).toBeDefined()
+    expect(crop!.width).toBeLessThan(1280)
+    expect(crop!.height).toBeLessThan(720)
+    expect(crop!.x).toBeGreaterThan(0)
   })
 
   it('does not upload an internal artwork or rules-box crop',()=>{
