@@ -29,6 +29,7 @@ async def audit(
         asyncio.to_thread(recognizer._neural.warm),
         asyncio.to_thread(recognizer._neural.warm_model),
         asyncio.to_thread(recognizer._get_visual_catalog),
+        asyncio.to_thread(recognizer.warm_fixed_ocr),
     )
     results = []
     for record in records:
