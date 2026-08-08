@@ -68,6 +68,7 @@ async def audit(
                 "ocr_text": result.ocr_text,
                 "fixed_identity_text": fixed_identity_text,
                 "fixed_identity_hints": recognizer.hints(fixed_identity_text),
+                "neural_candidates": result.neural_candidates,
             }
         )
 
