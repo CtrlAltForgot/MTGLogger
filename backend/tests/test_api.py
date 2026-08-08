@@ -1408,6 +1408,39 @@ def test_fixed_identity_ocr_batches_title_and_footer_rows_once():
     )
 
 
+def test_fixed_identity_accepts_separated_near_title_with_exact_frame_evidence():
+    from mtglogger.services.recognition import CardRecognizer
+
+    card = {
+        "name": "Wanderbrine Preacher",
+        "set": "ecl",
+        "collector_number": "41",
+        "released_at": "2026-01-23",
+    }
+
+    assert CardRecognizer.has_strong_fixed_identity_evidence(
+        "Wanderbrine Preacnet", None, "ecl", 2026, [card]
+    )
+
+
+def test_fixed_identity_rejects_near_title_without_exact_set_and_year():
+    from mtglogger.services.recognition import CardRecognizer
+
+    card = {
+        "name": "Wanderbrine Preacher",
+        "set": "ecl",
+        "collector_number": "41",
+        "released_at": "2026-01-23",
+    }
+
+    assert not CardRecognizer.has_strong_fixed_identity_evidence(
+        "Wanderbrine Preacnet", None, "tla", 2026, [card]
+    )
+    assert not CardRecognizer.has_strong_fixed_identity_evidence(
+        "Wanderbrine Preacnet", None, "ecl", 2025, [card]
+    )
+
+
 def test_incomplete_footer_does_not_repeat_general_detection():
     import numpy as np
 

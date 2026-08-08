@@ -1493,6 +1493,44 @@ class CardRecognizer:
         return False
 
     @classmethod
+    def has_strong_fixed_identity_evidence(
+        cls,
+        title: str | None,
+        number: str | None,
+        printed_set_code: str | None,
+        copyright_year: int | None,
+        cards: list[dict],
+    ) -> bool:
+        """Accept a fixed-row near-title only with physical-frame corroboration.
+
+        Recognition-only OCR occasionally damages the final few title glyphs
+        (``Preacher`` -> ``Preacnet``).  Requiring an exact set code, a
+        compatible copyright year, and a clearly separated catalog name keeps
+        this shortcut conservative while avoiding a multi-second detector pass.
+        Exact-printing auto-add authorization remains independent downstream.
+        """
+        if cls.has_strong_lookup_evidence(
+            title, number, printed_set_code, copyright_year, cards
+        ):
+            return True
+        if not title or not printed_set_code or not cards:
+            return False
+        scored = [
+            (cls.card_name_similarity(title, card["name"]), card)
+            for card in cards
+            if cls.exact_set_code_match(printed_set_code, card["set"])
+            and (
+                not copyright_year
+                or int(card.get("released_at", "0000")[:4]) == copyright_year
+            )
+        ]
+        scored.sort(key=lambda item: item[0])
+        if not scored or scored[-1][0] < 0.82:
+            return False
+        runner_up = scored[-2][0] if len(scored) > 1 else 0.0
+        return scored[-1][0] - runner_up >= 0.08
+
+    @classmethod
     def unique_exact_footer_card(
         cls,
         number: str | None,
@@ -2461,7 +2499,7 @@ class CardRecognizer:
                 fixed_cards = await self._lookup_cards(
                     *fixed_hints[:3], box_set_code, language, fixed_promo
                 )
-                if self.has_strong_lookup_evidence(*fixed_hints, fixed_cards):
+                if self.has_strong_fixed_identity_evidence(*fixed_hints, fixed_cards):
                     text = fixed_text
                     title, number, printed_set_code, copyright_year = fixed_hints
                     promo_type = fixed_promo
