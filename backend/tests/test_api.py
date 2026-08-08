@@ -1439,6 +1439,45 @@ def test_fixed_identity_rejects_near_title_without_exact_set_and_year():
     )
 
 
+def test_fixed_title_canonicalizes_one_separated_ordinary_card_family():
+    from mtglogger.services.recognition import CardRecognizer
+
+    cards = [
+        {
+            "name": "Wanderbrine Preacher",
+            "set": set_code,
+            "type_line": "Creature — Merfolk Cleric",
+        }
+        for set_code in ("ecl", "plst")
+    ]
+
+    assert (
+        CardRecognizer.canonical_fixed_title_identity(
+            "Wanderbrine Preacnet", cards
+        )
+        == "Wanderbrine Preacher"
+    )
+
+
+def test_fixed_title_does_not_shortcut_basic_lands_or_tokens():
+    from mtglogger.services.recognition import CardRecognizer
+
+    assert CardRecognizer.canonical_fixed_title_identity(
+        "Forest",
+        [{"name": "Forest", "set": "ecl", "type_line": "Basic Land — Forest"}],
+    ) is None
+    assert CardRecognizer.canonical_fixed_title_identity(
+        "Goblin Wizard",
+        [
+            {
+                "name": "Goblin Wizard",
+                "set": "tm21",
+                "type_line": "Token Creature — Goblin Wizard",
+            }
+        ],
+    ) is None
+
+
 def test_incomplete_footer_does_not_repeat_general_detection():
     import numpy as np
 

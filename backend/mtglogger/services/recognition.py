@@ -1544,6 +1544,33 @@ class CardRecognizer:
         return scored[-1][0] - runner_up >= 0.08
 
     @classmethod
+    def canonical_fixed_title_identity(
+        cls, observed_title: str | None, cards: list[dict]
+    ) -> str | None:
+        """Return one clearly separated ordinary-card name from a title row."""
+        if not observed_title or not cards:
+            return None
+        # A title names a card family, not a token/land printing. Those families
+        # contain many visually distinct objects and must retain footer/layout
+        # evidence before exact-print matching begins.
+        if any(cls.is_basic_land(card) for card in cards) or any(
+            "token" in str(card.get("type_line") or "").casefold() for card in cards
+        ):
+            return None
+        names = sorted({str(card["name"]) for card in cards})
+        ranked = sorted(
+            (
+                (cls.card_name_similarity(observed_title, name), name)
+                for name in names
+            ),
+            reverse=True,
+        )
+        if not ranked or ranked[0][0] < 0.86:
+            return None
+        runner_up = ranked[1][0] if len(ranked) > 1 else 0.0
+        return ranked[0][1] if ranked[0][0] - runner_up >= 0.10 else None
+
+    @classmethod
     def unique_exact_footer_card(
         cls,
         number: str | None,
@@ -2350,6 +2377,7 @@ class CardRecognizer:
                 and neural_matches[0].similarity >= 0.72
             ):
                 neural_fast_identity = True
+            fixed_title_identity = False
             if neural_fast_identity:
                 # A clear canonical embedding establishes only the card name.
                 # Exact-printing authorization remains downstream and still
@@ -2504,33 +2532,53 @@ class CardRecognizer:
                 # full text detector.  Only accept this shortcut when catalog
                 # lookup corroborates a unique printing or a strong title;
                 # unusual layouts retain the existing broad-OCR fallback.
-                fixed_text = await asyncio.to_thread(
-                    self.extract_fixed_identity_text, analysis_image
+                fixed_title_text = await asyncio.to_thread(
+                    self.extract_fixed_title_text, analysis_image
                 )
-                fixed_hints = self.hints(fixed_text)
-                fixed_promo = self.promo_type_hint(fixed_text)
-                fixed_cards = await self._lookup_cards(
-                    *fixed_hints[:3], box_set_code, language, fixed_promo
+                observed_fixed_title = self.hints(fixed_title_text)[0]
+                fixed_title_cards = await self._lookup_cards(
+                    observed_fixed_title, None, None, box_set_code, language, None
                 )
-                if self.has_strong_fixed_identity_evidence(*fixed_hints, fixed_cards):
-                    text = fixed_text
-                    title, number, printed_set_code, copyright_year = fixed_hints
-                    promo_type = fixed_promo
-                    cards = fixed_cards
-                else:
-                    text = await asyncio.to_thread(
-                        self.extract_identification_text, analysis_image
-                    )
-                    title, number, printed_set_code, copyright_year = self.hints(text)
-                    promo_type = self.promo_type_hint(text)
+                canonical_fixed_title = self.canonical_fixed_title_identity(
+                    observed_fixed_title, fixed_title_cards
+                )
+                fixed_title_identity = bool(canonical_fixed_title)
+                if canonical_fixed_title:
+                    title = canonical_fixed_title
+                    number = printed_set_code = copyright_year = None
+                    promo_type = None
+                    text = fixed_title_text
                     cards = await self._lookup_cards(
-                        title,
-                        number,
-                        printed_set_code,
-                        box_set_code,
-                        language,
-                        promo_type,
+                        title, None, None, box_set_code, language, None
                     )
+                else:
+                    fixed_text = await asyncio.to_thread(
+                        self.extract_fixed_identity_text, analysis_image
+                    )
+                    fixed_hints = self.hints(fixed_text)
+                    fixed_promo = self.promo_type_hint(fixed_text)
+                    fixed_cards = await self._lookup_cards(
+                        *fixed_hints[:3], box_set_code, language, fixed_promo
+                    )
+                    if self.has_strong_fixed_identity_evidence(*fixed_hints, fixed_cards):
+                        text = fixed_text
+                        title, number, printed_set_code, copyright_year = fixed_hints
+                        promo_type = fixed_promo
+                        cards = fixed_cards
+                    else:
+                        text = await asyncio.to_thread(
+                            self.extract_identification_text, analysis_image
+                        )
+                        title, number, printed_set_code, copyright_year = self.hints(text)
+                        promo_type = self.promo_type_hint(text)
+                        cards = await self._lookup_cards(
+                            title,
+                            number,
+                            printed_set_code,
+                            box_set_code,
+                            language,
+                            promo_type,
+                        )
             ocr_complete = time.perf_counter()
             repaired_family_set_code = False
             # Keep the camera's original footer observation separate from the
@@ -2585,7 +2633,7 @@ class CardRecognizer:
             # card images, so compare them with the original rectified camera
             # pixels. This reuses an existing frame and adds no processing pass.
             descriptor_image = corrected
-            neural_recovered_identity = neural_fast_identity
+            neural_recovered_identity = neural_fast_identity or fixed_title_identity
             # The embedding is computed alongside OCR. Consult it before the
             # expensive full-frame OCR recovery so a decisive artwork identity
             # can fuse with an already-readable footer. This turns the common
