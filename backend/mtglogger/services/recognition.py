@@ -2575,7 +2575,7 @@ class CardRecognizer:
                 )
                 current_footer_text = (
                     await asyncio.to_thread(
-                        self.extract_current_footer_text, analysis_image
+                        self.extract_current_footer_text, corrected
                     )
                     if likely_basic_land
                     else ""
