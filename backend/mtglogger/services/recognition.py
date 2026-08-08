@@ -426,8 +426,8 @@ class CardRecognizer:
             return ""
         height, width = image.shape[:2]
         rows = [
+            image[int(height * 0.86) : int(height * 0.92), : int(width * 0.55)],
             image[int(height * 0.90) : int(height * 0.95), : int(width * 0.45)],
-            image[int(height * 0.94) : int(height * 0.995), : int(width * 0.45)],
         ]
         try:
             texts = []
