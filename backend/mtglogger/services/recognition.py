@@ -431,13 +431,17 @@ class CardRecognizer:
         ]
         try:
             texts = []
-            for result in self._footer_ocr.predict(rows):
-                data = result.json if hasattr(result, "json") else {}
-                if callable(data):
-                    data = data()
-                value = (data.get("res") or {}).get("rec_text", "")
-                if value.strip():
-                    texts.append(value.strip())
+            # Mixed-height batching can silently omit the first current-frame
+            # row on Paddle CPU. Run these two tiny rows independently; startup
+            # warmup pays both predictor paths before scanner traffic.
+            for row in rows:
+                for result in self._footer_ocr.predict([row]):
+                    data = result.json if hasattr(result, "json") else {}
+                    if callable(data):
+                        data = data()
+                    value = (data.get("res") or {}).get("rec_text", "")
+                    if value.strip():
+                        texts.append(value.strip())
             return "\n".join(texts)
         except Exception:
             logger.exception("Current footer OCR inference failed")
@@ -453,6 +457,9 @@ class CardRecognizer:
             # singleton input and a batched input, so warming one title row did
             # not remove the first live card's batch preparation cost.
             self.extract_fixed_identity_text(
+                np.zeros((840, 600, 3), dtype=np.uint8)
+            )
+            self.extract_current_footer_text(
                 np.zeros((840, 600, 3), dtype=np.uint8)
             )
         except Exception:

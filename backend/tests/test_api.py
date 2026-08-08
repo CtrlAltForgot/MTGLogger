@@ -1420,7 +1420,7 @@ def test_current_footer_ocr_reads_only_two_modern_identity_rows():
 
         def predict(self, rows):
             self.calls.append(rows)
-            return [Result("L0282"), Result("TLA · EN")]
+            return [Result("L0282" if len(self.calls) == 1 else "TLA · EN")]
 
     recognizer = CardRecognizer.__new__(CardRecognizer)
     recognizer._footer_ocr = Ocr()
@@ -1428,7 +1428,8 @@ def test_current_footer_ocr_reads_only_two_modern_identity_rows():
         np.zeros((840, 600, 3), dtype=np.uint8)
     )
 
-    assert len(recognizer._footer_ocr.calls[0]) == 2
+    assert len(recognizer._footer_ocr.calls) == 2
+    assert all(len(call) == 1 for call in recognizer._footer_ocr.calls)
     assert CardRecognizer.hints(text)[1:3] == ("0282", "tla")
 
 
