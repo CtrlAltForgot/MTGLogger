@@ -45,6 +45,9 @@ async def audit(
             already_rectified=record.get("image_kind") != "camera_source",
         )
         top = result.candidates[0] if result.candidates else None
+        fixed_identity_text = await asyncio.to_thread(
+            recognizer.extract_fixed_identity_text, result.corrected
+        )
         auto_add = bool(top and result.confidence >= 98.5 and result.auto_add_safe)
         results.append(
             {
@@ -62,6 +65,8 @@ async def audit(
                 "processing_ms": result.processing_ms,
                 "timings_ms": result.timings_ms,
                 "ocr_text": result.ocr_text,
+                "fixed_identity_text": fixed_identity_text,
+                "fixed_identity_hints": recognizer.hints(fixed_identity_text),
             }
         )
 
