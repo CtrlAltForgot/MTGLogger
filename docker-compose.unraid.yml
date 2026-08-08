@@ -13,3 +13,9 @@ services:
       # Compact ORB descriptors live on the array, not the cache-backed appdata share.
       - /mnt/user/mtglogger-reference-data/descriptors:/app/descriptors
       - /mnt/user/mtglogger-reference-data/neural:/app/data/neural
+  web:
+    volumes:
+      # Serve the exact frontend artifact produced by the deploy. This mirrors
+      # the API source mount and avoids reverting UI-only changes when Unraid's
+      # local Docker build cache is unavailable.
+      - /mnt/user/appdata/mtglogger-src/frontend/dist:/usr/share/nginx/html:ro
