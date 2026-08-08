@@ -44,6 +44,7 @@ class _VisualCatalog:
     ]
     references_by_name: dict[str, tuple[CardReference, ...]]
     names: tuple[str, ...]
+    names_by_prefix: dict[str, tuple[str, ...]]
     examples: dict[str, tuple[str, ...]]
     global_hashes: np.ndarray
     global_row_indices: np.ndarray
@@ -2180,7 +2181,11 @@ class CardRecognizer:
         catalog = cls._get_visual_catalog()
         rows = list(catalog.references_by_name.get(title.casefold(), ()))
         if not rows:
-            closest = cls.closest_catalog_names(title, catalog.names, limit=1)
+            normalized_title = cls.normalized_name(title)
+            prefix_names = catalog.names_by_prefix.get(normalized_title[:3], ())
+            closest = cls.closest_catalog_names(
+                title, prefix_names or catalog.names, limit=1
+            )
             if not closest or closest[0][1] < 0.72:
                 return []
             rows = list(
@@ -5366,6 +5371,15 @@ class CardRecognizer:
                     global_hashes.append(int(example_hash, 16))
                     global_row_indices.append(row_index)
                     global_hash_is_example.append(True)
+            names = tuple(
+                references[0].name
+                for references in references_by_name_lists.values()
+            )
+            names_by_prefix_lists: dict[str, list[str]] = {}
+            for name in names:
+                names_by_prefix_lists.setdefault(
+                    CardRecognizer.normalized_name(name)[:3], []
+                ).append(name)
             _visual_catalog = _VisualCatalog(
                 loaded_at=now,
                 rows=rows,
@@ -5376,10 +5390,11 @@ class CardRecognizer:
                     key: tuple(value)
                     for key, value in references_by_name_lists.items()
                 },
-                names=tuple(
-                    references[0].name
-                    for references in references_by_name_lists.values()
-                ),
+                names=names,
+                names_by_prefix={
+                    prefix: tuple(names)
+                    for prefix, names in names_by_prefix_lists.items()
+                },
                 examples={key: tuple(value) for key, value in examples.items()},
                 global_hashes=np.asarray(global_hashes, dtype=np.uint64),
                 global_row_indices=np.asarray(global_row_indices, dtype=np.int32),
