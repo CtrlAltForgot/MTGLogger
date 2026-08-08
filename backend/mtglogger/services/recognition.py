@@ -382,6 +382,43 @@ class CardRecognizer:
             logger.exception("Fixed title OCR inference failed")
             return ""
 
+    def extract_fixed_identity_text(self, image: np.ndarray) -> str:
+        """Read the title and printing footer in one recognition-only batch.
+
+        Normal portrait cards put these fields in stable rows.  Paddle's text
+        detector is by far the most expensive part of a live scan, so use the
+        lightweight recognizer directly before falling back to layout-agnostic
+        detection for showcase, token, helper, and other unusual frames.
+        """
+        if getattr(self, "_footer_ocr", None) is None:
+            return ""
+        height, width = image.shape[:2]
+        rows = [
+            image[
+                int(height * 0.01) : int(height * 0.09),
+                int(width * 0.04) : int(width * 0.90),
+            ],
+            image[int(height * 0.86) : int(height * 0.92), : int(width * 0.55)],
+            image[int(height * 0.90) : int(height * 0.95), : int(width * 0.45)],
+            image[int(height * 0.94) : int(height * 0.995), : int(width * 0.45)],
+            image[int(height * 0.93) : int(height * 0.98), int(width * 0.55) :],
+            image[int(height * 0.94) : int(height * 0.995), int(width * 0.55) :],
+        ]
+        rows[0] = self.scale_to_width(rows[0], 720)
+        try:
+            texts = []
+            for result in self._footer_ocr.predict(rows):
+                data = result.json if hasattr(result, "json") else {}
+                if callable(data):
+                    data = data()
+                value = (data.get("res") or {}).get("rec_text", "")
+                if value.strip():
+                    texts.append(value.strip())
+            return "\n".join(texts)
+        except Exception:
+            logger.exception("Fixed identity OCR inference failed")
+            return ""
+
     def extract_recovery_footer_text(
         self,
         image: np.ndarray,
@@ -2411,19 +2448,38 @@ class CardRecognizer:
                     )
                 oracle_recovery = True
             else:
-                text = await asyncio.to_thread(
-                    self.extract_identification_text, analysis_image
+                # Conventional portrait cards can be identified from their
+                # fixed title and footer rows without running Paddle's costly
+                # full text detector.  Only accept this shortcut when catalog
+                # lookup corroborates a unique printing or a strong title;
+                # unusual layouts retain the existing broad-OCR fallback.
+                fixed_text = await asyncio.to_thread(
+                    self.extract_fixed_identity_text, analysis_image
                 )
-                title, number, printed_set_code, copyright_year = self.hints(text)
-                promo_type = self.promo_type_hint(text)
-                cards = await self._lookup_cards(
-                    title,
-                    number,
-                    printed_set_code,
-                    box_set_code,
-                    language,
-                    promo_type,
+                fixed_hints = self.hints(fixed_text)
+                fixed_promo = self.promo_type_hint(fixed_text)
+                fixed_cards = await self._lookup_cards(
+                    *fixed_hints[:3], box_set_code, language, fixed_promo
                 )
+                if self.has_strong_lookup_evidence(*fixed_hints, fixed_cards):
+                    text = fixed_text
+                    title, number, printed_set_code, copyright_year = fixed_hints
+                    promo_type = fixed_promo
+                    cards = fixed_cards
+                else:
+                    text = await asyncio.to_thread(
+                        self.extract_identification_text, analysis_image
+                    )
+                    title, number, printed_set_code, copyright_year = self.hints(text)
+                    promo_type = self.promo_type_hint(text)
+                    cards = await self._lookup_cards(
+                        title,
+                        number,
+                        printed_set_code,
+                        box_set_code,
+                        language,
+                        promo_type,
+                    )
             ocr_complete = time.perf_counter()
             repaired_family_set_code = False
             # Keep the camera's original footer observation separate from the

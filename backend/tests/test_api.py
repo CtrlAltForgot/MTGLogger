@@ -1369,6 +1369,45 @@ def test_focused_ocr_reads_only_enlarged_title_and_footer_when_title_is_usable()
     assert calls[0][1] == 840
 
 
+def test_fixed_identity_ocr_batches_title_and_footer_rows_once():
+    import numpy as np
+
+    from mtglogger.services.recognition import CardRecognizer
+
+    class Result:
+        def __init__(self, text):
+            self.json = {"res": {"rec_text": text}}
+
+    class Ocr:
+        calls = []
+
+        def predict(self, rows):
+            self.calls.append(rows)
+            return [
+                Result("Wanderbrine Preacher"),
+                Result("C 0041"),
+                Result("ECL · EN"),
+                Result("WARREN MAHY"),
+                Result(""),
+                Result(""),
+            ]
+
+    recognizer = CardRecognizer.__new__(CardRecognizer)
+    recognizer._footer_ocr = Ocr()
+
+    text = recognizer.extract_fixed_identity_text(
+        np.zeros((840, 600, 3), dtype=np.uint8)
+    )
+
+    assert len(recognizer._footer_ocr.calls) == 1
+    assert len(recognizer._footer_ocr.calls[0]) == 6
+    assert CardRecognizer.hints(text)[:3] == (
+        "Wanderbrine Preacher",
+        "0041",
+        "ecl",
+    )
+
+
 def test_incomplete_footer_does_not_repeat_general_detection():
     import numpy as np
 
