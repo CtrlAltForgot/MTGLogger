@@ -421,27 +421,34 @@ class CardRecognizer:
             return ""
 
     def extract_current_footer_text(self, image: np.ndarray) -> str:
-        """Read only the two identity rows used by current card frames."""
+        """Read current-frame footer rows with a title-shape stabilizer."""
         if getattr(self, "_footer_ocr", None) is None:
             return ""
         height, width = image.shape[:2]
         rows = [
+            self.scale_to_width(
+                image[
+                    int(height * 0.01) : int(height * 0.09),
+                    int(width * 0.04) : int(width * 0.90),
+                ],
+                720,
+            ),
             image[int(height * 0.86) : int(height * 0.92), : int(width * 0.55)],
             image[int(height * 0.94) : int(height * 0.995), : int(width * 0.45)],
         ]
         try:
             texts = []
-            # Mixed-height batching can silently omit the first current-frame
-            # row on Paddle CPU. Run these two tiny rows independently; startup
-            # warmup pays both predictor paths before scanner traffic.
-            for row in rows:
-                for result in self._footer_ocr.predict([row]):
-                    data = result.json if hasattr(result, "json") else {}
-                    if callable(data):
-                        data = data()
-                    value = (data.get("res") or {}).get("rec_text", "")
-                    if value.strip():
-                        texts.append(value.strip())
+            # Paddle suppresses the narrow collector row when it is evaluated
+            # alone. A title-shaped first item stabilizes the same batch path
+            # used by full fixed identity OCR while still omitting one unused
+            # footer crop.
+            for result in self._footer_ocr.predict(rows):
+                data = result.json if hasattr(result, "json") else {}
+                if callable(data):
+                    data = data()
+                value = (data.get("res") or {}).get("rec_text", "")
+                if value.strip():
+                    texts.append(value.strip())
             return "\n".join(texts)
         except Exception:
             logger.exception("Current footer OCR inference failed")
