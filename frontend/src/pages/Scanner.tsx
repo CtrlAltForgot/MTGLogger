@@ -56,7 +56,12 @@ export default function Scanner(){
   useEffect(()=>{void scan.start()},[scan.start])
 
   const tone=result?.disposition==='added'?'success':result?.disposition==='suggestions'||result?.disposition==='confirmation'?'warning':'error'
-  const stateLabel=scan.state==='remove'?(tuning.slingerMode?'Slide next card':'Swap to next card'):scan.state==='processing'?'Finishing queued cards…':scan.state==='stabilizing'?'Hold still…':scan.state==='calibrating'?'Calibrating…':scan.state==='waiting'?'Ready for card':''
+  const stateLabel=scan.state==='processing'?'Finishing queued cards…':scan.state==='calibrating'?'Calibrating…':scan.state==='waiting'?'Ready for card':''
+  const prominentInstruction=scan.state==='stabilizing'
+    ?{severity:'warning' as const,label:'Hold Still…'}
+    :scan.state==='remove'
+      ?{severity:'success' as const,label:tuning.slingerMode?'Slide next card':'Swap to next card'}
+      :null
   const scannerInstruction=scan.state==='processing'
     ?'The two-card pipeline is full. Move the current card only when prompted.'
     :(tuning.slingerMode?'Align the scan area with the slinger window. Each physical slide rearms the next capture—even for identical copies.':'Place a card anywhere in view and hold it steady. Swap directly to the next card after capture.')
@@ -75,7 +80,12 @@ export default function Scanner(){
         <canvas ref={scan.canvas} hidden/>
         {(settingScanArea||(scan.scanArea.left>0||scan.scanArea.top>0||scan.scanArea.width<100||scan.scanArea.height<100))&&<><Box sx={{position:'absolute',left:0,right:0,top:0,height:`${visibleScanArea.top}%`,bgcolor:'rgba(0,0,0,.56)',pointerEvents:'none'}}/><Box sx={{position:'absolute',left:0,right:0,top:`${visibleScanArea.top+visibleScanArea.height}%`,bottom:0,bgcolor:'rgba(0,0,0,.56)',pointerEvents:'none'}}/><Box sx={{position:'absolute',left:0,top:`${visibleScanArea.top}%`,width:`${visibleScanArea.left}%`,height:`${visibleScanArea.height}%`,bgcolor:'rgba(0,0,0,.56)',pointerEvents:'none'}}/><Box sx={{position:'absolute',left:`${visibleScanArea.left+visibleScanArea.width}%`,right:0,top:`${visibleScanArea.top}%`,height:`${visibleScanArea.height}%`,bgcolor:'rgba(0,0,0,.56)',pointerEvents:'none'}}/><Box sx={{position:'absolute',left:`${visibleScanArea.left}%`,top:`${visibleScanArea.top}%`,width:`${visibleScanArea.width}%`,height:`${visibleScanArea.height}%`,outline:'2px dashed rgba(255,255,255,.9)',pointerEvents:'none'}}>{settingScanArea&&<Typography sx={{position:'absolute',top:8,left:10,color:'common.white',textShadow:'0 1px 4px #000',fontWeight:800}}>Drag around the area to scan</Typography>}</Box></>}
         {scan.metrics.bounds&&scan.state!=='calibrating'&&<Box sx={{position:'absolute',left:`${scan.metrics.bounds.left}%`,top:`${scan.metrics.bounds.top}%`,width:`${scan.metrics.bounds.width}%`,height:`${scan.metrics.bounds.height}%`,border:'3px solid',borderColor:'success.main',borderRadius:2,boxShadow:'0 0 0 1px rgba(0,0,0,.4), 0 0 24px rgba(100,217,151,.28)',transition:'all 120ms linear',pointerEvents:'none'}}/>}
-        {stateLabel&&<Chip label={stateLabel} color={scan.state==='remove'?'success':scan.state==='processing'?'warning':'default'} sx={{position:'absolute',top:16,left:16,fontWeight:700,backdropFilter:'blur(12px)'}}/>}
+        {prominentInstruction&&<Box aria-live="assertive" sx={{position:'absolute',inset:0,display:'grid',placeItems:'center',bgcolor:'rgba(5,3,4,.58)',backdropFilter:'brightness(.6)',pointerEvents:'none',p:2}}>
+          <Alert severity={prominentInstruction.severity} variant="filled" sx={{minWidth:{xs:'min(84%, 280px)',sm:340},justifyContent:'center',alignItems:'center',borderRadius:2,boxShadow:'0 16px 48px rgba(0,0,0,.48)','& .MuiAlert-icon':{fontSize:32,alignItems:'center'},'& .MuiAlert-message':{py:.75}}}>
+            <Typography variant="h5" fontWeight={900}>{prominentInstruction.label}</Typography>
+          </Alert>
+        </Box>}
+        {stateLabel&&<Chip label={stateLabel} color={scan.state==='waiting'?'success':scan.state==='processing'?'warning':'default'} sx={{position:'absolute',top:16,left:16,fontWeight:700,backdropFilter:'blur(12px)'}}/>}
         {scan.state!=='idle'&&<Tooltip title="Turn camera off"><IconButton aria-label="Turn camera off" onClick={scan.stop} sx={{position:'absolute',right:16,top:16,color:'common.white',bgcolor:'rgba(10,7,8,.55)',backdropFilter:'blur(12px)','&:hover':{bgcolor:'rgba(10,7,8,.78)'}}}><VideocamOff/></IconButton></Tooltip>}
         {scan.state==='processing'&&<LinearProgress sx={{position:'absolute',bottom:0,left:0,right:0}}/>}
       </Box>
