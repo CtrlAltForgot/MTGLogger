@@ -36,10 +36,6 @@ async def lifespan(_: FastAPI):
     # before health checks admit scanner traffic so the first physical card in
     # a batch never pays the multi-second catalog construction cost.
     await asyncio.to_thread(CardRecognizer._get_visual_catalog)
-    # Recognition-only title/footer OCR has its own lazy Paddle initialization.
-    # Warm the scanner's actual singleton so the first card in every API
-    # restart does not absorb that multi-second setup cost.
-    await asyncio.to_thread(scanner.recognizer.warm_fixed_ocr)
     price_task = asyncio.create_task(price_refresh_loop(get_settings().price_refresh_hours))
     reference_task = (
         asyncio.create_task(reference_refresh_loop(get_settings().reference_refresh_hours))

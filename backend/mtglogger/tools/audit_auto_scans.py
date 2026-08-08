@@ -10,17 +10,11 @@ from ..config import get_settings
 from ..services.recognition import CardRecognizer
 
 
-async def audit(
-    since: str | None,
-    limit: int | None,
-    scan_ids: set[str] | None = None,
-) -> dict:
+async def audit(since: str | None, limit: int | None) -> dict:
     manifest = get_settings().evaluation_dir / "auto_added" / "manifest.json"
     records = json.loads(manifest.read_text()) if manifest.is_file() else []
     if since:
         records = [record for record in records if record["scan_id"] >= since]
-    if scan_ids:
-        records = [record for record in records if record["scan_id"] in scan_ids]
     if limit:
         records = records[-limit:]
 
@@ -29,7 +23,6 @@ async def audit(
         asyncio.to_thread(recognizer._neural.warm),
         asyncio.to_thread(recognizer._neural.warm_model),
         asyncio.to_thread(recognizer._get_visual_catalog),
-        asyncio.to_thread(recognizer.warm_fixed_ocr),
     )
     results = []
     for record in records:
@@ -46,12 +39,6 @@ async def audit(
             already_rectified=record.get("image_kind") != "camera_source",
         )
         top = result.candidates[0] if result.candidates else None
-        fixed_identity_text = await asyncio.to_thread(
-            recognizer.extract_fixed_identity_text, result.corrected
-        )
-        current_footer_text = await asyncio.to_thread(
-            recognizer.extract_current_footer_text, result.corrected
-        )
         auto_add = bool(top and result.confidence >= 98.5 and result.auto_add_safe)
         results.append(
             {
@@ -67,13 +54,6 @@ async def audit(
                 "confidence": result.confidence,
                 "auto_add": auto_add,
                 "processing_ms": result.processing_ms,
-                "timings_ms": result.timings_ms,
-                "ocr_text": result.ocr_text,
-                "fixed_identity_text": fixed_identity_text,
-                "fixed_identity_hints": recognizer.hints(fixed_identity_text),
-                "current_footer_text": current_footer_text,
-                "current_footer_hints": recognizer.hints(current_footer_text),
-                "neural_candidates": result.neural_candidates,
             }
         )
 
@@ -108,16 +88,10 @@ async def audit(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--since", help="Minimum sortable scan id, e.g. 20260807-185200")
-    parser.add_argument(
-        "--scan-id",
-        action="append",
-        dest="scan_ids",
-        help="Replay one exact scan id; repeat to select more than one",
-    )
     parser.add_argument("--limit", type=int)
     parser.add_argument("--pretty", action="store_true")
     args = parser.parse_args()
-    result = asyncio.run(audit(args.since, args.limit, set(args.scan_ids or [])))
+    result = asyncio.run(audit(args.since, args.limit))
     print(json.dumps(result, indent=2 if args.pretty else None))
 
 

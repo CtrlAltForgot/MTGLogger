@@ -42,9 +42,6 @@ class _VisualCatalog:
     rows_by_set: dict[
         str, tuple[tuple[CardReference, CardVisualFingerprint | None], ...]
     ]
-    references_by_name: dict[str, tuple[CardReference, ...]]
-    names: tuple[str, ...]
-    names_by_prefix: dict[str, tuple[str, ...]]
     examples: dict[str, tuple[str, ...]]
     global_hashes: np.ndarray
     global_row_indices: np.ndarray
@@ -385,93 +382,6 @@ class CardRecognizer:
             logger.exception("Fixed title OCR inference failed")
             return ""
 
-    def extract_fixed_identity_text(self, image: np.ndarray) -> str:
-        """Read the title and printing footer in one recognition-only batch.
-
-        Normal portrait cards put these fields in stable rows.  Paddle's text
-        detector is by far the most expensive part of a live scan, so use the
-        lightweight recognizer directly before falling back to layout-agnostic
-        detection for showcase, token, helper, and other unusual frames.
-        """
-        if getattr(self, "_footer_ocr", None) is None:
-            return ""
-        height, width = image.shape[:2]
-        rows = [
-            image[
-                int(height * 0.01) : int(height * 0.09),
-                int(width * 0.04) : int(width * 0.90),
-            ],
-            image[int(height * 0.86) : int(height * 0.92), : int(width * 0.55)],
-            image[int(height * 0.90) : int(height * 0.95), : int(width * 0.45)],
-            image[int(height * 0.94) : int(height * 0.995), : int(width * 0.45)],
-        ]
-        rows[0] = self.scale_to_width(rows[0], 720)
-        try:
-            texts = []
-            for result in self._footer_ocr.predict(rows):
-                data = result.json if hasattr(result, "json") else {}
-                if callable(data):
-                    data = data()
-                value = (data.get("res") or {}).get("rec_text", "")
-                if value.strip():
-                    texts.append(value.strip())
-            return "\n".join(texts)
-        except Exception:
-            logger.exception("Fixed identity OCR inference failed")
-            return ""
-
-    def extract_current_footer_text(self, image: np.ndarray) -> str:
-        """Read current-frame footer rows with a title-shape stabilizer."""
-        if getattr(self, "_footer_ocr", None) is None:
-            return ""
-        height, width = image.shape[:2]
-        rows = [
-            self.scale_to_width(
-                image[
-                    int(height * 0.01) : int(height * 0.09),
-                    int(width * 0.04) : int(width * 0.90),
-                ],
-                720,
-            ),
-            image[int(height * 0.90) : int(height * 0.95), : int(width * 0.45)],
-            image[int(height * 0.94) : int(height * 0.995), : int(width * 0.45)],
-        ]
-        try:
-            texts = []
-            # Paddle suppresses the narrow collector row when it is evaluated
-            # alone. A title-shaped first item stabilizes the same batch path
-            # used by full fixed identity OCR while still omitting one unused
-            # footer crop.
-            for result in self._footer_ocr.predict(rows):
-                data = result.json if hasattr(result, "json") else {}
-                if callable(data):
-                    data = data()
-                value = (data.get("res") or {}).get("rec_text", "")
-                if value.strip():
-                    texts.append(value.strip())
-            return "\n".join(texts)
-        except Exception:
-            logger.exception("Current footer OCR inference failed")
-            return ""
-
-    def warm_fixed_ocr(self) -> None:
-        """Pay Paddle's recognition-only initialization cost before traffic."""
-        if getattr(self, "_footer_ocr", None) is None:
-            return
-        try:
-            # Exercise the exact four-crop batch, including its mixed row
-            # shapes. Paddle initializes different execution paths for a
-            # singleton input and a batched input, so warming one title row did
-            # not remove the first live card's batch preparation cost.
-            self.extract_fixed_identity_text(
-                np.zeros((840, 600, 3), dtype=np.uint8)
-            )
-            self.extract_current_footer_text(
-                np.zeros((840, 600, 3), dtype=np.uint8)
-            )
-        except Exception:
-            logger.exception("Fixed OCR warmup failed")
-
     def extract_recovery_footer_text(
         self,
         image: np.ndarray,
@@ -752,8 +662,7 @@ class CardRecognizer:
             if set_code:
                 break
             match = re.match(
-                rf"^\s*([A-Z2][A-Z0-9]{{1,5}}?)[\s·•.+\-:]+"
-                rf"(?:A[\s·•.+\-:]*)?(?:{languages})(?=\s|$|[A-Z])",
+                rf"^\s*([A-Z2][A-Z0-9]{{1,5}}?)[\s·•.+\-:]+(?:{languages})(?=\s|$|[A-Z])",
                 line,
             )
             if match:
@@ -869,11 +778,7 @@ class CardRecognizer:
             # zero padding here; collector comparison normalizes it safely.
             footer = "\n".join(lines[-6:])
             rarity_prefixed = re.search(
-                # Current-frame OCR frequently concatenates the artist credit
-                # immediately after this rigid rarity+zero-padded field
-                # (``L0282SLAWEK``). A following letter is therefore allowed;
-                # the leading rarity and 3-4 digit shape keep the match narrow.
-                r"(?<![A-Z0-9])[LCMRU]([0-9O]{3,4})(?![0-9O])", footer
+                r"(?<![A-Z0-9])[LCMRU]([0-9O]{3,4})(?![A-Z0-9])", footer
             )
             if rarity_prefixed:
                 observed = rarity_prefixed.group(1)
@@ -1551,71 +1456,6 @@ class CardRecognizer:
         return False
 
     @classmethod
-    def has_strong_fixed_identity_evidence(
-        cls,
-        title: str | None,
-        number: str | None,
-        printed_set_code: str | None,
-        copyright_year: int | None,
-        cards: list[dict],
-    ) -> bool:
-        """Accept a fixed-row near-title only with physical-frame corroboration.
-
-        Recognition-only OCR occasionally damages the final few title glyphs
-        (``Preacher`` -> ``Preacnet``).  Requiring an exact set code, a
-        compatible copyright year, and a clearly separated catalog name keeps
-        this shortcut conservative while avoiding a multi-second detector pass.
-        Exact-printing auto-add authorization remains independent downstream.
-        """
-        if cls.has_strong_lookup_evidence(
-            title, number, printed_set_code, copyright_year, cards
-        ):
-            return True
-        if not title or not printed_set_code or not cards:
-            return False
-        scored = [
-            (cls.card_name_similarity(title, card["name"]), card)
-            for card in cards
-            if cls.exact_set_code_match(printed_set_code, card["set"])
-            and (
-                not copyright_year
-                or int(card.get("released_at", "0000")[:4]) == copyright_year
-            )
-        ]
-        scored.sort(key=lambda item: item[0])
-        if not scored or scored[-1][0] < 0.82:
-            return False
-        runner_up = scored[-2][0] if len(scored) > 1 else 0.0
-        return scored[-1][0] - runner_up >= 0.08
-
-    @classmethod
-    def canonical_fixed_title_identity(
-        cls, observed_title: str | None, cards: list[dict]
-    ) -> str | None:
-        """Return one clearly separated ordinary-card name from a title row."""
-        if not observed_title or not cards:
-            return None
-        # A title names a card family, not a token/land printing. Those families
-        # contain many visually distinct objects and must retain footer/layout
-        # evidence before exact-print matching begins.
-        if any(cls.is_basic_land(card) for card in cards) or any(
-            "token" in str(card.get("type_line") or "").casefold() for card in cards
-        ):
-            return None
-        names = sorted({str(card["name"]) for card in cards})
-        ranked = sorted(
-            (
-                (cls.card_name_similarity(observed_title, name), name)
-                for name in names
-            ),
-            reverse=True,
-        )
-        if not ranked or ranked[0][0] < 0.86:
-            return None
-        runner_up = ranked[1][0] if len(ranked) > 1 else 0.0
-        return ranked[0][1] if ranked[0][0] - runner_up >= 0.10 else None
-
-    @classmethod
     def unique_exact_footer_card(
         cls,
         number: str | None,
@@ -2220,19 +2060,39 @@ class CardRecognizer:
     def _lookup_local_cards(
         cls, title: str, number: str | None, preferred_set: str | None
     ) -> list[dict]:
-        catalog = cls._get_visual_catalog()
-        rows = list(catalog.references_by_name.get(title.casefold(), ()))
-        if not rows:
-            normalized_title = cls.normalized_name(title)
-            prefix_names = catalog.names_by_prefix.get(normalized_title[:3], ())
-            closest = cls.closest_catalog_names(
-                title, prefix_names or catalog.names, limit=1
-            )
-            if not closest or closest[0][1] < 0.72:
-                return []
-            rows = list(
-                catalog.references_by_name.get(closest[0][0].casefold(), ())
-            )
+        try:
+            with SessionLocal() as db:
+                rows = list(
+                    db.scalars(
+                        select(CardReference).where(CardReference.name == title)
+                    )
+                )
+                # OCR normally arrives through a canonical catalog name, so
+                # use the existing indexed equality path first. Retain the
+                # case-insensitive behavior for manually supplied/localized
+                # text without making every normal scan walk the full catalog.
+                if not rows:
+                    rows = list(
+                        db.scalars(
+                            select(CardReference).where(
+                                func.lower(CardReference.name) == title.casefold()
+                            )
+                        )
+                    )
+                if not rows:
+                    names = list(db.scalars(select(CardReference.name).distinct()))
+                    closest = cls.closest_catalog_names(title, names, limit=1)
+                    if not closest or closest[0][1] < 0.72:
+                        return []
+                    rows = list(
+                        db.scalars(
+                            select(CardReference).where(
+                                func.lower(CardReference.name) == closest[0][0].casefold()
+                            )
+                        )
+                    )
+        except SQLAlchemyError:
+            return []
         if not rows:
             return []
         exact = [
@@ -2347,7 +2207,6 @@ class CardRecognizer:
             started = time.perf_counter()
             recovery_used = False
             oracle_recovery = False
-            current_land_fast_path = False
             decoded = self.decode(raw)
             logger.info(
                 "Scanner input frame: %dx%d (%d bytes)",
@@ -2403,7 +2262,6 @@ class CardRecognizer:
                 and neural_matches[0].similarity >= 0.72
             ):
                 neural_fast_identity = True
-            fixed_title_identity = False
             if neural_fast_identity:
                 # A clear canonical embedding establishes only the card name.
                 # Exact-printing authorization remains downstream and still
@@ -2553,128 +2411,19 @@ class CardRecognizer:
                     )
                 oracle_recovery = True
             else:
-                # Conventional portrait cards can be identified from their
-                # fixed title and footer rows without running Paddle's costly
-                # full text detector.  Only accept this shortcut when catalog
-                # lookup corroborates a unique printing or a strong title;
-                # unusual layouts retain the existing broad-OCR fallback.
-                basic_land_names = {
-                    "plains",
-                    "island",
-                    "swamp",
-                    "mountain",
-                    "forest",
-                    "wastes",
-                }
-                leading_neural_names = [
-                    match.reference.name.casefold() for match in neural_matches[:3]
-                ]
-                likely_basic_land = bool(
-                    leading_neural_names
-                    and leading_neural_names[0] in basic_land_names
-                    and leading_neural_names.count(leading_neural_names[0]) >= 2
+                text = await asyncio.to_thread(
+                    self.extract_identification_text, analysis_image
                 )
-                current_footer_text = (
-                    await asyncio.to_thread(
-                        self.extract_current_footer_text, corrected
-                    )
-                    if likely_basic_land
-                    else ""
+                title, number, printed_set_code, copyright_year = self.hints(text)
+                promo_type = self.promo_type_hint(text)
+                cards = await self._lookup_cards(
+                    title,
+                    number,
+                    printed_set_code,
+                    box_set_code,
+                    language,
+                    promo_type,
                 )
-                current_footer_hints = self.hints(current_footer_text)
-                current_footer_cards = (
-                    await self._lookup_cards(
-                        None,
-                        current_footer_hints[1],
-                        current_footer_hints[2],
-                        box_set_code,
-                        language,
-                        None,
-                    )
-                    if current_footer_hints[1] and current_footer_hints[2]
-                    else []
-                )
-                exact_current_land = self.unique_exact_footer_card(
-                    current_footer_hints[1],
-                    current_footer_hints[2],
-                    current_footer_cards,
-                )
-                if exact_current_land and self.is_basic_land(exact_current_land):
-                    text = current_footer_text
-                    title = exact_current_land["name"]
-                    number = current_footer_hints[1]
-                    printed_set_code = current_footer_hints[2]
-                    copyright_year = current_footer_hints[3]
-                    promo_type = None
-                    cards = current_footer_cards
-                    fixed_title_identity = True
-                    current_land_fast_path = True
-                    fixed_title_text = ""
-                else:
-                    fixed_title_text = await asyncio.to_thread(
-                        self.extract_fixed_title_text, analysis_image
-                    )
-                observed_fixed_title = self.hints(fixed_title_text)[0]
-                fixed_title_cards = (
-                    await self._lookup_cards(
-                        observed_fixed_title, None, None, box_set_code, language, None
-                    )
-                    if observed_fixed_title
-                    and len(self.normalized_name(observed_fixed_title)) >= 4
-                    else []
-                )
-                canonical_fixed_title = self.canonical_fixed_title_identity(
-                    observed_fixed_title, fixed_title_cards
-                )
-                fixed_title_identity = bool(canonical_fixed_title)
-                if exact_current_land and self.is_basic_land(exact_current_land):
-                    pass
-                elif canonical_fixed_title:
-                    title = canonical_fixed_title
-                    number = printed_set_code = copyright_year = None
-                    promo_type = None
-                    text = fixed_title_text
-                    cards = await self._lookup_cards(
-                        title, None, None, box_set_code, language, None
-                    )
-                else:
-                    fixed_text = await asyncio.to_thread(
-                        self.extract_fixed_identity_text, analysis_image
-                    )
-                    fixed_hints = self.hints(fixed_text)
-                    fixed_promo = self.promo_type_hint(fixed_text)
-                    fixed_lookup_title = (
-                        None
-                        if fixed_hints[1] and fixed_hints[2]
-                        else fixed_hints[0]
-                    )
-                    fixed_cards = await self._lookup_cards(
-                        fixed_lookup_title,
-                        fixed_hints[1],
-                        fixed_hints[2],
-                        box_set_code,
-                        language,
-                        fixed_promo,
-                    )
-                    if self.has_strong_fixed_identity_evidence(*fixed_hints, fixed_cards):
-                        text = fixed_text
-                        title, number, printed_set_code, copyright_year = fixed_hints
-                        promo_type = fixed_promo
-                        cards = fixed_cards
-                    else:
-                        text = await asyncio.to_thread(
-                            self.extract_identification_text, analysis_image
-                        )
-                        title, number, printed_set_code, copyright_year = self.hints(text)
-                        promo_type = self.promo_type_hint(text)
-                        cards = await self._lookup_cards(
-                            title,
-                            number,
-                            printed_set_code,
-                            box_set_code,
-                            language,
-                            promo_type,
-                        )
             ocr_complete = time.perf_counter()
             repaired_family_set_code = False
             # Keep the camera's original footer observation separate from the
@@ -2729,7 +2478,7 @@ class CardRecognizer:
             # card images, so compare them with the original rectified camera
             # pixels. This reuses an existing frame and adds no processing pass.
             descriptor_image = corrected
-            neural_recovered_identity = neural_fast_identity or fixed_title_identity
+            neural_recovered_identity = neural_fast_identity
             # The embedding is computed alongside OCR. Consult it before the
             # expensive full-frame OCR recovery so a decisive artwork identity
             # can fuse with an already-readable footer. This turns the common
@@ -2935,7 +2684,7 @@ class CardRecognizer:
                     exact_footer_year_cards
                     if len(exact_footer_year_cards) == 1
                     else await self._lookup_cards(
-                        None if current_land_fast_path else (merged_title or title),
+                        merged_title or title,
                         merged_number,
                         merged_set,
                         box_set_code,
@@ -2946,7 +2695,7 @@ class CardRecognizer:
                 merged_exact = self.unique_exact_footer_card(
                     merged_number, merged_set, merged_cards
                 )
-                merged_identity = title if current_land_fast_path else (merged_title or title)
+                merged_identity = merged_title or title
                 if merged_exact and (
                     len(exact_footer_year_cards) == 1
                     or
@@ -5446,14 +5195,10 @@ class CardRecognizer:
                 rows_by_set_lists: dict[
                     str, list[tuple[CardReference, CardVisualFingerprint | None]]
                 ] = {}
-                references_by_name_lists: dict[str, list[CardReference]] = {}
                 for reference, fingerprint in rows:
                     rows_by_set_lists.setdefault(reference.set_code, []).append(
                         (reference, fingerprint)
                     )
-                    references_by_name_lists.setdefault(
-                        reference.name.casefold(), []
-                    ).append(reference)
                 examples: dict[str, list[str]] = {}
                 for scryfall_id, example_hash in db.execute(
                     select(CardVisualExample.scryfall_id, CardVisualExample.art_hash)
@@ -5484,29 +5229,11 @@ class CardRecognizer:
                     global_hashes.append(int(example_hash, 16))
                     global_row_indices.append(row_index)
                     global_hash_is_example.append(True)
-            names = tuple(
-                references[0].name
-                for references in references_by_name_lists.values()
-            )
-            names_by_prefix_lists: dict[str, list[str]] = {}
-            for name in names:
-                names_by_prefix_lists.setdefault(
-                    CardRecognizer.normalized_name(name)[:3], []
-                ).append(name)
             _visual_catalog = _VisualCatalog(
                 loaded_at=now,
                 rows=rows,
                 rows_by_set={
                     key: tuple(value) for key, value in rows_by_set_lists.items()
-                },
-                references_by_name={
-                    key: tuple(value)
-                    for key, value in references_by_name_lists.items()
-                },
-                names=names,
-                names_by_prefix={
-                    prefix: tuple(names)
-                    for prefix, names in names_by_prefix_lists.items()
                 },
                 examples={key: tuple(value) for key, value in examples.items()},
                 global_hashes=np.asarray(global_hashes, dtype=np.uint64),
