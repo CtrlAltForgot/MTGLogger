@@ -2347,6 +2347,7 @@ class CardRecognizer:
             started = time.perf_counter()
             recovery_used = False
             oracle_recovery = False
+            current_land_fast_path = False
             decoded = self.decode(raw)
             logger.info(
                 "Scanner input frame: %dx%d (%d bytes)",
@@ -2607,6 +2608,7 @@ class CardRecognizer:
                     promo_type = None
                     cards = current_footer_cards
                     fixed_title_identity = True
+                    current_land_fast_path = True
                     fixed_title_text = ""
                 else:
                     fixed_title_text = await asyncio.to_thread(
@@ -2933,7 +2935,7 @@ class CardRecognizer:
                     exact_footer_year_cards
                     if len(exact_footer_year_cards) == 1
                     else await self._lookup_cards(
-                        merged_title or title,
+                        None if current_land_fast_path else (merged_title or title),
                         merged_number,
                         merged_set,
                         box_set_code,
@@ -2944,7 +2946,7 @@ class CardRecognizer:
                 merged_exact = self.unique_exact_footer_card(
                     merged_number, merged_set, merged_cards
                 )
-                merged_identity = merged_title or title
+                merged_identity = title if current_land_fast_path else (merged_title or title)
                 if merged_exact and (
                     len(exact_footer_year_cards) == 1
                     or
