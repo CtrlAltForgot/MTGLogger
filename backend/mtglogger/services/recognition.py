@@ -421,11 +421,14 @@ class CardRecognizer:
         """Pay Paddle's recognition-only initialization cost before traffic."""
         if getattr(self, "_footer_ocr", None) is None:
             return
-        # Match the title-row dimensions used by live inference so Paddle can
-        # initialize the same predictor shape while the API is still starting.
-        blank = np.zeros((72, 720, 3), dtype=np.uint8)
         try:
-            list(self._footer_ocr.predict([blank]))
+            # Exercise the exact four-crop batch, including its mixed row
+            # shapes. Paddle initializes different execution paths for a
+            # singleton input and a batched input, so warming one title row did
+            # not remove the first live card's batch preparation cost.
+            self.extract_fixed_identity_text(
+                np.zeros((840, 600, 3), dtype=np.uint8)
+            )
         except Exception:
             logger.exception("Fixed OCR warmup failed")
 
