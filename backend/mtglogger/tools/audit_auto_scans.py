@@ -10,11 +10,17 @@ from ..config import get_settings
 from ..services.recognition import CardRecognizer
 
 
-async def audit(since: str | None, limit: int | None) -> dict:
+async def audit(
+    since: str | None,
+    limit: int | None,
+    scan_ids: set[str] | None = None,
+) -> dict:
     manifest = get_settings().evaluation_dir / "auto_added" / "manifest.json"
     records = json.loads(manifest.read_text()) if manifest.is_file() else []
     if since:
         records = [record for record in records if record["scan_id"] >= since]
+    if scan_ids:
+        records = [record for record in records if record["scan_id"] in scan_ids]
     if limit:
         records = records[-limit:]
 
@@ -88,10 +94,16 @@ async def audit(since: str | None, limit: int | None) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--since", help="Minimum sortable scan id, e.g. 20260807-185200")
+    parser.add_argument(
+        "--scan-id",
+        action="append",
+        dest="scan_ids",
+        help="Replay one exact scan id; repeat to select more than one",
+    )
     parser.add_argument("--limit", type=int)
     parser.add_argument("--pretty", action="store_true")
     args = parser.parse_args()
-    result = asyncio.run(audit(args.since, args.limit))
+    result = asyncio.run(audit(args.since, args.limit, set(args.scan_ids or [])))
     print(json.dumps(result, indent=2 if args.pretty else None))
 
 
