@@ -715,7 +715,8 @@ class CardRecognizer:
             if set_code:
                 break
             match = re.match(
-                rf"^\s*([A-Z2][A-Z0-9]{{1,5}}?)[\s·•.+\-:]+(?:{languages})(?=\s|$|[A-Z])",
+                rf"^\s*([A-Z2][A-Z0-9]{{1,5}}?)[\s·•.+\-:]+"
+                rf"(?:A[\s·•.+\-:]*)?(?:{languages})(?=\s|$|[A-Z])",
                 line,
             )
             if match:
@@ -831,7 +832,11 @@ class CardRecognizer:
             # zero padding here; collector comparison normalizes it safely.
             footer = "\n".join(lines[-6:])
             rarity_prefixed = re.search(
-                r"(?<![A-Z0-9])[LCMRU]([0-9O]{3,4})(?![A-Z0-9])", footer
+                # Current-frame OCR frequently concatenates the artist credit
+                # immediately after this rigid rarity+zero-padded field
+                # (``L0282SLAWEK``). A following letter is therefore allowed;
+                # the leading rarity and 3-4 digit shape keep the match narrow.
+                r"(?<![A-Z0-9])[LCMRU]([0-9O]{3,4})(?![0-9O])", footer
             )
             if rarity_prefixed:
                 observed = rarity_prefixed.group(1)

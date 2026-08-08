@@ -1527,6 +1527,17 @@ def test_footer_artist_line_is_not_invented_as_a_card_title():
     assert set_code == "ori"
 
 
+def test_current_land_footer_survives_joined_artist_and_stray_language_glyph():
+    from mtglogger.services.recognition import CardRecognizer
+
+    _title, number, set_code, _year = CardRecognizer.hints(
+        "am\nLO282SLAWEKFEDORCZUK\nTLA AEN M SLAWEK FEDORCZUK"
+    )
+
+    assert number == "0282"
+    assert set_code == "tla"
+
+
 def test_footer_artist_credit_does_not_suppress_full_card_land_recovery():
     import numpy as np
 
