@@ -49,6 +49,9 @@ async def audit(
         fixed_identity_text = await asyncio.to_thread(
             recognizer.extract_fixed_identity_text, result.corrected
         )
+        current_footer_text = await asyncio.to_thread(
+            recognizer.extract_current_footer_text, result.corrected
+        )
         auto_add = bool(top and result.confidence >= 98.5 and result.auto_add_safe)
         results.append(
             {
@@ -68,6 +71,8 @@ async def audit(
                 "ocr_text": result.ocr_text,
                 "fixed_identity_text": fixed_identity_text,
                 "fixed_identity_hints": recognizer.hints(fixed_identity_text),
+                "current_footer_text": current_footer_text,
+                "current_footer_hints": recognizer.hints(current_footer_text),
                 "neural_candidates": result.neural_candidates,
             }
         )
