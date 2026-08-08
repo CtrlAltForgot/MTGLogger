@@ -42,6 +42,8 @@ class _VisualCatalog:
     rows_by_set: dict[
         str, tuple[tuple[CardReference, CardVisualFingerprint | None], ...]
     ]
+    references_by_name: dict[str, tuple[CardReference, ...]]
+    names: tuple[str, ...]
     examples: dict[str, tuple[str, ...]]
     global_hashes: np.ndarray
     global_row_indices: np.ndarray
@@ -2175,39 +2177,15 @@ class CardRecognizer:
     def _lookup_local_cards(
         cls, title: str, number: str | None, preferred_set: str | None
     ) -> list[dict]:
-        try:
-            with SessionLocal() as db:
-                rows = list(
-                    db.scalars(
-                        select(CardReference).where(CardReference.name == title)
-                    )
-                )
-                # OCR normally arrives through a canonical catalog name, so
-                # use the existing indexed equality path first. Retain the
-                # case-insensitive behavior for manually supplied/localized
-                # text without making every normal scan walk the full catalog.
-                if not rows:
-                    rows = list(
-                        db.scalars(
-                            select(CardReference).where(
-                                func.lower(CardReference.name) == title.casefold()
-                            )
-                        )
-                    )
-                if not rows:
-                    names = list(db.scalars(select(CardReference.name).distinct()))
-                    closest = cls.closest_catalog_names(title, names, limit=1)
-                    if not closest or closest[0][1] < 0.72:
-                        return []
-                    rows = list(
-                        db.scalars(
-                            select(CardReference).where(
-                                func.lower(CardReference.name) == closest[0][0].casefold()
-                            )
-                        )
-                    )
-        except SQLAlchemyError:
-            return []
+        catalog = cls._get_visual_catalog()
+        rows = list(catalog.references_by_name.get(title.casefold(), ()))
+        if not rows:
+            closest = cls.closest_catalog_names(title, catalog.names, limit=1)
+            if not closest or closest[0][1] < 0.72:
+                return []
+            rows = list(
+                catalog.references_by_name.get(closest[0][0].casefold(), ())
+            )
         if not rows:
             return []
         exact = [
@@ -5350,10 +5328,14 @@ class CardRecognizer:
                 rows_by_set_lists: dict[
                     str, list[tuple[CardReference, CardVisualFingerprint | None]]
                 ] = {}
+                references_by_name_lists: dict[str, list[CardReference]] = {}
                 for reference, fingerprint in rows:
                     rows_by_set_lists.setdefault(reference.set_code, []).append(
                         (reference, fingerprint)
                     )
+                    references_by_name_lists.setdefault(
+                        reference.name.casefold(), []
+                    ).append(reference)
                 examples: dict[str, list[str]] = {}
                 for scryfall_id, example_hash in db.execute(
                     select(CardVisualExample.scryfall_id, CardVisualExample.art_hash)
@@ -5390,6 +5372,14 @@ class CardRecognizer:
                 rows_by_set={
                     key: tuple(value) for key, value in rows_by_set_lists.items()
                 },
+                references_by_name={
+                    key: tuple(value)
+                    for key, value in references_by_name_lists.items()
+                },
+                names=tuple(
+                    references[0].name
+                    for references in references_by_name_lists.values()
+                ),
                 examples={key: tuple(value) for key, value in examples.items()},
                 global_hashes=np.asarray(global_hashes, dtype=np.uint64),
                 global_row_indices=np.asarray(global_row_indices, dtype=np.int32),
