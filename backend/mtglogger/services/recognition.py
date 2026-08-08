@@ -2524,8 +2524,13 @@ class CardRecognizer:
                     self.extract_fixed_title_text, analysis_image
                 )
                 observed_fixed_title = self.hints(fixed_title_text)[0]
-                fixed_title_cards = await self._lookup_cards(
-                    observed_fixed_title, None, None, box_set_code, language, None
+                fixed_title_cards = (
+                    await self._lookup_cards(
+                        observed_fixed_title, None, None, box_set_code, language, None
+                    )
+                    if observed_fixed_title
+                    and len(self.normalized_name(observed_fixed_title)) >= 4
+                    else []
                 )
                 canonical_fixed_title = self.canonical_fixed_title_identity(
                     observed_fixed_title, fixed_title_cards
@@ -2545,8 +2550,18 @@ class CardRecognizer:
                     )
                     fixed_hints = self.hints(fixed_text)
                     fixed_promo = self.promo_type_hint(fixed_text)
+                    fixed_lookup_title = (
+                        None
+                        if fixed_hints[1] and fixed_hints[2]
+                        else fixed_hints[0]
+                    )
                     fixed_cards = await self._lookup_cards(
-                        *fixed_hints[:3], box_set_code, language, fixed_promo
+                        fixed_lookup_title,
+                        fixed_hints[1],
+                        fixed_hints[2],
+                        box_set_code,
+                        language,
+                        fixed_promo,
                     )
                     if self.has_strong_fixed_identity_evidence(*fixed_hints, fixed_cards):
                         text = fixed_text
