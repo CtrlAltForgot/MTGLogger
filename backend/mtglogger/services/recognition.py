@@ -401,8 +401,6 @@ class CardRecognizer:
             image[int(height * 0.86) : int(height * 0.92), : int(width * 0.55)],
             image[int(height * 0.90) : int(height * 0.95), : int(width * 0.45)],
             image[int(height * 0.94) : int(height * 0.995), : int(width * 0.45)],
-            image[int(height * 0.93) : int(height * 0.98), int(width * 0.55) :],
-            image[int(height * 0.94) : int(height * 0.995), int(width * 0.55) :],
         ]
         rows[0] = self.scale_to_width(rows[0], 720)
         try:
@@ -418,6 +416,18 @@ class CardRecognizer:
         except Exception:
             logger.exception("Fixed identity OCR inference failed")
             return ""
+
+    def warm_fixed_ocr(self) -> None:
+        """Pay Paddle's recognition-only initialization cost before traffic."""
+        if getattr(self, "_footer_ocr", None) is None:
+            return
+        # Match the title-row dimensions used by live inference so Paddle can
+        # initialize the same predictor shape while the API is still starting.
+        blank = np.zeros((72, 720, 3), dtype=np.uint8)
+        try:
+            list(self._footer_ocr.predict([blank]))
+        except Exception:
+            logger.exception("Fixed OCR warmup failed")
 
     def extract_recovery_footer_text(
         self,

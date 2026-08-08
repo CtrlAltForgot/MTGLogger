@@ -1388,8 +1388,6 @@ def test_fixed_identity_ocr_batches_title_and_footer_rows_once():
                 Result("C 0041"),
                 Result("ECL · EN"),
                 Result("WARREN MAHY"),
-                Result(""),
-                Result(""),
             ]
 
     recognizer = CardRecognizer.__new__(CardRecognizer)
@@ -1400,7 +1398,7 @@ def test_fixed_identity_ocr_batches_title_and_footer_rows_once():
     )
 
     assert len(recognizer._footer_ocr.calls) == 1
-    assert len(recognizer._footer_ocr.calls[0]) == 6
+    assert len(recognizer._footer_ocr.calls[0]) == 4
     assert CardRecognizer.hints(text)[:3] == (
         "Wanderbrine Preacher",
         "0041",
