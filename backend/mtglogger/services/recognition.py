@@ -420,6 +420,29 @@ class CardRecognizer:
             logger.exception("Fixed identity OCR inference failed")
             return ""
 
+    def extract_current_footer_text(self, image: np.ndarray) -> str:
+        """Read only the two identity rows used by current card frames."""
+        if getattr(self, "_footer_ocr", None) is None:
+            return ""
+        height, width = image.shape[:2]
+        rows = [
+            image[int(height * 0.90) : int(height * 0.95), : int(width * 0.45)],
+            image[int(height * 0.94) : int(height * 0.995), : int(width * 0.45)],
+        ]
+        try:
+            texts = []
+            for result in self._footer_ocr.predict(rows):
+                data = result.json if hasattr(result, "json") else {}
+                if callable(data):
+                    data = data()
+                value = (data.get("res") or {}).get("rec_text", "")
+                if value.strip():
+                    texts.append(value.strip())
+            return "\n".join(texts)
+        except Exception:
+            logger.exception("Current footer OCR inference failed")
+            return ""
+
     def warm_fixed_ocr(self) -> None:
         """Pay Paddle's recognition-only initialization cost before traffic."""
         if getattr(self, "_footer_ocr", None) is None:
@@ -2520,9 +2543,61 @@ class CardRecognizer:
                 # full text detector.  Only accept this shortcut when catalog
                 # lookup corroborates a unique printing or a strong title;
                 # unusual layouts retain the existing broad-OCR fallback.
-                fixed_title_text = await asyncio.to_thread(
-                    self.extract_fixed_title_text, analysis_image
+                basic_land_names = {
+                    "plains",
+                    "island",
+                    "swamp",
+                    "mountain",
+                    "forest",
+                    "wastes",
+                }
+                leading_neural_names = [
+                    match.reference.name.casefold() for match in neural_matches[:3]
+                ]
+                likely_basic_land = bool(
+                    leading_neural_names
+                    and leading_neural_names[0] in basic_land_names
+                    and leading_neural_names.count(leading_neural_names[0]) >= 2
                 )
+                current_footer_text = (
+                    await asyncio.to_thread(
+                        self.extract_current_footer_text, analysis_image
+                    )
+                    if likely_basic_land
+                    else ""
+                )
+                current_footer_hints = self.hints(current_footer_text)
+                current_footer_cards = (
+                    await self._lookup_cards(
+                        None,
+                        current_footer_hints[1],
+                        current_footer_hints[2],
+                        box_set_code,
+                        language,
+                        None,
+                    )
+                    if current_footer_hints[1] and current_footer_hints[2]
+                    else []
+                )
+                exact_current_land = self.unique_exact_footer_card(
+                    current_footer_hints[1],
+                    current_footer_hints[2],
+                    current_footer_cards,
+                )
+                if exact_current_land and self.is_basic_land(exact_current_land):
+                    text = current_footer_text
+                    title = exact_current_land["name"]
+                    number = current_footer_hints[1]
+                    printed_set_code = current_footer_hints[2]
+                    copyright_year = current_footer_hints[3]
+                    promo_type = None
+                    cards = current_footer_cards
+                    fixed_title_identity = True
+                    fixed_title_text = ""
+                else:
+                    fixed_title_text = await asyncio.to_thread(
+                        self.extract_fixed_title_text, analysis_image
+                    )
                 observed_fixed_title = self.hints(fixed_title_text)[0]
                 fixed_title_cards = (
                     await self._lookup_cards(
@@ -2536,7 +2611,9 @@ class CardRecognizer:
                     observed_fixed_title, fixed_title_cards
                 )
                 fixed_title_identity = bool(canonical_fixed_title)
-                if canonical_fixed_title:
+                if exact_current_land and self.is_basic_land(exact_current_land):
+                    pass
+                elif canonical_fixed_title:
                     title = canonical_fixed_title
                     number = printed_set_code = copyright_year = None
                     promo_type = None

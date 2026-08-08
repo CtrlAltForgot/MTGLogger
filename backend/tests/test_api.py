@@ -1406,6 +1406,32 @@ def test_fixed_identity_ocr_batches_title_and_footer_rows_once():
     )
 
 
+def test_current_footer_ocr_reads_only_two_modern_identity_rows():
+    import numpy as np
+
+    from mtglogger.services.recognition import CardRecognizer
+
+    class Result:
+        def __init__(self, text):
+            self.json = {"res": {"rec_text": text}}
+
+    class Ocr:
+        calls = []
+
+        def predict(self, rows):
+            self.calls.append(rows)
+            return [Result("L0282"), Result("TLA · EN")]
+
+    recognizer = CardRecognizer.__new__(CardRecognizer)
+    recognizer._footer_ocr = Ocr()
+    text = recognizer.extract_current_footer_text(
+        np.zeros((840, 600, 3), dtype=np.uint8)
+    )
+
+    assert len(recognizer._footer_ocr.calls[0]) == 2
+    assert CardRecognizer.hints(text)[1:3] == ("0282", "tla")
+
+
 def test_fixed_identity_accepts_separated_near_title_with_exact_frame_evidence():
     from mtglogger.services.recognition import CardRecognizer
 
