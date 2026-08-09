@@ -67,6 +67,7 @@ def migrate_schema() -> None:
             "flavor_name": "VARCHAR(255)",
             "language": "VARCHAR(16) DEFAULT 'en'",
             "oracle_text": "TEXT",
+            "loyalty": "VARCHAR(16)",
             "artist": "VARCHAR(255)",
             "promo_types": "TEXT",
             "finishes": "TEXT",

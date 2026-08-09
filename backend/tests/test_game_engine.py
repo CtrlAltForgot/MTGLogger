@@ -115,6 +115,14 @@ def test_legend_rule_uses_canonical_name_and_bot_keeps_stronger_copy():
     assert any(c["instance_id"]=="strong" for c in bot["battlefield"]) and any(c["instance_id"]=="weak" for c in bot["graveyard"])
 
 
+def test_planeswalker_loyalty_abilities_once_per_turn_and_zero_loyalty_death():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player")
+    walker={**card(720,"Test Walker","Legendary Planeswalker — Test"),"oracle_text":"+1: Draw a card.\n−2: Create a 1/1 white Soldier creature token.","loyalty":"3","instance_id":"walker","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{"loyalty":3},"summoning_sick":False};player["battlefield"].append(walker);before=len(player["hand"])
+    plus=next(a for a in legal_actions(state,"player") if a["type"]=="activate_loyalty" and a["ability_index"]==0);state=perform_action(state,"player",{"type":"activate_loyalty","card_id":"walker","ability_index":plus["ability_index"]});assert next(p for p in state["players"] if p["id"]=="player")["battlefield"][-1]["counters"]["loyalty"]==4
+    state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");assert len(player["hand"])==before+1 and not any(a["type"]=="activate_loyalty" for a in legal_actions(state,"player"))
+    bolt={**card(721,"Loyalty Bolt","Instant"),"oracle_text":"Loyalty Bolt deals 4 damage to any target.","instance_id":"bolt","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"].append(bolt);state=perform_action(state,"player",{"type":"cast","card_id":"bolt","target_id":"walker"});state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");assert any(c["instance_id"]=="walker" for c in player["graveyard"])
+
+
 def test_targeted_removal_requires_and_resolves_a_legal_creature_target():
     state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"})
     player=next(player for player in state["players"] if player["id"]=="player");bot=next(player for player in state["players"] if player["id"]=="bot")

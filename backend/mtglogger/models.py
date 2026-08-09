@@ -173,6 +173,7 @@ class CardReference(Base):
     mana_value: Mapped[float | None] = mapped_column(nullable=True)
     power: Mapped[str | None] = mapped_column(String(16), nullable=True)
     toughness: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    loyalty: Mapped[str | None] = mapped_column(String(16), nullable=True)
     keywords: Mapped[str | None] = mapped_column(Text, nullable=True)
     legalities: Mapped[str | None] = mapped_column(Text, nullable=True)
     released_at: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)

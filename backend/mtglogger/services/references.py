@@ -634,6 +634,7 @@ def _reference_metadata(provider, card: dict, image_url: str | None = None) -> d
         "mana_value": card.get("cmc"),
         "power": card.get("power") or primary_face.get("power"),
         "toughness": card.get("toughness") or primary_face.get("toughness"),
+        "loyalty": card.get("loyalty") or (faces[0].get("loyalty") if faces else None),
         "keywords": json.dumps(card.get("keywords") or []),
         "legalities": json.dumps(card.get("legalities") or {}),
         "released_at": _released_at(card),

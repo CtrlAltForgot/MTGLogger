@@ -81,6 +81,11 @@ def choose_bot_action(state: dict, difficulty: str = "standard") -> dict | None:
         if choice.get("targets"):
             opposing=[target for target in choice["targets"] if target["controller_id"]!="bot"];choice={**choice,"target_id":(opposing or choice["targets"])[0]["id"]}
         return choice
+    if "activate_loyalty" in by_type:
+        choices=by_type["activate_loyalty"];choice=max(choices,key=lambda action:len(action.get("label","")))
+        if choice.get("targets"):
+            opposing=[target for target in choice["targets"] if target["controller_id"]!="bot"];choice={**choice,"target_id":(opposing or choice["targets"])[0]["id"]}
+        return choice
     if "declare_attackers" in by_type:
         action = by_type["declare_attackers"][0]
         if difficulty == "beginner":

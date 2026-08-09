@@ -107,6 +107,15 @@ def _activated_abilities(card: dict) -> list[dict]:
     return abilities
 
 
+def _loyalty_abilities(card:dict)->list[dict]:
+    abilities=[]
+    for line in (card.get("oracle_text") or "").splitlines():
+        match=re.match(r"^([+−-]?\d+):\s*(.+)$",line.strip())
+        if not match:continue
+        cost=int(match.group(1).replace("−","-"));effect=match.group(2).strip();ability_card={**card,"name":f"{card['name']} loyalty ability","oracle_text":effect,"type_line":"Ability","mana_cost":""};abilities.append({"cost":cost,"effect":effect,"card":ability_card})
+    return abilities
+
+
 def _can_pay(player: dict, card: dict, extra_generic: int = 0) -> bool:
     available = []
     for permanent in player["battlefield"]:
@@ -149,6 +158,9 @@ def _new_player(player_id: str, name: str, deck: list[dict], is_bot: bool, forma
             card["tapped"] = False
             card["damage"] = 0
             card["counters"] = {}
+            if "Planeswalker" in card.get("type_line",""):
+                try:card["counters"]["loyalty"]=int(card.get("loyalty") or 0)
+                except ValueError:card["counters"]["loyalty"]=0
             card["summoning_sick"] = False
             card.pop("quantity", None)
             library.append(card)
@@ -286,6 +298,17 @@ def legal_actions(state: dict, player_id: str) -> list[dict]:
             action = {"type": "activate", "card_id": permanent["instance_id"], "ability_index": index, "label": ability["effect"]}
             if targets: action["targets"] = targets
             actions.append(action)
+    if active and main and not state["stack"]:
+        for permanent in player["battlefield"]:
+            if "Planeswalker" not in permanent.get("type_line","") or permanent.get("loyalty_activated_turn")==state["turn"]:continue
+            current=permanent.get("counters",{}).get("loyalty",0)
+            for index,ability in enumerate(_loyalty_abilities(permanent)):
+                if current+ability["cost"]<0:continue
+                targets=_targets(state,player_id,ability["card"])
+                if _target_kind(ability["card"]) and not targets:continue
+                action={"type":"activate_loyalty","card_id":permanent["instance_id"],"ability_index":index,"label":f"{ability['cost']:+d}: {ability['effect']}"}
+                if targets:action["targets"]=targets
+                actions.append(action)
     if _multiplayer(state):
         actions.append({"type": "pass_priority"})
         if active and not state["stack"] and not state.get("pending_phase_advance"):
@@ -343,6 +366,7 @@ def _resolve_spell(state: dict) -> None:
             else:target_player["life"] -= amount
         elif target:
             if _has_keyword(card,"Infect") or _has_keyword(card,"Wither"):target["counters"]["-1/-1"]=target["counters"].get("-1/-1",0)+amount
+            elif "Planeswalker" in target.get("type_line",""):target["counters"]["loyalty"]=max(0,target["counters"].get("loyalty",0)-amount)
             else:target["damage"] += amount
     if target and target_owner and re.search(r"destroy target (?:creature|permanent|nonland permanent)", effect_text):
         if not _has_keyword(target,"Indestructible"): _leave_battlefield(state, target_owner, target, "graveyard"); _log(state, f"{target['name']} was destroyed.")
@@ -524,6 +548,8 @@ def _state_based_actions(state: dict) -> None:
                 _,toughness=_parse_stats(permanent)
                 if "Creature" in permanent.get("type_line","") and (toughness<=0 or (permanent.get("damage",0)>=toughness and not _has_keyword(permanent,"Indestructible"))):
                     _leave_battlefield(state,owner,permanent,"graveyard");changed=True
+                elif "Planeswalker" in permanent.get("type_line","") and permanent.get("counters",{}).get("loyalty",0)<=0:
+                    _leave_battlefield(state,owner,permanent,"graveyard");changed=True
     if _pending_decision(state):return
     for owner in state["players"]:
         if any("legend rule doesn't apply" in (permanent.get("oracle_text") or "").casefold() for permanent in owner["battlefield"]):continue
@@ -607,6 +633,15 @@ def perform_action(state: dict, player_id: str, action: dict) -> dict:
         permanent["tapped"]=True;state["stack"].append({"id":_id(),"kind":"ability","card":ability["card"],"controller_id":player_id,"target_id":target_id,"source_id":permanent["instance_id"]});state["consecutive_passes"]=0;state["pending_phase_advance"]=False
         if _multiplayer(state):state["priority_player_id"]=opponent(state,player_id)["id"]
         _log(state,f"{player['name']} activated {permanent['name']}: {ability['effect']}")
+    elif action_type == "activate_loyalty":
+        permanent=next((card for card in player["battlefield"] if card["instance_id"]==action.get("card_id") and "Planeswalker" in card.get("type_line","")),None);index=action.get("ability_index")
+        available=next((entry for entry in legal_actions(state,player_id) if entry["type"]=="activate_loyalty" and entry["card_id"]==action.get("card_id") and entry["ability_index"]==index),None)
+        if not permanent or not available:raise RuleViolation("That loyalty ability cannot be activated")
+        ability=_loyalty_abilities(permanent)[index];target_id=action.get("target_id");targets=available.get("targets",[])
+        if targets and target_id not in {target["id"] for target in targets}:raise RuleViolation("Choose a legal target")
+        permanent["counters"]["loyalty"]=permanent["counters"].get("loyalty",0)+ability["cost"];permanent["loyalty_activated_turn"]=state["turn"];state["stack"].append({"id":_id(),"kind":"ability","card":ability["card"],"controller_id":player_id,"target_id":target_id,"source_id":permanent["instance_id"]});state["consecutive_passes"]=0;state["pending_phase_advance"]=False
+        if _multiplayer(state):state["priority_player_id"]=opponent(state,player_id)["id"]
+        _log(state,f"{player['name']} activated {permanent['name']} ({ability['cost']:+d}): {ability['effect']}")
     elif action_type == "resolve":
         _resolve_spell(state)
     elif action_type == "pass_priority":

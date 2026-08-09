@@ -5,7 +5,7 @@ import random
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, Header, HTTPException
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from ..database import get_db
@@ -46,6 +46,7 @@ def _deck_cards(db: Session, deck: Deck) -> list[dict]:
             "keywords": json.loads(reference.keywords or "[]") if reference and reference.keywords else [],
             "power": getattr(reference, "power", None),
             "toughness": getattr(reference, "toughness", None),
+            "loyalty": getattr(reference, "loyalty", None),
             "quantity": entry.quantity,
         })
     return cards
@@ -68,7 +69,7 @@ def _generated_deck_cards(db: Session, proposal: dict) -> list[dict]:
             "mana_cost": (reference.mana_cost if reference else "") or "",
             "mana_value": float((reference.mana_value if reference else 0) or 0),
             "keywords": json.loads(reference.keywords or "[]") if reference and reference.keywords else [],
-            "power": getattr(reference, "power", None), "toughness": getattr(reference, "toughness", None),
+            "power": getattr(reference, "power", None), "toughness": getattr(reference, "toughness", None), "loyalty": getattr(reference, "loyalty", None),
             "quantity": quantity,
         })
     return cards
@@ -108,7 +109,10 @@ async def create_game(payload: GameCreate, db: Session = Depends(get_db)):
     generated_bot = payload.opponent_type == "bot" and payload.bot_deck_mode == "generated"
     opponent_deck = player_deck if generated_bot else _deck(db, payload.opponent_deck_id)
     reference_ids = {entry.inventory.scryfall_id for deck in (player_deck, opponent_deck) for entry in deck.entries}
-    incomplete = list(db.scalars(select(CardReference).where(CardReference.scryfall_id.in_(reference_ids), CardReference.type_line.contains("Creature"), CardReference.power.is_(None))))
+    incomplete = list(db.scalars(select(CardReference).where(CardReference.scryfall_id.in_(reference_ids), or_(
+        (CardReference.type_line.contains("Creature")) & CardReference.power.is_(None),
+        (CardReference.type_line.contains("Planeswalker")) & CardReference.loyalty.is_(None),
+    ))))
     if incomplete:
         try:
             provider = ScryfallProvider()
