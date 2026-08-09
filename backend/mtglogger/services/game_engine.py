@@ -1518,6 +1518,17 @@ def _sacrifice_permanents(state:dict,owner:dict,cards:list[dict])->None:
         _leave_battlefield(state,owner,card,"graveyard",sources,dedupe)
 
 
+def _discard_cards(state:dict,player:dict,cards:list[dict])->None:
+    cards=[card for card in cards if card in player["hand"]]
+    if not cards:return
+    sources=[(source_owner,source) for source_owner in state["players"] for source in source_owner["battlefield"]];dedupe=set()
+    for card in cards:
+        player["hand"].remove(card);player["graveyard"].append(card)
+        if player.get("discard_event_turn")!=state["turn"]:player["discard_event_turn"]=state["turn"];player["discards_this_turn"]=0
+        player["discards_this_turn"]=player.get("discards_this_turn",0)+1
+        _queue_triggers(state,"discard",card,player,dedupe,sources)
+
+
 def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owner: dict, dedupe:set[str]|None=None, sources_override:list[tuple[dict,dict]]|None=None) -> None:
     if event in {"earthbend","waterbend","firebend","airbend"}:
         event_owner["bent_this_turn"]=sorted(set(event_owner.get("bent_this_turn",[]))|{event})
@@ -1526,7 +1537,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
     if event=="upkeep":
         for owner,permanent in sources:
             if permanent.pop("transform_next_upkeep",False):_transform(state,permanent)
-    if event in {"dies","cycling"} and event_card:
+    if event in {"dies","cycling","discard"} and event_card:
         if not any(source is event_card for _,source in sources):
             insert_at=max((index+1 for index,(owner,_) in enumerate(sources) if owner["id"]==event_owner["id"]),default=len(sources));sources.insert(insert_at,(event_owner,event_card))
     for owner, source in sources:
@@ -1571,6 +1582,15 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 opposing=not controlled and re.search(r"whenever (?:an|one or more) opponents? draws? (?:a|one or more) cards?",lower) is not None
                 any_player=re.search(r"whenever a player draws? (?:a|one or more) cards?",lower) is not None
                 matches=(yours or opposing or any_player) and (not one_or_more or dedupe is None or dedupe_key not in dedupe)
+                if matches and one_or_more and dedupe is not None:dedupe.add(dedupe_key)
+            elif event == "discard" and event_card:
+                controlled=owner["id"]==event_owner["id"];count=event_owner.get("discards_this_turn",0);one_or_more="one or more cards" in lower;dedupe_key=f"discard:{source.get('instance_id')}";type_line=event_card.get("type_line","").casefold()
+                kind_ok=not (("nonland card" in lower and "land" in type_line) or ("creature card" in lower and "creature" not in type_line) or ("land card" in lower and "land" not in type_line))
+                self_discard=source is event_card and ("when you discard this card" in lower or re.search(r"when (?:~|this card|[^,]+) is discarded",lower) is not None)
+                yours=controlled and (re.search(r"whenever you discard (?:a|one or more) cards?",lower) is not None or ("whenever you discard your first card each turn" in lower and count==1) or ("whenever you discard your second card each turn" in lower and count==2))
+                opposing=not controlled and re.search(r"whenever (?:an|one or more) opponents? discards? (?:a|one or more) cards?",lower) is not None
+                any_player=re.search(r"whenever (?:a|one or more) players? discards? (?:a|one or more) cards?",lower) is not None
+                matches=kind_ok and (self_discard or yours or opposing or any_player) and (not one_or_more or dedupe is None or dedupe_key not in dedupe)
                 if matches and one_or_more and dedupe is not None:dedupe.add(dedupe_key)
             elif event == "leaves" and event_card:
                 matches=source is not event_card and owner["id"]==event_owner["id"] and "Creature" in event_card.get("type_line","") and "when another creature you control leaves the battlefield" in lower
@@ -1913,8 +1933,8 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         card=next((card for card in player["hand"] if card["instance_id"]==action.get("card_id")),None);cycling=_cycling_ability(card or {})
         available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="cycle" and entry["card_id"]==action.get("card_id")),None)
         if not card or not cycling or not available:raise RuleViolation("That card cannot be cycled")
-        _pay_mana(state,player,{"mana_cost":cycling["mana_cost"]});player["hand"].remove(card);player["graveyard"].append(card)
-        state["stack"].append({"id":_id(),"kind":"ability","card":cycling["card"],"controller_id":player_id,"target_id":None,"source_id":card["instance_id"]});state["consecutive_passes"]=0;state["pending_phase_advance"]=False
+        stack_before_cost=len(state["stack"]);_pay_mana(state,player,{"mana_cost":cycling["mana_cost"]});_discard_cards(state,player,[card]);cost_triggers=state["stack"][stack_before_cost:];del state["stack"][stack_before_cost:]
+        state["stack"].append({"id":_id(),"kind":"ability","card":cycling["card"],"controller_id":player_id,"target_id":None,"source_id":card["instance_id"]});state["stack"].extend(cost_triggers);state["consecutive_passes"]=0;state["pending_phase_advance"]=False
         _queue_triggers(state,"cycling",card,player)
         if (_multiplayer(state) or not allow_direct_resolution) and not state.get("pending_trigger_targets"):state["priority_player_id"]=opponent(state,player_id)["id"]
         _log(state,f"{player['name']} discarded {card['name']} to activate {cycling['keyword']}.")
@@ -1960,6 +1980,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         elif len(selected_cost_ids)!=required_cost or len(set(selected_cost_ids))!=required_cost or not set(selected_cost_ids).issubset(cost_options):raise RuleViolation(f"Choose exactly {required_cost} legal card(s) for the activation cost")
         selected_cost_cards=[card for zone in (player["hand"],player["battlefield"]) for card in zone if card["instance_id"] in set(selected_cost_ids)]
         if len(selected_cost_cards)!=(len(selected_cost_ids) if waterbend_symbol or available.get("selection_x") else required_cost):raise RuleViolation("One or more activation cost cards are no longer available")
+        stack_before_cost=len(state["stack"])
         if waterbend_symbol:
             excluded={permanent["instance_id"]} if ability["taps"] else set();waterbend_amount=x_value if waterbend_symbol=="X" else int(waterbend_symbol);residual=_waterbend_residual(player,x_card,waterbend_amount,selected_cost_ids,excluded,x_value=x_value if _has_x_cost(x_card) else 0)
             if residual is None:raise RuleViolation("That waterbend payment is no longer available")
@@ -1976,15 +1997,18 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if ability["taps"]:permanent["tapped"]=True
         if ability.get("restrictions",{}).get("once_each_turn") or ability.get("restrictions",{}).get("once"):
             permanent.setdefault("activated_ability_usage",{})[str(index)]={"turn":state["turn"],"ever":True}
-        stack_item={"id":_id(),"kind":"ability","card":ability["card"],"controller_id":player_id,"target_id":target_id,"target_ids":target_ids,"source_id":permanent["instance_id"],"x_value":x_value};state["stack"].append(stack_item);state["consecutive_passes"]=0;state["pending_phase_advance"]=False
+        cost_triggers=state["stack"][stack_before_cost:];del state["stack"][stack_before_cost:]
+        stack_item={"id":_id(),"kind":"ability","card":ability["card"],"controller_id":player_id,"target_id":target_id,"target_ids":target_ids,"source_id":permanent["instance_id"],"x_value":x_value};state["stack"].append(stack_item);state["stack"].extend(cost_triggers);state["consecutive_passes"]=0;state["pending_phase_advance"]=False
         if waterbend_symbol:_queue_triggers(state,"waterbend",permanent,player)
         for ward_target in ([target_id] if target_id else [])+target_ids:_queue_ward(state,player,ward_target,stack_item)
         sacrifice_cards=[permanent] if ability["self_sacrifice"] else []
         discard_ids={card_id for requirement in available.get("cost_requirements",[]) if requirement["kind"]=="discard" for card_id in requirement["options"]}
         sacrifice_ids={card_id for requirement in available.get("cost_requirements",[]) if requirement["kind"]=="sacrifice" for card_id in requirement["options"]}
+        discard_cards=[]
         for card in list(selected_cost_cards):
-            if card["instance_id"] in discard_ids and card in player["hand"]:player["hand"].remove(card);player["graveyard"].append(card)
+            if card["instance_id"] in discard_ids and card in player["hand"]:discard_cards.append(card)
             elif card["instance_id"] in sacrifice_ids and card in player["battlefield"]:sacrifice_cards.append(card)
+        _discard_cards(state,player,discard_cards)
         _sacrifice_permanents(state,player,list({card["instance_id"]:card for card in sacrifice_cards}.values()))
         if (_multiplayer(state) or not allow_direct_resolution) and not state.get("pending_ward") and not state.get("pending_trigger_targets"):state["priority_player_id"]=opponent(state,player_id)["id"]
         _log(state,f"{player['name']} activated {permanent['name']}: {ability['effect']}")
@@ -2069,7 +2093,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
                 if len(requested)!=amount or len(set(requested))!=amount:raise RuleViolation(f"Choose exactly {amount} card(s) to discard for ward")
                 chosen=[card for card in player["hand"] if card["instance_id"] in set(requested)]
                 if len(chosen)!=amount:raise RuleViolation("One or more Ward discards are not in your hand")
-                for chosen_card in chosen:player["hand"].remove(chosen_card);player["graveyard"].append(chosen_card)
+                _discard_cards(state,player,chosen)
             _log(state,f"{player['name']} paid {pending.get('label',pending.get('mana_cost',''))} for {pending['source_name']}'s ward.")
         else:
             state["stack"].remove(stack_item)
@@ -2150,9 +2174,10 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if pending.get("player_id")!=player_id or len(requested)!=required or len(set(requested))!=required:raise RuleViolation(f"Choose exactly {required} cards to discard")
         chosen=[card for card in player["hand"] if card["instance_id"] in set(requested)]
         if len(chosen)!=required:raise RuleViolation("One or more selected cards are not in your hand")
-        for card in chosen:player["hand"].remove(card);player["graveyard"].append(card)
+        _discard_cards(state,player,chosen)
         reason=pending.get("reason","cleanup");state["pending_discard"]=None;_log(state,f"{player['name']} discarded {required} card(s){' to maximum hand size' if reason=='cleanup' else ''}.")
-        if reason=="cleanup":_begin_next_turn(state)
+        if reason=="cleanup" and not state["stack"] and not state.get("pending_trigger_targets"):_begin_next_turn(state)
+        elif reason=="cleanup":state["priority_player_id"]=(state.get("pending_trigger_targets") or [{"controller_id":state["active_player_id"]}])[0]["controller_id"]
         else:state["priority_player_id"]=state["active_player_id"]
     elif action_type == "sacrifice_permanents":
         pending=state.get("pending_sacrifice") or {};requested=action.get("card_ids") or [];required=pending.get("amount",0);allowed_ids=set(pending.get("card_ids",[]))
