@@ -102,6 +102,17 @@ def test_bot_prioritizes_playing_land_then_casting_spells():
     assert choose_bot_action(state,"expert")["type"]=="play_land"
 
 
+def test_expert_bot_avoids_bad_attacks_and_targets_the_largest_threat():
+    state=kept_game();state["active_player_id"]="bot";state["priority_player_id"]="bot";state["phase"]="combat";bot=next(p for p in state["players"] if p["id"]=="bot");enemy=next(p for p in state["players"] if p["id"]=="player");bot["battlefield"]=[];enemy["battlefield"]=[]
+    weak={**card(100,"Risky Attacker","Creature — Goblin","","2","2"),"instance_id":"risky","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};flyer={**card(101,"Evasive Attacker","Creature — Bird","","2","2"),"keywords":["Flying"],"instance_id":"evasive","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};wall={**card(102,"Large Defender","Creature — Giant","","5","5"),"instance_id":"large-defender","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};bot["battlefield"].extend([weak,flyer]);enemy["battlefield"].append(wall)
+    choice=choose_bot_action(state,"expert");assert choice["type"]=="declare_attackers" and choice["attacker_ids"]==["evasive"]
+    enemy["life"]=2;choice=choose_bot_action(state,"expert");assert set(choice["attacker_ids"])=={"risky","evasive"}
+
+    state=kept_game();state["active_player_id"]="bot";state["priority_player_id"]="bot";state["phase"]="precombat_main";bot=next(p for p in state["players"] if p["id"]=="bot");enemy=next(p for p in state["players"] if p["id"]=="player");bot["hand"]=[];bot["land_plays_remaining"]=0;enemy["battlefield"]=[]
+    small={**card(103,"Small Threat","Creature — Citizen","","1","1"),"instance_id":"small-threat","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};large={**card(104,"Huge Threat","Creature — Dragon","","8","8"),"keywords":["Flying","Trample"],"instance_id":"huge-threat","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};removal={**card(105,"Bot Removal","Instant"),"oracle_text":"Destroy target creature.","instance_id":"bot-removal","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};enemy["battlefield"].extend([small,large]);bot["hand"].append(removal)
+    choice=choose_bot_action(state,"expert");assert choice["type"]=="cast" and choice["target_id"]=="huge-threat"
+
+
 def test_bot_mulligans_bad_hands_by_difficulty_and_assigns_only_legal_blocks():
     first,second=decks();state=new_game(first,second);bot=next(player for player in state["players"] if player["id"]=="bot")
     bot["library"].extend(bot["hand"]);bot["hand"]=[]

@@ -1,6 +1,7 @@
 import random
+import re
 
-from .game_engine import legal_actions, perform_action
+from .game_engine import _has_keyword, _protected_from, legal_actions, perform_action
 
 
 def _card(state: dict, player_id: str, instance_id: str) -> dict:
@@ -11,6 +12,51 @@ def _card(state: dict, player_id: str, instance_id: str) -> dict:
 def _stats(card:dict)->tuple[int,int]:
     try:return int(card.get("power") or 0),int(card.get("toughness") or 0)
     except ValueError:return 0,0
+
+
+def _threat_score(card:dict)->float:
+    power,toughness=_stats(card);loyalty=card.get("counters",{}).get("loyalty",0);keywords=len(card.get("keywords",[]));text=card.get("oracle_text") or ""
+    return float(card.get("mana_value") or 0)*2+power*1.4+toughness+loyalty*1.2+keywords*1.5+min(5,len(text)/80)
+
+
+def _target_card(state:dict,target_id:str)->dict|None:
+    for owner in state["players"]:
+        for zone in ("battlefield","graveyard"):
+            card=next((card for card in owner[zone] if card["instance_id"]==target_id),None)
+            if card:return card
+    stack_item=next((item for item in state["stack"] if item["id"]==target_id),None)
+    return stack_item["card"] if stack_item else None
+
+
+def _choose_target(state:dict,action:dict)->str:
+    text=(action.get("label") or _card(state,"bot",action.get("card_id","" )).get("oracle_text","") if action.get("card_id") else action.get("label") or "").casefold()
+    harmful=any(word in text for word in ("damage","destroy","exile","tap target","gets -","loses","counter target"));targets=action["targets"]
+    preferred=[target for target in targets if (target["controller_id"]!="bot")==harmful] or targets
+    damage=re.search(r"deals (\d+) damage",text)
+    if harmful and damage:
+        lethal=next((target for target in preferred if target["kind"]=="player" and next(player for player in state["players"] if player["id"]==target["id"])["life"]<=int(damage.group(1))),None)
+        if lethal:return lethal["id"]
+    return max(preferred,key=lambda target:_threat_score(_target_card(state,target["id"]) or {}))["id"]
+
+
+def _can_block(attacker:dict,blocker:dict)->bool:
+    text=(attacker.get("oracle_text") or "").casefold()
+    return "can't be blocked" not in text and "unblockable" not in text and (not _has_keyword(attacker,"Flying") or _has_keyword(blocker,"Flying") or _has_keyword(blocker,"Reach")) and not _protected_from(attacker,blocker)
+
+
+def _choose_attackers(state:dict,ids:list[str],difficulty:str)->list[str]:
+    bot=next(player for player in state["players"] if player["id"]=="bot");enemy=next(player for player in state["players"] if player["id"]!="bot");attackers={card["instance_id"]:card for card in bot["battlefield"] if card["instance_id"] in ids};blockers=[card for card in enemy["battlefield"] if "Creature" in card.get("type_line","") and not card.get("tapped")]
+    if difficulty=="beginner":return ids[:max(1,len(ids)//2)]
+    selected=[]
+    for card_id in ids:
+        attacker=attackers[card_id];power,toughness=_stats(attacker);legal=[blocker for blocker in blockers if _can_block(attacker,blocker)]
+        if power>=enemy["life"] or not legal or _has_keyword(attacker,"Vigilance"):selected.append(card_id);continue
+        favorable=all((power>=_stats(blocker)[1] or _has_keyword(attacker,"Deathtouch")) and (toughness>_stats(blocker)[0] or _has_keyword(attacker,"Indestructible")) for blocker in legal)
+        if favorable or (difficulty=="standard" and power>=max(_stats(blocker)[1] for blocker in legal)):selected.append(card_id)
+    if difficulty=="expert" and len(ids)>len(blockers):
+        pressure=sorted((card_id for card_id in ids if card_id not in selected),key=lambda card_id:_stats(attackers[card_id])[0],reverse=True)
+        selected.extend(pressure[:max(0,len(ids)-len(blockers)-len(selected))])
+    return selected
 
 
 def _should_mulligan(state:dict,difficulty:str)->bool:
@@ -98,26 +144,23 @@ def choose_bot_action(state: dict, difficulty: str = "standard") -> dict | None:
         else:
             choice = max(spells, key=lambda action: (_card(state, "bot", action["card_id"]).get("mana_value") or 0, len(_card(state, "bot", action["card_id"]).get("oracle_text") or "")))
         if choice.get("targets"):
-            opposing = [target for target in choice["targets"] if target["controller_id"] != "bot"]
-            choice = {**choice, "target_id": (opposing or choice["targets"])[0]["id"]}
+            choice = {**choice, "target_id":_choose_target(state,choice)}
         return choice
     if "activate" in by_type:
         choices=by_type["activate"];choice=max(choices,key=lambda action:len(action.get("label", "")))
         if choice.get("targets"):
-            opposing=[target for target in choice["targets"] if target["controller_id"]!="bot"];choice={**choice,"target_id":(opposing or choice["targets"])[0]["id"]}
+            choice={**choice,"target_id":_choose_target(state,choice)}
         return choice
     if "activate_loyalty" in by_type:
         choices=by_type["activate_loyalty"];choice=max(choices,key=lambda action:len(action.get("label","")))
         if choice.get("targets"):
-            opposing=[target for target in choice["targets"] if target["controller_id"]!="bot"];choice={**choice,"target_id":(opposing or choice["targets"])[0]["id"]}
+            choice={**choice,"target_id":_choose_target(state,choice)}
         return choice
     if "declare_attackers" in by_type:
         action = by_type["declare_attackers"][0]
-        if difficulty == "beginner":
-            ids = action["card_ids"][: max(1, len(action["card_ids"]) // 2)]
-        else:
-            ids = action["card_ids"]
-        defenders=action.get("defenders",[]);planeswalkers=[target for target in defenders if target["kind"]=="permanent"];target=(planeswalkers[0] if difficulty=="expert" and planeswalkers else defenders[0]) if defenders else None
+        ids=_choose_attackers(state,action["card_ids"],difficulty)
+        defenders=action.get("defenders",[]);planeswalkers=[target for target in defenders if target["kind"]=="permanent"];enemy=next(player for player in state["players"] if player["id"]!="bot");total_power=sum(_stats(_card(state,"bot",card_id))[0] for card_id in ids);player_target=next((target for target in defenders if target["kind"]=="player"),None)
+        target=(player_target if total_power>=enemy["life"] else max(planeswalkers,key=lambda candidate:_threat_score(_target_card(state,candidate["id"]) or {}),default=player_target)) if difficulty=="expert" else (defenders[0] if defenders else None)
         return {"type": "declare_attackers", "attacker_ids": ids,"attack_targets":{card_id:target["id"] for card_id in ids} if target else {}}
     if "declare_blockers" in by_type:
         action = by_type["declare_blockers"][0]
