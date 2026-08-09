@@ -88,6 +88,7 @@ def indexed_cards(
             or_(
                 CardReference.name.ilike(pattern),
                 CardReference.printed_name.ilike(pattern),
+                CardReference.flavor_name.ilike(pattern),
                 CardReference.collector_number.ilike(pattern),
                 CardReference.set_name.ilike(pattern),
                 CardReference.set_code.ilike(pattern),
@@ -103,9 +104,10 @@ def indexed_cards(
         "items": [
             {
                 "scryfall_id": card.scryfall_id,
-                "name": card.printed_name or card.name,
+                "name": card.flavor_name or card.printed_name or card.name,
                 "oracle_name": card.name,
                 "printed_name": card.printed_name,
+                "flavor_name": card.flavor_name,
                 "set_code": card.set_code,
                 "set_name": card.set_name,
                 "collector_number": card.collector_number,
@@ -128,7 +130,7 @@ def serialize_card_details(card: dict) -> dict:
     return {
         "scryfall_id": card["id"],
         "oracle_id": card.get("oracle_id"),
-        "name": card.get("printed_name") or card["name"],
+        "name": card.get("flavor_name") or card.get("printed_name") or card["name"],
         "oracle_name": card["name"],
         "set_code": card.get("set", ""),
         "set_name": card.get("set_name", ""),
@@ -188,7 +190,7 @@ async def card_details(scryfall_id: str, db: Session = Depends(get_db)):
         details = {
             "scryfall_id": reference.scryfall_id,
             "oracle_id": reference.oracle_id,
-            "name": reference.printed_name or reference.name,
+            "name": reference.flavor_name or reference.printed_name or reference.name,
             "oracle_name": reference.name,
             "set_code": reference.set_code,
             "set_name": reference.set_name,

@@ -91,6 +91,7 @@ def local_card_search(db: Session, query: str, language: str) -> list[Candidate]
             or_(
                 func.lower(CardReference.name).contains(normalized, autoescape=True),
                 func.lower(CardReference.printed_name).contains(normalized, autoescape=True),
+                func.lower(CardReference.flavor_name).contains(normalized, autoescape=True),
             ),
             CardReference.language == language,
         )
@@ -100,6 +101,7 @@ def local_card_search(db: Session, query: str, language: str) -> list[Candidate]
                     or_(
                         func.lower(CardReference.name) == normalized,
                         func.lower(CardReference.printed_name) == normalized,
+                        func.lower(CardReference.flavor_name) == normalized,
                     ),
                     0,
                 ),
@@ -116,7 +118,7 @@ def local_card_search(db: Session, query: str, language: str) -> list[Candidate]
     return [
         Candidate(
             scryfall_id=card.scryfall_id,
-            name=card.printed_name or card.name,
+            name=card.flavor_name or card.printed_name or card.name,
             set_code=card.set_code,
             set_name=card.set_name,
             collector_number=card.collector_number,

@@ -156,6 +156,7 @@ class CardReference(Base):
     scryfall_id: Mapped[str] = mapped_column(String(36), primary_key=True)
     name: Mapped[str] = mapped_column(String(255), index=True)
     printed_name: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    flavor_name: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     set_code: Mapped[str] = mapped_column(String(16))
     set_name: Mapped[str] = mapped_column(String(255))
     collector_number: Mapped[str] = mapped_column(String(32))

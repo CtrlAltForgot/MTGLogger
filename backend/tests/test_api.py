@@ -3366,6 +3366,7 @@ def test_reference_metadata_refresh_does_not_download_images():
                     "id": "printing",
                     "name": "Swamp",
                     "printed_name": "Pantano",
+                    "flavor_name": "Squidward, Sarcastic Snob",
                     "set": "m21",
                     "set_name": "Core Set 2021",
                     "collector_number": "266",
@@ -3377,7 +3378,7 @@ def test_reference_metadata_refresh_does_not_download_images():
         enriched = db.get(CardReference, "printing")
         alias_results = indexed_cards(
             set_code=None,
-            search="pantano",
+            search="squidward",
             page=1,
             page_size=40,
             db=db,
@@ -3386,9 +3387,10 @@ def test_reference_metadata_refresh_does_not_download_images():
     assert refreshed == 1
     assert enriched.artist == "Christine Choi"
     assert enriched.printed_name == "Pantano"
+    assert enriched.flavor_name == "Squidward, Sarcastic Snob"
     assert enriched.released_at == date(2020, 7, 3)
     assert alias_results["total"] == 1
-    assert alias_results["items"][0]["name"] == "Pantano"
+    assert alias_results["items"][0]["name"] == "Squidward, Sarcastic Snob"
     assert alias_results["items"][0]["oracle_name"] == "Swamp"
 
 

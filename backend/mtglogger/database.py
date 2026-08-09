@@ -46,6 +46,7 @@ def migrate_schema() -> None:
         additive_reference_columns = {
             "oracle_id": "VARCHAR(36)",
             "printed_name": "VARCHAR(255)",
+            "flavor_name": "VARCHAR(255)",
             "language": "VARCHAR(16) DEFAULT 'en'",
             "oracle_text": "TEXT",
             "artist": "VARCHAR(255)",
@@ -71,7 +72,13 @@ def migrate_schema() -> None:
         existing_indexes = {
             index["name"] for index in inspect(engine).get_indexes("card_references")
         }
-        for column_name in ("oracle_id", "printed_name", "language", "released_at"):
+        for column_name in (
+            "oracle_id",
+            "printed_name",
+            "flavor_name",
+            "language",
+            "released_at",
+        ):
             index_name = f"ix_card_references_{column_name}"
             if column_name in refreshed_columns and index_name not in existing_indexes:
                 with engine.begin() as connection:
