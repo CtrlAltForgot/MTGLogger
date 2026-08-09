@@ -1973,3 +1973,31 @@ def test_incubate_creates_countered_transformable_incubator():
     assert token["counters"]["+1/+1"]==3 and action["type"]=="activate"
     state=perform_action(state,"player",{"type":"activate","card_id":token["instance_id"],"ability_index":action["ability_index"],"cost_card_ids":[]});state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");token=next(card for card in player["battlefield"] if card["instance_id"]==token["instance_id"])
     assert token["current_face"]==1 and "Phyrexian" in token["type_line"] and token["counters"]["+1/+1"]==3
+
+
+def test_cascade_reveals_in_order_and_casts_strictly_lower_value_spell_for_free():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player")
+    for index in range(3):
+        land=next(card for card in player["library"] if "Land" in card["type_line"]);player["library"].remove(land);land["instance_id"]=f"cascade-land-{index}";land["tapped"]=False;player["battlefield"].append(land)
+    cascade={**card(1490,"Testing Blast","Sorcery","{3}"),"oracle_text":"Cascade","keywords":["Cascade"],"mana_value":3,"instance_id":"testing-blast","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};candidate={**card(1491,"Free Bear","Creature — Bear","{1}{G}","2","2"),"mana_value":2,"instance_id":"free-bear","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};revealed_land={**card(1492,"Reveal Forest","Basic Land — Forest"),"mana_value":0,"instance_id":"reveal-forest","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"].append(cascade);player["library"].extend([candidate,revealed_land])
+    state=perform_action(state,"player",{"type":"cast","card_id":"testing-blast"});assert [item.get("kind","spell") for item in state["stack"]]==["spell","cascade"]
+    state=perform_action(state,"player",{"type":"resolve"});actions=legal_actions(state,"player");cast_action=next(action for action in actions if action["type"]=="cast_discovered")
+    assert cast_action["card_id"]=="free-bear" and {card["instance_id"] for card in next(p for p in state["players"] if p["id"]=="player")["exile"]}>={"free-bear","reveal-forest"}
+    state=perform_action(state,"player",{"type":"cast_discovered"});assert [item["card"]["name"] for item in state["stack"]]==["Testing Blast","Free Bear"]
+    state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");assert any(card["instance_id"]=="free-bear" for card in player["battlefield"]) and any(card["instance_id"]=="reveal-forest" for card in player["library"]) and not player["exile"]
+
+
+def test_discover_allows_equal_value_and_bot_casts_a_targeted_card():
+    state=kept_game();state["active_player_id"]="bot";state["priority_player_id"]="bot";state["phase"]="precombat_main";bot=next(p for p in state["players"] if p["id"]=="bot");player=next(p for p in state["players"] if p["id"]=="player")
+    target={**card(1500,"Discovery Target","Creature — Giant","","4","4"),"instance_id":"discovery-target","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};found={**card(1501,"Discovered Removal","Sorcery","{2}{B}"),"oracle_text":"Destroy target creature.","mana_value":3,"instance_id":"discovered-removal","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};source={**card(1502,"Discovery Effect","Ability"),"oracle_text":"Discover 3.","instance_id":"discovery-effect","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].append(target);bot["library"].append(found);state["stack"].append({"id":"discover-stack","kind":"ability","card":source,"controller_id":"bot","target_id":None,"source_id":"missing"})
+    state=perform_action(state,"bot",{"type":"resolve"});actions=legal_actions(state,"bot");assert {action["type"] for action in actions}>={"cast_discovered","hand_discovered"}
+    choice=choose_bot_action(state,"expert");assert choice["type"]=="cast_discovered" and choice["target_id"]=="discovery-target"
+    state=perform_action(state,"bot",choice);assert state["stack"][-1]["card"]["instance_id"]=="discovered-removal"
+
+
+def test_discover_again_trigger_waits_until_the_first_choice_finishes():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player")
+    watcher={**card(1510,"Discovery Echo","Enchantment"),"oracle_text":"Whenever you discover, discover again for the same value.","instance_id":"discovery-echo","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};first={**card(1511,"First Discovery","Creature — Scout","{3}","3","3"),"mana_value":3,"instance_id":"first-discovery","owner_id":"player","controller_id":"player"};second={**card(1512,"Second Discovery","Creature — Scout","{2}","2","2"),"mana_value":2,"instance_id":"second-discovery","owner_id":"player","controller_id":"player"};source={**card(1513,"Discover Source","Ability"),"oracle_text":"Discover 3.","instance_id":"discover-source","owner_id":"player","controller_id":"player"};player["battlefield"].append(watcher);player["library"].extend([second,first]);state["stack"].append({"id":"discover-source-stack","kind":"ability","card":source,"controller_id":"player","target_id":None,"source_id":"missing"})
+    state=perform_action(state,"player",{"type":"resolve"});assert state["pending_discovery"] and not state["stack"]
+    state=perform_action(state,"player",{"type":"hand_discovered"});assert not state["pending_discovery"] and state["stack"][-1]["card"]["oracle_text"].casefold().startswith("discover 3")
+    state=perform_action(state,"player",{"type":"resolve"});assert state["pending_discovery"] and state["pending_discovery"]["candidate_id"]=="second-discovery"

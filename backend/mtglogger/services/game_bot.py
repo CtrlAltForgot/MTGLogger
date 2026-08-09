@@ -224,6 +224,12 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
     if "choose_amass_army" in by_type:
         action=by_type["choose_amass_army"][0];choice=max(action.get("targets",[]),key=lambda target:_threat_score(state,_target_card(state,target["id"]) or {}),default=None)
         return {"type":"choose_amass_army","target_id":choice["id"]} if choice else by_type.get("concede",[None])[0]
+    if "cast_discovered" in by_type or "hand_discovered" in by_type or "decline_discovery" in by_type:
+        cast=by_type.get("cast_discovered",[None])[0]
+        if cast:
+            if cast.get("targets"):cast={**cast,"target_id":_choose_target(state,cast)}
+            return cast
+        return by_type.get("hand_discovered",by_type.get("decline_discovery",[None]))[0]
     if "accept_transform" in by_type or "decline_transform" in by_type:
         return by_type["decline_transform"][0] if difficulty=="beginner" else by_type["accept_transform"][0]
     if "choose_trigger_target" in by_type:

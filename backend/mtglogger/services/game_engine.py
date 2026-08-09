@@ -740,6 +740,37 @@ def _amass(state:dict,player:dict,subtype:str,amount:int,source_name:str)->None:
     state["pending_amass"]={"player_id":player["id"],"source_name":source_name,"subtype":subtype,"amount":amount,"card_ids":[army["instance_id"] for army in armies]};state["priority_player_id"]=player["id"]
 
 
+def _bottom_randomized_exiled(state:dict,player:dict,card_ids:list[str])->None:
+    cards=[card for card in player["exile"] if card["instance_id"] in set(card_ids)]
+    if cards:_leave_exile(state,player,cards)
+    random.SystemRandom().shuffle(cards);player["library"][0:0]=cards
+
+
+def _start_discovery(state:dict,player:dict,value:int,mode:str,source_name:str)->None:
+    revealed=[];candidate=None
+    while player["library"]:
+        card=player["library"].pop();_put_into_exile(state,player,[card],"library",player["id"]);revealed.append(card["instance_id"])
+        if "Land" not in card.get("type_line","") and float(card.get("mana_value") or 0)<=(value if mode=="discover" else value-1):candidate=card;break
+    if not candidate:
+        _bottom_randomized_exiled(state,player,revealed);_log(state,f"{player['name']} found no eligible card while using {source_name}.")
+        if mode=="discover":player["discover_event_value"]=value;_queue_triggers(state,"discover",None,player);player.pop("discover_event_value",None)
+        return
+    state["pending_discovery"]={"player_id":player["id"],"source_name":source_name,"mode":mode,"value":value,"candidate_id":candidate["instance_id"],"revealed_ids":revealed};state["priority_player_id"]=player["id"]
+    _log(state,f"{player['name']} {mode}d {candidate['name']} at mana value {value}.")
+
+
+def _cascade_count(card:dict)->int:
+    rules=(card.get("oracle_text") or "").split("(",1)[0];count=len(re.findall(r"\bcascade\b",rules,re.IGNORECASE))
+    return count or (1 if _has_keyword(card,"Cascade") else 0)
+
+
+def _queue_cascade_triggers(state:dict,player:dict,card:dict)->None:
+    for _ in range(_cascade_count(card)):
+        ability={"name":f"{card['name']} — Cascade","oracle_text":"Cascade","source_type_line":card.get("type_line",""),"source_mana_cost":card.get("mana_cost",""),"type_line":"Ability","mana_cost":""}
+        state["stack"].append({"id":_id(),"kind":"cascade","card":ability,"controller_id":player["id"],"target_id":None,"source_id":card["instance_id"],"cascade_value":int(float(card.get("mana_value") or 0))})
+        _log(state,f"{card['name']}'s cascade ability triggered.")
+
+
 def _has_x_cost(card:dict)->bool:
     return any(symbol.upper()=="X" for symbol in _mana_symbols(card))
 
@@ -812,7 +843,7 @@ def _new_player(player_id: str, name: str, deck: list[dict], is_bot: bool, forma
 def new_game(player_deck: list[dict], opponent_deck: list[dict], play_first: bool = True, opponent_is_bot: bool = True, player_format: str = "", opponent_format: str = "") -> dict:
     human_id, bot_id = "player", "bot"
     players = [_new_player(human_id, "You", player_deck, False, player_format), _new_player(bot_id, "Bot" if opponent_is_bot else "Guest", opponent_deck, opponent_is_bot, opponent_format)]
-    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "beginning_draw_pending":True,"first_turn_draw_skipped":False,"active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id, "players": players, "stack": [], "combat": {"attackers": [], "attackers_declared":False,"blocks": {}, "attack_targets": {},"block_orders":{},"damage_pending":False,"damage_step":None,"first_strike_damage_ids":[],"block_triggers_pending":False}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "pending_legendary": None,"pending_commander_zone":[],"pending_library_search":None,"pending_scry":None,"pending_damage_order":None,"pending_ward":None,"pending_blight":None,"pending_proliferate":None,"pending_amass":None,"pending_transform":None,"pending_trigger_targets":[], "log": []}
+    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "beginning_draw_pending":True,"first_turn_draw_skipped":False,"active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id, "players": players, "stack": [], "combat": {"attackers": [], "attackers_declared":False,"blocks": {}, "attack_targets": {},"block_orders":{},"damage_pending":False,"damage_step":None,"first_strike_damage_ids":[],"block_triggers_pending":False}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "pending_legendary": None,"pending_commander_zone":[],"pending_library_search":None,"pending_scry":None,"pending_damage_order":None,"pending_ward":None,"pending_blight":None,"pending_proliferate":None,"pending_amass":None,"pending_discovery":None,"pending_transform":None,"pending_trigger_targets":[], "log": []}
     for player in players:
         _draw(state, player, 7,False)
     _log(state, "Opening hands drawn. Choose whether to keep or mulligan.")
@@ -993,7 +1024,7 @@ def _multiplayer(state: dict) -> bool:
 
 
 def _pending_decision(state:dict)->bool:
-    return bool(state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_transform") or state.get("pending_trigger_targets"))
+    return bool(state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_discovery") or state.get("pending_transform") or state.get("pending_trigger_targets"))
 
 
 def _queue_commander_zone_choice(state:dict,owner:dict,card:dict,zone:str)->None:
@@ -1092,6 +1123,17 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
         if pending_amass["player_id"]!=player_id:return []
         cards_by_id={card["instance_id"]:card for card in player["battlefield"]};targets=[{"id":card_id,"name":cards_by_id[card_id]["name"],"kind":"permanent","controller_id":player_id} for card_id in pending_amass["card_ids"] if card_id in cards_by_id]
         return [{"type":"choose_amass_army","targets":targets,"source_name":pending_amass["source_name"],"amount":pending_amass["amount"],"subtype":pending_amass["subtype"]},{"type":"concede"}]
+    pending_discovery=state.get("pending_discovery")
+    if pending_discovery:
+        if pending_discovery["player_id"]!=player_id:return []
+        candidate=next((card for card in player["exile"] if card["instance_id"]==pending_discovery["candidate_id"]),None)
+        if not candidate:return [{"type":"decline_discovery","source_name":pending_discovery["source_name"]},{"type":"concede"}]
+        common={"card_id":candidate["instance_id"],"card":candidate,"source_name":pending_discovery["source_name"],"mode":pending_discovery["mode"],"value":pending_discovery["value"]};actions=[]
+        targeting_card=_spell_targeting_card(candidate);targets=_targets(state,player_id,targeting_card);modal=bool(_modal_spec(candidate));target_required=bool(_target_kind(targeting_card))
+        if not modal and (not target_required or targets):actions.append({"type":"cast_discovered",**common,**({"targets":targets} if targets else {})})
+        if pending_discovery["mode"]=="discover":actions.append({"type":"hand_discovered",**common})
+        else:actions.append({"type":"decline_discovery",**common})
+        actions.append({"type":"concede"});return actions
     pending_transform=state.get("pending_transform")
     if pending_transform:
         if pending_transform["player_id"]!=player_id:return []
@@ -1280,6 +1322,8 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
 def _resolve_spell(state: dict) -> None:
     item = state["stack"].pop()
     card, caster = item["card"], _player(state, item["controller_id"])
+    if item.get("kind")=="cascade":
+        _start_discovery(state,caster,int(item.get("cascade_value") or 0),"cascade",card["name"]);return
     if item.get("kind")=="equip_ability":
         equipment=next((permanent for permanent in caster["battlefield"] if permanent["instance_id"]==item.get("source_id") and "Equipment" in permanent.get("type_line","")),None);target=next((permanent for permanent in caster["battlefield"] if permanent["instance_id"]==item.get("target_id") and "Creature" in permanent.get("type_line","")),None)
         if not equipment or not target or _has_keyword(target,"Shroud") or _protected_from(target,equipment):_log(state,f"{card['name']} did not resolve because its source or target was no longer legal.");return
@@ -1362,6 +1406,8 @@ def _resolve_spell(state: dict) -> None:
     incubate_match=re.search(r"\bincubates? (\d+)\b",keyword_text)
     if incubate_match:
         amount=int(incubate_match.group(1));token=_incubator_token(caster);_enter_battlefield(state,caster,[token],"token");_add_counters(state,token,"+1/+1",amount,caster["id"],"incubate");_log(state,f"{caster['name']} incubated {amount}.")
+    discover_match=re.search(r"\bdiscover (\d+)\b",keyword_text)
+    if discover_match:_start_discovery(state,caster,int(discover_match.group(1)),"discover",source_permanent.get("name",card["name"]) if source_permanent else card["name"])
     if re.search(r"\bairbend (?:up to one )?target (?:creature|spell|creature or spell)\b",effect_text):
         airbent=None;airbend_owner=None
         if target and target_owner:
@@ -1898,6 +1944,8 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 if matches:
                     trigger_count=1 if one_or_more or threshold_match else amount
                     if one_or_more and dedupe is not None:dedupe.add(dedupe_key)
+            elif event=="discover":
+                matches=owner["id"]==event_owner["id"] and "whenever you discover" in lower
             elif event == "leaves" and event_card:
                 matches=source is not event_card and owner["id"]==event_owner["id"] and "Creature" in event_card.get("type_line","") and "when another creature you control leaves the battlefield" in lower
             elif event == "upkeep":
@@ -1908,7 +1956,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 matches = owner["id"]==event_owner["id"] and re.search(r"at the beginning of combat on your turn",lower) is not None
             elif event == "cast" and event_card:
                 controlled=event_owner["id"]==owner["id"];type_line=event_card.get("type_line","").casefold();count=event_owner.get("spells_cast_this_turn",0);cast_zone=event_card.get("cast_source_zone","hand");colors=set(event_card.get("colors") or [])
-                kind_match=((re.search(r"casts? (?:a|an) spell(?: from (?:exile|your graveyard))?(?:,|$)",lower) is not None) or ("creature spell" in lower and "creature" in type_line) or ("noncreature spell" in lower and "creature" not in type_line) or ("instant or sorcery spell" in lower and any(kind in type_line for kind in ("instant","sorcery"))) or ("artifact spell" in lower and "artifact" in type_line) or ("enchantment spell" in lower and "enchantment" in type_line) or ("planeswalker spell" in lower and "planeswalker" in type_line) or ("permanent spell" in lower and any(kind in type_line for kind in ("creature","artifact","enchantment","planeswalker","battle"))) or ("legendary spell" in lower and "legendary" in type_line) or ("historic spell" in lower and ("legendary" in type_line or "artifact" in type_line or "saga" in type_line)) or ("multicolored spell" in lower and len(colors)>=2))
+                kind_match=((re.search(r"casts? (?:a|an) spell(?: from (?:exile|your graveyard))?(?:,|$)",lower) is not None) or ("spell with cascade" in lower and _cascade_count(event_card)>0) or ("creature spell" in lower and "creature" in type_line) or ("noncreature spell" in lower and "creature" not in type_line) or ("instant or sorcery spell" in lower and any(kind in type_line for kind in ("instant","sorcery"))) or ("artifact spell" in lower and "artifact" in type_line) or ("enchantment spell" in lower and "enchantment" in type_line) or ("planeswalker spell" in lower and "planeswalker" in type_line) or ("permanent spell" in lower and any(kind in type_line for kind in ("creature","artifact","enchantment","planeswalker","battle"))) or ("legendary spell" in lower and "legendary" in type_line) or ("historic spell" in lower and ("legendary" in type_line or "artifact" in type_line or "saga" in type_line)) or ("multicolored spell" in lower and len(colors)>=2))
                 zone_ok=("from exile" not in lower or cast_zone=="exile") and ("from your graveyard" not in lower or cast_zone=="graveyard")
                 ordinal=("whenever you cast your first spell each turn" in lower and count==1) or ("whenever you cast your second spell each turn" in lower and count==2) or ("whenever you cast your third spell each turn" in lower and count==3)
                 yours=controlled and source is not event_card and ("whenever you cast" in lower or "whenever you cast or copy" in lower) and (kind_match or ordinal) and zone_ok
@@ -1974,6 +2022,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
             if event=="exile" and "that many" in effect.casefold():effect=re.sub(r"\bthat many\b",str(event_card.get("exile_event_batch_size",1)),effect,flags=re.IGNORECASE)
             if event=="enters" and re.search(r"\b(?:that many|that much)\b",effect,re.IGNORECASE):effect=re.sub(r"\b(?:that many|that much)\b",str(event_card.get("entry_event_batch_size",1)),effect,flags=re.IGNORECASE)
             if event=="counter_added" and re.search(r"\b(?:that many|that much|the same number)\b",effect,re.IGNORECASE):effect=re.sub(r"\b(?:that many|that much|the same number)\b",str(event_card.get("counter_event_amount",1)),effect,flags=re.IGNORECASE)
+            if event=="discover" and "same value" in effect.casefold():effect=re.sub(r"discover again for the same value",f"discover {event_owner.get('discover_event_value',0)}",effect,flags=re.IGNORECASE)
             if event in {"earthbend","waterbend","firebend","airbend"} and "whenever you waterbend, earthbend, firebend, or airbend" in lower:effect=re.split(r"whenever you waterbend, earthbend, firebend, or airbend,",clause,flags=re.IGNORECASE)[1].strip()
             if event=="enters" and re.match(r"if it was kicked,",effect,re.IGNORECASE):effect=effect.split(",",1)[1].strip()
             if event=="leaves" and "transform" in effect and "next upkeep" in effect:
@@ -2184,6 +2233,21 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         state["pending_mulligan_bottom"]=None;player["kept_hand"]=True;_log(state,f"{player['name']} put {required} card(s) on the bottom and kept {len(player['hand'])}.")
         if all(item["kept_hand"] for item in state["players"]):
             state["status"]="active";state["priority_player_id"]=state["active_player_id"];active=_player(state,state["active_player_id"]);_log(state,f"Turn 1 began for {active['name']}. Untap and upkeep started.");_queue_triggers(state,"upkeep",None,active)
+    elif action_type in {"cast_discovered","hand_discovered","decline_discovery"}:
+        pending=state.get("pending_discovery") or {};candidate=next((card for card in player["exile"] if card["instance_id"]==pending.get("candidate_id")),None)
+        if pending.get("player_id")!=player_id or not candidate:raise RuleViolation("That discovered card is no longer available")
+        target_id=action.get("target_id");targeting_card=_spell_targeting_card(candidate);targets=_targets(state,player_id,targeting_card)
+        if action_type=="cast_discovered" and _target_kind(targeting_card) and target_id not in {target["id"] for target in targets}:raise RuleViolation("Choose a legal target for the discovered spell")
+        remaining=[card_id for card_id in pending["revealed_ids"] if card_id!=candidate["instance_id"]];state["pending_discovery"]=None
+        if action_type=="cast_discovered":
+            _leave_exile(state,player,[candidate]);stack_item={"id":_id(),"card":candidate,"controller_id":player_id,"target_id":target_id,"target_ids":[],"mode_indices":[],"mode_targets":[],"x_value":0,"free_cast":True,"cast_source_zone":"exile"};state["stack"].append(stack_item);player["spells_cast_this_turn"]=player.get("spells_cast_this_turn",0)+1;candidate["cast_source_zone"]="exile";_queue_triggers(state,"cast",candidate,player);_queue_cascade_triggers(state,player,candidate);candidate.pop("cast_source_zone",None);_log(state,f"{player['name']} cast {candidate['name']} without paying its mana cost.")
+        elif action_type=="hand_discovered":
+            _leave_exile(state,player,[candidate]);player["hand"].append(candidate);_log(state,f"{player['name']} put {candidate['name']} into their hand.")
+        else:
+            remaining.append(candidate["instance_id"]);_log(state,f"{player['name']} declined to cast {candidate['name']} with cascade.")
+        _bottom_randomized_exiled(state,player,remaining);state["consecutive_passes"]=0;state["pending_phase_advance"]=False
+        if pending["mode"]=="discover":player["discover_event_value"]=pending["value"];_queue_triggers(state,"discover",None,player);player.pop("discover_event_value",None)
+        if not state.get("pending_trigger_targets"):state["priority_player_id"]=opponent(state,player_id)["id"] if (_multiplayer(state) or not allow_direct_resolution) and action_type=="cast_discovered" else state["active_player_id"]
     elif action_type == "play_land":
         card = next((card for card in player["hand"] if card["instance_id"] == action.get("card_id") and "Land" in card.get("type_line", "")), None)
         if not card: raise RuleViolation("That land is not in your hand")
@@ -2252,7 +2316,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if requested_waterbend:_queue_triggers(state,"waterbend",card,player)
         if player.get("cast_event_turn")!=state["turn"]:player["cast_event_turn"]=state["turn"];player["spells_cast_this_turn"]=0
         player["spells_cast_this_turn"]=player.get("spells_cast_this_turn",0)+1;card["cast_source_zone"]="graveyard" if source=="flashback" else "exile" if source=="airbend" else source
-        _queue_triggers(state,"cast",card,player);card.pop("cast_source_zone",None)
+        _queue_triggers(state,"cast",card,player);_queue_cascade_triggers(state,player,card);card.pop("cast_source_zone",None)
         ward_targets=[effective_target] if effective_target else []
         ward_targets.extend(target for target in mode_targets if target and target not in ward_targets)
         ward_targets.extend(target for target in target_ids if target not in ward_targets)
