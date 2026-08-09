@@ -612,6 +612,8 @@ def _reference_metadata(provider, card: dict, image_url: str | None = None) -> d
     oracle_text = card.get("oracle_text") or "\n".join(
         face.get("oracle_text", "") for face in card.get("card_faces", [])
     )
+    faces = card.get("card_faces") or []
+    primary_face = next((face for face in faces if face.get("power") is not None), {})
     return {
         "name": card["name"],
         "printed_name": card.get("printed_name"),
@@ -630,8 +632,8 @@ def _reference_metadata(provider, card: dict, image_url: str | None = None) -> d
         "type_line": card.get("type_line"),
         "mana_cost": card.get("mana_cost"),
         "mana_value": card.get("cmc"),
-        "power": card.get("power"),
-        "toughness": card.get("toughness"),
+        "power": card.get("power") or primary_face.get("power"),
+        "toughness": card.get("toughness") or primary_face.get("toughness"),
         "keywords": json.dumps(card.get("keywords") or []),
         "legalities": json.dumps(card.get("legalities") or {}),
         "released_at": _released_at(card),
