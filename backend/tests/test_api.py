@@ -526,10 +526,7 @@ def test_private_game_tokens_redaction_rotation_and_version_conflicts(client):
         host_deck=Deck(name="Private host");guest_deck=Deck(name="Private guest");db.add_all([host_deck,guest_deck]);db.flush()
         game=GameSession(name="Secure game",player_deck_id=host_deck.id,opponent_deck_id=guest_deck.id,opponent_type="human",bot_difficulty="standard",invite_code="secure-invite-code",host_token_hash=hashlib.sha256(host_token.encode()).hexdigest(),guest_token_hash=hashlib.sha256(guest_token.encode()).hexdigest(),invite_expires_at=datetime.now(UTC)+timedelta(days=1),state_json=json.dumps(state),history_json="[]",status="mulligan");db.add(game);db.commit();game_id=game.id
 
-    listing=client.get("/api/play").json()[0]
-    assert listing["invite_code"] is None and listing["invite_expires_at"] is None and listing["legal_actions"]==[] and listing["action_history"]==[]
-    assert listing["state"]["stack"]==[] and listing["state"]["log"]==[] and listing["state"]["combat"]["attackers"]==[]
-    assert all(not any(player[zone] for zone in ("hand","battlefield","graveyard","exile","command")) for player in listing["state"]["players"])
+    assert game_id not in {listed["id"] for listed in client.get("/api/play").json()}
     assert client.get(f"/api/play/{game_id}").status_code==404
     assert client.get(f"/api/play/{game_id}",headers={"X-Game-Token":guest_token}).status_code==404
     assert client.get("/api/play/invite/secure-invite-code/state",headers={"X-Game-Token":host_token}).status_code==404

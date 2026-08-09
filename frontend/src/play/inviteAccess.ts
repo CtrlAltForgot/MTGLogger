@@ -25,3 +25,16 @@ export function normalizeInviteUrl(value:string):string{
     return access.code&&access.token?buildInviteUrl(url.origin,url.pathname,access.code,access.token):value
   }catch{return value}
 }
+
+export type StoredHostCredential={id:string;hostToken:string}
+
+export function storedHostCredentials(entries:Array<[string,string]>):StoredHostCredential[]{
+  const prefix='mtglogger-invite-'
+  return entries.flatMap(([key,value])=>{
+    if(!key.startsWith(prefix))return []
+    try{
+      const parsed=JSON.parse(value) as {hostToken?:string}
+      return parsed.hostToken?[{id:key.slice(prefix.length),hostToken:parsed.hostToken}]:[]
+    }catch{return []}
+  })
+}

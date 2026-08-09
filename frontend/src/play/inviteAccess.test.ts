@@ -1,5 +1,5 @@
 import { describe,expect,it } from 'vitest'
-import { buildInviteUrl,normalizeInviteUrl,resolveInviteAccess,scrubbedInvitePath } from './inviteAccess'
+import { buildInviteUrl,normalizeInviteUrl,resolveInviteAccess,scrubbedInvitePath,storedHostCredentials } from './inviteAccess'
 
 describe('private game invite access',()=>{
   it('reads a fragment secret without putting it in the server-visible query',()=>{
@@ -18,5 +18,13 @@ describe('private game invite access',()=>{
 
   it('normalizes previously saved query-token links before they are copied',()=>{
     expect(normalizeInviteUrl('https://cards.test/app?page=play&invite=room&token=old')).toBe('https://cards.test/app?page=play&invite=room#token=old')
+  })
+
+  it('discovers only private games backed by a valid locally held host capability',()=>{
+    expect(storedHostCredentials([
+      ['unrelated','value'],
+      ['mtglogger-invite-game-a',JSON.stringify({hostToken:'host-a',inviteUrl:'url'})],
+      ['mtglogger-invite-game-b','legacy-url-without-a-host-key'],
+    ])).toEqual([{id:'game-a',hostToken:'host-a'}])
   })
 })

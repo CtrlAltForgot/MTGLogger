@@ -145,7 +145,10 @@ def _serialize(game: GameSession, viewer_id: str = "player", invite_token: str |
 
 @router.get("", response_model=list[GameRead])
 def list_games(db: Session = Depends(get_db)):
-    return [_serialize(game,"spectator" if game.opponent_type=="human" else "player") for game in db.scalars(select(GameSession).order_by(GameSession.updated_at.desc()).limit(25))]
+    # Private sessions are discoverable only by possession of their host or guest
+    # capability. The host UI restores its own sessions from locally held host keys.
+    games=db.scalars(select(GameSession).where(or_(GameSession.opponent_type.is_(None),GameSession.opponent_type!="human")).order_by(GameSession.updated_at.desc()).limit(25))
+    return [_serialize(game,"player") for game in games]
 
 
 @router.post("", response_model=GameRead, status_code=201)
