@@ -53,10 +53,10 @@ def choose_bot_action(state: dict, difficulty: str = "standard") -> dict | None:
         return {"type":"bottom_mulligan_cards","card_ids":ranked[:amount]}
     if "resolve" in by_type:
         return by_type["resolve"][0]
-    if "discard_to_hand_size" in by_type:
-        action=by_type["discard_to_hand_size"][0];amount=action["amount"]
+    if "discard_cards" in by_type:
+        action=by_type["discard_cards"][0];amount=action["amount"]
         ranked=sorted(action["card_ids"],key=lambda card_id:(_card(state,"bot",card_id).get("mana_value") or 0,"Land" not in _card(state,"bot",card_id).get("type_line","")))
-        return {"type":"discard_to_hand_size","card_ids":ranked[:amount]}
+        return {"type":"discard_cards","card_ids":ranked[:amount]}
     if "sacrifice_permanents" in by_type:
         action=by_type["sacrifice_permanents"][0];amount=action["amount"]
         ranked=sorted(action["card_ids"],key=lambda card_id:((_card(state,"bot",card_id).get("mana_value") or 0),sum(_stats(_card(state,"bot",card_id)))))

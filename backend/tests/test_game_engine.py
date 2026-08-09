@@ -99,6 +99,14 @@ def test_opponent_chooses_forced_sacrifice_and_bot_picks_lowest_value():
     state=perform_action(state,"bot",action);bot=next(p for p in state["players"] if p["id"]=="bot");assert any(c["instance_id"]=="small" for c in bot["graveyard"]) and any(c["instance_id"]=="large" for c in bot["battlefield"])
 
 
+def test_draw_then_discard_creates_a_persisted_caster_choice():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");before=len(player["hand"])
+    loot={**card(700,"Catalog","Instant"),"oracle_text":"Draw two cards, then discard a card.","instance_id":"catalog","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"].append(loot);state=perform_action(state,"player",{"type":"cast","card_id":"catalog"});state=perform_action(state,"player",{"type":"resolve"})
+    action=legal_actions(state,"player")[0];assert action["type"]=="discard_cards" and action["reason"]=="effect" and action["amount"]==1
+    chosen=action["card_ids"][:1];state=perform_action(state,"player",{"type":"discard_cards","card_ids":chosen});player=next(p for p in state["players"] if p["id"]=="player")
+    assert len(player["hand"])==before+1 and any(c["instance_id"]==chosen[0] for c in player["graveyard"]) and state["turn"]==1
+
+
 def test_targeted_removal_requires_and_resolves_a_legal_creature_target():
     state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"})
     player=next(player for player in state["players"] if player["id"]=="player");bot=next(player for player in state["players"] if player["id"]=="bot")
@@ -232,7 +240,7 @@ def test_bounce_tap_combat_trick_mill_and_discard_effects_resolve():
     assert not next(item for item in state["players"] if item["id"]=="bot")["battlefield"]
     player=next(item for item in state["players"] if item["id"]=="player");bot=next(item for item in state["players"] if item["id"]=="bot");before_library=len(bot["library"]);before_hand=len(bot["hand"]);state=resolve("Target player mills three cards.","bot")
     assert len(next(item for item in state["players"] if item["id"]=="bot")["library"])==before_library-3
-    player=next(item for item in state["players"] if item["id"]=="player");bot=next(item for item in state["players"] if item["id"]=="bot");state=resolve("Target opponent discards two cards.",None)
+    player=next(item for item in state["players"] if item["id"]=="player");bot=next(item for item in state["players"] if item["id"]=="bot");state=resolve("Target opponent discards two cards.",None);choice=choose_bot_action(state,"expert");assert choice["type"]=="discard_cards" and len(choice["card_ids"])==2;state=perform_action(state,"bot",choice)
     assert len(next(item for item in state["players"] if item["id"]=="bot")["hand"])==before_hand-2
 
 
@@ -290,11 +298,11 @@ def test_cleanup_requires_exact_discard_to_seven_before_next_turn():
     while len(player["hand"])<9:player["hand"].append(player["library"].pop())
     state["phase"]="ending";state=perform_action(state,"player",{"type":"advance_phase"})
     assert state["turn"]==1 and state["pending_discard"]=={"player_id":"player","amount":2}
-    action=legal_actions(state,"player")[0];assert action["type"]=="discard_to_hand_size" and action["amount"]==2
-    try:perform_action(state,"player",{"type":"discard_to_hand_size","card_ids":action["card_ids"][:1]})
+    action=legal_actions(state,"player")[0];assert action["type"]=="discard_cards" and action["amount"]==2 and action["reason"]=="cleanup"
+    try:perform_action(state,"player",{"type":"discard_cards","card_ids":action["card_ids"][:1]})
     except RuleViolation:pass
     else:raise AssertionError("cleanup accepted the wrong discard count")
-    chosen=action["card_ids"][:2];state=perform_action(state,"player",{"type":"discard_to_hand_size","card_ids":chosen});player=next(p for p in state["players"] if p["id"]=="player")
+    chosen=action["card_ids"][:2];state=perform_action(state,"player",{"type":"discard_cards","card_ids":chosen});player=next(p for p in state["players"] if p["id"]=="player")
     assert len(player["hand"])==7 and all(any(card["instance_id"]==card_id for card in player["graveyard"]) for card_id in chosen) and state["turn"]==2 and state["active_player_id"]=="bot"
 
 
@@ -302,7 +310,7 @@ def test_bot_discards_automatically_and_no_maximum_hand_size_is_honored():
     state=kept_game();bot=next(p for p in state["players"] if p["id"]=="bot");state["active_player_id"]="bot";state["priority_player_id"]="bot";state["phase"]="ending"
     while len(bot["hand"])<9:bot["hand"].append(bot["library"].pop())
     state=perform_action(state,"bot",{"type":"advance_phase"});choice=choose_bot_action(state,"expert")
-    assert choice["type"]=="discard_to_hand_size" and len(choice["card_ids"])==2
+    assert choice["type"]=="discard_cards" and len(choice["card_ids"])==2
     state=perform_action(state,"bot",choice);assert len(next(p for p in state["players"] if p["id"]=="bot")["hand"])==7
     state=kept_game();player=next(p for p in state["players"] if p["id"]=="player");player["battlefield"].append({**card(660,"Spellbook","Artifact"),"oracle_text":"You have no maximum hand size.","instance_id":"spellbook","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False})
     while len(player["hand"])<9:player["hand"].append(player["library"].pop())

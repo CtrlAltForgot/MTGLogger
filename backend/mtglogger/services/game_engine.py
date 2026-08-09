@@ -223,6 +223,10 @@ def _multiplayer(state: dict) -> bool:
     return not any(player.get("is_bot") for player in state["players"])
 
 
+def _pending_decision(state:dict)->bool:
+    return bool(state.get("pending_discard") or state.get("pending_sacrifice"))
+
+
 def _commander_tax(player: dict, card: dict) -> int:
     return player.get("commander_casts", 0) * 2 if card.get("commander") else 0
 
@@ -241,7 +245,7 @@ def legal_actions(state: dict, player_id: str) -> list[dict]:
     pending_discard=state.get("pending_discard")
     if pending_discard:
         if pending_discard["player_id"] != player_id:return []
-        return [{"type":"discard_to_hand_size","card_ids":[card["instance_id"] for card in player["hand"]],"amount":pending_discard["amount"]},{"type":"concede"}]
+        return [{"type":"discard_cards","card_ids":[card["instance_id"] for card in player["hand"]],"amount":pending_discard["amount"],"reason":pending_discard.get("reason","cleanup")},{"type":"concede"}]
     pending_sacrifice=state.get("pending_sacrifice")
     if pending_sacrifice:
         if pending_sacrifice["player_id"]!=player_id:return []
@@ -353,11 +357,13 @@ def _resolve_spell(state: dict) -> None:
         words={"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10}; amount=words.get(mill_match.group(1),int(mill_match.group(1)) if mill_match.group(1).isdigit() else 0)
         for _ in range(min(amount,len(target_player["library"]))): target_player["graveyard"].append(target_player["library"].pop())
         _log(state, f"{target_player['name']} milled {amount} card(s).")
-    discard_match = re.search(r"target opponent discards? (?:a|one|two|three|four|five|six|seven|eight|nine|ten|\d+) cards?", effect_text)
+    discard_match = re.search(r"(?:(target|each) opponent|you) discards? (a|one|two|three|four|five|six|seven|eight|nine|ten|\d+) cards?", effect_text)
     if discard_match:
-        amount_word=re.search(r"discards? (a|one|two|three|four|five|six|seven|eight|nine|ten|\d+)",discard_match.group(0)).group(1);words={"a":1,"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10};amount=words.get(amount_word,int(amount_word) if amount_word.isdigit() else 0)
-        for _ in range(min(amount,len(other["hand"]))): other["graveyard"].append(other["hand"].pop())
-        _log(state, f"{other['name']} discarded {amount} card(s).")
+        amount_word=discard_match.group(2);words={"a":1,"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10};amount=words.get(amount_word,int(amount_word) if amount_word.isdigit() else 0);affected=caster if discard_match.group(0).startswith("you") else other;required=min(amount,len(affected["hand"]))
+        if required:state["pending_discard"]={"player_id":affected["id"],"amount":required,"reason":"effect"};state["priority_player_id"]=affected["id"];_log(state,f"{affected['name']} must discard {required} card(s).")
+    elif re.search(r"(?:then |you )?discard (?:a|one|two|three|four|\d+) cards?",effect_text):
+        match=re.search(r"discard (a|one|two|three|four|\d+) cards?",effect_text);word=match.group(1);words={"a":1,"one":1,"two":2,"three":3,"four":4};amount=words.get(word,int(word) if word.isdigit() else 1);required=min(amount,len(caster["hand"]))
+        if required:state["pending_discard"]={"player_id":caster["id"],"amount":required,"reason":"effect"};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} must discard {required} card(s).")
     if target_stack_item and "counter target spell" in effect_text:
         state["stack"].remove(target_stack_item); countered=target_stack_item["card"]
         if target_stack_item.get("kind", "spell") == "spell": _player(state,target_stack_item["controller_id"])["graveyard"].append(countered)
@@ -596,7 +602,7 @@ def perform_action(state: dict, player_id: str, action: dict) -> dict:
             state["consecutive_passes"] = 0
             if state["stack"]: _resolve_spell(state)
             elif state.get("pending_phase_advance"): _advance_turn_phase(state)
-            if not state.get("pending_sacrifice"):state["priority_player_id"] = state["active_player_id"]
+            if not _pending_decision(state):state["priority_player_id"] = state["active_player_id"]
         else:
             state["priority_player_id"] = opponent(state, player_id)["id"]
     elif action_type == "declare_attackers":
@@ -622,13 +628,15 @@ def perform_action(state: dict, player_id: str, action: dict) -> dict:
             _advance_turn_phase(state)
     elif action_type == "concede":
         state["status"] = "complete"; state["winner_id"] = opponent(state, player_id)["id"]; _log(state, f"{player['name']} conceded.")
-    elif action_type == "discard_to_hand_size":
+    elif action_type == "discard_cards":
         pending=state.get("pending_discard") or {};requested=action.get("card_ids") or [];required=pending.get("amount",0)
         if pending.get("player_id")!=player_id or len(requested)!=required or len(set(requested))!=required:raise RuleViolation(f"Choose exactly {required} cards to discard")
         chosen=[card for card in player["hand"] if card["instance_id"] in set(requested)]
         if len(chosen)!=required:raise RuleViolation("One or more selected cards are not in your hand")
         for card in chosen:player["hand"].remove(card);player["graveyard"].append(card)
-        _log(state,f"{player['name']} discarded {required} card(s) to maximum hand size.");_begin_next_turn(state)
+        reason=pending.get("reason","cleanup");state["pending_discard"]=None;_log(state,f"{player['name']} discarded {required} card(s){' to maximum hand size' if reason=='cleanup' else ''}.")
+        if reason=="cleanup":_begin_next_turn(state)
+        else:state["priority_player_id"]=state["active_player_id"]
     elif action_type == "sacrifice_permanents":
         pending=state.get("pending_sacrifice") or {};requested=action.get("card_ids") or [];required=pending.get("amount",0);allowed_ids=set(pending.get("card_ids",[]))
         if pending.get("player_id")!=player_id or len(requested)!=required or len(set(requested))!=required or not set(requested).issubset(allowed_ids):raise RuleViolation(f"Choose exactly {required} legal permanent(s) to sacrifice")
