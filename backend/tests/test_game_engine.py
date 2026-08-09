@@ -383,3 +383,11 @@ def test_bot_makes_and_completes_scry_decisions():
     state=kept_game();bot=next(p for p in state["players"] if p["id"]=="bot");state["active_player_id"]="bot";state["priority_player_id"]="bot";ids=[card["instance_id"] for card in reversed(bot["library"][-2:])];state["pending_scry"]={"player_id":"bot","amount":2,"card_ids":ids}
     choice=choose_bot_action(state,"expert");assert choice["type"]=="scry" and set(choice["top_ids"]+choice["bottom_ids"])==set(ids)
     state=perform_action(state,"bot",choice);assert state.get("pending_scry") is None
+
+
+def test_surveil_orders_kept_cards_and_moves_selected_cards_to_graveyard():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player")
+    spell={**card(810,"Unexplained Vision","Sorcery"),"oracle_text":"Surveil 2.","instance_id":"surveil-spell","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"].append(spell);expected=[card["instance_id"] for card in reversed(player["library"][-2:])]
+    state=perform_action(state,"player",{"type":"cast","card_id":"surveil-spell"});state=perform_action(state,"player",{"type":"resolve"});action=legal_actions(state,"player")[0];assert action["type"]=="surveil" and action["card_ids"]==expected
+    state=perform_action(state,"player",{"type":"surveil","top_ids":[expected[1]],"graveyard_ids":[expected[0]]});player=next(p for p in state["players"] if p["id"]=="player")
+    assert player["library"][-1]["instance_id"]==expected[1] and player["graveyard"][-1]["instance_id"]==expected[0] and state.get("pending_scry") is None

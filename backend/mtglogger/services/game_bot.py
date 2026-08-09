@@ -64,12 +64,12 @@ def choose_bot_action(state: dict, difficulty: str = "standard") -> dict | None:
     if "choose_legendary" in by_type:
         action=by_type["choose_legendary"][0];choice=max(action["card_ids"],key=lambda card_id:((_card(state,"bot",card_id).get("mana_value") or 0),sum(_stats(_card(state,"bot",card_id)))))
         return {"type":"choose_legendary","card_ids":[choice]}
-    if "scry" in by_type:
-        action=by_type["scry"][0];cards={card["instance_id"]:card for card in action.get("cards",[])};bot=next(player for player in state["players"] if player["id"]=="bot");lands_in_hand=sum("Land" in card.get("type_line","") for card in bot["hand"])
+    if "scry" in by_type or "surveil" in by_type:
+        kind="surveil" if "surveil" in by_type else "scry";action=by_type[kind][0];cards={card["instance_id"]:card for card in action.get("cards",[])};bot=next(player for player in state["players"] if player["id"]=="bot");lands_in_hand=sum("Land" in card.get("type_line","") for card in bot["hand"])
         if difficulty=="beginner":bottom=[]
         else:bottom=[card_id for card_id in action["card_ids"] if ("Land" in cards[card_id].get("type_line","") and lands_in_hand>=4) or ("Land" not in cards[card_id].get("type_line","") and lands_in_hand<2) or (difficulty=="expert" and (cards[card_id].get("mana_value") or 0)>max(3,len([card for card in bot["battlefield"] if "Land" in card.get("type_line","")])+2))]
         top=[card_id for card_id in action["card_ids"] if card_id not in bottom]
-        return {"type":"scry","top_ids":top,"bottom_ids":bottom}
+        return {"type":kind,"top_ids":top,"graveyard_ids" if kind=="surveil" else "bottom_ids":bottom}
     if "play_land" in by_type:
         return by_type["play_land"][0]
     if "cast" in by_type:
