@@ -165,7 +165,7 @@ def _new_player(player_id: str, name: str, deck: list[dict], is_bot: bool, forma
 def new_game(player_deck: list[dict], opponent_deck: list[dict], play_first: bool = True, opponent_is_bot: bool = True, player_format: str = "", opponent_format: str = "") -> dict:
     human_id, bot_id = "player", "bot"
     players = [_new_player(human_id, "You", player_deck, False, player_format), _new_player(bot_id, "Bot" if opponent_is_bot else "Guest", opponent_deck, opponent_is_bot, opponent_format)]
-    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id, "players": players, "stack": [], "combat": {"attackers": [], "blocks": {}}, "consecutive_passes": 0, "pending_phase_advance": False, "log": []}
+    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id, "players": players, "stack": [], "combat": {"attackers": [], "blocks": {}}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "log": []}
     for player in players:
         _draw(state, player, 7)
     _log(state, "Opening hands drawn. Choose whether to keep or mulligan.")
@@ -221,10 +221,21 @@ def _commander_tax(player: dict, card: dict) -> int:
     return player.get("commander_casts", 0) * 2 if card.get("commander") else 0
 
 
+def _maximum_hand_size(player:dict)->int|None:
+    texts=[(card.get("oracle_text") or "").casefold() for card in player["battlefield"]]
+    if any("you have no maximum hand size" in text for text in texts):return None
+    increases=sum(int(value) for text in texts for value in re.findall(r"maximum hand size is increased by (\d+)",text))
+    return 7+increases
+
+
 def legal_actions(state: dict, player_id: str) -> list[dict]:
     if state["status"] == "complete":
         return []
     player = _player(state, player_id)
+    pending_discard=state.get("pending_discard")
+    if pending_discard:
+        if pending_discard["player_id"] != player_id:return []
+        return [{"type":"discard_to_hand_size","card_ids":[card["instance_id"] for card in player["hand"]],"amount":pending_discard["amount"]},{"type":"concede"}]
     if state["status"] == "mulligan":
         if player["kept_hand"]:
             return []
@@ -477,16 +488,23 @@ def _state_based_actions(state: dict) -> None:
                     _leave_battlefield(state,owner,permanent,"graveyard");changed=True
 
 
+def _begin_next_turn(state:dict)->None:
+    state["pending_discard"]=None;state["turn"] += 1; state["phase"] = PHASES[0]; state["active_player_id"] = opponent(state, state["active_player_id"])["id"]
+    active = _player(state, state["active_player_id"]); active["land_plays_remaining"] = 1
+    for owner in state["players"]:
+        for permanent in owner["battlefield"]: permanent.pop("temporary_power",None); permanent.pop("temporary_toughness",None); permanent["damage"] = 0
+    for permanent in active["battlefield"]: permanent["tapped"] = False; permanent["summoning_sick"] = False
+    _draw(state, active); _log(state, f"Turn {state['turn']} began for {active['name']}."); _queue_triggers(state,"upkeep",None,active)
+
+
 def _advance_turn_phase(state: dict) -> None:
     if state["phase"] == "combat" and state["combat"]["attackers"]: _combat_damage(state)
     index = PHASES.index(state["phase"])
     if index == len(PHASES) - 1:
-        state["turn"] += 1; state["phase"] = PHASES[0]; state["active_player_id"] = opponent(state, state["active_player_id"])["id"]
-        active = _player(state, state["active_player_id"]); active["land_plays_remaining"] = 1
-        for owner in state["players"]:
-            for permanent in owner["battlefield"]: permanent.pop("temporary_power",None); permanent.pop("temporary_toughness",None); permanent["damage"] = 0
-        for permanent in active["battlefield"]: permanent["tapped"] = False; permanent["summoning_sick"] = False
-        _draw(state, active); _log(state, f"Turn {state['turn']} began for {active['name']}."); _queue_triggers(state,"upkeep",None,active)
+        ending=_player(state,state["active_player_id"]);maximum=_maximum_hand_size(ending);excess=max(0,len(ending["hand"])-maximum) if maximum is not None else 0
+        if excess:
+            state["pending_discard"]={"player_id":ending["id"],"amount":excess};state["priority_player_id"]=ending["id"];state["pending_phase_advance"]=False;state["consecutive_passes"]=0;_log(state,f"{ending['name']} must discard {excess} card(s) to hand size.");return
+        _begin_next_turn(state)
     else:
         state["phase"] = PHASES[index + 1]
     state["priority_player_id"] = state["active_player_id"]
@@ -567,6 +585,13 @@ def perform_action(state: dict, player_id: str, action: dict) -> dict:
             _advance_turn_phase(state)
     elif action_type == "concede":
         state["status"] = "complete"; state["winner_id"] = opponent(state, player_id)["id"]; _log(state, f"{player['name']} conceded.")
+    elif action_type == "discard_to_hand_size":
+        pending=state.get("pending_discard") or {};requested=action.get("card_ids") or [];required=pending.get("amount",0)
+        if pending.get("player_id")!=player_id or len(requested)!=required or len(set(requested))!=required:raise RuleViolation(f"Choose exactly {required} cards to discard")
+        chosen=[card for card in player["hand"] if card["instance_id"] in set(requested)]
+        if len(chosen)!=required:raise RuleViolation("One or more selected cards are not in your hand")
+        for card in chosen:player["hand"].remove(card);player["graveyard"].append(card)
+        _log(state,f"{player['name']} discarded {required} card(s) to maximum hand size.");_begin_next_turn(state)
     elif action_type == "adjust_life":
         target_player = _player(state, action.get("target_id") or player_id); amount = max(-100, min(100, int(action.get("amount") or 0))); target_player["life"] += amount; _log(state, f"{target_player['name']}'s life was adjusted by {amount:+d}.")
     elif action_type == "add_counter":

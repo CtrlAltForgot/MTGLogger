@@ -17,6 +17,10 @@ def choose_bot_action(state: dict, difficulty: str = "standard") -> dict | None:
         return by_type["keep"][0]
     if "resolve" in by_type:
         return by_type["resolve"][0]
+    if "discard_to_hand_size" in by_type:
+        action=by_type["discard_to_hand_size"][0];amount=action["amount"]
+        ranked=sorted(action["card_ids"],key=lambda card_id:(_card(state,"bot",card_id).get("mana_value") or 0,"Land" not in _card(state,"bot",card_id).get("type_line","")))
+        return {"type":"discard_to_hand_size","card_ids":ranked[:amount]}
     if "play_land" in by_type:
         return by_type["play_land"][0]
     if "cast" in by_type:

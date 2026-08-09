@@ -1,5 +1,5 @@
 from mtglogger.services.game_bot import choose_bot_action
-from mtglogger.services.game_engine import legal_actions, new_game, perform_action, public_state
+from mtglogger.services.game_engine import RuleViolation, legal_actions, new_game, perform_action, public_state
 
 
 def card(index:int,name:str,type_line:str,mana_cost:str="",power:str|None=None,toughness:str|None=None,quantity:int=1):
@@ -251,3 +251,27 @@ def test_infect_wither_toxic_and_poison_loss_are_enforced():
     assert bot["life"]==19 and bot["poison"]==2 and any(item["instance_id"]=="durable" for item in bot["graveyard"])
     bot["poison"]=10;state["status"]="active";state["winner_id"]=None
     state=perform_action(state,"player",{"type":"adjust_life","amount":0});assert state["status"]=="complete" and state["winner_id"]=="player"
+
+
+def test_cleanup_requires_exact_discard_to_seven_before_next_turn():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player")
+    while len(player["hand"])<9:player["hand"].append(player["library"].pop())
+    state["phase"]="ending";state=perform_action(state,"player",{"type":"advance_phase"})
+    assert state["turn"]==1 and state["pending_discard"]=={"player_id":"player","amount":2}
+    action=legal_actions(state,"player")[0];assert action["type"]=="discard_to_hand_size" and action["amount"]==2
+    try:perform_action(state,"player",{"type":"discard_to_hand_size","card_ids":action["card_ids"][:1]})
+    except RuleViolation:pass
+    else:raise AssertionError("cleanup accepted the wrong discard count")
+    chosen=action["card_ids"][:2];state=perform_action(state,"player",{"type":"discard_to_hand_size","card_ids":chosen});player=next(p for p in state["players"] if p["id"]=="player")
+    assert len(player["hand"])==7 and all(any(card["instance_id"]==card_id for card in player["graveyard"]) for card_id in chosen) and state["turn"]==2 and state["active_player_id"]=="bot"
+
+
+def test_bot_discards_automatically_and_no_maximum_hand_size_is_honored():
+    state=kept_game();bot=next(p for p in state["players"] if p["id"]=="bot");state["active_player_id"]="bot";state["priority_player_id"]="bot";state["phase"]="ending"
+    while len(bot["hand"])<9:bot["hand"].append(bot["library"].pop())
+    state=perform_action(state,"bot",{"type":"advance_phase"});choice=choose_bot_action(state,"expert")
+    assert choice["type"]=="discard_to_hand_size" and len(choice["card_ids"])==2
+    state=perform_action(state,"bot",choice);assert len(next(p for p in state["players"] if p["id"]=="bot")["hand"])==7
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player");player["battlefield"].append({**card(660,"Spellbook","Artifact"),"oracle_text":"You have no maximum hand size.","instance_id":"spellbook","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False})
+    while len(player["hand"])<9:player["hand"].append(player["library"].pop())
+    state["phase"]="ending";state=perform_action(state,"player",{"type":"advance_phase"});assert state["turn"]==2 and state.get("pending_discard") is None
