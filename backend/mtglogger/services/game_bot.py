@@ -194,7 +194,16 @@ def choose_bot_action(state: dict, difficulty: str = "standard") -> dict | None:
         else:
             choice = max(spells, key=lambda action: (_card(state, "bot", action["card_id"]).get("mana_value") or 0, len(_card(state, "bot", action["card_id"]).get("oracle_text") or "")))
         if choice.get("modes"):
-            mode=max(choice["modes"],key=lambda candidate:_mode_score(state,candidate));choice={**choice,"chosen_modes":[mode["index"]],"label":mode["label"],"targets":mode.get("targets",[])}
+            maximum=choice.get("mode_max",choice.get("mode_count",1));minimum=choice.get("mode_min",choice.get("mode_count",1));ranked=sorted(choice["modes"],key=lambda candidate:_mode_score(state,candidate),reverse=True)
+            chosen=([ranked[0]]*maximum if choice.get("mode_repeatable") and ranked else ranked[:maximum])
+            if choice.get("mode_repeatable") and chosen:
+                while len(chosen)<minimum:chosen.append(chosen[0])
+            chosen=chosen[:max(minimum,maximum)];mode_targets=[]
+            for mode in chosen:
+                targets=mode.get("targets",[])
+                if choice.get("mode_distinct_targets"):targets=[target for target in targets if target["id"] not in mode_targets]
+                mode_targets.append(_choose_target(state,{**choice,"label":mode["label"],"targets":targets}) if targets else None)
+            choice={**choice,"chosen_modes":[mode["index"] for mode in chosen],"mode_targets":mode_targets,"target_id":mode_targets[0] if len(mode_targets)==1 else None,"modes":None}
         if choice.get("targets"):
             choice = {**choice, "target_id":_choose_target(state,choice)}
         return choice

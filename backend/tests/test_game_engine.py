@@ -676,3 +676,49 @@ def test_modal_modes_without_legal_targets_are_hidden_and_bot_chooses_lethal_mod
     command={**card(941,"Bot Command","Sorcery"),"oracle_text":"Choose one —\n• Draw a card.\n• Destroy target creature.\n• Bot Command deals 3 damage to any target.","instance_id":"bot-command","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};bot["hand"].append(command)
     action=next(action for action in legal_actions(state,"bot") if action.get("card_id")=="bot-command");assert [mode["index"] for mode in action["modes"]]==[0,2]
     choice=choose_bot_action(state,"expert");assert choice["type"]=="cast" and choice["chosen_modes"]==[2] and choice["target_id"]=="player"
+
+
+def test_choose_two_modes_keep_independent_targets_and_resolve_each_effect():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
+    victim={**card(950,"Mode Victim","Creature — Citizen","","2","2"),"instance_id":"mode-victim","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};bot["battlefield"].append(victim)
+    command={**card(951,"Test Command","Sorcery"),"oracle_text":"Choose two —\n• Draw two cards.\n• Destroy target creature.\n• Test Command deals 3 damage to any target.","instance_id":"test-command","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"].append(command)
+    action=next(action for action in legal_actions(state,"player") if action.get("card_id")=="test-command");assert action["mode_min"]==action["mode_max"]==2 and not action["mode_repeatable"]
+    try:perform_action(state,"player",{"type":"cast","card_id":"test-command","chosen_modes":[1,2],"mode_targets":["mode-victim"]})
+    except RuleViolation:pass
+    else:raise AssertionError("modal spell accepted an incomplete per-mode target list")
+    state=perform_action(state,"player",{"type":"cast","card_id":"test-command","chosen_modes":[1,2],"mode_targets":["mode-victim","bot"]});assert state["stack"][-1]["mode_targets"]==["mode-victim","bot"]
+    state=perform_action(state,"player",{"type":"resolve"});bot=next(p for p in state["players"] if p["id"]=="bot");player=next(p for p in state["players"] if p["id"]=="player")
+    assert bot["life"]==17 and any(card["instance_id"]=="mode-victim" for card in bot["graveyard"]) and any(card["instance_id"]=="test-command" for card in player["graveyard"])
+
+
+def test_repeatable_modal_spell_accepts_the_same_mode_more_than_once():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player")
+    command={**card(952,"Repeat Command","Sorcery"),"oracle_text":"Choose two. You may choose the same mode more than once.\n• Repeat Command deals 2 damage to any target.\n• You gain 2 life.","instance_id":"repeat-command","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"].append(command)
+    action=next(action for action in legal_actions(state,"player") if action.get("card_id")=="repeat-command");assert action["mode_repeatable"] and action["mode_min"]==action["mode_max"]==2
+    state=perform_action(state,"player",{"type":"cast","card_id":"repeat-command","chosen_modes":[0,0],"mode_targets":["bot","bot"]});state=perform_action(state,"player",{"type":"resolve"});bot=next(p for p in state["players"] if p["id"]=="bot")
+    assert bot["life"]==16
+
+
+def test_multimode_spells_queue_every_distinct_ward_cost():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
+    player["battlefield"]=[{**card(960+index,f"Ward Land {index}","Basic Land — Plains"),"instance_id":f"ward-land-{index}","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False} for index in range(2)]
+    warded=[{**card(965+index,f"Warded Target {index}","Creature — Citizen","","2","2"),"oracle_text":"Ward {1}","instance_id":f"warded-{index}","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False} for index in range(2)];bot["battlefield"]=warded
+    command={**card(970,"Double Doom","Sorcery"),"oracle_text":"Choose two —\n• Destroy target creature.\n• Exile target creature.","instance_id":"double-doom","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"].append(command)
+    state=perform_action(state,"player",{"type":"cast","card_id":"double-doom","chosen_modes":[0,1],"mode_targets":["warded-0","warded-1"]});assert state["pending_ward"]["source_name"]=="Warded Target 0" and len(state["pending_ward"]["remaining"])==1
+    state=perform_action(state,"player",{"type":"pay_ward"});assert state["pending_ward"]["source_name"]=="Warded Target 1"
+    state=perform_action(state,"player",{"type":"pay_ward"});assert state["pending_ward"] is None and sum(card["tapped"] for card in next(p for p in state["players"] if p["id"]=="player")["battlefield"])==2
+
+
+def test_one_or_more_modes_can_require_distinct_targets():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player")
+    command={**card(971,"Different Command","Sorcery"),"oracle_text":"Choose one or more — Each mode must target a different player.\n• Target player mills 2 cards.\n• Different Command deals 2 damage to any target.","instance_id":"different-command","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"].append(command)
+    action=next(action for action in legal_actions(state,"player") if action.get("card_id")=="different-command");assert action["mode_min"]==1 and action["mode_max"]==2 and action["mode_distinct_targets"]
+    try:perform_action(state,"player",{"type":"cast","card_id":"different-command","chosen_modes":[0,1],"mode_targets":["bot","bot"]})
+    except RuleViolation:pass
+    else:raise AssertionError("modal spell accepted duplicate targets despite its different-target restriction")
+
+
+def test_triggered_modal_text_on_a_permanent_is_not_a_cast_mode():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player")
+    permanent={**card(972,"Modal Visitor","Creature — Citizen","","2","2"),"oracle_text":"When Modal Visitor enters, choose one —\n• You gain 2 life.\n• Draw a card.","instance_id":"modal-visitor","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"].append(permanent)
+    action=next(action for action in legal_actions(state,"player") if action.get("card_id")=="modal-visitor");assert "modes" not in action

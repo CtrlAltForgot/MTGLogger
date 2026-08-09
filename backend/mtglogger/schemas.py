@@ -313,6 +313,7 @@ class GameAction(BaseModel):
     card_ids: list[str] = Field(default_factory=list)
     cost_card_ids: list[str] = Field(default_factory=list)
     chosen_modes: list[int] = Field(default_factory=list, max_length=5)
+    mode_targets: list[str | None] = Field(default_factory=list, max_length=5)
     top_ids: list[str] = Field(default_factory=list)
     bottom_ids: list[str] = Field(default_factory=list)
     graveyard_ids: list[str] = Field(default_factory=list)

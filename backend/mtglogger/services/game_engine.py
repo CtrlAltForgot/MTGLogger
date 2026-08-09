@@ -313,15 +313,26 @@ def _spell_targeting_card(card:dict)->dict:
     return {**card,"oracle_text":spell_text}
 
 
-def _modal_options(card:dict)->list[dict]:
-    lines=(card.get("oracle_text") or "").splitlines();header=next((index for index,line in enumerate(lines) if re.search(r"\bchoose one\s*[—-]\s*$",line.strip(),re.IGNORECASE)),None)
-    if header is None:return []
+def _modal_spec(card:dict)->dict|None:
+    lines=(card.get("oracle_text") or "").splitlines();header=next(((index,line.strip()) for index,line in enumerate(lines) if re.match(r"^choose (?:one|two|three|one or both|one or more)\b",line.strip(),re.IGNORECASE)),None)
+    if header is None:return None
+    index,label=header;oracle=(card.get("oracle_text") or "").casefold();lower=label.casefold();repeat="same mode more than once" in oracle;distinct_targets="different target" in oracle or "different player" in oracle
+    if "one or more" in lower:min_modes,max_modes=1,5
+    elif "one or both" in lower:min_modes,max_modes=1,2
+    elif "choose three" in lower:min_modes=max_modes=3
+    elif "choose two" in lower:min_modes=max_modes=2
+    else:min_modes=max_modes=1
     options=[]
-    for line in lines[header+1:]:
+    for line in lines[index+1:]:
         stripped=line.strip()
         if stripped.startswith(("•","-")):options.append(stripped[1:].strip())
         elif options and stripped:options[-1]=f"{options[-1]} {stripped}"
-    return [{"index":index,"label":text} for index,text in enumerate(options)]
+    if not options:return None
+    return {"min_modes":min_modes,"max_modes":min(max_modes,len(options) if not repeat else max_modes),"repeatable":repeat,"distinct_targets":distinct_targets,"options":[{"index":option_index,"label":text} for option_index,text in enumerate(options)]}
+
+
+def _modal_options(card:dict)->list[dict]:
+    return (_modal_spec(card) or {}).get("options",[])
 
 
 def _selected_mode_card(card:dict,indices:list[int]|None)->dict:
@@ -373,7 +384,10 @@ def _queue_ward(state:dict,caster:dict,target_id:str|None,stack_item:dict)->None
     target_owner=next((owner for owner in state["players"] if any(card["instance_id"]==target_id for card in owner["battlefield"])),None)
     target=next((card for owner in state["players"] for card in owner["battlefield"] if card["instance_id"]==target_id),None);details=_ward_details(target or {})
     if target and target_owner and target_owner["id"]!=caster["id"] and details:
-        state["pending_ward"]={"player_id":caster["id"],"stack_id":stack_item["id"],"source_name":target["name"],**details};state["priority_player_id"]=caster["id"];_log(state,f"{target['name']}'s ward requires {details['label']}.")
+        entry={"player_id":caster["id"],"stack_id":stack_item["id"],"source_name":target["name"],**details}
+        if state.get("pending_ward"):state["pending_ward"].setdefault("remaining",[]).append(entry)
+        else:state["pending_ward"]={**entry,"remaining":[]}
+        state["priority_player_id"]=caster["id"];_log(state,f"{target['name']}'s ward requires {details['label']}.")
 
 
 def _commander_tax(player: dict, card: dict) -> int:
@@ -447,15 +461,15 @@ def legal_actions(state: dict, player_id: str) -> list[dict]:
         instant_speed = "Instant" in card.get("type_line", "") or _has_keyword(card, "Flash")
         if "Land" in card.get("type_line", "") or not ((active and main and not state["stack"]) or instant_speed) or not _can_pay(player, card, _commander_tax(player, card)): continue
         action = {"type": "cast", "card_id": card["instance_id"], "source": source, "commander_tax": _commander_tax(player, card)}
-        modal_options=_modal_options(card)
-        if modal_options:
+        modal_spec=_modal_spec(card);modal_options=(modal_spec or {}).get("options",[])
+        if modal_spec:
             modes=[]
             for option in modal_options:
                 mode_card={**card,"oracle_text":option["label"]};targeting_card=_spell_targeting_card(mode_card);targets=_targets(state,player_id,targeting_card)
                 if _target_kind(targeting_card) and not targets:continue
                 modes.append({**option,"targets":targets})
-            if not modes:continue
-            action["mode_count"]=1;action["modes"]=modes
+            if len(modes)<modal_spec["min_modes"] and not modal_spec["repeatable"]:continue
+            action.update({"mode_count":modal_spec["min_modes"],"mode_min":modal_spec["min_modes"],"mode_max":min(modal_spec["max_modes"],len(modes) if not modal_spec["repeatable"] else modal_spec["max_modes"]),"mode_repeatable":modal_spec["repeatable"],"mode_distinct_targets":modal_spec["distinct_targets"],"modes":modes})
         else:
             targeting_card=_spell_targeting_card(card);targets = _targets(state, player_id, targeting_card)
             if _target_kind(targeting_card) and not targets: continue
@@ -513,6 +527,11 @@ def legal_actions(state: dict, player_id: str) -> list[dict]:
 def _resolve_spell(state: dict) -> None:
     item = state["stack"].pop()
     card, caster = item["card"], _player(state, item["controller_id"])
+    if item.get("kind","spell")=="spell" and len(item.get("mode_indices") or [])>1:
+        options={option["index"]:option for option in _modal_options(card)};targets=item.get("mode_targets") or []
+        for position,index in enumerate(item["mode_indices"]):
+            option=options[index];mode_card={**card,"name":f"{card['name']} — mode {position+1}","oracle_text":option["label"]};state["stack"].append({"id":_id(),"kind":"modal_effect","card":mode_card,"controller_id":caster["id"],"target_id":targets[position] if position<len(targets) else None});_resolve_spell(state)
+        caster["graveyard"].append(card);_log(state,f"{card['name']} resolved with {len(item['mode_indices'])} modes.");return
     rules_card=_selected_mode_card(card,item.get("mode_indices")) if item.get("kind","spell")=="spell" else card;targeting_card=_spell_targeting_card(rules_card) if item.get("kind","spell")=="spell" else rules_card;target_kind=_target_kind(targeting_card);target_id=item.get("target_id")
     if target_kind and target_id not in {target["id"] for target in _targets(state,caster["id"],targeting_card)}:
         if item.get("kind","spell")=="spell":_countered_spell_destination(state,caster,card)
@@ -866,20 +885,31 @@ def perform_action(state: dict, player_id: str, action: dict) -> dict:
         card = next((card for card in player.get(source or "hand", []) if card["instance_id"] == action.get("card_id")), None)
         tax = _commander_tax(player, card) if card else 0
         if not card or not _can_pay(player, card, tax): raise RuleViolation("That spell cannot be cast")
-        modal_options=_modal_options(card);chosen_modes=action.get("chosen_modes") or []
-        if modal_options:
+        modal_spec=_modal_spec(card);modal_options=(modal_spec or {}).get("options",[]);chosen_modes=action.get("chosen_modes") or [];mode_targets=action.get("mode_targets") or []
+        if modal_spec and len(chosen_modes)==1 and not mode_targets:mode_targets=[action.get("target_id")]
+        if modal_spec:
             available=next((entry for entry in legal_actions(state,player_id) if entry["type"]=="cast" and entry["card_id"]==card["instance_id"]),None);legal_modes={mode["index"] for mode in (available or {}).get("modes",[])}
-            if len(chosen_modes)!=1 or len(set(chosen_modes))!=1 or chosen_modes[0] not in legal_modes:raise RuleViolation("Choose exactly one legal mode")
-        elif chosen_modes:raise RuleViolation("That spell has no modal choice")
+            if not modal_spec["min_modes"]<=len(chosen_modes)<=modal_spec["max_modes"]:raise RuleViolation(f"Choose between {modal_spec['min_modes']} and {modal_spec['max_modes']} modes")
+            if (not modal_spec["repeatable"] and len(set(chosen_modes))!=len(chosen_modes)) or any(index not in legal_modes for index in chosen_modes):raise RuleViolation("Choose legal modes without repeating them")
+            if len(mode_targets)!=len(chosen_modes):raise RuleViolation("Provide one target selection for each chosen mode")
+            for position,index in enumerate(chosen_modes):
+                option=next(option for option in modal_options if option["index"]==index);mode_card=_spell_targeting_card({**card,"oracle_text":option["label"]});legal_targets=_targets(state,player_id,mode_card);requires_target=bool(_target_kind(mode_card));selected_target=mode_targets[position]
+                if requires_target and selected_target not in {target["id"] for target in legal_targets}:raise RuleViolation(f"Choose a legal target for mode {position+1}")
+                if not requires_target and selected_target is not None:raise RuleViolation(f"Mode {position+1} does not require a target")
+            selected_targets=[target for target in mode_targets if target]
+            if modal_spec["distinct_targets"] and len(selected_targets)!=len(set(selected_targets)):raise RuleViolation("Each mode must have a different target")
+        elif chosen_modes or mode_targets:raise RuleViolation("That spell has no modal choice")
         rules_card=_selected_mode_card(card,chosen_modes);targeting_card=_spell_targeting_card(rules_card);targets = _targets(state, player_id, targeting_card); target_id = action.get("target_id")
-        if _target_kind(targeting_card) and target_id not in {target["id"] for target in targets}: raise RuleViolation("Choose a legal target")
+        if not modal_spec and _target_kind(targeting_card) and target_id not in {target["id"] for target in targets}: raise RuleViolation("Choose a legal target")
         _pay_mana(player, card, tax); player[source].remove(card)
         if card.get("commander"): player["commander_casts"] = player.get("commander_casts", 0) + 1
-        stack_item={"id": _id(), "card": card, "controller_id": player_id, "target_id": target_id,"mode_indices":chosen_modes};state["stack"].append(stack_item); state["consecutive_passes"] = 0; state["pending_phase_advance"] = False
+        effective_target=target_id or (mode_targets[0] if len(mode_targets)==1 else None);stack_item={"id": _id(), "card": card, "controller_id": player_id, "target_id": effective_target,"mode_indices":chosen_modes,"mode_targets":mode_targets};state["stack"].append(stack_item); state["consecutive_passes"] = 0; state["pending_phase_advance"] = False
         _queue_triggers(state,"cast",card,player)
-        _queue_ward(state,player,target_id,stack_item)
+        ward_targets=[effective_target] if effective_target else []
+        ward_targets.extend(target for target in mode_targets if target and target not in ward_targets)
+        for ward_target in ward_targets:_queue_ward(state,player,ward_target,stack_item)
         if _multiplayer(state) and not state.get("pending_ward") and not state.get("pending_trigger_targets"): state["priority_player_id"] = opponent(state, player_id)["id"]
-        mode_label=next((mode["label"] for mode in modal_options if mode["index"] in chosen_modes),"")
+        mode_label="; ".join(next(mode["label"] for mode in modal_options if mode["index"]==index) for index in chosen_modes)
         _log(state, f"{player['name']} cast {card['name']}{f' choosing {mode_label}' if mode_label else ''}{f' with {tax} commander tax' if tax else ''}{' targeting '+next((target['name'] for target in targets if target['id']==target_id),'') if target_id else ''}.")
     elif action_type == "activate":
         permanent=next((card for card in player["battlefield"] if card["instance_id"]==action.get("card_id")),None);index=action.get("ability_index")
@@ -978,7 +1008,10 @@ def perform_action(state: dict, player_id: str, action: dict) -> dict:
             state["stack"].remove(stack_item)
             if stack_item.get("kind","spell")=="spell":_countered_spell_destination(state,player,stack_item["card"])
             _log(state,f"{stack_item['card']['name']} was countered by {pending['source_name']}'s ward.")
-        state["pending_ward"]=None;state["priority_player_id"]=opponent(state,player_id)["id"] if _multiplayer(state) else player_id
+        remaining=pending.get("remaining") or []
+        if action_type=="pay_ward" and remaining:
+            state["pending_ward"]={**remaining[0],"remaining":remaining[1:]};state["priority_player_id"]=player_id
+        else:state["pending_ward"]=None;state["priority_player_id"]=opponent(state,player_id)["id"] if _multiplayer(state) else player_id
     elif action_type in {"choose_trigger_target","skip_trigger"}:
         pending_list=state.get("pending_trigger_targets") or []
         if not pending_list or pending_list[0]["controller_id"]!=player_id:raise RuleViolation("There is no triggered target decision for this player")
