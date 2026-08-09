@@ -282,6 +282,18 @@ def test_creature_enter_trigger_is_queued_and_resolved_once():
     assert player["life"]==21
 
 
+def test_targeted_triggers_pause_for_the_controllers_legal_target_choice():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
+    first={**card(515,"First Choice","Creature — Bear","","2","2"),"instance_id":"first-choice","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};second={**card(516,"Second Choice","Creature — Bear","","2","2"),"instance_id":"second-choice","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};mage={**card(517,"Target Mage","Creature — Wizard","","2","2"),"oracle_text":"When Target Mage enters, tap target creature.","instance_id":"target-mage","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};bot["battlefield"].extend([first,second]);player["hand"].append(mage)
+    state=perform_action(state,"player",{"type":"cast","card_id":"target-mage"});state=perform_action(state,"player",{"type":"resolve"});action=legal_actions(state,"player")[0]
+    assert action["type"]=="choose_trigger_target" and {target["id"] for target in action["targets"]}>={"first-choice","second-choice"} and not state["stack"]
+    state=perform_action(state,"player",{"type":"choose_trigger_target","target_id":"second-choice"});assert state["stack"][-1]["kind"]=="trigger" and state["stack"][-1]["target_id"]=="second-choice";state=perform_action(state,"player",{"type":"resolve"});bot=next(p for p in state["players"] if p["id"]=="bot")
+    assert not next(card for card in bot["battlefield"] if card["instance_id"]=="first-choice")["tapped"] and next(card for card in bot["battlefield"] if card["instance_id"]=="second-choice")["tapped"]
+
+    ability={**mage,"name":"Bot Trigger","oracle_text":"Tap target creature.","type_line":"Ability","mana_cost":""};state["priority_player_id"]="bot";state["pending_trigger_targets"]=[{"controller_id":"bot","source_name":"Bot Source","card":ability,"trigger":{"id":"bot-trigger","kind":"trigger","card":ability,"controller_id":"bot","target_id":None,"source_id":"source"}}]
+    choice=choose_bot_action(state,"expert");target=next(target for target in legal_actions(state,"bot")[0]["targets"] if target["id"]==choice["target_id"]);assert choice["type"]=="choose_trigger_target" and target["controller_id"]=="player"
+
+
 def test_flying_reach_vigilance_lifelink_and_trample_are_enforced():
     state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});state=perform_action(state,"player",{"type":"advance_phase"});attacker=next(item for item in state["players"] if item["id"]=="player");defender=next(item for item in state["players"] if item["id"]=="bot")
     flyer={**card(520,"Sky Knight","Creature — Knight","","4","4"),"keywords":["Flying","Vigilance","Lifelink","Trample"],"instance_id":"flyer","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};ground={**card(521,"Groundling","Creature — Beast","","2","2"),"instance_id":"ground","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};reach={**card(522,"Archer","Creature — Archer","","1","1"),"keywords":["Reach"],"instance_id":"reach","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};attacker["battlefield"].append(flyer);defender["battlefield"].extend([ground,reach])

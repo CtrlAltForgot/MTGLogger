@@ -54,6 +54,10 @@ def choose_bot_action(state: dict, difficulty: str = "standard") -> dict | None:
                 amount=action.get("amount",1);ranked=sorted(action["card_ids"],key=lambda card_id:(_card(state,"bot",card_id).get("mana_value") or 0,"Land" not in _card(state,"bot",card_id).get("type_line","")));return {**action,"card_ids":ranked[:amount]}
             return action
         return by_type["decline_ward"][0]
+    if "choose_trigger_target" in by_type:
+        action=by_type["choose_trigger_target"][0];text=(action.get("label") or "").casefold();harmful=any(word in text for word in ("damage","destroy","exile","tap target","gets -","loses"));preferred=[target for target in action["targets"] if (target["controller_id"]!="bot")==harmful]
+        return {"type":"choose_trigger_target","target_id":(preferred or action["targets"])[0]["id"]}
+    if "skip_trigger" in by_type:return by_type["skip_trigger"][0]
     if "bottom_mulligan_cards" in by_type:
         action=by_type["bottom_mulligan_cards"][0];amount=action["amount"]
         ranked=sorted(action["card_ids"],key=lambda card_id:("Land" in _card(state,"bot",card_id).get("type_line",""),-(_card(state,"bot",card_id).get("mana_value") or 0)))

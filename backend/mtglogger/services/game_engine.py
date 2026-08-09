@@ -198,7 +198,7 @@ def _new_player(player_id: str, name: str, deck: list[dict], is_bot: bool, forma
 def new_game(player_deck: list[dict], opponent_deck: list[dict], play_first: bool = True, opponent_is_bot: bool = True, player_format: str = "", opponent_format: str = "") -> dict:
     human_id, bot_id = "player", "bot"
     players = [_new_player(human_id, "You", player_deck, False, player_format), _new_player(bot_id, "Bot" if opponent_is_bot else "Guest", opponent_deck, opponent_is_bot, opponent_format)]
-    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id, "players": players, "stack": [], "combat": {"attackers": [], "blocks": {}, "attack_targets": {},"block_orders":{},"damage_pending":False}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "pending_legendary": None,"pending_scry":None,"pending_damage_order":None,"pending_ward":None, "log": []}
+    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id, "players": players, "stack": [], "combat": {"attackers": [], "blocks": {}, "attack_targets": {},"block_orders":{},"damage_pending":False}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "pending_legendary": None,"pending_scry":None,"pending_damage_order":None,"pending_ward":None,"pending_trigger_targets":[], "log": []}
     for player in players:
         _draw(state, player, 7)
     _log(state, "Opening hands drawn. Choose whether to keep or mulligan.")
@@ -227,6 +227,12 @@ def _target_kind(card: dict) -> str | None:
     if re.search(r"return target (?:nonland )?permanent", text): return "permanent"
     if re.search(r"deals \d+ damage to any target", text): return "any"
     return None
+
+
+def _spell_targeting_card(card:dict)->dict:
+    if not any(kind in card.get("type_line","") for kind in ("Creature","Artifact","Enchantment","Planeswalker","Battle")):return card
+    clauses=re.split(r"(?<=[.!])\s+|\n",card.get("oracle_text") or "");spell_text=" ".join(clause for clause in clauses if not re.match(r"\s*(?:when|whenever|at the beginning)\b",clause,re.IGNORECASE))
+    return {**card,"oracle_text":spell_text}
 
 
 def _targets(state: dict, caster_id: str, card: dict) -> list[dict]:
@@ -263,7 +269,7 @@ def _multiplayer(state: dict) -> bool:
 
 
 def _pending_decision(state:dict)->bool:
-    return bool(state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward"))
+    return bool(state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_trigger_targets"))
 
 
 def _queue_ward(state:dict,caster:dict,target_id:str|None,stack_item:dict)->None:
@@ -319,6 +325,12 @@ def legal_actions(state: dict, player_id: str) -> list[dict]:
         can_pay=(kind=="mana" and _can_pay(player,{"mana_cost":common["mana_cost"]})) or (kind=="life" and player["life"]>=common["amount"]) or (kind=="discard" and len(player["hand"])>=common["amount"])
         if can_pay:actions.insert(0,{"type":"pay_ward",**common,**({"card_ids":[card["instance_id"] for card in player["hand"]]} if kind=="discard" else {})})
         return actions
+    pending_triggers=state.get("pending_trigger_targets") or []
+    if pending_triggers:
+        pending=pending_triggers[0]
+        if pending["controller_id"]!=player_id:return []
+        targets=_targets(state,player_id,pending["card"])
+        return ([{"type":"choose_trigger_target","targets":targets,"label":pending["card"]["oracle_text"],"source_name":pending["source_name"]},{"type":"concede"}] if targets else [{"type":"skip_trigger","source_name":pending["source_name"]},{"type":"concede"}])
     if state["status"] == "mulligan":
         if player["kept_hand"]:
             return []
@@ -338,8 +350,8 @@ def legal_actions(state: dict, player_id: str) -> list[dict]:
     for card, source in castable:
         instant_speed = "Instant" in card.get("type_line", "") or _has_keyword(card, "Flash")
         if "Land" in card.get("type_line", "") or not ((active and main and not state["stack"]) or instant_speed) or not _can_pay(player, card, _commander_tax(player, card)): continue
-        targets = _targets(state, player_id, card)
-        if _target_kind(card) and not targets: continue
+        targeting_card=_spell_targeting_card(card);targets = _targets(state, player_id, targeting_card)
+        if _target_kind(targeting_card) and not targets: continue
         action = {"type": "cast", "card_id": card["instance_id"], "source": source, "commander_tax": _commander_tax(player, card)}
         if targets: action["targets"] = targets
         actions.append(action)
@@ -391,8 +403,8 @@ def legal_actions(state: dict, player_id: str) -> list[dict]:
 def _resolve_spell(state: dict) -> None:
     item = state["stack"].pop()
     card, caster = item["card"], _player(state, item["controller_id"])
-    target_kind=_target_kind(card);target_id=item.get("target_id")
-    if target_kind and target_id not in {target["id"] for target in _targets(state,caster["id"],card)}:
+    targeting_card=_spell_targeting_card(card) if item.get("kind","spell")=="spell" else card;target_kind=_target_kind(targeting_card);target_id=item.get("target_id")
+    if target_kind and target_id not in {target["id"] for target in _targets(state,caster["id"],targeting_card)}:
         if item.get("kind","spell")=="spell":_countered_spell_destination(state,caster,card)
         _log(state,f"{card['name']} was countered because its target was no longer legal.");return
     text = (card.get("oracle_text") or "").casefold()
@@ -548,8 +560,12 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 matches = owner["id"] == event_owner["id"] and "at the beginning of your upkeep" in lower
             if not matches or "," not in clause: continue
             effect = clause.split(",", 1)[1].strip(); ability_card = {**source, "name": f"{source['name']} trigger", "oracle_text": effect, "type_line": "Ability", "mana_cost": ""}
-            targets = _targets(state, owner["id"], ability_card); preferred = [target for target in targets if target["controller_id"] != owner["id"]]
-            state["stack"].append({"id":_id(),"kind":"trigger","card":ability_card,"controller_id":owner["id"],"target_id":(preferred or targets)[0]["id"] if targets else None,"source_id":source["instance_id"]}); _log(state, f"{source['name']} triggered: {effect}")
+            targets = _targets(state, owner["id"], ability_card);trigger={"id":_id(),"kind":"trigger","card":ability_card,"controller_id":owner["id"],"target_id":None,"source_id":source["instance_id"]}
+            if _target_kind(ability_card):
+                if targets:state.setdefault("pending_trigger_targets",[]).append({"controller_id":owner["id"],"source_name":source["name"],"trigger":trigger,"card":ability_card});state["priority_player_id"]=state["pending_trigger_targets"][0]["controller_id"]
+                else:_log(state,f"{source['name']}'s trigger had no legal target and was removed.")
+            else:state["stack"].append(trigger)
+            _log(state, f"{source['name']} triggered: {effect}")
 
 
 def _combat_damage(state: dict) -> None:
@@ -697,8 +713,8 @@ def perform_action(state: dict, player_id: str, action: dict) -> dict:
         card = next((card for card in player.get(source or "hand", []) if card["instance_id"] == action.get("card_id")), None)
         tax = _commander_tax(player, card) if card else 0
         if not card or not _can_pay(player, card, tax): raise RuleViolation("That spell cannot be cast")
-        targets = _targets(state, player_id, card); target_id = action.get("target_id")
-        if _target_kind(card) and target_id not in {target["id"] for target in targets}: raise RuleViolation("Choose a legal target")
+        targeting_card=_spell_targeting_card(card);targets = _targets(state, player_id, targeting_card); target_id = action.get("target_id")
+        if _target_kind(targeting_card) and target_id not in {target["id"] for target in targets}: raise RuleViolation("Choose a legal target")
         _pay_mana(player, card, tax); player[source].remove(card)
         if card.get("commander"): player["commander_casts"] = player.get("commander_casts", 0) + 1
         stack_item={"id": _id(), "card": card, "controller_id": player_id, "target_id": target_id};state["stack"].append(stack_item); state["consecutive_passes"] = 0; state["pending_phase_advance"] = False
@@ -789,6 +805,15 @@ def perform_action(state: dict, player_id: str, action: dict) -> dict:
             if stack_item.get("kind","spell")=="spell":_countered_spell_destination(state,player,stack_item["card"])
             _log(state,f"{stack_item['card']['name']} was countered by {pending['source_name']}'s ward.")
         state["pending_ward"]=None;state["priority_player_id"]=opponent(state,player_id)["id"] if _multiplayer(state) else player_id
+    elif action_type in {"choose_trigger_target","skip_trigger"}:
+        pending_list=state.get("pending_trigger_targets") or []
+        if not pending_list or pending_list[0]["controller_id"]!=player_id:raise RuleViolation("There is no triggered target decision for this player")
+        pending=pending_list.pop(0);targets=_targets(state,player_id,pending["card"]);target_id=action.get("target_id")
+        if action_type=="choose_trigger_target":
+            if target_id not in {target["id"] for target in targets}:raise RuleViolation("Choose a legal target for the triggered ability")
+            trigger=pending["trigger"];trigger["target_id"]=target_id;state["stack"].append(trigger);_log(state,f"{player['name']} chose {next(target['name'] for target in targets if target['id']==target_id)} for {pending['source_name']}'s trigger.")
+        elif targets:raise RuleViolation("This triggered ability still has legal targets")
+        state["pending_trigger_targets"]=pending_list;state["priority_player_id"]=pending_list[0]["controller_id"] if pending_list else state["active_player_id"]
     elif action_type == "advance_phase":
         if _multiplayer(state):
             state["pending_phase_advance"] = True; state["consecutive_passes"] = 1; state["priority_player_id"] = opponent(state, player_id)["id"]; _log(state, f"{player['name']} is ready to leave {state['phase'].replace('_', ' ')}.")
