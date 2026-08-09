@@ -7,7 +7,7 @@ from .game_engine import _can_block_pair, _effective_rules_text, _has_keyword, _
 
 def _card(state: dict, player_id: str, instance_id: str) -> dict:
     player = next(player for player in state["players"] if player["id"] == player_id)
-    return next(card for zone in (player["hand"],player["battlefield"],player["graveyard"],player.get("command",[])) for card in zone if card["instance_id"] == instance_id)
+    return next(card for zone in (player["hand"],player["battlefield"],player["graveyard"],player.get("exile",[]),player.get("command",[])) for card in zone if card["instance_id"] == instance_id)
 
 
 def _stats(state:dict,card:dict)->tuple[int,int]:

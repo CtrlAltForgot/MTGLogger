@@ -1134,3 +1134,28 @@ def test_expert_bot_uses_counterspell_response_and_returns_priority_to_human():
     state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
     human_spell={**card(1110,"Human Draw","Instant"),"oracle_text":"Draw two cards.","instance_id":"human-draw","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};counter={**card(1111,"Bot Counter","Instant"),"oracle_text":"Counter target spell.","instance_id":"bot-counter","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"].append(human_spell);bot["hand"].append(counter)
     state=perform_action(state,"player",{"type":"cast","card_id":"human-draw"},allow_direct_resolution=False);state=run_bot(state,"expert");assert state["priority_player_id"]=="player" and [item["card"]["name"] for item in state["stack"]]==["Human Draw","Bot Counter"] and state["stack"][-1]["target_id"]==state["stack"][0]["id"]
+
+
+def test_airbend_exiles_a_creature_and_owner_may_cast_it_for_two():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player")
+    lands=[{**card(1120+index,f"Plains {index}","Basic Land — Plains"),"instance_id":f"airbend-land-{index}","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False} for index in range(2)]
+    creature={**card(1123,"Airbend Bear","Creature — Bear","{4}{G}","4","4"),"instance_id":"airbend-bear","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    spell={**card(1124,"Test Airbend","Sorcery"),"oracle_text":"Airbend target creature you control.","instance_id":"test-airbend","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    player["battlefield"]=[*lands,creature];player["hand"].append(spell)
+    state=perform_action(state,"player",{"type":"cast","card_id":"test-airbend","target_id":"airbend-bear"});state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player")
+    exiled=next(card for card in player["exile"] if card["instance_id"]=="airbend-bear");assert exiled["airbent"]
+    action=next(action for action in legal_actions(state,"player") if action.get("card_id")=="airbend-bear");assert action["source"]=="airbend" and "{2}" in action["label"] and "x_max" not in action
+    state=perform_action(state,"player",{"type":"cast","card_id":"airbend-bear","source":"airbend"});player=next(p for p in state["players"] if p["id"]=="player");assert sum(land["tapped"] for land in player["battlefield"] if "Land" in land["type_line"])==2 and not state["stack"][-1]["card"].get("airbent")
+    state=perform_action(state,"player",{"type":"resolve"});assert any(card["instance_id"]=="airbend-bear" for card in next(p for p in state["players"] if p["id"]=="player")["battlefield"])
+
+
+def test_airbend_can_exile_a_spell_and_tokens_cease_to_exist():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player")
+    target_spell={**card(1130,"Suspended Draw","Instant"),"oracle_text":"Draw a card.","instance_id":"suspended-draw","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    airbend={**card(1131,"Airbend Response","Instant"),"oracle_text":"Airbend target creature or spell.","instance_id":"airbend-response","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    player["hand"].extend([target_spell,airbend]);state=perform_action(state,"player",{"type":"cast","card_id":"suspended-draw"});target_stack_id=state["stack"][-1]["id"]
+    state=perform_action(state,"player",{"type":"cast","card_id":"airbend-response","target_id":target_stack_id});state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player")
+    assert not state["stack"] and next(card for card in player["exile"] if card["instance_id"]=="suspended-draw")["airbent"]
+    token={**card(1132,"Air Token","Creature — Bird","","1","1"),"instance_id":"air-token","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False,"token":True};player["battlefield"].append(token);player["hand"].append({**airbend,"instance_id":"airbend-token"})
+    state=perform_action(state,"player",{"type":"cast","card_id":"airbend-token","target_id":"air-token"});state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player")
+    assert not any(card["instance_id"]=="air-token" for zone in (player["battlefield"],player["exile"]) for card in zone)
