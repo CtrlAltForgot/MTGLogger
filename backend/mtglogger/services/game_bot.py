@@ -159,6 +159,11 @@ def _ability_score(state:dict,action:dict)->float:
 def _choose_ability_cost(state:dict,action:dict)->list[str]:
     amount=action.get("cost_amount",0)
     if not amount:return []
+    if action.get("cost_kind")=="compound":
+        bot=next(player for player in state["players"] if player["id"]=="bot");battlefield_ids={card["instance_id"] for card in bot["battlefield"]}
+        def payment_cost(group:list[str])->float:
+            return sum(_threat_score(state,_card(state,"bot",card_id)) if card_id in battlefield_ids else float(_card(state,"bot",card_id).get("mana_value") or 0)+(.75 if "Land" in _card(state,"bot",card_id).get("type_line","") else 0) for card_id in group)
+        return min(action.get("cost_combinations",[]),key=payment_cost,default=[])
     cards=[_card(state,"bot",card_id) for card_id in action.get("cost_options",[])]
     if action.get("cost_kind")=="sacrifice":cards.sort(key=lambda card:_threat_score(state,card))
     else:cards.sort(key=lambda card:("Land" in card.get("type_line",""),card.get("mana_value") or 0))

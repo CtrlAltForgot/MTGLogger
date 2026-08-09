@@ -2,7 +2,7 @@ import random
 import re
 import uuid
 from copy import deepcopy
-from itertools import combinations
+from itertools import combinations, product
 
 
 PHASES = ("beginning", "precombat_main", "combat", "postcombat_main", "ending")
@@ -402,20 +402,20 @@ def _activated_abilities(card: dict) -> list[dict]:
         counter_cost=None
         if counter_match:
             word=counter_match.group(1).casefold();amount={"a":1,"one":1,"two":2,"three":3,"four":4,"five":5}.get(word,int(word) if word.isdigit() else 1);counter_cost={"name":counter_match.group(2).replace("−","-"),"amount":amount}
-        words={"a":1,"an":1,"one":1,"two":2,"three":3,"four":4,"five":5};selection_cost=None
+        words={"a":1,"an":1,"one":1,"two":2,"three":3,"four":4,"five":5};selection_costs=[]
         discard_match=re.search(r"\bdiscard (a|an|one|two|three|four|five|\d+) (?:(nonland|land|creature|artifact|enchantment|planeswalker|instant|sorcery) )?cards?\b",cost,re.IGNORECASE)
         if discard_match:
-            word=discard_match.group(1).casefold();selection_cost={"kind":"discard","filter":discard_match.group(2).casefold() if discard_match.group(2) else "card","amount":words.get(word,int(word) if word.isdigit() else 1),"exclude_source":False}
+            word=discard_match.group(1).casefold();selection_costs.append({"kind":"discard","filter":discard_match.group(2).casefold() if discard_match.group(2) else "card","amount":words.get(word,int(word) if word.isdigit() else 1),"exclude_source":False})
         sacrifice_match=None if self_sacrifice else re.search(r"\bsacrifice (another |a |an |one |two |three |two other |three other )?(artifact or creature|creature or artifact|nonland permanent|land|creature|artifact|enchantment|planeswalker|permanent|token)s?\b",cost,re.IGNORECASE)
         if sacrifice_match:
-            count_word=(sacrifice_match.group(1) or "a").strip().casefold();selection_cost={"kind":"sacrifice","filter":sacrifice_match.group(2).casefold(),"amount":2 if count_word=="two other" else 3 if count_word=="three other" else words.get(count_word,1),"exclude_source":"other" in count_word or count_word=="another"}
+            count_word=(sacrifice_match.group(1) or "a").strip().casefold();selection_costs.append({"kind":"sacrifice","filter":sacrifice_match.group(2).casefold(),"amount":2 if count_word=="two other" else 3 if count_word=="three other" else words.get(count_word,1),"exclude_source":"other" in count_word or count_word=="another"})
         blight_match=re.search(r"\bblight (\d+)\b",cost,re.IGNORECASE)
-        if blight_match:selection_cost={"kind":"blight","filter":"creature","amount":1,"blight_amount":int(blight_match.group(1)),"exclude_source":False}
-        unsupported=("discard" in cost.casefold() and not selection_cost) or ("sacrifice" in cost.casefold() and not self_sacrifice and not selection_cost) or ("remove" in cost.casefold() and "counter" in cost.casefold() and not counter_cost)
-        if unsupported or (not taps and not mana_cost and not waterbend_symbol and not self_sacrifice and not life_cost and not counter_cost and not selection_cost):continue
+        if blight_match:selection_costs.append({"kind":"blight","filter":"creature","amount":1,"blight_amount":int(blight_match.group(1)),"exclude_source":False})
+        unsupported=("discard" in cost.casefold() and not selection_costs) or ("sacrifice" in cost.casefold() and not self_sacrifice and not selection_costs) or ("remove" in cost.casefold() and "counter" in cost.casefold() and not counter_cost) or (waterbend_symbol and selection_costs)
+        if unsupported or (not taps and not mana_cost and not waterbend_symbol and not self_sacrifice and not life_cost and not counter_cost and not selection_costs):continue
         if re.match(r"add (?:\{|one mana)", effect, re.IGNORECASE): continue
         ability_card = {**card, "name": f"{card['name']} ability", "oracle_text": effect, "source_type_line":card.get("type_line",""),"source_mana_cost":card.get("mana_cost",""), "type_line": "Ability", "mana_cost": ""}
-        abilities.append({"cost":cost,"mana_cost":mana_cost,"waterbend_symbol":waterbend_symbol,"taps":taps,"self_sacrifice":self_sacrifice,"life_cost":life_cost,"counter_cost":counter_cost,"selection_cost":selection_cost,"effect":effect,"card":ability_card})
+        abilities.append({"cost":cost,"mana_cost":mana_cost,"waterbend_symbol":waterbend_symbol,"taps":taps,"self_sacrifice":self_sacrifice,"life_cost":life_cost,"counter_cost":counter_cost,"selection_cost":selection_costs[0] if len(selection_costs)==1 else None,"selection_costs":selection_costs,"effect":effect,"card":ability_card})
     return abilities
 
 
@@ -446,6 +446,20 @@ def _activated_cost_options(player:dict,source:dict,selection_cost:dict|None)->l
         return kind in type_line
     zone=player["hand"] if selection_cost["kind"]=="discard" else player["battlefield"]
     return [card for card in zone if (not selection_cost.get("exclude_source") or card["instance_id"]!=source["instance_id"]) and matches(card)]
+
+
+def _selection_cost_combinations(player:dict,source:dict,costs:list[dict])->tuple[list[dict],list[list[str]]]:
+    requirements=[];groups=[]
+    for cost in costs:
+        options=_activated_cost_options(player,source,cost);ids=[card["instance_id"] for card in options];amount=cost["amount"]
+        requirements.append({"kind":cost["kind"],"filter":cost["filter"],"amount":amount,"options":ids})
+        groups.append(list(combinations(ids,amount)))
+    valid=[]
+    for selected_groups in product(*groups):
+        flattened=[card_id for group in selected_groups for card_id in group]
+        if len(flattened)==len(set(flattened)):valid.append(flattened)
+        if len(valid)>=500:break
+    return requirements,valid
 
 
 def _can_pay(player: dict, card: dict, extra_generic: int = 0, excluded_id: str | None = None,x_value:int=0,excluded_ids:set[str]|None=None) -> bool:
@@ -1011,12 +1025,13 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
             if (waterbend_symbol and not waterbend_combinations) or (not waterbend_symbol and ability["mana_cost"] and not _can_pay(player,{"mana_cost":ability["mana_cost"]},excluded_id=permanent["instance_id"] if ability["taps"] else None)):continue
             if ability["life_cost"] and player["life"]<ability["life_cost"]:continue
             if ability["counter_cost"] and permanent.get("counters",{}).get(ability["counter_cost"]["name"],0)<ability["counter_cost"]["amount"]:continue
-            cost_options=_activated_cost_options(player,permanent,ability["selection_cost"])
-            if ability["selection_cost"] and len(cost_options)<ability["selection_cost"]["amount"]:continue
+            selection_costs=ability.get("selection_costs",[]);cost_requirements,cost_combinations=_selection_cost_combinations(player,permanent,selection_costs)
+            if selection_costs and not cost_combinations:continue
+            cost_options=list(dict.fromkeys(card_id for requirement in cost_requirements for card_id in requirement["options"]))
             fight_steps=_fight_target_steps(state,player_id,ability["card"],permanent);targets=[] if fight_steps else _targets(state, player_id, ability["card"])
             if (fight_steps and any(not step["targets"] for step in fight_steps)) or (not fight_steps and _target_kind(ability["card"]) and not targets): continue
-            action = {"type": "activate", "card_id": permanent["instance_id"], "ability_index": index, "label": f"{ability['cost']}: {ability['effect']}","life_cost":ability["life_cost"],"self_sacrifice":ability["self_sacrifice"],"counter_cost":ability["counter_cost"],"cost_kind":ability["selection_cost"]["kind"] if ability["selection_cost"] else None,"cost_amount":ability["selection_cost"]["amount"] if ability["selection_cost"] else 0,"cost_options":[card["instance_id"] for card in cost_options]}
-            if ability["selection_cost"] and ability["selection_cost"]["kind"]=="blight":action["blight_amount"]=ability["selection_cost"]["blight_amount"]
+            action = {"type": "activate", "card_id": permanent["instance_id"], "ability_index": index, "label": f"{ability['cost']}: {ability['effect']}","life_cost":ability["life_cost"],"self_sacrifice":ability["self_sacrifice"],"counter_cost":ability["counter_cost"],"cost_kind":selection_costs[0]["kind"] if len(selection_costs)==1 else "compound" if selection_costs else None,"cost_amount":sum(cost["amount"] for cost in selection_costs),"cost_options":cost_options,"cost_requirements":cost_requirements,"cost_combinations":cost_combinations}
+            if len(selection_costs)==1 and selection_costs[0]["kind"]=="blight":action["blight_amount"]=selection_costs[0]["blight_amount"]
             if waterbend_symbol:
                 options=[candidate["instance_id"] for candidate in player["battlefield"] if candidate["instance_id"] not in excluded and not candidate.get("tapped") and any(kind in candidate.get("type_line","") for kind in ("Artifact","Creature"))];action.update({"waterbend":True,"waterbend_amount":waterbend_amount,"cost_kind":"waterbend","cost_min_amount":min(map(len,waterbend_combinations)),"cost_max_amount":max(map(len,waterbend_combinations)),"cost_options":options,"cost_combinations":waterbend_combinations})
             if _has_x_cost({"mana_cost":ability["mana_cost"]}):action.update({"x_min":0,"x_max":_maximum_x(player,{"mana_cost":ability["mana_cost"]},excluded_id=permanent["instance_id"] if ability["taps"] else None)})
@@ -1750,6 +1765,9 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if waterbend_symbol:
             combinations_for_x=(available.get("cost_combinations_by_x") or {}).get(x_value,available.get("cost_combinations",[]));valid_groups={tuple(sorted(group)) for group in combinations_for_x}
             if tuple(sorted(selected_cost_ids)) not in valid_groups:raise RuleViolation("Choose artifacts and creatures that produce a legal waterbend payment")
+        elif available.get("cost_kind")=="compound":
+            valid_groups={tuple(sorted(group)) for group in available.get("cost_combinations",[])}
+            if tuple(sorted(selected_cost_ids)) not in valid_groups:raise RuleViolation("Choose one complete legal payment for every activation cost")
         elif len(selected_cost_ids)!=required_cost or len(set(selected_cost_ids))!=required_cost or not set(selected_cost_ids).issubset(cost_options):raise RuleViolation(f"Choose exactly {required_cost} legal card(s) for the activation cost")
         selected_cost_cards=[card for zone in (player["hand"],player["battlefield"]) for card in zone if card["instance_id"] in set(selected_cost_ids)]
         if len(selected_cost_cards)!=(len(selected_cost_ids) if waterbend_symbol else required_cost):raise RuleViolation("One or more activation cost cards are no longer available")
@@ -1763,16 +1781,19 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if ability["life_cost"]:player["life"]-=ability["life_cost"]
         if ability["counter_cost"]:
             name,amount=ability["counter_cost"]["name"],ability["counter_cost"]["amount"];permanent["counters"][name]-=amount
-        if ability.get("selection_cost") and ability["selection_cost"]["kind"]=="blight":_apply_blight(state,player,selected_cost_cards[0],ability["selection_cost"]["blight_amount"])
+        blight_cost=next((cost for cost in ability.get("selection_costs",[]) if cost["kind"]=="blight"),None)
+        if blight_cost:
+            blight_options={card["instance_id"] for card in _activated_cost_options(player,permanent,blight_cost)};blight_target=next(card for card in selected_cost_cards if card["instance_id"] in blight_options);_apply_blight(state,player,blight_target,blight_cost["blight_amount"])
         if ability["taps"]:permanent["tapped"]=True
         stack_item={"id":_id(),"kind":"ability","card":ability["card"],"controller_id":player_id,"target_id":target_id,"target_ids":target_ids,"source_id":permanent["instance_id"],"x_value":x_value};state["stack"].append(stack_item);state["consecutive_passes"]=0;state["pending_phase_advance"]=False
         if waterbend_symbol:_queue_triggers(state,"waterbend",permanent,player)
         for ward_target in ([target_id] if target_id else [])+target_ids:_queue_ward(state,player,ward_target,stack_item)
         if ability["self_sacrifice"]:_leave_battlefield(state,player,permanent,"graveyard")
-        if available.get("cost_kind")=="discard":
-            for card in selected_cost_cards:player["hand"].remove(card);player["graveyard"].append(card)
-        elif available.get("cost_kind")=="sacrifice":
-            for card in selected_cost_cards:_leave_battlefield(state,player,card,"graveyard")
+        discard_ids={card_id for requirement in available.get("cost_requirements",[]) if requirement["kind"]=="discard" for card_id in requirement["options"]}
+        sacrifice_ids={card_id for requirement in available.get("cost_requirements",[]) if requirement["kind"]=="sacrifice" for card_id in requirement["options"]}
+        for card in list(selected_cost_cards):
+            if card["instance_id"] in discard_ids and card in player["hand"]:player["hand"].remove(card);player["graveyard"].append(card)
+            elif card["instance_id"] in sacrifice_ids and card in player["battlefield"]:_leave_battlefield(state,player,card,"graveyard")
         if (_multiplayer(state) or not allow_direct_resolution) and not state.get("pending_ward") and not state.get("pending_trigger_targets"):state["priority_player_id"]=opponent(state,player_id)["id"]
         _log(state,f"{player['name']} activated {permanent['name']}: {ability['effect']}")
     elif action_type == "activate_loyalty":

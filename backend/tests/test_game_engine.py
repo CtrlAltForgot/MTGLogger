@@ -1054,6 +1054,29 @@ def test_token_and_nonland_permanent_sacrifice_costs_are_enforced():
     assert not any(card["instance_id"]=="food-token" for card in player["battlefield"]+player["graveyard"])
 
 
+def test_compound_discard_and_sacrifice_cost_requires_and_pays_every_component():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player")
+    outlet={**card(932,"Compound Outlet","Artifact"),"oracle_text":"Discard a card, Sacrifice another creature: Draw two cards.","instance_id":"compound-outlet","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};fodder={**card(933,"Compound Fodder","Creature — Citizen","","1","1"),"instance_id":"compound-fodder","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].extend([outlet,fodder]);first,second=player["hand"][:2]
+    action=next(action for action in legal_actions(state,"player") if action.get("card_id")=="compound-outlet")
+    assert action["cost_kind"]=="compound" and action["cost_amount"]==2
+    assert {requirement["kind"] for requirement in action["cost_requirements"]}=={"discard","sacrifice"}
+    assert any(set(group)=={first["instance_id"],"compound-fodder"} for group in action["cost_combinations"])
+    try:perform_action(state,"player",{"type":"activate","card_id":"compound-outlet","ability_index":action["ability_index"],"cost_card_ids":[first["instance_id"],second["instance_id"]]})
+    except RuleViolation:pass
+    else:raise AssertionError("compound activation accepted two discards instead of a discard and sacrifice")
+    state=perform_action(state,"player",{"type":"activate","card_id":"compound-outlet","ability_index":action["ability_index"],"cost_card_ids":[first["instance_id"],"compound-fodder"]});player=next(p for p in state["players"] if p["id"]=="player")
+    assert any(card["instance_id"]==first["instance_id"] for card in player["graveyard"])
+    assert any(card["instance_id"]=="compound-fodder" for card in player["graveyard"])
+
+
+def test_expert_bot_selects_a_complete_low_cost_compound_payment():
+    state=kept_game();state["active_player_id"]="bot";state["priority_player_id"]="bot";state["phase"]="precombat_main";bot=next(p for p in state["players"] if p["id"]=="bot")
+    outlet={**card(934,"Bot Compound Outlet","Artifact"),"oracle_text":"Discard a card, Sacrifice another creature: Draw three cards.","instance_id":"bot-compound-outlet","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};token={**card(935,"Disposable","Token Creature — Citizen","","1","1"),"instance_id":"bot-disposable","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False,"token":True};discard={**card(936,"Spare Land","Basic Land — Swamp"),"instance_id":"bot-spare","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};bot["battlefield"]=[outlet,token];bot["hand"]=[discard];bot["land_plays_remaining"]=0
+    choice=choose_bot_action(state,"expert")
+    assert choice["type"]=="activate" and choice["card_id"]=="bot-compound-outlet"
+    assert set(choice["cost_card_ids"])=={"bot-spare","bot-disposable"}
+
+
 def test_expert_bot_uses_profitable_costly_abilities_but_never_pays_lethal_life():
     state=kept_game();state["active_player_id"]="bot";state["priority_player_id"]="bot";state["phase"]="precombat_main";bot=next(p for p in state["players"] if p["id"]=="bot");bot["hand"]=[];bot["land_plays_remaining"]=0;bot["life"]=2
     fatal={**card(930,"Fatal Bargain","Artifact"),"oracle_text":"Pay 2 life: Draw a card.","instance_id":"fatal-bargain","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};relic={**card(931,"Scholar Relic","Artifact"),"oracle_text":"Sacrifice Scholar Relic: Draw three cards.","instance_id":"scholar-relic","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};bot["battlefield"].append(fatal)
