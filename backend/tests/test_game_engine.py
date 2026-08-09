@@ -338,6 +338,15 @@ def test_mana_rocks_colorless_and_hybrid_costs_and_zero_toughness_state_action()
     assert not any(item["instance_id"]=="hybrid" for item in player["battlefield"])
 
 
+def test_opposing_power_toughness_counters_cancel_before_lethal_state_actions():
+    state=kept_game();player=next(item for item in state["players"] if item["id"]=="player")
+    bearer={**card(533,"Counter Bearer","Creature — Bear","","2","2"),"instance_id":"counter-bearer","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{"+1/+1":2},"summoning_sick":False};player["battlefield"].append(bearer)
+    state=perform_action(state,"player",{"type":"add_counter","target_id":"counter-bearer","counter_name":"-1/-1","amount":1});player=next(item for item in state["players"] if item["id"]=="player");bearer=next(item for item in player["battlefield"] if item["instance_id"]=="counter-bearer")
+    assert bearer["counters"]=={"+1/+1":1}
+    state=perform_action(state,"player",{"type":"add_counter","target_id":"counter-bearer","counter_name":"-1/-1","amount":3});player=next(item for item in state["players"] if item["id"]=="player")
+    assert not any(item["instance_id"]=="counter-bearer" for item in player["battlefield"]) and any(item["instance_id"]=="counter-bearer" for item in player["graveyard"])
+
+
 def test_bounce_tap_combat_trick_mill_and_discard_effects_resolve():
     state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(item for item in state["players"] if item["id"]=="player");bot=next(item for item in state["players"] if item["id"]=="bot")
     creature={**card(600,"Target","Creature — Bear","","2","2"),"instance_id":"target","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};bot["battlefield"].append(creature)

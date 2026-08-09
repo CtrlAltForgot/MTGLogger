@@ -1708,6 +1708,12 @@ def _state_based_actions(state: dict) -> None:
         changed=False;trigger_sources=[(source_owner,source) for source_owner in state["players"] for source in source_owner["battlefield"]];trigger_dedupe=set()
         for owner in state["players"]:
             for permanent in list(owner["battlefield"]):
+                counters=permanent.setdefault("counters",{});opposing=min(counters.get("+1/+1",0),counters.get("-1/-1",0))
+                if opposing:
+                    for name in ("+1/+1","-1/-1"):
+                        counters[name]-=opposing
+                        if not counters[name]:counters.pop(name)
+                    changed=True;_log(state,f"{opposing} opposing +1/+1 and -1/-1 counter pair(s) were removed from {permanent['name']}.")
                 if permanent.get("attached_to"):
                     target=next((target for target_owner in state["players"] for target in target_owner["battlefield"] if target["instance_id"]==permanent["attached_to"]),None) or next((player for player in state["players"] if player["id"]==permanent["attached_to"]),None);aura="Aura" in permanent.get("type_line","");aura_text=(permanent.get("oracle_text") or "").casefold();allowed_types=_aura_allowed_types(permanent);target_types=(target or {}).get("type_line","").casefold();type_illegal=bool(aura and allowed_types and not (("player" in allowed_types and target and target.get("id")) or any(kind in target_types for kind in allowed_types-{"player"})));wrong_controller=bool(aura and target and (("enchant creature you control" in aura_text and target.get("controller_id")!=permanent.get("controller_id")) or ("enchant creature an opponent controls" in aura_text and target.get("controller_id")==permanent.get("controller_id"))));illegal=not target or type_illegal or wrong_controller or (target is not None and target.get("instance_id") is not None and _protected_from(target,permanent)) or (target is not None and target.get("id") is not None and _player_protected_from(state,target,permanent))
                     if target and target.get("instance_id") and permanent.get("control_aura_return_to") and target.get("controller_id")!=permanent.get("controller_id"):_change_control(state,target,_player(state,permanent["controller_id"]))
