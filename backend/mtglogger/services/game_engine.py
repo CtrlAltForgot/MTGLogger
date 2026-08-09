@@ -212,9 +212,19 @@ def _damage_permanent(state:dict,target:dict,amount:int,source:dict)->int:
     return amount
 
 
-def _destroy_permanent(state:dict,owner:dict,card:dict)->bool:
+def _remove_from_combat(state:dict,card_id:str)->None:
+    combat=state.get("combat",{});combat["attackers"]=[attacker for attacker in combat.get("attackers",[]) if attacker!=card_id];combat.get("attack_targets",{}).pop(card_id,None);combat.get("block_orders",{}).pop(card_id,None)
+    combat["blocks"]={blocker:attacker for blocker,attacker in combat.get("blocks",{}).items() if blocker!=card_id and attacker!=card_id}
+    for order in combat.get("block_orders",{}).values():
+        if card_id in order:order.remove(card_id)
+
+
+def _destroy_permanent(state:dict,owner:dict,card:dict,cant_regenerate:bool=False)->bool:
     if _has_keyword(card,"Indestructible"):return False
     if _consume_shield(state,card,"destruction"):return False
+    regenerations=card.get("regeneration_shields",0)
+    if regenerations and not cant_regenerate:
+        card["regeneration_shields"]=regenerations-1;card["tapped"]=True;card["damage"]=0;_remove_from_combat(state,card["instance_id"]);_log(state,f"{card['name']} regenerated instead of being destroyed.");return False
     _leave_battlefield(state,owner,card,"graveyard");return True
 
 
@@ -237,7 +247,8 @@ def _ward_cost(card:dict)->str:
 
 def _activated_abilities(card: dict) -> list[dict]:
     abilities = []
-    for line in (card.get("oracle_text") or "").splitlines():
+    text=card.get("oracle_text") or "";quoted=re.findall(r'"([^"]+:[^"]+)"',text);lines=[*(line for line in text.splitlines() if '"' not in line),*quoted]
+    for line in lines:
         match = re.match(r"^([^:]+):\s*(.+)$", line.strip())
         if not match: continue
         cost,effect = match.group(1).strip(),match.group(2).strip()
@@ -254,15 +265,20 @@ def _activated_abilities(card: dict) -> list[dict]:
         discard_match=re.search(r"\bdiscard (a|one|two|three|four|five|\d+) cards?\b",cost,re.IGNORECASE)
         if discard_match:
             word=discard_match.group(1).casefold();selection_cost={"kind":"discard","filter":"card","amount":words.get(word,int(word) if word.isdigit() else 1),"exclude_source":False}
-        sacrifice_match=None if self_sacrifice else re.search(r"\bsacrifice (another |a |an |one |two |three )?(creature|artifact|permanent)s?\b",cost,re.IGNORECASE)
+        sacrifice_match=None if self_sacrifice else re.search(r"\bsacrifice (another |a |an |one |two |three |two other |three other )?(creature|artifact|permanent)s?\b",cost,re.IGNORECASE)
         if sacrifice_match:
-            count_word=(sacrifice_match.group(1) or "a").strip().casefold();selection_cost={"kind":"sacrifice","filter":sacrifice_match.group(2).casefold(),"amount":words.get(count_word,1),"exclude_source":count_word=="another"}
+            count_word=(sacrifice_match.group(1) or "a").strip().casefold();selection_cost={"kind":"sacrifice","filter":sacrifice_match.group(2).casefold(),"amount":2 if count_word=="two other" else 3 if count_word=="three other" else words.get(count_word,1),"exclude_source":"other" in count_word or count_word=="another"}
         unsupported=("discard" in cost.casefold() and not selection_cost) or ("sacrifice" in cost.casefold() and not self_sacrifice and not selection_cost) or ("remove" in cost.casefold() and "counter" in cost.casefold() and not counter_cost)
         if unsupported or (not taps and not mana_cost and not self_sacrifice and not life_cost and not counter_cost and not selection_cost):continue
         if re.match(r"add (?:\{|one mana)", effect, re.IGNORECASE): continue
         ability_card = {**card, "name": f"{card['name']} ability", "oracle_text": effect, "type_line": "Ability", "mana_cost": ""}
         abilities.append({"cost":cost,"mana_cost":mana_cost,"taps":taps,"self_sacrifice":self_sacrifice,"life_cost":life_cost,"counter_cost":counter_cost,"selection_cost":selection_cost,"effect":effect,"card":ability_card})
     return abilities
+
+
+def _permanent_abilities(state:dict,card:dict)->list[dict]:
+    granted=[ability for rules in card.get("attachment_rules",{}).values() for ability in re.findall(r'"([^"]+:[^"]+)"',rules)]
+    return _activated_abilities({**card,"oracle_text":"\n".join([card.get("oracle_text") or "",*granted])})
 
 
 def _loyalty_abilities(card:dict)->list[dict]:
@@ -429,7 +445,7 @@ def _target_kind(card: dict) -> str | None:
     if re.search(r"target player mills?", text): return "player"
     if re.search(r"target player sacrifices?",text):return "player"
     if re.search(r"(?:destroy|exile) target (?:artifact, creature, enchantment, planeswalker|nonland permanent|permanent)", text): return "permanent"
-    if re.search(r"(?:destroy|exile|tap|untap|return) target creature", text) or re.search(r"target creature .*(?:gets [+-](?:\d+|x)/[+-](?:\d+|x)|gains? [^.]+ until end of turn|can(?:not|'t) (?:attack|block))", text) or re.search(r"(?:deals (?:\d+|x) damage|put .+ counters?) (?:to|on) target creature", text): return "creature"
+    if re.search(r"(?:destroy|exile|tap|untap|return|regenerate) target creature", text) or re.search(r"target creature .*(?:gets [+-](?:\d+|x)/[+-](?:\d+|x)|gains? [^.]+ until end of turn|can(?:not|'t) (?:attack|block))", text) or re.search(r"(?:deals (?:\d+|x) damage|put .+ counters?) (?:to|on) target creature", text): return "creature"
     for kind in ("artifact","enchantment","land","planeswalker"):
         if re.search(rf"(?:destroy|exile|tap|untap|return) target {kind}\b",text):return kind
     if re.search(r"return target (?:nonland )?permanent", text): return "permanent"
@@ -630,7 +646,7 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
             if targets: action["targets"] = targets
         actions.append(action)
     for permanent in player["battlefield"]:
-        for index, ability in enumerate(_activated_abilities(permanent)):
+        for index, ability in enumerate(_permanent_abilities(state,permanent)):
             if ability["taps"] and (permanent.get("tapped") or ("Creature" in permanent.get("type_line", "") and permanent.get("summoning_sick") and not _has_keyword(permanent,"Haste"))):continue
             if ability["mana_cost"] and not _can_pay(player,{"mana_cost":ability["mana_cost"]},excluded_id=permanent["instance_id"] if ability["taps"] else None):continue
             if ability["life_cost"] and player["life"]<ability["life_cost"]:continue
@@ -734,13 +750,18 @@ def _resolve_spell(state: dict) -> None:
             else:target_player["life"] -= amount
         elif target:_damage_permanent(state,target,amount,card)
     if target and target_owner and re.search(r"destroy target (?:creature|permanent|nonland permanent)", effect_text):
-        if _destroy_permanent(state,target_owner,target):_log(state, f"{target['name']} was destroyed.")
+        if _destroy_permanent(state,target_owner,target,"can't be regenerated" in effect_text):_log(state, f"{target['name']} was destroyed.")
     if target and target_owner and re.search(r"exile target (?:creature|permanent|nonland permanent)", effect_text):
         _leave_battlefield(state, target_owner, target, "exile"); _log(state, f"{target['name']} was exiled.")
     if target and target_owner and re.search(r"return target (?:creature|permanent|nonland permanent).* to (?:its|their) owner'?s hand", effect_text):
         _leave_battlefield(state, target_owner, target, "hand"); _log(state, f"{target['name']} returned to its owner's hand.")
     if target and re.search(r"\btap target creature", effect_text): target["tapped"] = True
     if target and re.search(r"\buntap target creature", effect_text): target["tapped"] = False
+    regeneration_target=target if target and ("regenerate target creature" in effect_text or "regenerate it" in effect_text) else source_permanent if source_permanent and "regenerate this creature" in effect_text else None
+    if regeneration_target:regeneration_target["regeneration_shields"]=regeneration_target.get("regeneration_shields",0)+1;_log(state,f"{regeneration_target['name']} gained a regeneration shield until end of turn.")
+    if "regenerate each other creature you control" in effect_text and sum(any(kind in graveyard_card.get("type_line","") for kind in ("Instant","Sorcery")) for graveyard_card in caster["graveyard"])>=2:
+        for permanent in caster["battlefield"]:
+            if permanent is not regeneration_target and "Creature" in permanent.get("type_line",""):permanent["regeneration_shields"]=permanent.get("regeneration_shields",0)+1
     if target and re.search(r"(?:target|that) creature can(?:not|'t) attack(?: or block)? this turn",effect_text):target["cant_attack_until_turn"]=state["turn"]
     if target and re.search(r"(?:target|that) creature can(?:not|'t) (?:attack or )?block this turn",effect_text):target["cant_block_until_turn"]=state["turn"]
     global_no_blocks=re.search(r"(?:other )?creatures(?: controlled by that player| without flying)? can(?:not|'t) block this turn",effect_text)
@@ -820,7 +841,7 @@ def _resolve_spell(state: dict) -> None:
             for permanent in list(owner["battlefield"]):
                 type_line=permanent.get("type_line","").casefold();matches=(kind=="nonland permanents" and "land" not in type_line) or kind[:-1] in type_line
                 if matches:
-                    if destination=="graveyard":_destroy_permanent(state,owner,permanent)
+                    if destination=="graveyard":_destroy_permanent(state,owner,permanent,"can't be regenerated" in effect_text)
                     else:_leave_battlefield(state,owner,permanent,destination)
         _log(state,f"All {kind} were {'destroyed' if destination=='graveyard' else 'exiled'}.")
     global_stats=re.search(r"(?:all|each) creatures?(?: you control| your opponents control)? get ([+-]\d+)/([+-]\d+) until end of turn",effect_text)
@@ -1020,7 +1041,7 @@ def _begin_next_turn(state:dict)->None:
     state["pending_discard"]=None;state["turn"] += 1; state["phase"] = PHASES[0];state["beginning_draw_pending"]=True; state["active_player_id"] = opponent(state, state["active_player_id"])["id"]
     active = _player(state, state["active_player_id"]); active["land_plays_remaining"] = 1
     for owner in state["players"]:
-        for permanent in owner["battlefield"]: permanent.pop("temporary_power",None); permanent.pop("temporary_toughness",None);permanent.pop("temporary_keywords",None);permanent.pop("cant_attack_until_turn",None);permanent.pop("cant_block_until_turn",None); permanent["damage"] = 0
+        for permanent in owner["battlefield"]: permanent.pop("temporary_power",None); permanent.pop("temporary_toughness",None);permanent.pop("temporary_keywords",None);permanent.pop("cant_attack_until_turn",None);permanent.pop("cant_block_until_turn",None);permanent.pop("regeneration_shields",None); permanent["damage"] = 0
     for permanent in active["battlefield"]: permanent["tapped"] = False; permanent["summoning_sick"] = False
     _log(state, f"Turn {state['turn']} began for {active['name']}. Untap and upkeep started."); _queue_triggers(state,"upkeep",None,active)
 
@@ -1126,7 +1147,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         permanent=next((card for card in player["battlefield"] if card["instance_id"]==action.get("card_id")),None);index=action.get("ability_index")
         available=next((entry for entry in legal_actions(state,player_id) if entry["type"]=="activate" and entry["card_id"]==action.get("card_id") and entry["ability_index"]==index),None)
         if not permanent or not available:raise RuleViolation("That ability cannot be activated")
-        ability=_activated_abilities(permanent)[index];target_id=action.get("target_id");targets=available.get("targets",[])
+        ability=_permanent_abilities(state,permanent)[index];target_id=action.get("target_id");targets=available.get("targets",[])
         x_value=int(action.get("x_value") or 0);x_card={"mana_cost":ability["mana_cost"]};x_max=_maximum_x(player,x_card,excluded_id=permanent["instance_id"] if ability["taps"] else None)
         if (_has_x_cost(x_card) and not 0<=x_value<=x_max) or (not _has_x_cost(x_card) and action.get("x_value") is not None):raise RuleViolation("That ability cannot be activated with the chosen X value")
         if targets and target_id not in {target["id"] for target in targets}:raise RuleViolation("Choose a legal target")

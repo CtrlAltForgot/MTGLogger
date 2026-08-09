@@ -86,12 +86,12 @@ body { margin: 0; min-width: 320px; }
 img { border-radius: 7px; }
 button, a { -webkit-tap-highlight-color: transparent; }
 
-.play-shell { width:100%; }
-.play-table { position: relative; min-height:max(860px,calc(100vh - 112px)); overflow: hidden; padding: 24px 128px; background: radial-gradient(ellipse at center,rgba(60,88,67,.92),rgba(24,43,34,.98) 58%,#101914),linear-gradient(120deg,#213a2c,#16231d) !important; border: 1px solid rgba(170,216,183,.16); }
+.play-shell { width:calc(100vw - 24px); margin-left:calc(50% - 50vw + 12px); }
+.play-table { position: relative; width:100%; min-height:max(900px,calc(100dvh - 96px)); overflow: hidden; padding: 24px clamp(104px,7vw,150px); background: radial-gradient(ellipse at center,rgba(60,88,67,.92),rgba(24,43,34,.98) 58%,#101914),linear-gradient(120deg,#213a2c,#16231d) !important; border: 1px solid rgba(170,216,183,.16); }
 .play-table::before { content:""; position:absolute; inset:0; pointer-events:none; opacity:.18; background-image:repeating-linear-gradient(35deg,transparent 0 28px,rgba(255,255,255,.025) 29px 30px); }
-.battlefield-zone { position:relative; height:275px; display:grid; grid-template-rows:1fr 1fr; align-items:center; z-index:1; }
+.battlefield-zone { position:relative; height:300px; display:grid; grid-template-rows:1fr 1fr; align-items:center; z-index:1; }
 .permanent-row,.land-row,.player-hand { min-height:122px; align-items:center; overflow:visible; }
-.play-card { position:relative; width:88px; aspect-ratio:488/680; flex:0 0 auto; margin-left:-20px; transition:transform .22s ease,filter .22s ease; transform-origin:center; filter:drop-shadow(0 7px 7px rgba(0,0,0,.42)); }
+.play-card { position:relative; width:96px; aspect-ratio:488/680; flex:0 0 auto; margin-left:-22px; transition:transform .22s ease,filter .22s ease; transform-origin:center; filter:drop-shadow(0 7px 7px rgba(0,0,0,.42)); }
 .play-card:first-child { margin-left:0; }
 .play-card img { width:100%; height:100%; object-fit:cover; display:block; }
 .token-face { width:100%; height:100%; display:grid; place-content:center; justify-items:center; gap:5px; padding:7px; text-align:center; border:2px solid rgba(255,224,153,.72); border-radius:7px; color:#fff2cf; background:radial-gradient(circle at 50% 34%,rgba(255,211,111,.28),transparent 35%),linear-gradient(145deg,#44331d,#17120c 62%,#080706); box-shadow:inset 0 0 0 3px rgba(0,0,0,.4); }
@@ -109,7 +109,7 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .play-stats { position:absolute !important; left:-7px; bottom:-8px; z-index:5; background:#f4eee8 !important; color:#17110f !important; font-weight:900; }
 .play-blocked { top:-8px; bottom:auto; }
 .player-hand { position:relative; height:155px; z-index:3; }
-.player-hand .play-card { width:108px; margin-left:-34px; transform-origin:bottom center; }
+.player-hand .play-card { width:118px; margin-left:-38px; transform-origin:bottom center; }
 .player-hand .play-card:hover { transform:translateY(-52px) scale(1.6); }
 .hidden-hand { height:75px; align-items:flex-start; }
 .card-back { width:54px; height:75px; border-radius:6px; border:3px solid #17100c; background:radial-gradient(circle,#351b11 12%,#100907 15%,#100907 31%,#6d321b 33%,#1b0d08 37%,#080504 55%,#5a2919 58%,#0b0706 62%); box-shadow:0 5px 10px rgba(0,0,0,.45); }

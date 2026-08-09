@@ -105,6 +105,10 @@ def _ability_score(state:dict,action:dict)->float:
     if "create " in text and " token" in text:score+=4
     if "deals " in text and " damage" in text:score+=4
     if "you gain " in text and " life" in text:score+=2
+    if "regenerate" in text:
+        threatened=bool(state["stack"] and state["stack"][-1].get("target_id")==source["instance_id"] and "destroy" in (state["stack"][-1]["card"].get("oracle_text") or "").casefold())
+        combat=state.get("combat",{});in_combat=source["instance_id"] in combat.get("attackers",[]) or source["instance_id"] in combat.get("blocks",{}) or source["instance_id"] in combat.get("blocks",{}).values()
+        score+=9 if threatened else 4 if combat.get("damage_pending") and in_combat else -6
     if action.get("self_sacrifice"):score-=_threat_score(state,source)*.65
     score-=float(action.get("life_cost") or 0)*1.25
     counter_cost=action.get("counter_cost") or {};score-=float(counter_cost.get("amount") or 0)*.75
@@ -259,7 +263,7 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
             action,target_id,_=max(candidates,key=lambda candidate:candidate[2]);return {**action,"target_id":target_id}
     if "activate" in by_type:
         choices=by_type["activate"];choice=max(choices,key=lambda action:_ability_score(state,action))
-        if difficulty=="beginner" or _ability_score(state,choice)>0:
+        if (difficulty=="beginner" and _ability_score(state,choice)>-.5) or _ability_score(state,choice)>0:
             choice={**choice,"cost_card_ids":_choose_ability_cost(state,choice)}
             if choice.get("x_max") is not None:choice={**choice,"x_value":_choose_x(state,choice)}
             if choice.get("targets"):
