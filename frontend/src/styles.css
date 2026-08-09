@@ -100,6 +100,7 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .play-card.is-legal { cursor:pointer; box-shadow:0 0 0 3px #62e59b,0 0 22px rgba(98,229,155,.8); border-radius:7px; animation:legal-pulse 1.8s ease-in-out infinite; }
 .play-card.is-selected { transform:translateY(-22px) scale(1.08); box-shadow:0 0 0 4px #ffd45f,0 0 30px rgba(255,212,95,.9); animation:none; z-index:12; }
 .play-card.is-attacking { transform:translateY(20px); box-shadow:0 0 0 3px #ff687c; border-radius:7px; }
+.play-card.is-entering { animation:card-enter .72s cubic-bezier(.18,.9,.24,1.25); z-index:15; }
 .play-counter,.play-blocked { position:absolute !important; right:-8px; bottom:-8px; z-index:5; }
 .play-attached { position:absolute !important; left:50%; top:-9px; transform:translateX(-50%); z-index:6; }
 .play-stats { position:absolute !important; left:-7px; bottom:-8px; z-index:5; background:#f4eee8 !important; color:#17110f !important; font-weight:900; }
@@ -111,13 +112,31 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .card-back { width:54px; height:75px; border-radius:6px; border:3px solid #17100c; background:radial-gradient(circle,#351b11 12%,#100907 15%,#100907 31%,#6d321b 33%,#1b0d08 37%,#080504 55%,#5a2919 58%,#0b0706 62%); box-shadow:0 5px 10px rgba(0,0,0,.45); }
 .table-divider { position:relative; z-index:2; color:rgba(255,255,255,.35) !important; }
 .player-hud { position:absolute; left:18px; bottom:24px; z-index:5; display:flex; align-items:center; gap:7px; padding:9px 12px; border-radius:14px; background:rgba(10,12,10,.8); border:1px solid rgba(255,255,255,.13); backdrop-filter:blur(10px); }
+.player-hud.is-impacted { animation:hud-impact .62s ease-out; }
 .opponent-hud { top:24px; bottom:auto; }
 .play-actions { position:absolute; right:18px; bottom:22px; max-width:620px; justify-content:flex-end; z-index:10; }
 .game-log { position:absolute; right:18px; top:18px; width:265px; max-height:170px; overflow:auto; padding:10px 12px; z-index:5; background:rgba(10,12,10,.78) !important; backdrop-filter:blur(9px); }
 .command-zone { position:absolute; left:20px; bottom:105px; z-index:6; width:92px; text-align:center; padding:7px; border-radius:10px; background:rgba(18,13,20,.82); border:1px solid rgba(255,200,91,.42); }
 .command-zone .play-card { width:72px; margin:4px 0 0; }
 .opponent-command { top:105px; bottom:auto; }
+.visual-stack { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); z-index:8; pointer-events:none; }
+.visual-stack .stack-card { margin-left:-48px; animation:stack-arrive .45s cubic-bezier(.18,.9,.24,1.2) both; }
+.visual-stack .stack-card:first-child { margin-left:0; }
+.visual-stack .play-card { width:112px; margin-left:0; filter:drop-shadow(0 16px 20px rgba(0,0,0,.75)); }
+.table-notice { position:absolute; left:50%; top:43%; transform:translate(-50%,-50%); z-index:30; max-width:min(620px,80%); display:flex; align-items:center; gap:10px; padding:14px 22px; border:1px solid rgba(255,255,255,.24); background:rgba(12,14,13,.94) !important; backdrop-filter:blur(14px); pointer-events:none; animation:notice-in 1.55s ease both; }
+.table-notice.tone-phase { color:#ffe19a; box-shadow:0 0 42px rgba(255,199,75,.28); }
+.table-notice.tone-good { color:#7cf0ad; box-shadow:0 0 42px rgba(91,225,150,.25); }
+.table-notice.tone-danger { color:#ff8293; box-shadow:0 0 42px rgba(255,84,111,.28); }
+.table-notice.tone-stack { color:#a8dfff; box-shadow:0 0 42px rgba(70,180,255,.22); }
 @keyframes legal-pulse { 50% { box-shadow:0 0 0 3px #62e59b,0 0 30px rgba(98,229,155,.95); } }
+@keyframes card-enter { 0% { opacity:0; transform:translateY(-75px) scale(1.65) rotate(-5deg); filter:brightness(1.8) drop-shadow(0 0 34px #fff2a8); } 65% { opacity:1; transform:translateY(8px) scale(1.08) rotate(1deg); } 100% { transform:none; } }
+@keyframes stack-arrive { from { opacity:0; transform:translateY(-90px) scale(1.7) rotate(6deg); filter:brightness(1.7) drop-shadow(0 0 30px #8ad8ff); } to { opacity:1; transform:none; } }
+@keyframes hud-impact { 20% { transform:scale(1.18); background:rgba(130,12,28,.92); box-shadow:0 0 35px rgba(255,67,91,.8); } 100% { transform:none; } }
+@keyframes notice-in { 0% { opacity:0; transform:translate(-50%,-35%) scale(.82); } 15%,72% { opacity:1; transform:translate(-50%,-50%) scale(1); } 100% { opacity:0; transform:translate(-50%,-62%) scale(.96); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .play-card,.play-card.is-legal,.play-card.is-entering,.player-hud.is-impacted,.visual-stack .stack-card,.table-notice { animation:none !important; transition:none !important; }
+}
 
 @media (max-width: 900px) {
   .play-table { padding:100px 12px 150px; min-height:900px; }
