@@ -90,6 +90,98 @@ def _mana_source(card: dict) -> bool:
     return "Land" in card.get("type_line", "") or any(kind in card.get("type_line","") for kind in ("Treasure","Gold")) or re.search(r"\{T\}:\s*Add ", card.get("oracle_text") or "", re.IGNORECASE) is not None
 
 
+_MANA_COLORS = "WUBRGC"
+
+
+def _mana_output_options(card: dict) -> list[tuple[int, ...]]:
+    """Return the distinct mana pools produced by one activation of a source."""
+    type_line = card.get("type_line", "")
+    text = card.get("oracle_text") or ""
+    if any(kind in type_line for kind in ("Treasure", "Gold")):
+        return [tuple(1 if color == choice else 0 for color in _MANA_COLORS) for choice in "WUBRG"]
+
+    options: set[tuple[int, ...]] = set()
+    for clause in re.findall(r"Add ([^.\n]+)", text, re.IGNORECASE):
+        symbols = [symbol.upper() for symbol in re.findall(r"\{([WUBRGC])\}", clause, re.IGNORECASE)]
+        if symbols:
+            if " or " in clause.casefold():
+                for symbol in symbols:
+                    options.add(tuple(1 if color == symbol else 0 for color in _MANA_COLORS))
+            else:
+                options.add(tuple(symbols.count(color) for color in _MANA_COLORS))
+            continue
+        amount_match = re.search(r"\b(one|two|three|four|five) mana\b", clause, re.IGNORECASE)
+        amount = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5}.get((amount_match.group(1).casefold() if amount_match else ""), 1)
+        if "any color" in clause.casefold():
+            if "any combination" in clause.casefold():
+                pools = {(0, 0, 0, 0, 0, 0)}
+                for _ in range(amount):
+                    pools = {tuple(pool[index] + (1 if index == choice else 0) for index in range(6)) for pool in pools for choice in range(5)}
+                options.update(pools)
+            else:
+                options.update(tuple(amount if color == choice else 0 for color in _MANA_COLORS) for choice in "WUBRG")
+
+    if not options and "Land" in type_line:
+        colors = _land_colors(card)
+        if not colors and "Basic Land" in type_line:
+            colors = {"C"}
+        options.update(tuple(1 if color == choice else 0 for color in _MANA_COLORS) for choice in colors)
+    return sorted(options)
+
+
+def _pool_pays(pool: tuple[int, ...], colored: list[set[str]], generic: int) -> bool:
+    remaining = list(pool)
+    requirements = sorted(colored, key=len)
+
+    def assign(index: int) -> bool:
+        if index == len(requirements):
+            return sum(remaining) >= generic
+        for color in requirements[index]:
+            color_index = _MANA_COLORS.index(color)
+            if remaining[color_index]:
+                remaining[color_index] -= 1
+                if assign(index + 1):
+                    return True
+                remaining[color_index] += 1
+        return False
+
+    return assign(0)
+
+
+def _mana_payment_plan(player: dict, card: dict, extra_generic: int = 0, excluded_id: str | None = None, x_value: int = 0, excluded_ids: set[str] | None = None) -> list[dict] | None:
+    excluded = set(excluded_ids or ())
+    if excluded_id:
+        excluded.add(excluded_id)
+    sources = [permanent for permanent in player["battlefield"] if permanent.get("instance_id") not in excluded and not permanent.get("tapped") and _mana_source(permanent) and not ("Creature" in permanent.get("type_line", "") and permanent.get("summoning_sick") and not _has_keyword(permanent, "Haste"))]
+    sources.extend({"instance_id": f"firebending-mana-{index}", "name": "Firebending mana", "type_line": "", "oracle_text": "Add {R}.", "firebending_mana": True} for index in range(player.get("firebending_mana", 0)))
+    colored, generic = _mana_requirements(card, extra_generic, x_value)
+    needed = len(colored) + generic
+    if needed == 0:
+        return []
+
+    # Dynamic programming keeps one cheapest source set for every useful mana pool.
+    # Expiring firebending mana is preferred, reusable sources follow, and sacrifice
+    # sources are conserved unless they are needed.
+    empty = (0, 0, 0, 0, 0, 0)
+    states: dict[tuple[int, ...], tuple[int, list[dict]]] = {empty: (0, [])}
+    for source in sources:
+        outputs = [(0, 0, 0, 1, 0, 0)] if source.get("firebending_mana") else _mana_output_options(source)
+        if not outputs:
+            continue
+        source_cost = 1 if source.get("firebending_mana") else 10000 if any(kind in source.get("type_line", "") for kind in ("Treasure", "Gold")) else 100
+        updated = dict(states)
+        for pool, (cost, chosen) in states.items():
+            for output in outputs:
+                combined = tuple(min(needed, pool[index] + output[index]) for index in range(6))
+                candidate = (cost + source_cost, chosen + [source])
+                current = updated.get(combined)
+                if current is None or (candidate[0], len(candidate[1])) < (current[0], len(current[1])):
+                    updated[combined] = candidate
+        states = updated
+    payable = [(cost, len(chosen), chosen) for pool, (cost, chosen) in states.items() if _pool_pays(pool, colored, generic)]
+    return min(payable, default=(0, 0, None), key=lambda item: (item[0], item[1]))[2]
+
+
 def _mana_requirements(card: dict, extra_generic: int = 0, x_value:int=0) -> tuple[list[set[str]], int]:
     colored=[];generic=extra_generic
     for symbol in _mana_symbols(card):
@@ -479,38 +571,12 @@ def _selection_cost_combinations(player:dict,source:dict,costs:list[dict],x_valu
 
 
 def _can_pay(player: dict, card: dict, extra_generic: int = 0, excluded_id: str | None = None,x_value:int=0,excluded_ids:set[str]|None=None) -> bool:
-    excluded=set(excluded_ids or ())
-    if excluded_id:excluded.add(excluded_id)
-    available = []
-    for permanent in player["battlefield"]:
-        if permanent.get("instance_id") not in excluded and not permanent.get("tapped") and _mana_source(permanent) and not ("Creature" in permanent.get("type_line", "") and permanent.get("summoning_sick") and not _has_keyword(permanent,"Haste")):
-            available.append(_land_colors(permanent) or {"C"})
-    available.extend({"R"} for _ in range(player.get("firebending_mana",0)))
-    colored,generic=_mana_requirements(card,extra_generic,x_value)
-    for choices in colored:
-        match = next((colors for colors in available if colors & choices), None)
-        if not match:
-            return False
-        available.remove(match)
-    return len(available) >= generic
+    return _mana_payment_plan(player,card,extra_generic,excluded_id,x_value,excluded_ids) is not None
 
 
 def _pay_mana(state:dict,player: dict, card: dict, extra_generic: int = 0, excluded_id: str | None = None,x_value:int=0,excluded_ids:set[str]|None=None) -> None:
-    excluded=set(excluded_ids or ())
-    if excluded_id:excluded.add(excluded_id)
-    colored,generic=_mana_requirements(card,extra_generic,x_value)
-    lands = [permanent for permanent in player["battlefield"] if permanent.get("instance_id") not in excluded and not permanent.get("tapped") and _mana_source(permanent) and not ("Creature" in permanent.get("type_line", "") and permanent.get("summoning_sick") and not _has_keyword(permanent,"Haste"))]
-    lands.extend({"instance_id":f"firebending-mana-{index}","name":"Firebending mana","type_line":"","oracle_text":"Add {R}.","firebending_mana":True} for index in range(player.get("firebending_mana",0)))
-    lands.sort(key=lambda permanent:0 if permanent.get("firebending_mana") else 2 if any(kind in permanent.get("type_line","") for kind in ("Treasure","Gold")) else 1)
-    chosen = []
-    for choices in colored:
-        land = next((item for item in lands if (_land_colors(item) or {"C"}) & choices), None)
-        if not land:
-            raise RuleViolation("Not enough colored mana")
-        lands.remove(land)
-        chosen.append(land)
-    chosen.extend(lands[:generic])
-    if len(chosen) < len(colored) + generic:
+    chosen = _mana_payment_plan(player,card,extra_generic,excluded_id,x_value,excluded_ids)
+    if chosen is None:
         raise RuleViolation("Not enough mana")
     for land in chosen:
         if land.get("firebending_mana"):player["firebending_mana"]=max(0,player.get("firebending_mana",0)-1)

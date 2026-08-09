@@ -531,6 +531,30 @@ def test_treasure_produces_colored_mana_and_is_sacrificed_during_payment():
     red_spell={**card(765,"Red Treasure Spell","Sorcery","{R}"),"oracle_text":"You gain 1 life.","instance_id":"red-treasure-spell","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"].append(red_spell);assert any(action.get("card_id")=="red-treasure-spell" for action in legal_actions(state,"player"));state=perform_action(state,"player",{"type":"cast","card_id":"red-treasure-spell"});player=next(p for p in state["players"] if p["id"]=="player");assert not any(card["instance_id"]==treasure["instance_id"] for card in player["battlefield"])
 
 
+def test_multi_mana_rock_pays_two_generic_mana_with_one_activation():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");player["battlefield"]=[]
+    rock={**card(766,"Test Ring","Artifact"),"oracle_text":"{T}: Add {C}{C}.","instance_id":"test-ring","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};spell={**card(767,"Two Mana Spell","Sorcery","{2}"),"instance_id":"two-mana-spell","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].append(rock);player["hand"].append(spell)
+    assert any(action.get("card_id")==spell["instance_id"] for action in legal_actions(state,"player"));state=perform_action(state,"player",{"type":"cast","card_id":spell["instance_id"]});assert next(card for card in next(p for p in state["players"] if p["id"]=="player")["battlefield"] if card["instance_id"]==rock["instance_id"])["tapped"]
+
+
+def test_flexible_sources_find_a_valid_multicolor_payment_and_conserve_treasure():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");player["battlefield"]=[]
+    dual={**card(768,"Test Dual","Land"),"oracle_text":"{T}: Add {W} or {U}.","instance_id":"test-dual","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};plains={**card(769,"Plains","Basic Land — Plains"),"instance_id":"test-plains","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};treasure={**card(770,"Treasure Token","Token Artifact — Treasure"),"oracle_text":"{T}, Sacrifice this artifact: Add one mana of any color.","instance_id":"spare-treasure","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False,"token":True};spell={**card(771,"Azorius Spell","Sorcery","{W}{U}"),"instance_id":"azorius-spell","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].extend([dual,plains,treasure]);player["hand"].append(spell)
+    assert any(action.get("card_id")==spell["instance_id"] for action in legal_actions(state,"player"));state=perform_action(state,"player",{"type":"cast","card_id":spell["instance_id"]});player=next(p for p in state["players"] if p["id"]=="player");assert next(card for card in player["battlefield"] if card["instance_id"]==dual["instance_id"])["tapped"] and next(card for card in player["battlefield"] if card["instance_id"]==plains["instance_id"])["tapped"] and any(card["instance_id"]==treasure["instance_id"] for card in player["battlefield"])
+
+
+def test_summoning_sick_mana_creature_is_not_a_mana_source_until_ready():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");player["battlefield"]=[]
+    dork={**card(772,"Mana Dork","Creature — Elf Druid","","1","1"),"oracle_text":"{T}: Add {G}.","instance_id":"mana-dork","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":True};spell={**card(773,"Green Spell","Sorcery","{G}"),"instance_id":"green-spell","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].append(dork);player["hand"].append(spell)
+    assert not any(action.get("card_id")==spell["instance_id"] for action in legal_actions(state,"player"));dork["summoning_sick"]=False;assert any(action.get("card_id")==spell["instance_id"] for action in legal_actions(state,"player"))
+
+
+def test_utility_land_without_a_mana_ability_cannot_pay_for_a_spell():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");player["battlefield"]=[]
+    utility={**card(774,"Test Maze","Land"),"oracle_text":"{T}: Tap target attacking creature.","instance_id":"test-maze","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};spell={**card(775,"One Mana Spell","Sorcery","{1}"),"instance_id":"one-mana-spell","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].append(utility);player["hand"].append(spell)
+    assert not any(action.get("card_id")==spell["instance_id"] for action in legal_actions(state,"player"))
+
+
 def test_bot_uses_a_clue_when_it_has_mana_and_no_better_spell():
     state=kept_game();state["active_player_id"]="bot";state["priority_player_id"]="bot";state["phase"]="combat";bot=next(p for p in state["players"] if p["id"]=="bot");bot["hand"]=[];bot["battlefield"]=[]
     for index in range(2):bot["battlefield"].append({**card(766+index,"Island","Basic Land — Island"),"instance_id":f"bot-clue-island-{index}","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False})
