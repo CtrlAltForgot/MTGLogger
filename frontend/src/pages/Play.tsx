@@ -6,7 +6,7 @@ import type { Deck, Game, GameCard, GameMode, GamePlayer, GameTarget, LegalGameA
 
 const phases=[['beginning','Upkeep · draw next'],['precombat_main','Main 1'],['combat','Combat'],['postcombat_main','Main 2'],['ending','End turn']]
 const isMeaningfulChoice=(action:LegalGameAction)=>{
-  if(['advance_phase','resolve_combat_damage','adjust_life','add_counter','move_zone','create_token','concede'].includes(action.type))return false
+  if(['advance_phase','pass_priority','resolve_combat_damage','adjust_life','add_counter','move_zone','create_token','concede'].includes(action.type))return false
   if(['declare_attackers','declare_blockers'].includes(action.type))return !!action.card_ids?.length
   return true
 }
@@ -57,7 +57,7 @@ export default function Play(){
   useEffect(()=>{if(!game||game.opponent_type!=='human')return;const timer=setInterval(()=>request<Game>(gamePath,{headers:authHeaders}).then(setGame).catch(()=>undefined),1800);return()=>clearInterval(timer)},[game?.id,gamePath,accessToken])
   useEffect(()=>{
     if(!game||busy||game.state.status!=='active'||game.state.priority_player_id!==viewerId)return
-    const automatic=game.legal_actions.find(action=>action.type==='resolve_combat_damage')||game.legal_actions.find(action=>action.type==='advance_phase')
+    const automatic=game.legal_actions.find(action=>action.type==='pass_priority')||game.legal_actions.find(action=>action.type==='resolve_combat_damage')||game.legal_actions.find(action=>action.type==='advance_phase')
     const decisions=game.legal_actions.filter(isMeaningfulChoice)
     if(!automatic||decisions.length)return
     const timer=setTimeout(()=>void act({type:automatic.type}),350)
@@ -82,7 +82,7 @@ export default function Play(){
   const blockOrderAction=game?.legal_actions.find(action=>action.type==='order_blockers')
   const payWardAction=game?.legal_actions.find(action=>action.type==='pay_ward'),declineWardAction=game?.legal_actions.find(action=>action.type==='decline_ward'),wardAction=payWardAction||declineWardAction
   const triggerTargetAction=game?.legal_actions.find(action=>action.type==='choose_trigger_target'),skipTriggerAction=game?.legal_actions.find(action=>action.type==='skip_trigger')
-  const autoAdvancing=!!game?.legal_actions.some(action=>action.type==='advance_phase'||action.type==='resolve_combat_damage')&&!game?.legal_actions.some(isMeaningfulChoice)&&game.state.priority_player_id===viewerId
+  const autoAdvancing=!!game?.legal_actions.some(action=>action.type==='advance_phase'||action.type==='pass_priority'||action.type==='resolve_combat_damage')&&!game?.legal_actions.some(isMeaningfulChoice)&&game.state.priority_player_id===viewerId
   const humanActive=game?.state.active_player_id===viewerId
   const winner=game?.state.players.find(item=>item.id===game.state.winner_id)
   const gameTitle=useMemo(()=>decks.find(deck=>deck.id===game?.player_deck_id)?.name,[decks,game])
@@ -134,8 +134,7 @@ export default function Play(){
       <Box className="player-hud"><Favorite color="error"/><Typography variant="h4">{player?.life}</Typography>{!!player?.poison&&<Chip size="small" color={player.poison>=7?'error':'warning'} label={`☠ ${player.poison}/10`}/>}<Box><Typography fontWeight={900}>You</Typography><Typography variant="caption">{player?.library_count} library · {player?.graveyard.length} graveyard{Object.values(player?.commander_damage||{}).some(Boolean)?` · ${Math.max(...Object.values(player?.commander_damage||{}))} commander`:''}</Typography></Box></Box>
       <Stack className="play-actions" direction="row" gap={1} flexWrap="wrap" useFlexGap>
         {legal('keep')&&<Button variant="contained" color="success" disabled={busy} onClick={()=>void act({type:'keep'})}>Keep hand</Button>}{legal('mulligan')&&<Button variant="outlined" disabled={busy} onClick={()=>void act({type:'mulligan'})}>Mulligan</Button>}
-        {legal('resolve')&&<Button variant="contained" disabled={busy} onClick={()=>void act({type:'resolve'})}>Resolve {game.state.stack.at(-1)?.card.name}</Button>}
-        {legal('pass_priority')&&<Button variant={game.state.stack.length?'contained':'outlined'} color="secondary" disabled={busy} onClick={()=>void act({type:'pass_priority'})}>{game.state.stack.length?'Pass priority':'Pass'}</Button>}
+        {legal('pass_priority')&&<Button variant={game.state.stack.length?'contained':'outlined'} color="secondary" disabled={busy} onClick={()=>void act({type:'pass_priority'})}>{game.state.stack.length?(game.state.consecutive_passes?'Pass · resolve top':'Pass priority'):'Pass'}</Button>}
         {attackAction&&<><Chip color="warning" label={`${selectedAttackers.length} attacker${selectedAttackers.length===1?'':'s'} selected`}/><Button variant="contained" color="error" startIcon={<Bolt/>} disabled={busy} onClick={prepareAttack}>{selectedAttackers.length?'Choose defenders':'No attacks'}</Button><Button color="error" onClick={()=>setSelectedAttackers(attackAction.card_ids||[])}>Select all</Button></>}
         {blockAction&&<><Chip color={menaceInvalid?'error':'info'} label={`${Object.keys(blocks).length} blocker${Object.keys(blocks).length===1?'':'s'} assigned`}/><Button variant="contained" color="info" startIcon={<Shield/>} disabled={busy||menaceInvalid} onClick={()=>void act({type:'declare_blockers',blocks})}>{Object.keys(blocks).length?'Confirm blocks':'No blocks'}</Button><Button color="info" onClick={()=>setBlocks(automaticBlocks())}>Auto assign</Button></>}
         {discardAction&&<><Chip color="warning" label={`Discard ${selectedDiscards.length}/${discardAction.amount}`}/><Button variant="contained" color="warning" disabled={busy||selectedDiscards.length!==discardAction.amount} onClick={()=>void act({type:'discard_cards',card_ids:selectedDiscards})}>Confirm discard</Button></>}

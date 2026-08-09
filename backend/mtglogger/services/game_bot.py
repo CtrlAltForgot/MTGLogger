@@ -144,8 +144,8 @@ def _choose_x(state:dict,action:dict)->int:
     return maximum
 
 
-def choose_bot_action(state: dict, difficulty: str = "standard") -> dict | None:
-    actions = legal_actions(state, "bot")
+def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_protocol:bool=False) -> dict | None:
+    actions = legal_actions(state, "bot",allow_direct_resolution=not use_priority_protocol)
     if not actions:
         return None
     by_type = {kind: [action for action in actions if action["type"] == kind] for kind in {action["type"] for action in actions}}
@@ -197,6 +197,15 @@ def choose_bot_action(state: dict, difficulty: str = "standard") -> dict | None:
         return by_type["play_land"][0]
     if "cast" in by_type:
         spells = by_type["cast"]
+        if state["stack"]:
+            top=state["stack"][-1];counterspells=[action for action in spells if "counter target spell" in (_card(state,"bot",action["card_id"]).get("oracle_text") or "").casefold()]
+            enemy=next(player for player in state["players"] if player["id"]!="bot")
+            def is_lethal(action:dict)->bool:
+                match=re.search(r"deals (\d+|x) damage to any target",(_card(state,"bot",action["card_id"]).get("oracle_text") or "").casefold());amount=(action.get("x_max",0) if match and match.group(1)=="x" else int(match.group(1)) if match else 0)
+                return amount>=enemy["life"] and any(target.get("id")==enemy["id"] for target in action.get("targets",[]))
+            lethal=[action for action in spells if is_lethal(action)]
+            spells=(counterspells if top.get("controller_id")!="bot" else []) or lethal
+            if not spells:return by_type.get("pass_priority",[None])[0]
         if difficulty == "beginner":
             choice = random.choice(spells)
         else:
@@ -245,16 +254,16 @@ def choose_bot_action(state: dict, difficulty: str = "standard") -> dict | None:
     if "declare_blockers" in by_type:
         action = by_type["declare_blockers"][0]
         return {"type": "declare_blockers", "blocks": _choose_blocks(state,action,difficulty)}
-    return by_type.get("advance_phase", [None])[0]
+    return by_type.get("advance_phase",by_type.get("pass_priority",[None]))[0]
 
 
 def run_bot(state: dict, difficulty: str = "standard", limit: int = 80) -> dict:
     steps = 0
     while steps < limit and state["status"] != "complete":
-        action = choose_bot_action(state, difficulty)
+        action = choose_bot_action(state, difficulty,use_priority_protocol=True)
         if not action:
             break
-        state = perform_action(state, "bot", action)
+        state = perform_action(state, "bot", action,allow_direct_resolution=False)
         steps += 1
         if state["status"] == "active" and state["active_player_id"] != "bot" and not state["stack"]:
             break

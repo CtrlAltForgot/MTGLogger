@@ -468,7 +468,7 @@ def _maximum_hand_size(player:dict)->int|None:
     return 7+increases
 
 
-def legal_actions(state: dict, player_id: str) -> list[dict]:
+def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True) -> list[dict]:
     if state["status"] == "complete":
         return []
     player = _player(state, player_id)
@@ -573,7 +573,7 @@ def legal_actions(state: dict, player_id: str) -> list[dict]:
             if not equip_cost or not _can_pay(player,{"mana_cost":equip_cost}):continue
             targets=[{"id":creature["instance_id"],"name":creature["name"],"kind":"permanent","controller_id":player_id} for creature in player["battlefield"] if "Creature" in creature.get("type_line","") and not _has_keyword(creature,"Shroud") and not _protected_from(creature,equipment)]
             if targets:actions.append({"type":"equip","card_id":equipment["instance_id"],"label":f"Equip {equipment['name']} · {equip_cost}","mana_cost":equip_cost,"targets":targets})
-    if _multiplayer(state):
+    if _multiplayer(state) or not allow_direct_resolution:
         actions.append({"type": "pass_priority"})
         if active and not state["stack"] and not state.get("pending_phase_advance") and not state["combat"].get("damage_pending"):
             actions.append({"type": "advance_phase"})
@@ -943,11 +943,11 @@ def _advance_turn_phase(state: dict) -> None:
     state["pending_phase_advance"] = False; state["consecutive_passes"] = 0
 
 
-def perform_action(state: dict, player_id: str, action: dict) -> dict:
+def perform_action(state: dict, player_id: str, action: dict, allow_direct_resolution:bool=True) -> dict:
     state = deepcopy(state)
     player = _player(state, player_id)
     action_type = action.get("type")
-    allowed = {entry["type"] for entry in legal_actions(state, player_id)}
+    allowed = {entry["type"] for entry in legal_actions(state, player_id,allow_direct_resolution)}
     manual_actions = {"adjust_life", "add_counter", "create_token", "move_zone"}
     if action_type not in allowed and action_type not in manual_actions:
         raise RuleViolation(f"{action_type} is not legal right now")
@@ -1004,7 +1004,7 @@ def perform_action(state: dict, player_id: str, action: dict) -> dict:
         ward_targets=[effective_target] if effective_target else []
         ward_targets.extend(target for target in mode_targets if target and target not in ward_targets)
         for ward_target in ward_targets:_queue_ward(state,player,ward_target,stack_item)
-        if _multiplayer(state) and not state.get("pending_ward") and not state.get("pending_trigger_targets"): state["priority_player_id"] = opponent(state, player_id)["id"]
+        if (_multiplayer(state) or not allow_direct_resolution) and not state.get("pending_ward") and not state.get("pending_trigger_targets"): state["priority_player_id"] = opponent(state, player_id)["id"]
         mode_label="; ".join(next(mode["label"] for mode in modal_options if mode["index"]==index) for index in chosen_modes)
         _log(state, f"{player['name']} cast {card['name']}{f' with X={x_value}' if _has_x_cost(card) else ''}{f' choosing {mode_label}' if mode_label else ''}{f' with {tax} commander tax' if tax else ''}{' targeting '+next((target['name'] for target in targets if target['id']==target_id),'') if target_id else ''}.")
     elif action_type == "equip":
@@ -1012,7 +1012,7 @@ def perform_action(state: dict, player_id: str, action: dict) -> dict:
         if not available or target_id not in {target["id"] for target in available["targets"]}:raise RuleViolation("That Equipment cannot be attached to that creature now")
         equipment=next(card for card in player["battlefield"] if card["instance_id"]==action["card_id"]);target=next(card for card in player["battlefield"] if card["instance_id"]==target_id)
         _pay_mana(player,{"mana_cost":available["mana_cost"]});stack_item={"id":_id(),"kind":"equip_ability","card":{**equipment,"name":f"{equipment['name']} equip ability","type_line":"Ability"},"controller_id":player_id,"target_id":target_id,"source_id":equipment["instance_id"]};state["stack"].append(stack_item);state["consecutive_passes"]=0;state["pending_phase_advance"]=False
-        if _multiplayer(state):state["priority_player_id"]=opponent(state,player_id)["id"]
+        if _multiplayer(state) or not allow_direct_resolution:state["priority_player_id"]=opponent(state,player_id)["id"]
         _log(state,f"{player['name']} activated {equipment['name']}'s equip ability targeting {target['name']}.")
     elif action_type == "activate":
         permanent=next((card for card in player["battlefield"] if card["instance_id"]==action.get("card_id")),None);index=action.get("ability_index")
@@ -1037,7 +1037,7 @@ def perform_action(state: dict, player_id: str, action: dict) -> dict:
             for card in selected_cost_cards:player["hand"].remove(card);player["graveyard"].append(card)
         elif available.get("cost_kind")=="sacrifice":
             for card in selected_cost_cards:_leave_battlefield(state,player,card,"graveyard")
-        if _multiplayer(state) and not state.get("pending_ward") and not state.get("pending_trigger_targets"):state["priority_player_id"]=opponent(state,player_id)["id"]
+        if (_multiplayer(state) or not allow_direct_resolution) and not state.get("pending_ward") and not state.get("pending_trigger_targets"):state["priority_player_id"]=opponent(state,player_id)["id"]
         _log(state,f"{player['name']} activated {permanent['name']}: {ability['effect']}")
     elif action_type == "activate_loyalty":
         permanent=next((card for card in player["battlefield"] if card["instance_id"]==action.get("card_id") and "Planeswalker" in card.get("type_line","")),None);index=action.get("ability_index")
@@ -1046,7 +1046,7 @@ def perform_action(state: dict, player_id: str, action: dict) -> dict:
         ability=_loyalty_abilities(permanent)[index];target_id=action.get("target_id");targets=available.get("targets",[])
         if targets and target_id not in {target["id"] for target in targets}:raise RuleViolation("Choose a legal target")
         permanent["counters"]["loyalty"]=permanent["counters"].get("loyalty",0)+ability["cost"];permanent["loyalty_activated_turn"]=state["turn"];stack_item={"id":_id(),"kind":"ability","card":ability["card"],"controller_id":player_id,"target_id":target_id,"source_id":permanent["instance_id"]};state["stack"].append(stack_item);state["consecutive_passes"]=0;state["pending_phase_advance"]=False;_queue_ward(state,player,target_id,stack_item)
-        if _multiplayer(state) and not state.get("pending_ward"):state["priority_player_id"]=opponent(state,player_id)["id"]
+        if (_multiplayer(state) or not allow_direct_resolution) and not state.get("pending_ward"):state["priority_player_id"]=opponent(state,player_id)["id"]
         _log(state,f"{player['name']} activated {permanent['name']} ({ability['cost']:+d}): {ability['effect']}")
     elif action_type == "resolve":
         _resolve_spell(state)
@@ -1116,7 +1116,7 @@ def perform_action(state: dict, player_id: str, action: dict) -> dict:
         remaining=pending.get("remaining") or []
         if action_type=="pay_ward" and remaining:
             state["pending_ward"]={**remaining[0],"remaining":remaining[1:]};state["priority_player_id"]=player_id
-        else:state["pending_ward"]=None;state["priority_player_id"]=opponent(state,player_id)["id"] if _multiplayer(state) else player_id
+        else:state["pending_ward"]=None;state["priority_player_id"]=opponent(state,player_id)["id"] if (_multiplayer(state) or not allow_direct_resolution) else player_id
     elif action_type in {"choose_trigger_target","skip_trigger"}:
         pending_list=state.get("pending_trigger_targets") or []
         if not pending_list or pending_list[0]["controller_id"]!=player_id:raise RuleViolation("There is no triggered target decision for this player")
@@ -1127,7 +1127,7 @@ def perform_action(state: dict, player_id: str, action: dict) -> dict:
         elif targets:raise RuleViolation("This triggered ability still has legal targets")
         state["pending_trigger_targets"]=pending_list;state["priority_player_id"]=pending_list[0]["controller_id"] if pending_list else state["active_player_id"]
     elif action_type == "advance_phase":
-        if _multiplayer(state):
+        if _multiplayer(state) or not allow_direct_resolution:
             state["pending_phase_advance"] = True; state["consecutive_passes"] = 1; state["priority_player_id"] = opponent(state, player_id)["id"]; _log(state, f"{player['name']} is ready to leave {state['phase'].replace('_', ' ')}.")
         elif state["phase"]=="combat" and state["combat"]["attackers"] and player_id!=state["active_player_id"]:
             state["combat"]["damage_pending"]=True;state["priority_player_id"]=state["active_player_id"];_log(state,"No blockers were declared. Players may respond before combat damage.")

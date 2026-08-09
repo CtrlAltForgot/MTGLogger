@@ -94,7 +94,7 @@ async def _build_random_bot_deck(db: Session, format_name: str) -> tuple[list[di
 
 def _serialize(game: GameSession, viewer_id: str = "player", invite_token: str | None = None, host_token: str | None = None) -> GameRead:
     state = json.loads(game.state_json)
-    player_ids={player["id"] for player in state["players"]};actions=legal_actions(state,viewer_id) if viewer_id in player_ids else []
+    player_ids={player["id"] for player in state["players"]};actions=legal_actions(state,viewer_id,allow_direct_resolution=False) if viewer_id in player_ids else []
     return GameRead(id=game.id, name=game.name, status=game.status, player_deck_id=game.player_deck_id, opponent_deck_id=game.opponent_deck_id, bot_difficulty=game.bot_difficulty, opponent_type=game.opponent_type or "bot", invite_code=game.invite_code, invite_token=invite_token, host_token=host_token, invite_expires_at=game.invite_expires_at, state=public_state(state, viewer_id), legal_actions=actions, created_at=game.created_at, updated_at=game.updated_at)
 
 
@@ -181,9 +181,9 @@ def _save_action(game: GameSession, state: dict, player_id: str, action: dict) -
     expected=action.pop("expected_version",None)
     if game.opponent_type=="human" and expected!=state.get("version"):raise HTTPException(409,"Game changed in the other browser. Refresh and try again.")
     history = json.loads(game.history_json or "[]"); history.append(state); game.history_json = json.dumps(history[-20:])
-    state = perform_action(state, player_id, action)
+    state = perform_action(state, player_id, action,allow_direct_resolution=False)
     if game.opponent_type == "bot":
-        if state["status"] == "mulligan": state = run_bot(state, game.bot_difficulty, 1)
+        if state["status"] == "mulligan": state = run_bot(state, game.bot_difficulty, 20)
         elif state["status"] == "active" and (state["active_player_id"] == "bot" or state["priority_player_id"] == "bot"): state = run_bot(state, game.bot_difficulty)
     game.state_json = json.dumps(state); game.status = state["status"]
     return state

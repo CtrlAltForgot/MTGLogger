@@ -1,4 +1,4 @@
-from mtglogger.services.game_bot import _choose_blocks, choose_bot_action
+from mtglogger.services.game_bot import _choose_blocks, choose_bot_action, run_bot
 from mtglogger.services.game_engine import RuleViolation, _has_keyword, legal_actions, new_game, perform_action, public_state
 
 
@@ -793,3 +793,37 @@ def test_attachment_restrictions_change_authoritative_combat_legality():
     creature={**card(1080,"Pacified Attacker","Creature — Warrior","","3","3"),"instance_id":"pacified-attacker","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};aura={**card(1081,"Test Pacifism","Enchantment — Aura"),"oracle_text":"Enchant creature\nEnchanted creature can't attack or block.","instance_id":"test-pacifism","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"]=[creature];player["hand"].append(aura)
     state=perform_action(state,"player",{"type":"cast","card_id":"test-pacifism","target_id":"pacified-attacker"});state=perform_action(state,"player",{"type":"resolve"});state["phase"]="combat"
     assert not any(action["type"]=="declare_attackers" for action in legal_actions(state,"player"))
+
+
+def test_production_priority_requires_both_players_to_pass_before_resolution():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player")
+    spell={**card(1090,"Priority Draw","Instant"),"oracle_text":"Draw a card.","instance_id":"priority-draw","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"].append(spell);before=len(player["hand"])
+    state=perform_action(state,"player",{"type":"cast","card_id":"priority-draw"},allow_direct_resolution=False);assert state["priority_player_id"]=="bot" and len(state["stack"])==1 and "resolve" not in {action["type"] for action in legal_actions(state,"bot",allow_direct_resolution=False)}
+    state=perform_action(state,"bot",{"type":"pass_priority"},allow_direct_resolution=False);assert state["priority_player_id"]=="player" and state["consecutive_passes"]==1 and len(state["stack"])==1
+    state=perform_action(state,"player",{"type":"pass_priority"},allow_direct_resolution=False);player=next(p for p in state["players"] if p["id"]=="player");assert not state["stack"] and len(player["hand"])==before and state["priority_player_id"]==state["active_player_id"]
+
+
+def test_bot_spell_stops_for_human_response_and_counterspell_uses_real_priority():
+    state=kept_game();state["active_player_id"]="bot";state["priority_player_id"]="bot";state["phase"]="precombat_main";bot=next(p for p in state["players"] if p["id"]=="bot");player=next(p for p in state["players"] if p["id"]=="player");bot["hand"]=[];bot["land_plays_remaining"]=0
+    land={**card(1100,"Mountain","Basic Land — Mountain"),"instance_id":"bot-priority-land","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};bolt={**card(1101,"Bot Priority Bolt","Instant","{R}"),"oracle_text":"Bot Priority Bolt deals 3 damage to any target.","instance_id":"bot-priority-bolt","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};counter={**card(1102,"Human Counter","Instant"),"oracle_text":"Counter target spell.","instance_id":"human-counter","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};bot["battlefield"]=[land];bot["hand"].append(bolt);player["hand"].append(counter)
+    state=run_bot(state,"expert");assert state["priority_player_id"]=="player" and [item["card"]["name"] for item in state["stack"]]==["Bot Priority Bolt"]
+    response=next(action for action in legal_actions(state,"player",allow_direct_resolution=False) if action.get("card_id")=="human-counter");assert response["targets"][0]["id"]==state["stack"][-1]["id"]
+    state=perform_action(state,"player",{"type":"cast","card_id":"human-counter","target_id":state["stack"][-1]["id"]},allow_direct_resolution=False);state=run_bot(state,"expert");assert state["priority_player_id"]=="player" and state["consecutive_passes"]==1 and len(state["stack"])==2
+    state=perform_action(state,"player",{"type":"pass_priority"},allow_direct_resolution=False);player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot");assert not state["stack"] and any(card["instance_id"]=="bot-priority-bolt" for card in bot["graveyard"]) and player["life"]==20
+
+
+def test_production_phase_advance_allows_opponent_response_then_advances_on_pass():
+    state=kept_game();assert state["phase"]=="beginning"
+    state=perform_action(state,"player",{"type":"advance_phase"},allow_direct_resolution=False);assert state["phase"]=="beginning" and state["pending_phase_advance"] and state["priority_player_id"]=="bot" and state["consecutive_passes"]==1
+    state=perform_action(state,"bot",{"type":"pass_priority"},allow_direct_resolution=False);assert state["phase"]=="precombat_main" and not state["pending_phase_advance"]
+
+
+def test_bot_completes_its_entire_mulligan_sequence_without_an_extra_human_action():
+    first,second=decks();state=new_game(first,second);state=perform_action(state,"player",{"type":"keep"},allow_direct_resolution=False);state=run_bot(state,"expert",20);bot=next(player for player in state["players"] if player["id"]=="bot")
+    assert bot["kept_hand"] and state["status"]=="active" and len(bot["hand"])==7-bot["mulligans"]
+
+
+def test_expert_bot_uses_counterspell_response_and_returns_priority_to_human():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
+    human_spell={**card(1110,"Human Draw","Instant"),"oracle_text":"Draw two cards.","instance_id":"human-draw","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};counter={**card(1111,"Bot Counter","Instant"),"oracle_text":"Counter target spell.","instance_id":"bot-counter","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"].append(human_spell);bot["hand"].append(counter)
+    state=perform_action(state,"player",{"type":"cast","card_id":"human-draw"},allow_direct_resolution=False);state=run_bot(state,"expert");assert state["priority_player_id"]=="player" and [item["card"]["name"] for item in state["stack"]]==["Human Draw","Bot Counter"] and state["stack"][-1]["target_id"]==state["stack"][0]["id"]
