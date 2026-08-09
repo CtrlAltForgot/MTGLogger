@@ -1,7 +1,7 @@
 import pytest
 
 from mtglogger.services.game_bot import _choose_blocks, choose_bot_action, run_bot
-from mtglogger.services.game_engine import RuleViolation, _add_saga_lore, _enter_battlefield, _has_keyword, _leave_graveyard, _put_into_exile, _queue_triggers, _set_tapped, legal_actions, new_game, perform_action, public_state
+from mtglogger.services.game_engine import RuleViolation, _add_counters, _add_saga_lore, _enter_battlefield, _has_keyword, _leave_graveyard, _put_into_exile, _queue_triggers, _set_tapped, legal_actions, new_game, perform_action, public_state
 
 
 def card(index:int,name:str,type_line:str,mana_cost:str="",power:str|None=None,toughness:str|None=None,quantity:int=1):
@@ -1869,3 +1869,68 @@ def test_expert_bot_redirects_damage_away_from_a_protected_player():
     state=kept_game();state["active_player_id"]="bot";state["priority_player_id"]="bot";state["phase"]="precombat_main";bot=next(p for p in state["players"] if p["id"]=="bot");player=next(p for p in state["players"] if p["id"]=="player");bot["hand"]=[];bot["land_plays_remaining"]=0
     mountain={**card(1370,"Mountain","Basic Land — Mountain"),"instance_id":"bot-protection-mountain","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};sanctuary={**card(1371,"Protected Player","Enchantment"),"oracle_text":"You have protection from red.","instance_id":"protected-player","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};creature={**card(1372,"Unprotected Creature","Creature — Bear","","3","3"),"instance_id":"unprotected-creature","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};bolt={**card(1373,"Bot Red Bolt","Instant","{R}"),"oracle_text":"Bot Red Bolt deals 3 damage to any target.","instance_id":"bot-red-bolt","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};bot["battlefield"]=[mountain];bot["hand"].append(bolt);player["battlefield"]=[sanctuary,creature]
     choice=choose_bot_action(state,"expert");assert choice["type"]=="cast" and choice["target_id"]=="unprotected-creature"
+
+
+def test_counter_placement_queues_one_or_more_trigger_and_substitutes_that_many():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player")
+    engine={**card(1380,"Growth Engine","Enchantment"),"oracle_text":"Whenever one or more +1/+1 counters are put on a creature you control, put that many growth counters on this enchantment.","instance_id":"growth-engine","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    creature={**card(1381,"Growing Test","Creature — Plant","","1","1"),"instance_id":"growing-test","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    player["battlefield"].extend([engine,creature]);placed=_add_counters(state,creature,"+1/+1",3,"player")
+    assert placed==3 and creature["counters"]["+1/+1"]==3 and len(state["stack"])==1 and "put 3 growth counters" in state["stack"][-1]["card"]["oracle_text"].casefold()
+    state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");engine=next(c for c in player["battlefield"] if c["instance_id"]=="growth-engine")
+    assert engine["counters"]["growth"]==3
+
+
+def test_each_counter_triggers_separately_but_first_event_only_triggers_once_per_turn():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player")
+    watcher={**card(1390,"Counter Scholar","Creature — Wizard","","2","2"),"oracle_text":"Whenever a +1/+1 counter is put on this creature, draw a card.","instance_id":"counter-scholar","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    first={**card(1391,"First Counter Mentor","Enchantment"),"oracle_text":"Creatures you control have \"Whenever one or more counters are put on this creature for the first time each turn, draw a card.\"","instance_id":"first-counter-mentor","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    player["battlefield"].extend([watcher,first]);before=len(player["library"]);_add_counters(state,watcher,"+1/+1",3,"player")
+    assert len(state["stack"])==4
+    while state["stack"]:state=perform_action(state,"player",{"type":"resolve"})
+    player=next(p for p in state["players"] if p["id"]=="player");watcher=next(c for c in player["battlefield"] if c["instance_id"]=="counter-scholar")
+    _add_counters(state,watcher,"shield",1,"player")
+    assert len(state["stack"])==0 and len(player["library"])==before-4
+
+
+def test_counter_replacements_add_one_double_and_ignore_loyalty_costs():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player")
+    creature={**card(1400,"Replacement Target","Creature — Beast","","2","2"),"instance_id":"replacement-target","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    scales={**card(1401,"Test Scales","Enchantment"),"oracle_text":"If one or more +1/+1 counters would be put on a creature you control, that many plus one +1/+1 counters are put on it instead.","instance_id":"test-scales","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    player["battlefield"].extend([creature,scales]);assert _add_counters(state,creature,"+1/+1",2,"player")==3
+    scales["oracle_text"]="If one or more +1/+1 counters would be put on a creature you control, twice that many +1/+1 counters are put on it instead."
+    assert _add_counters(state,creature,"+1/+1",2,"player")==4
+    walker={**card(1402,"Test Walker","Legendary Planeswalker"),"instance_id":"test-walker","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].append(walker)
+    assert _add_counters(state,walker,"loyalty",2,"player","cost")==2 and walker["counters"]["loyalty"]==2
+
+
+def test_enters_with_counters_uses_counter_event_pipeline():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player")
+    watcher={**card(1410,"Arrival Watcher","Enchantment"),"oracle_text":"Whenever one or more +1/+1 counters are put on a creature you control, draw a card.","instance_id":"arrival-watcher","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    entrant={**card(1411,"Counter Entrant","Creature — Construct"),"oracle_text":"Counter Entrant enters with 2 +1/+1 counters on it.","instance_id":"counter-entrant","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].append(watcher);player["hand"].append(entrant)
+    state=perform_action(state,"player",{"type":"cast","card_id":"counter-entrant"});state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");entrant=next(c for c in player["battlefield"] if c["instance_id"]=="counter-entrant")
+    assert entrant["counters"]["+1/+1"]==2 and any(item["card"]["name"]=="Arrival Watcher trigger" for item in state["stack"])
+
+
+def test_active_player_counter_trigger_includes_player_counters_and_amount():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player")
+    watcher={**card(1420,"Unified Test","Enchantment"),"oracle_text":"Whenever you put one or more counters on a permanent or player, draw that many cards.","instance_id":"unified-test","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].append(watcher)
+    _add_counters(state,player,"poison",2,"player","effect")
+    assert player["poison"]==2 and len(state["stack"])==1 and "draw 2 cards" in state["stack"][-1]["card"]["oracle_text"].casefold()
+
+
+def test_named_self_replacement_does_not_modify_other_creatures_and_threshold_fires_once():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player")
+    clock={**card(1430,"Test Clock","Artifact"),"oracle_text":"If one or more charge counters would be put on Test Clock, twice that many charge counters are put on it instead. When the twelfth charge counter is put on this artifact, draw seven cards.","instance_id":"test-clock","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{"charge":10},"summoning_sick":False}
+    other={**card(1431,"Other Battery","Artifact Creature — Construct","","1","1"),"instance_id":"other-battery","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].extend([clock,other])
+    assert _add_counters(state,other,"charge",1,"player")==1
+    assert _add_counters(state,clock,"charge",1,"player")==2 and clock["counters"]["charge"]==12
+    assert len(state["stack"])==1
+
+
+def test_static_counter_prevention_blocks_permanent_and_player_counters():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
+    solemnity={**card(1440,"Test Solemnity","Enchantment"),"oracle_text":"Players can't get counters. Counters can't be put on artifacts, creatures, enchantments, or lands.","instance_id":"test-solemnity","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    creature={**card(1441,"Prevented Creature","Creature — Human","","2","2"),"instance_id":"prevented-creature","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].append(solemnity);bot["battlefield"].append(creature)
+    assert _add_counters(state,creature,"+1/+1",2,"bot")==0 and creature["counters"]=={}
+    assert _add_counters(state,bot,"poison",2,"player")==0 and bot["poison"]==0 and not state["stack"]

@@ -414,7 +414,7 @@ def _player_protected_from(state:dict,player:dict,source:dict)->bool:
 def _consume_shield(state:dict,card:dict,reason:str)->bool:
     shields=card.get("counters",{}).get("shield",0)
     if shields<=0:return False
-    card["counters"]["shield"]=shields-1
+    _remove_counters(card,"shield",1)
     _log(state,f"A shield counter protected {card['name']} from {reason}.")
     return True
 
@@ -430,7 +430,7 @@ def _queue_damage_event(state:dict,source:dict,target:dict,amount:int,combat:boo
 def _damage_player(state:dict,target:dict,amount:int,source:dict,combat:bool=False)->int:
     if amount<=0:return 0
     if _player_protected_from(state,target,source):_log(state,f"Protection prevented {amount} damage to {target['name']}.");return 0
-    if _has_keyword(source,"Infect"):target["poison"]=target.get("poison",0)+amount
+    if _has_keyword(source,"Infect"):_add_counters(state,target,"poison",amount,source.get("controller_id"),"damage")
     else:target["life"]-=amount
     if _has_keyword(source,"Lifelink"):_gain_life(state,_player(state,source.get("controller_id",source.get("owner_id"))),amount)
     _queue_damage_event(state,source,target,amount,combat)
@@ -443,9 +443,9 @@ def _damage_permanent(state:dict,target:dict,amount:int,source:dict)->int:
         _log(state,f"Protection prevented {amount} damage to {target['name']}.");return 0
     if _consume_shield(state,target,"damage"):return 0
     if _has_keyword(source,"Infect") or _has_keyword(source,"Wither"):
-        target["counters"]["-1/-1"]=target["counters"].get("-1/-1",0)+amount
+        _add_counters(state,target,"-1/-1",amount,source.get("controller_id"),"damage")
     elif "Planeswalker" in target.get("type_line",""):
-        target["counters"]["loyalty"]=max(0,target["counters"].get("loyalty",0)-amount)
+        _remove_counters(target,"loyalty",amount)
     else:target["damage"]+=amount
     if _has_keyword(source,"Deathtouch"):target["deathtouch_damage"]=True
     if _has_keyword(source,"Lifelink"):_gain_life(state,_player(state,source.get("controller_id",source.get("owner_id"))),amount)
@@ -493,8 +493,8 @@ def _optional_blight_cost(card:dict)->int|None:
 
 def _apply_blight(state:dict,player:dict,creature:dict,amount:int)->None:
     original=amount;plus=creature.setdefault("counters",{}).get("+1/+1",0);cancel=min(plus,amount)
-    if cancel:creature["counters"]["+1/+1"]-=cancel;amount-=cancel
-    if amount:creature["counters"]["-1/-1"]=creature["counters"].get("-1/-1",0)+amount
+    if cancel:_remove_counters(creature,"+1/+1",cancel);amount-=cancel
+    if amount:_add_counters(state,creature,"-1/-1",amount,player["id"],"cost")
     _log(state,f"{player['name']} blighted {creature['name']} for {original}.")
 
 
@@ -539,7 +539,7 @@ def _queue_saga_chapter(state:dict,owner:dict,saga:dict,chapter:int)->None:
 
 def _add_saga_lore(state:dict,owner:dict,saga:dict)->None:
     if "Saga" not in saga.get("type_line","") or int(saga.get("current_face",0))!=0:return
-    saga.setdefault("counters",{})["lore"]=saga["counters"].get("lore",0)+1;_queue_saga_chapter(state,owner,saga,saga["counters"]["lore"])
+    _add_counters(state,saga,"lore",1,owner["id"],"turn_based");_queue_saga_chapter(state,owner,saga,saga["counters"]["lore"])
 
 
 def _activated_abilities(card: dict) -> list[dict]:
@@ -1346,7 +1346,7 @@ def _resolve_spell(state: dict) -> None:
             target["earthbend_base_type_line"]=target.get("type_line","");target["earthbend_base_power"]=target.get("power");target["earthbend_base_toughness"]=target.get("toughness")
         if "Creature" not in target.get("type_line",""):
             parts=target["type_line"].split(" — ",1);target["type_line"]=f"{parts[0]} Creature"+(f" — {parts[1]}" if len(parts)>1 else "")
-        target["power"]="0";target["toughness"]="0";target["earthbent"]=True;target["earthbend_controller"]=caster["id"];target["counters"]["+1/+1"]=target["counters"].get("+1/+1",0)+earthbend
+        target["power"]="0";target["toughness"]="0";target["earthbent"]=True;target["earthbend_controller"]=caster["id"];_add_counters(state,target,"+1/+1",earthbend,caster["id"],"effect")
         _log(state,f"{caster['name']} earthbent {target['name']} for {earthbend}.");_queue_triggers(state,"earthbend",target,caster)
     each_draw_match=re.search(r"each player draws? (?:a|one|two|three|four|\d+) cards?",effect_text)
     draw_match = re.search(r"(?<!each player )draw (?:a|one|two|three|four|\d+) cards?", effect_text);ordered_scry_draw=bool(draw_match and re.search(r"(?:scry|surveil) [^,.]+, then draw",effect_text))
@@ -1414,10 +1414,10 @@ def _resolve_spell(state: dict) -> None:
     counter_match=re.search(r"put (a|one|two|three|four|five|six|seven|eight|nine|ten|\d+) ([+−-]\d+/[+−-]\d+|[a-z][a-z-]*) counters? on target (?:creature|permanent|artifact|planeswalker)",effect_text)
     if target and counter_match:
         words={"a":1,"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10};amount=words.get(counter_match.group(1),int(counter_match.group(1)) if counter_match.group(1).isdigit() else 1);name=counter_match.group(2).replace("−","-")
-        target["counters"][name]=target["counters"].get(name,0)+amount;_log(state,f"{target['name']} received {amount} {name} counter(s).")
-    source_counter_name=re.escape((source_permanent or {}).get("name","").casefold());self_counter=re.search(rf"put (a|one|two|three|four|five|\d+) ([+−-]\d+/[+−-]\d+|[a-z][a-z-]*) counters? on (?:him|her|them|it|this (?:creature|permanent)|{source_counter_name})",effect_text)
+        placed=_add_counters(state,target,name,amount,caster["id"],"effect");_log(state,f"{target['name']} received {placed} {name} counter(s).")
+    source_counter_name=re.escape((source_permanent or {}).get("name","").casefold());self_counter=re.search(rf"put (a|one|two|three|four|five|\d+) ([+−-]\d+/[+−-]\d+|[a-z][a-z-]*) counters? on (?:him|her|them|it|this (?:creature|permanent|artifact|enchantment|planeswalker)|{source_counter_name})",effect_text)
     if source_permanent and self_counter:
-        words={"a":1,"one":1,"two":2,"three":3,"four":4,"five":5};amount=words.get(self_counter.group(1),int(self_counter.group(1)) if self_counter.group(1).isdigit() else 1);name=self_counter.group(2).replace("−","-");source_permanent["counters"][name]=source_permanent["counters"].get(name,0)+amount
+        words={"a":1,"one":1,"two":2,"three":3,"four":4,"five":5};amount=words.get(self_counter.group(1),int(self_counter.group(1)) if self_counter.group(1).isdigit() else 1);name=self_counter.group(2).replace("−","-");_add_counters(state,source_permanent,name,amount,caster["id"],"effect")
     keyword_match=re.search(r"target creature gains? ([^.]+?) until end of turn",effect_text)
     if target and keyword_match:
         supported=("flying","first strike","double strike","deathtouch","haste","hexproof","indestructible","lifelink","menace","reach","trample","vigilance")
@@ -1513,9 +1513,8 @@ def _resolve_spell(state: dict) -> None:
         card["summoning_sick"] = True
         if re.search(r"\benters (?:the battlefield )?tapped\b",text):card["tapped"]=True
         enters_counters=re.search(r"enters(?: the battlefield)? with (\d+) ([+−-]\d+/[+−-]\d+|loyalty|charge|shield|stun) counters?",text)
-        if enters_counters:
-            counter_name=enters_counters.group(2).replace("−","-");card["counters"][counter_name]=card["counters"].get(counter_name,0)+int(enters_counters.group(1))
         _enter_battlefield(state,caster,[card],item.get("cast_source_zone","stack"),True)
+        if enters_counters:_add_counters(state,card,enters_counters.group(2).replace("−","-"),int(enters_counters.group(1)),caster["id"],"enters")
         if "Aura" in card.get("type_line","") and (target or target_player):_attach(state,card,target or target_player)
         entered = True
     elif item.get("kind", "spell") == "spell":
@@ -1637,6 +1636,72 @@ def _set_tapped(state:dict,cards:list[dict],tapped:bool,actor_id:str|None=None,c
     for card in changing:
         for key in ("tap_event_actor_id","tap_event_cause","tap_event_batch_size"):card.pop(key,None)
     return changing
+
+
+def _counter_replacement_amount(state:dict,target:dict,name:str,amount:int,actor_id:str|None,cause:str)->int:
+    """Apply the common static replacement effects that modify counter placement."""
+    if amount<=0:return max(0,amount)
+    target_type=(target.get("type_line") or "").casefold();target_controller=target.get("controller_id",target.get("id"));is_player="type_line" not in target
+    target_text=(target.get("oracle_text") or "").casefold()
+    if "can't have counters put on it" in target_text or "cannot have counters put on it" in target_text:return 0
+    for owner in state["players"]:
+        for source in owner["battlefield"]:
+            static=(source.get("oracle_text") or "").casefold()
+            if source.get("attached_to")==target.get("instance_id") and "enchanted creature can't" in static and "can't have counters put on it" in static:return 0
+            if "counters can't be put on artifacts, creatures, enchantments, or lands" in static and any(kind in target_type for kind in ("artifact","creature","enchantment","land")):return 0
+            if is_player and "players can't get counters" in static:return 0
+    result=amount
+    for owner in state["players"]:
+        for source in owner["battlefield"]:
+            text=(source.get("oracle_text") or "").casefold()
+            clauses=[clause for clause in re.split(r"(?<=[.!])\s+|\n",text) if "would be put" in clause and "counter" in clause]
+            for clause in clauses:
+                clause=clause.replace("−","-");condition=clause.split(",",1)[0];source_name=(source.get("name") or "").casefold()
+                if cause=="cost" and "if an effect would put" in condition:continue
+                controlled=target_controller==owner["id"]
+                actor_is_opponent=actor_id is not None and actor_id!=owner["id"]
+                if "an opponent would put" in clause:
+                    if not actor_is_opponent:continue
+                elif any(scope in clause for scope in ("you control","your team controls")) and not controlled:continue
+                elif "on you" in clause and not (is_player and controlled):continue
+                if "creature or vehicle" in clause and not any(kind in target_type for kind in ("creature","vehicle")):continue
+                if "artifact or creature" in clause and not any(kind in target_type for kind in ("artifact","creature")):continue
+                if "creature, spacecraft, or planet" in clause and not any(kind in target_type for kind in ("creature","spacecraft","planet")):continue
+                if re.search(r"on (?:a |another )?creature\b",clause) and "permanent" not in clause and "artifact" not in clause and "vehicle" not in clause and "creature" not in target_type:continue
+                if "on a permanent" in clause and is_player:continue
+                self_scope=any(reference in condition for reference in ("on this creature","on this permanent","on this artifact","on this enchantment","on this planeswalker")) or bool(source_name and re.search(rf"\bon {re.escape(source_name)}\b",condition))
+                if self_scope and target is not source:continue
+                named=re.search(r"one or more ([+\-]\d+/[+\-]\d+|[a-z][a-z-]*) counters? would be put",clause)
+                if named and named.group(1).replace("−","-")!=name:continue
+                if "can't have counters put" in clause or "cannot have counters put" in clause:result=0
+                elif "twice that many" in clause:result*=2
+                elif "that many plus one" in clause:result+=1
+                elif "half that many" in clause:result//=2
+    return result
+
+
+def _add_counters(state:dict,target:dict,name:str,amount:int,actor_id:str|None=None,cause:str="effect",dedupe:set[str]|None=None)->int:
+    amount=_counter_replacement_amount(state,target,name,max(0,amount),actor_id,cause)
+    if amount<=0:return 0
+    if name=="poison" and "id" in target:target["poison"]=target.get("poison",0)+amount
+    else:
+        counters=target.setdefault("counters",{});counters[name]=counters.get(name,0)+amount
+    if target.get("counter_event_turn")!=state.get("turn"):
+        target["counter_event_turn"]=state.get("turn");target["counter_events_this_turn"]=0
+    target["counter_events_this_turn"]=target.get("counter_events_this_turn",0)+1
+    target["counter_event_name"]=name;target["counter_event_amount"]=amount;target["counter_event_actor_id"]=actor_id;target["counter_event_cause"]=cause
+    owner=_player(state,target.get("controller_id",target.get("id",target.get("owner_id"))))
+    _queue_triggers(state,"counter_added",target,owner,dedupe)
+    for key in ("counter_event_name","counter_event_amount","counter_event_actor_id","counter_event_cause"):target.pop(key,None)
+    return amount
+
+
+def _remove_counters(target:dict,name:str,amount:int)->int:
+    if name=="poison" and "id" in target:
+        removed=min(max(0,amount),max(0,target.get("poison",0)));target["poison"]-=removed;return removed
+    counters=target.setdefault("counters",{});removed=min(max(0,amount),max(0,counters.get(name,0)))
+    if removed:counters[name]-=removed
+    return removed
 
 
 def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owner: dict, dedupe:set[str]|None=None, sources_override:list[tuple[dict,dict]]|None=None) -> None:
@@ -1773,6 +1838,29 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 matches=event_phrase and kind_ok and relationship_ok and subtype_ok and counter_ok and attacker_ok and during_turn and first_time and (not one_or_more or dedupe is None or dedupe_key not in dedupe) and (not once_each_turn or not already_triggered)
                 if matches and one_or_more and dedupe is not None:dedupe.add(dedupe_key)
                 if matches and once_each_turn:source.setdefault("tap_trigger_turns",{})[condition]=state.get("turn")
+            elif event=="counter_added" and event_card:
+                condition=lower.split(",",1)[0];counter_name=event_card.get("counter_event_name","");amount=event_card.get("counter_event_amount",0);type_line=(event_card.get("type_line") or "").casefold();same_controller=event_owner["id"]==owner["id"]
+                active_placement="whenever you put one or more counters on" in condition;placement_phrase=re.search(r"(?:counter|counters) (?:is|are) put on",condition) is not None or active_placement
+                named=None if re.search(r"(?:one or more |a |an )counters? (?:is|are) put",condition) else re.search(r"(?:one or more |a |an )?([+\-]\d+/[+\-]\d+|[a-z][a-z-]*) counters? (?:is|are) put",condition)
+                counter_ok=not named or named.group(1).replace("−","-")==counter_name
+                is_creature="creature" in type_line;is_planeswalker="planeswalker" in type_line;is_permanent=bool(type_line)
+                kind_ok=not (("creature" in condition and not is_creature) or ("planeswalker" in condition and not is_planeswalker) or ("permanent" in condition and "or player" not in condition and not is_permanent))
+                source_name=(source.get("name") or "").casefold();self_reference=any(reference in condition for reference in ("this creature","this permanent","this artifact","this enchantment")) or bool(source_name and source_name in condition);self_event=source is event_card and self_reference
+                another_ok="another" not in condition or source is not event_card
+                controlled_scope=same_controller and "you control" in condition
+                opposing_scope=not same_controller and ("opponent controls" in condition or "an opponent" in condition)
+                uncontrolled_scope=not same_controller and "you don't control" in condition
+                global_scope=not self_reference and "you control" not in condition and "opponent controls" not in condition and "an opponent" not in condition
+                first_required="first time each turn" in condition;first_ok=not first_required or event_card.get("counter_events_this_turn")==1
+                one_or_more="one or more" in condition;dedupe_key=f"counter-added:{source.get('instance_id')}:{event_card.get('instance_id',event_card.get('id'))}:{counter_name}"
+                ordinal_words={"first":1,"second":2,"third":3,"fourth":4,"fifth":5,"sixth":6,"seventh":7,"eighth":8,"ninth":9,"tenth":10,"eleventh":11,"twelfth":12};threshold_match=re.search(r"when the (first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth) ([a-z][a-z-]*) counter is put",condition);threshold_ok=True
+                if threshold_match:
+                    threshold=ordinal_words[threshold_match.group(1)];threshold_ok=threshold_match.group(2)==counter_name and event_card.get("counters",{}).get(counter_name,0)-amount<threshold<=event_card.get("counters",{}).get(counter_name,0)
+                actor_ok=not active_placement or event_card.get("counter_event_actor_id")==owner["id"]
+                matches=placement_phrase and actor_ok and counter_ok and kind_ok and another_ok and (self_event or controlled_scope or opposing_scope or uncontrolled_scope or global_scope) and first_ok and threshold_ok and (not one_or_more or dedupe is None or dedupe_key not in dedupe)
+                if matches:
+                    trigger_count=1 if one_or_more or threshold_match else amount
+                    if one_or_more and dedupe is not None:dedupe.add(dedupe_key)
             elif event == "leaves" and event_card:
                 matches=source is not event_card and owner["id"]==event_owner["id"] and "Creature" in event_card.get("type_line","") and "when another creature you control leaves the battlefield" in lower
             elif event == "upkeep":
@@ -1848,6 +1936,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 if exile_effect:effect=exile_effect.group(1).strip()
             if event=="exile" and "that many" in effect.casefold():effect=re.sub(r"\bthat many\b",str(event_card.get("exile_event_batch_size",1)),effect,flags=re.IGNORECASE)
             if event=="enters" and re.search(r"\b(?:that many|that much)\b",effect,re.IGNORECASE):effect=re.sub(r"\b(?:that many|that much)\b",str(event_card.get("entry_event_batch_size",1)),effect,flags=re.IGNORECASE)
+            if event=="counter_added" and re.search(r"\b(?:that many|that much|the same number)\b",effect,re.IGNORECASE):effect=re.sub(r"\b(?:that many|that much|the same number)\b",str(event_card.get("counter_event_amount",1)),effect,flags=re.IGNORECASE)
             if event in {"earthbend","waterbend","firebend","airbend"} and "whenever you waterbend, earthbend, firebend, or airbend" in lower:effect=re.split(r"whenever you waterbend, earthbend, firebend, or airbend,",clause,flags=re.IGNORECASE)[1].strip()
             if event=="enters" and re.match(r"if it was kicked,",effect,re.IGNORECASE):effect=effect.split(",",1)[1].strip()
             if event=="leaves" and "transform" in effect and "next upkeep" in effect:
@@ -1857,7 +1946,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
             fight_steps=_fight_target_steps(state,owner["id"],ability_card,source);targets=[] if fight_steps else _targets(state, owner["id"], ability_card)
             for _ in range(trigger_count):
                 trigger={"id":_id(),"kind":"trigger","card":ability_card,"controller_id":owner["id"],"target_id":None,"source_id":source["instance_id"]}
-                if event_card and event in {"enters","exile","tapped","untapped","dies","discard","graveyard_leave","damage","combat_damage_player"}:trigger["event_card_id"]=event_card.get("instance_id");trigger["event_owner_id"]=event_owner.get("id")
+                if event_card and event in {"enters","exile","tapped","untapped","counter_added","dies","discard","graveyard_leave","damage","combat_damage_player"}:trigger["event_card_id"]=event_card.get("instance_id");trigger["event_owner_id"]=event_owner.get("id")
                 if fight_steps:
                     if all(step["targets"] for step in fight_steps):state.setdefault("pending_trigger_targets",[]).append({"controller_id":owner["id"],"source_name":source["name"],"trigger":trigger,"card":ability_card,"target_steps":fight_steps});state["priority_player_id"]=state["pending_trigger_targets"][0]["controller_id"]
                     else:_log(state,f"{source['name']}'s fight trigger had no legal targets and was removed.")
@@ -1877,7 +1966,7 @@ def _combat_damage(state: dict) -> None:
         if planeswalker:_damage_permanent(state,planeswalker,amount,creature)
         elif not _damage_player(state,defender,amount,creature,True):return
         toxic=_toxic_value(creature)
-        if not planeswalker and amount>0 and toxic:defender["poison"]=defender.get("poison",0)+toxic
+        if not planeswalker and amount>0 and toxic:_add_counters(state,defender,"poison",toxic,attacker["id"],"toxic")
         if not planeswalker and creature.get("commander"):
             source = creature["instance_id"];damage=defender.setdefault("commander_damage", {});names=defender.setdefault("commander_damage_names", {})
             # Games saved before individual commander tracking used the owner's id.
@@ -1953,7 +2042,7 @@ def _state_based_actions(state: dict) -> None:
                 counters=permanent.setdefault("counters",{});opposing=min(counters.get("+1/+1",0),counters.get("-1/-1",0))
                 if opposing:
                     for name in ("+1/+1","-1/-1"):
-                        counters[name]-=opposing
+                        _remove_counters(permanent,name,opposing)
                         if not counters[name]:counters.pop(name)
                     changed=True;_log(state,f"{opposing} opposing +1/+1 and -1/-1 counter pair(s) were removed from {permanent['name']}.")
                 if permanent.get("attached_to"):
@@ -2195,7 +2284,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         elif ability["mana_cost"]:_pay_mana(state,player,{"mana_cost":ability["mana_cost"]},excluded_id=permanent["instance_id"] if ability["taps"] else None,x_value=x_value)
         if ability["life_cost"]:player["life"]-=ability["life_cost"]
         if ability["counter_cost"]:
-            name,amount=ability["counter_cost"]["name"],ability["counter_cost"]["amount"];permanent["counters"][name]-=amount
+            name,amount=ability["counter_cost"]["name"],ability["counter_cost"]["amount"];_remove_counters(permanent,name,amount)
         blight_cost=next((cost for cost in ability.get("selection_costs",[]) if cost["kind"]=="blight"),None)
         if blight_cost:
             blight_options={card["instance_id"] for card in _activated_cost_options(player,permanent,blight_cost)};blight_target=next(card for card in selected_cost_cards if card["instance_id"] in blight_options);_apply_blight(state,player,blight_target,blight_cost["blight_amount"])
@@ -2223,7 +2312,11 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if not permanent or not available:raise RuleViolation("That loyalty ability cannot be activated")
         ability=_loyalty_abilities(permanent)[index];target_id=action.get("target_id");targets=available.get("targets",[])
         if targets and target_id not in {target["id"] for target in targets}:raise RuleViolation("Choose a legal target")
-        permanent["counters"]["loyalty"]=permanent["counters"].get("loyalty",0)+ability["cost"];permanent["loyalty_activated_turn"]=state["turn"];stack_item={"id":_id(),"kind":"ability","card":ability["card"],"controller_id":player_id,"target_id":target_id,"source_id":permanent["instance_id"]};state["stack"].append(stack_item);state["consecutive_passes"]=0;state["pending_phase_advance"]=False;_queue_ward(state,player,target_id,stack_item)
+        stack_before_cost=len(state["stack"])
+        if ability["cost"]>=0:_add_counters(state,permanent,"loyalty",ability["cost"],player_id,"cost")
+        else:_remove_counters(permanent,"loyalty",-ability["cost"])
+        cost_triggers=state["stack"][stack_before_cost:];del state["stack"][stack_before_cost:]
+        permanent["loyalty_activated_turn"]=state["turn"];stack_item={"id":_id(),"kind":"ability","card":ability["card"],"controller_id":player_id,"target_id":target_id,"source_id":permanent["instance_id"]};state["stack"].append(stack_item);state["stack"].extend(cost_triggers);state["consecutive_passes"]=0;state["pending_phase_advance"]=False;_queue_ward(state,player,target_id,stack_item)
         if (_multiplayer(state) or not allow_direct_resolution) and not state.get("pending_ward"):state["priority_player_id"]=opponent(state,player_id)["id"]
         _log(state,f"{player['name']} activated {permanent['name']} ({ability['cost']:+d}): {ability['effect']}")
     elif action_type == "resolve":
@@ -2331,11 +2424,11 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         eligible={owner["id"] for owner in state["players"] if owner.get("poison",0)>0}|{card["instance_id"] for owner in state["players"] for card in owner["battlefield"] if any(amount>0 for amount in card.get("counters",{}).values())}
         if not set(requested).issubset(eligible):raise RuleViolation("Choose only permanents and players that already have counters")
         for owner in state["players"]:
-            if owner["id"] in requested:owner["poison"]+=1
+            if owner["id"] in requested:_add_counters(state,owner,"poison",1,player_id,"proliferate")
             for permanent in owner["battlefield"]:
                 if permanent["instance_id"] in requested:
                     for name in list(permanent.get("counters",{})):
-                        if permanent["counters"][name]>0:permanent["counters"][name]+=1
+                        if permanent["counters"][name]>0:_add_counters(state,permanent,name,1,player_id,"proliferate")
         state["pending_proliferate"]=None;state["priority_player_id"]=state["active_player_id"];_log(state,f"{player['name']} proliferated {len(requested)} permanent(s) and player(s).")
     elif action_type in {"accept_transform","decline_transform"}:
         pending=state.get("pending_transform") or {}
@@ -2441,7 +2534,10 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
     elif action_type == "add_counter":
         permanent = next((card for owner in state["players"] for card in owner["battlefield"] if card["instance_id"] == action.get("target_id")), None)
         if not permanent: raise RuleViolation("Choose a permanent")
-        name = (action.get("counter_name") or "+1/+1")[:32]; amount = max(-20, min(20, int(action.get("amount") or 1))); permanent["counters"][name] = max(0, permanent["counters"].get(name, 0) + amount); _log(state, f"{permanent['name']} now has {permanent['counters'][name]} {name} counter(s).")
+        name = (action.get("counter_name") or "+1/+1")[:32]; amount = max(-20, min(20, int(action.get("amount") or 1)))
+        if amount>=0:_add_counters(state,permanent,name,amount,player_id,"manual")
+        else:_remove_counters(permanent,name,-amount)
+        _log(state, f"{permanent['name']} now has {permanent['counters'].get(name,0)} {name} counter(s).")
     elif action_type == "create_token":
         token = {"instance_id":_id(),"scryfall_id":"token","name":(action.get("token_name") or "Creature Token")[:80],"image_url":None,"type_line":"Token Creature","oracle_text":"","mana_cost":"","mana_value":0,"power":str(max(0,min(99,int(action.get("power") or 1)))),"toughness":str(max(1,min(99,int(action.get("toughness") or 1)))),"owner_id":player_id,"controller_id":player_id,"tapped":False,"damage":0,"counters":{},"summoning_sick":True,"token":True};_enter_battlefield(state,player,[token],"token");_log(state,f"{player['name']} created {token['name']}.")
     elif action_type == "move_zone":
