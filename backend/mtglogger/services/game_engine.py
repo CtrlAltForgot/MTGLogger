@@ -113,9 +113,9 @@ def _new_player(player_id: str, name: str, deck: list[dict], is_bot: bool) -> di
     return {"id": player_id, "name": name, "is_bot": is_bot, "life": 20, "library": library, "hand": [], "battlefield": [], "graveyard": [], "exile": [], "command": [], "land_plays_remaining": 1, "kept_hand": False, "lost": False}
 
 
-def new_game(player_deck: list[dict], opponent_deck: list[dict], play_first: bool = True) -> dict:
+def new_game(player_deck: list[dict], opponent_deck: list[dict], play_first: bool = True, opponent_is_bot: bool = True) -> dict:
     human_id, bot_id = "player", "bot"
-    players = [_new_player(human_id, "You", player_deck, False), _new_player(bot_id, "Bot", opponent_deck, True)]
+    players = [_new_player(human_id, "You", player_deck, False), _new_player(bot_id, "Bot" if opponent_is_bot else "Guest", opponent_deck, opponent_is_bot)]
     state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id, "players": players, "stack": [], "combat": {"attackers": [], "blocks": {}}, "log": []}
     for player in players:
         _draw(state, player, 7)
@@ -131,6 +131,26 @@ def public_state(state: dict, viewer_id: str = "player") -> dict:
             player["hand_count"] = len(player["hand"])
             player["hand"] = []
     return visible
+
+
+def _target_kind(card: dict) -> str | None:
+    text = (card.get("oracle_text") or "").casefold()
+    if re.search(r"(?:destroy|exile) target (?:artifact, creature, enchantment, planeswalker|nonland permanent|permanent)", text): return "permanent"
+    if re.search(r"(?:destroy|exile) target creature", text) or re.search(r"deals \d+ damage to target creature", text): return "creature"
+    if re.search(r"deals \d+ damage to any target", text): return "any"
+    return None
+
+
+def _targets(state: dict, caster_id: str, card: dict) -> list[dict]:
+    kind = _target_kind(card)
+    if not kind: return []
+    targets = []
+    for player in state["players"]:
+        if kind == "any": targets.append({"id": player["id"], "name": player["name"], "kind": "player", "controller_id": player["id"]})
+        for permanent in player["battlefield"]:
+            if kind in {"any", "permanent"} or (kind == "creature" and "Creature" in permanent.get("type_line", "")):
+                targets.append({"id": permanent["instance_id"], "name": permanent["name"], "kind": "permanent", "controller_id": player["id"]})
+    return targets
 
 
 def legal_actions(state: dict, player_id: str) -> list[dict]:
@@ -149,7 +169,13 @@ def legal_actions(state: dict, player_id: str) -> list[dict]:
     if active and main and not state["stack"]:
         if player["land_plays_remaining"]:
             actions.extend({"type": "play_land", "card_id": card["instance_id"]} for card in player["hand"] if "Land" in card.get("type_line", ""))
-        actions.extend({"type": "cast", "card_id": card["instance_id"]} for card in player["hand"] if "Land" not in card.get("type_line", "") and _can_pay(player, card))
+        for card in player["hand"]:
+            if "Land" in card.get("type_line", "") or not _can_pay(player, card): continue
+            targets = _targets(state, player_id, card)
+            if _target_kind(card) and not targets: continue
+            action = {"type": "cast", "card_id": card["instance_id"]}
+            if targets: action["targets"] = targets
+            actions.append(action)
     if state["stack"]:
         actions.append({"type": "resolve"})
     else:
@@ -170,6 +196,10 @@ def _resolve_spell(state: dict) -> None:
     card, caster = item["card"], _player(state, item["controller_id"])
     text = (card.get("oracle_text") or "").casefold()
     other = opponent(state, caster["id"])
+    target_id = item.get("target_id")
+    target_player = next((player for player in state["players"] if player["id"] == target_id), None)
+    target_owner = next((player for player in state["players"] if any(permanent["instance_id"] == target_id for permanent in player["battlefield"])), None)
+    target = next((permanent for player in state["players"] for permanent in player["battlefield"] if permanent["instance_id"] == target_id), None)
     draw_match = re.search(r"draw (?:a|one|two|three|four) cards?", text)
     if draw_match:
         word = draw_match.group(0).split()[1]
@@ -180,11 +210,32 @@ def _resolve_spell(state: dict) -> None:
     damage_match = re.search(r"deals (\d+) damage to (?:target opponent|each opponent)", text)
     if damage_match:
         other["life"] -= int(damage_match.group(1))
+    targeted_damage = re.search(r"deals (\d+) damage to (?:any target|target creature)", text)
+    if targeted_damage and (target_player or target):
+        amount = int(targeted_damage.group(1))
+        if target_player: target_player["life"] -= amount
+        elif target: target["damage"] += amount
+    if target and target_owner and re.search(r"destroy target (?:creature|permanent|nonland permanent)", text):
+        target_owner["battlefield"].remove(target); target_owner["graveyard"].append(target); _log(state, f"{target['name']} was destroyed.")
+    if target and target_owner and re.search(r"exile target (?:creature|permanent|nonland permanent)", text):
+        target_owner["battlefield"].remove(target); target_owner["exile"].append(target); _log(state, f"{target['name']} was exiled.")
+    token_match = re.search(r"create (a|one|two|three|four) (\d+)/(\d+) ([^.]*?) creature tokens?", text)
+    if token_match:
+        amount = {"a":1,"one":1,"two":2,"three":3,"four":4}[token_match.group(1)]
+        for _ in range(amount):
+            caster["battlefield"].append({"instance_id":_id(),"scryfall_id":"token","name":f"{token_match.group(4).title()} Token","image_url":None,"type_line":f"Token Creature — {token_match.group(4).title()}","oracle_text":"","mana_cost":"","mana_value":0,"power":token_match.group(2),"toughness":token_match.group(3),"owner_id":caster["id"],"controller_id":caster["id"],"tapped":False,"damage":0,"counters":{},"summoning_sick":True,"token":True})
+        _log(state, f"{caster['name']} created {amount} token(s).")
     if any(kind in card.get("type_line", "") for kind in ("Creature", "Artifact", "Enchantment", "Planeswalker", "Battle")):
         card["summoning_sick"] = "Creature" in card.get("type_line", "")
         caster["battlefield"].append(card)
     else:
         caster["graveyard"].append(card)
+    for owner in state["players"]:
+        for permanent in list(owner["battlefield"]):
+            _, toughness = _parse_stats(permanent)
+            plus = permanent.get("counters", {}).get("+1/+1", 0); minus = permanent.get("counters", {}).get("-1/-1", 0)
+            if toughness + plus - minus > 0 and permanent.get("damage", 0) >= toughness + plus - minus:
+                owner["battlefield"].remove(permanent); owner["graveyard"].append(permanent)
     _log(state, f"{card['name']} resolved.")
 
 
@@ -229,7 +280,8 @@ def perform_action(state: dict, player_id: str, action: dict) -> dict:
     player = _player(state, player_id)
     action_type = action.get("type")
     allowed = {entry["type"] for entry in legal_actions(state, player_id)}
-    if action_type not in allowed:
+    manual_actions = {"adjust_life", "add_counter", "create_token", "move_zone"}
+    if action_type not in allowed and action_type not in manual_actions:
         raise RuleViolation(f"{action_type} is not legal right now")
     if action_type == "keep":
         player["kept_hand"] = True; _log(state, f"{player['name']} kept seven cards.")
@@ -245,7 +297,9 @@ def perform_action(state: dict, player_id: str, action: dict) -> dict:
     elif action_type == "cast":
         card = next((card for card in player["hand"] if card["instance_id"] == action.get("card_id")), None)
         if not card or not _can_pay(player, card): raise RuleViolation("That spell cannot be cast")
-        _pay_mana(player, card); player["hand"].remove(card); state["stack"].append({"id": _id(), "card": card, "controller_id": player_id, "target_id": action.get("target_id")}); _log(state, f"{player['name']} cast {card['name']}.")
+        targets = _targets(state, player_id, card); target_id = action.get("target_id")
+        if _target_kind(card) and target_id not in {target["id"] for target in targets}: raise RuleViolation("Choose a legal target")
+        _pay_mana(player, card); player["hand"].remove(card); state["stack"].append({"id": _id(), "card": card, "controller_id": player_id, "target_id": target_id}); _log(state, f"{player['name']} cast {card['name']}{' targeting '+next((target['name'] for target in targets if target['id']==target_id),'') if target_id else ''}.")
     elif action_type == "resolve":
         _resolve_spell(state)
     elif action_type == "declare_attackers":
@@ -274,6 +328,20 @@ def perform_action(state: dict, player_id: str, action: dict) -> dict:
         state["priority_player_id"] = state["active_player_id"]
     elif action_type == "concede":
         state["status"] = "complete"; state["winner_id"] = opponent(state, player_id)["id"]; _log(state, f"{player['name']} conceded.")
+    elif action_type == "adjust_life":
+        target_player = _player(state, action.get("target_id") or player_id); amount = max(-100, min(100, int(action.get("amount") or 0))); target_player["life"] += amount; _log(state, f"{target_player['name']}'s life was adjusted by {amount:+d}.")
+    elif action_type == "add_counter":
+        permanent = next((card for owner in state["players"] for card in owner["battlefield"] if card["instance_id"] == action.get("target_id")), None)
+        if not permanent: raise RuleViolation("Choose a permanent")
+        name = (action.get("counter_name") or "+1/+1")[:32]; amount = max(-20, min(20, int(action.get("amount") or 1))); permanent["counters"][name] = max(0, permanent["counters"].get(name, 0) + amount); _log(state, f"{permanent['name']} now has {permanent['counters'][name]} {name} counter(s).")
+    elif action_type == "create_token":
+        token = {"instance_id":_id(),"scryfall_id":"token","name":(action.get("token_name") or "Creature Token")[:80],"image_url":None,"type_line":"Token Creature","oracle_text":"","mana_cost":"","mana_value":0,"power":str(max(0,min(99,int(action.get("power") or 1)))),"toughness":str(max(1,min(99,int(action.get("toughness") or 1)))),"owner_id":player_id,"controller_id":player_id,"tapped":False,"damage":0,"counters":{},"summoning_sick":True,"token":True}; player["battlefield"].append(token); _log(state, f"{player['name']} created {token['name']}.")
+    elif action_type == "move_zone":
+        source_owner = next((owner for owner in state["players"] if any(card["instance_id"] == action.get("target_id") for zone in ("hand","battlefield","graveyard","exile") for card in owner[zone])), None)
+        destination = action.get("destination")
+        if not source_owner or destination not in {"hand","battlefield","graveyard","exile"}: raise RuleViolation("Choose a card and destination zone")
+        source = next(zone for zone in ("hand","battlefield","graveyard","exile") if any(card["instance_id"] == action.get("target_id") for card in source_owner[zone])); card = next(card for card in source_owner[source] if card["instance_id"] == action.get("target_id"))
+        source_owner[source].remove(card); source_owner[destination].append(card); _log(state, f"{card['name']} moved from {source} to {destination}.")
     _check_winner(state)
     state["version"] += 1
     return state

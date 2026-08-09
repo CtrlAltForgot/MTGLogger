@@ -34,6 +34,22 @@ def migrate_schema() -> None:
         if "image_url" not in deck_columns:
             with engine.begin() as connection:
                 connection.execute(text("ALTER TABLE decks ADD COLUMN image_url TEXT"))
+    if "game_sessions" in tables:
+        game_columns = {column["name"] for column in inspector.get_columns("game_sessions")}
+        additive_game_columns = {
+            "opponent_type": "VARCHAR(16) DEFAULT 'bot'",
+            "invite_code": "VARCHAR(32)",
+            "guest_token_hash": "VARCHAR(64)",
+            "history_json": "TEXT DEFAULT '[]'",
+        }
+        for column_name, column_type in additive_game_columns.items():
+            if column_name not in game_columns:
+                with engine.begin() as connection:
+                    connection.execute(text(f"ALTER TABLE game_sessions ADD COLUMN {column_name} {column_type}"))
+        existing_indexes = {index["name"] for index in inspect(engine).get_indexes("game_sessions")}
+        if "invite_code" not in existing_indexes and "ix_game_sessions_invite_code" not in existing_indexes:
+            with engine.begin() as connection:
+                connection.execute(text("CREATE UNIQUE INDEX ix_game_sessions_invite_code ON game_sessions (invite_code)"))
     if "card_references" in tables:
         reference_columns = {
             column["name"] for column in inspector.get_columns("card_references")

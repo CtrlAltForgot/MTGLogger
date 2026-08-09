@@ -65,3 +65,37 @@ def test_bot_prioritizes_playing_land_then_casting_spells():
     bot=next(player for player in state["players"] if player["id"]=="bot")
     land=next(card for card in bot["library"] if "Land" in card["type_line"]);bot["library"].remove(land);bot["hand"].append(land)
     assert choose_bot_action(state,"expert")["type"]=="play_land"
+
+
+def test_targeted_removal_requires_and_resolves_a_legal_creature_target():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"})
+    player=next(player for player in state["players"] if player["id"]=="player");bot=next(player for player in state["players"] if player["id"]=="bot")
+    removal={**card(90,"Doom Blade","Instant","{1}{B}"),"oracle_text":"Destroy target creature."}
+    # Game cards have unique runtime identity and ownership metadata.
+    removal.update({"instance_id":"removal","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False});player["hand"].append(removal)
+    for index,name in enumerate(("Swamp","Island")):
+        land={**card(91+index,name,f"Basic Land — {name}"),"instance_id":f"land-{index}","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].append(land)
+    creature=next(item for item in bot["library"] if "Creature" in item["type_line"]);bot["library"].remove(creature);bot["battlefield"].append(creature)
+    cast=next(action for action in legal_actions(state,"player") if action.get("card_id")=="removal")
+    assert any(target["id"]==creature["instance_id"] for target in cast["targets"])
+    state=perform_action(state,"player",{"type":"cast","card_id":"removal","target_id":creature["instance_id"]});state=perform_action(state,"player",{"type":"resolve"})
+    bot=next(player for player in state["players"] if player["id"]=="bot")
+    assert creature in bot["graveyard"] and creature not in bot["battlefield"]
+
+
+def test_token_effect_and_manual_corrections_are_persisted_in_state():
+    state=kept_game();state=perform_action(state,"player",{"type":"adjust_life","amount":-3})
+    state=perform_action(state,"player",{"type":"create_token","token_name":"Soldier","power":1,"toughness":1})
+    player=next(player for player in state["players"] if player["id"]=="player");token=player["battlefield"][0]
+    state=perform_action(state,"player",{"type":"add_counter","target_id":token["instance_id"],"counter_name":"+1/+1","amount":2})
+    player=next(player for player in state["players"] if player["id"]=="player")
+    assert player["life"]==17
+    assert player["battlefield"][0]["counters"]["+1/+1"]==2
+
+
+def test_human_opponent_game_exposes_each_viewer_only_their_own_hand():
+    first,second=decks();state=new_game(first,second,opponent_is_bot=False)
+    host=public_state(state,"player");guest=public_state(state,"bot")
+    assert next(player for player in host["players"] if player["id"]=="bot")["hand"]==[]
+    assert next(player for player in guest["players"] if player["id"]=="player")["hand"]==[]
+    assert len(next(player for player in guest["players"] if player["id"]=="bot")["hand"])==7

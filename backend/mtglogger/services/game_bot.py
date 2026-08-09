@@ -22,8 +22,13 @@ def choose_bot_action(state: dict, difficulty: str = "standard") -> dict | None:
     if "cast" in by_type:
         spells = by_type["cast"]
         if difficulty == "beginner":
-            return random.choice(spells)
-        return max(spells, key=lambda action: (_card(state, "bot", action["card_id"]).get("mana_value") or 0, len(_card(state, "bot", action["card_id"]).get("oracle_text") or "")))
+            choice = random.choice(spells)
+        else:
+            choice = max(spells, key=lambda action: (_card(state, "bot", action["card_id"]).get("mana_value") or 0, len(_card(state, "bot", action["card_id"]).get("oracle_text") or "")))
+        if choice.get("targets"):
+            opposing = [target for target in choice["targets"] if target["controller_id"] != "bot"]
+            choice = {**choice, "target_id": (opposing or choice["targets"])[0]["id"]}
+        return choice
     if "declare_attackers" in by_type:
         action = by_type["declare_attackers"][0]
         if difficulty == "beginner":

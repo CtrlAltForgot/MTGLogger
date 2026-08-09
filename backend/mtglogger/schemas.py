@@ -299,6 +299,7 @@ class GameCreate(BaseModel):
     player_deck_id: str
     opponent_deck_id: str
     bot_difficulty: str = Field("standard", pattern="^(beginner|standard|expert)$")
+    opponent_type: str = Field("bot", pattern="^(bot|human)$")
     play_first: bool = True
 
 
@@ -308,6 +309,12 @@ class GameAction(BaseModel):
     target_id: str | None = None
     attacker_ids: list[str] = Field(default_factory=list)
     blocks: dict[str, str] = Field(default_factory=dict)
+    amount: int | None = Field(None, ge=-100, le=100)
+    counter_name: str | None = Field(None, max_length=32)
+    token_name: str | None = Field(None, max_length=80)
+    power: int | None = Field(None, ge=0, le=99)
+    toughness: int | None = Field(None, ge=1, le=99)
+    destination: str | None = Field(None, pattern="^(hand|battlefield|graveyard|exile)$")
 
 
 class GameRead(BaseModel):
@@ -317,6 +324,9 @@ class GameRead(BaseModel):
     player_deck_id: str
     opponent_deck_id: str
     bot_difficulty: str
+    opponent_type: str
+    invite_code: str | None = None
+    invite_token: str | None = None
     state: dict
     legal_actions: list[dict]
     created_at: datetime

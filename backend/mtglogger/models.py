@@ -283,7 +283,11 @@ class GameSession(Base):
     player_deck_id: Mapped[str] = mapped_column(ForeignKey("decks.id", ondelete="CASCADE"))
     opponent_deck_id: Mapped[str] = mapped_column(ForeignKey("decks.id", ondelete="CASCADE"))
     bot_difficulty: Mapped[str] = mapped_column(String(32), default="standard")
+    opponent_type: Mapped[str] = mapped_column(String(16), default="bot")
+    invite_code: Mapped[str | None] = mapped_column(String(32), nullable=True, unique=True, index=True)
+    guest_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     state_json: Mapped[str] = mapped_column(Text)
+    history_json: Mapped[str] = mapped_column(Text, default="[]")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now
