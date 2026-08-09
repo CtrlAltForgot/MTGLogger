@@ -8,13 +8,45 @@ def _card(state: dict, player_id: str, instance_id: str) -> dict:
     return next(card for zone in (player["hand"], player["battlefield"]) for card in zone if card["instance_id"] == instance_id)
 
 
+def _stats(card:dict)->tuple[int,int]:
+    try:return int(card.get("power") or 0),int(card.get("toughness") or 0)
+    except ValueError:return 0,0
+
+
+def _should_mulligan(state:dict,difficulty:str)->bool:
+    bot=next(player for player in state["players"] if player["id"]=="bot");lands=sum("Land" in card.get("type_line","") for card in bot["hand"]);mulligans=bot.get("mulligans",0)
+    if difficulty=="beginner" or mulligans>=3:return False
+    if difficulty=="standard":return lands<2 or lands>5
+    castable_curve=sum(1 for card in bot["hand"] if "Land" not in card.get("type_line","") and (card.get("mana_value") or 0)<=3)
+    return lands<2 or lands>4 or castable_curve<2
+
+
+def _choose_blocks(state:dict,action:dict,difficulty:str)->dict[str,str]:
+    bot=next(player for player in state["players"] if player["id"]=="bot");enemy=next(player for player in state["players"] if player["id"]!="bot")
+    blockers={card["instance_id"]:card for card in bot["battlefield"]};attackers={card["instance_id"]:card for card in enemy["battlefield"] if card["instance_id"] in state["combat"]["attackers"]};available=set(action["card_ids"]);result={}
+    ordered=sorted(attackers,key=lambda card_id:_stats(attackers[card_id])[0],reverse=True)
+    for attacker_id in ordered:
+        legal=[blocker_id for blocker_id in available if attacker_id in action.get("legal_blocks",{}).get(blocker_id,[])]
+        menace=any(keyword.casefold()=="menace" for keyword in attackers[attacker_id].get("keywords",[])) or "menace" in (attackers[attacker_id].get("oracle_text") or "").casefold();needed=2 if menace else 1
+        if len(legal)<needed:continue
+        if difficulty=="beginner":
+            if random.random()<.45:continue
+            chosen=random.sample(legal,needed)
+        else:
+            power,toughness=_stats(attackers[attacker_id]);legal.sort(key=lambda blocker_id:(_stats(blockers[blocker_id])[0]>=toughness,_stats(blockers[blocker_id])[1]>power,_stats(blockers[blocker_id])[0]),reverse=True)
+            chosen=legal[:needed]
+            if difficulty=="standard" and sum(_stats(blockers[blocker_id])[0] for blocker_id in chosen)<toughness and power<4:continue
+        for blocker_id in chosen:result[blocker_id]=attacker_id;available.remove(blocker_id)
+    return result
+
+
 def choose_bot_action(state: dict, difficulty: str = "standard") -> dict | None:
     actions = legal_actions(state, "bot")
     if not actions:
         return None
     by_type = {kind: [action for action in actions if action["type"] == kind] for kind in {action["type"] for action in actions}}
     if "keep" in by_type:
-        return by_type["keep"][0]
+        return by_type.get("mulligan",by_type["keep"])[0] if _should_mulligan(state,difficulty) else by_type["keep"][0]
     if "bottom_mulligan_cards" in by_type:
         action=by_type["bottom_mulligan_cards"][0];amount=action["amount"]
         ranked=sorted(action["card_ids"],key=lambda card_id:("Land" in _card(state,"bot",card_id).get("type_line",""),-(_card(state,"bot",card_id).get("mana_value") or 0)))
@@ -51,8 +83,7 @@ def choose_bot_action(state: dict, difficulty: str = "standard") -> dict | None:
         return {"type": "declare_attackers", "attacker_ids": ids}
     if "declare_blockers" in by_type:
         action = by_type["declare_blockers"][0]
-        attackers = state["combat"]["attackers"]
-        return {"type": "declare_blockers", "blocks": dict(zip(action["card_ids"], attackers))}
+        return {"type": "declare_blockers", "blocks": _choose_blocks(state,action,difficulty)}
     return by_type.get("advance_phase", [None])[0]
 
 

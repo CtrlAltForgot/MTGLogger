@@ -1,4 +1,4 @@
-from mtglogger.services.game_bot import choose_bot_action
+from mtglogger.services.game_bot import _choose_blocks, choose_bot_action
 from mtglogger.services.game_engine import RuleViolation, legal_actions, new_game, perform_action, public_state
 
 
@@ -67,6 +67,17 @@ def test_bot_prioritizes_playing_land_then_casting_spells():
     bot=next(player for player in state["players"] if player["id"]=="bot")
     land=next(card for card in bot["library"] if "Land" in card["type_line"]);bot["library"].remove(land);bot["hand"].append(land)
     assert choose_bot_action(state,"expert")["type"]=="play_land"
+
+
+def test_bot_mulligans_bad_hands_by_difficulty_and_assigns_only_legal_blocks():
+    first,second=decks();state=new_game(first,second);bot=next(player for player in state["players"] if player["id"]=="bot")
+    bot["library"].extend(bot["hand"]);bot["hand"]=[]
+    spells=[card for card in bot["library"] if "Land" not in card["type_line"]][:7]
+    for spell in spells:bot["library"].remove(spell);bot["hand"].append(spell)
+    assert choose_bot_action(state,"beginner")["type"]=="keep" and choose_bot_action(state,"expert")["type"]=="mulligan"
+    attacker={**card(70,"Flyer","Creature — Bird","","4","4"),"keywords":["Flying"],"instance_id":"flyer","owner_id":"player","controller_id":"player"};menace={**card(71,"Menace","Creature — Horror","","3","3"),"keywords":["Menace"],"instance_id":"menace","owner_id":"player","controller_id":"player"};ground={**card(72,"Ground","Creature — Bear","","3","3"),"instance_id":"ground","owner_id":"bot","controller_id":"bot"};reach={**card(73,"Reach","Creature — Archer","","2","4"),"keywords":["Reach"],"instance_id":"reach","owner_id":"bot","controller_id":"bot"};helper={**card(74,"Helper","Creature — Soldier","","2","2"),"instance_id":"helper","owner_id":"bot","controller_id":"bot"};player=next(p for p in state["players"] if p["id"]=="player");player["battlefield"]=[attacker,menace];bot["battlefield"]=[ground,reach,helper];state["combat"]={"attackers":["flyer","menace"],"blocks":{}}
+    action={"type":"declare_blockers","card_ids":["ground","reach","helper"],"legal_blocks":{"ground":["menace"],"reach":["flyer","menace"],"helper":["menace"]}}
+    blocks=_choose_blocks(state,action,"expert");assert blocks.get("reach")=="flyer" and list(blocks.values()).count("menace") in {0,2}
 
 
 def test_targeted_removal_requires_and_resolves_a_legal_creature_target():
