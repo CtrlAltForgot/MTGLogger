@@ -173,10 +173,18 @@ def _activated_abilities(card: dict) -> list[dict]:
         cost,effect = match.group(1).strip(),match.group(2).strip()
         mana_cost="".join(re.findall(r"\{[^}]+\}",cost,re.IGNORECASE)).upper().replace("{T}","").replace("{Q}","")
         taps="{T}" in cost.upper()
-        if re.search(r"\b(?:sacrifice|discard|pay \d+ life|remove .+ counter)\b",cost,re.IGNORECASE) or (not taps and not mana_cost):continue
+        source_name=re.escape(card.get("name", ""));self_reference=rf"(?:~|this (?:artifact|creature|permanent)|{source_name})"
+        self_sacrifice=re.search(rf"\bsacrifice {self_reference}\b",cost,re.IGNORECASE) is not None
+        life_match=re.search(r"\bpay (\d+) life\b",cost,re.IGNORECASE);life_cost=int(life_match.group(1)) if life_match else 0
+        counter_match=re.search(rf"\bremove (a|one|two|three|four|five|\d+) ([\w+/-]+) counters? from {self_reference}\b",cost,re.IGNORECASE)
+        counter_cost=None
+        if counter_match:
+            word=counter_match.group(1).casefold();amount={"a":1,"one":1,"two":2,"three":3,"four":4,"five":5}.get(word,int(word) if word.isdigit() else 1);counter_cost={"name":counter_match.group(2).replace("−","-"),"amount":amount}
+        unsupported=re.search(r"\bdiscard\b",cost,re.IGNORECASE) or ("sacrifice" in cost.casefold() and not self_sacrifice) or ("remove" in cost.casefold() and "counter" in cost.casefold() and not counter_cost)
+        if unsupported or (not taps and not mana_cost and not self_sacrifice and not life_cost and not counter_cost):continue
         if re.match(r"add (?:\{|one mana)", effect, re.IGNORECASE): continue
         ability_card = {**card, "name": f"{card['name']} ability", "oracle_text": effect, "type_line": "Ability", "mana_cost": ""}
-        abilities.append({"cost":cost,"mana_cost":mana_cost,"taps":taps,"effect":effect,"card":ability_card})
+        abilities.append({"cost":cost,"mana_cost":mana_cost,"taps":taps,"self_sacrifice":self_sacrifice,"life_cost":life_cost,"counter_cost":counter_cost,"effect":effect,"card":ability_card})
     return abilities
 
 
@@ -415,9 +423,11 @@ def legal_actions(state: dict, player_id: str) -> list[dict]:
         for index, ability in enumerate(_activated_abilities(permanent)):
             if ability["taps"] and (permanent.get("tapped") or ("Creature" in permanent.get("type_line", "") and permanent.get("summoning_sick") and not _has_keyword(permanent,"Haste"))):continue
             if ability["mana_cost"] and not _can_pay(player,{"mana_cost":ability["mana_cost"]},excluded_id=permanent["instance_id"] if ability["taps"] else None):continue
+            if ability["life_cost"] and player["life"]<ability["life_cost"]:continue
+            if ability["counter_cost"] and permanent.get("counters",{}).get(ability["counter_cost"]["name"],0)<ability["counter_cost"]["amount"]:continue
             targets = _targets(state, player_id, ability["card"])
             if _target_kind(ability["card"]) and not targets: continue
-            action = {"type": "activate", "card_id": permanent["instance_id"], "ability_index": index, "label": f"{ability['cost']}: {ability['effect']}"}
+            action = {"type": "activate", "card_id": permanent["instance_id"], "ability_index": index, "label": f"{ability['cost']}: {ability['effect']}","life_cost":ability["life_cost"],"self_sacrifice":ability["self_sacrifice"],"counter_cost":ability["counter_cost"]}
             if targets: action["targets"] = targets
             actions.append(action)
     if active and main and not state["stack"]:
@@ -817,9 +827,13 @@ def perform_action(state: dict, player_id: str, action: dict) -> dict:
         ability=_activated_abilities(permanent)[index];target_id=action.get("target_id");targets=available.get("targets",[])
         if targets and target_id not in {target["id"] for target in targets}:raise RuleViolation("Choose a legal target")
         if ability["mana_cost"]:_pay_mana(player,{"mana_cost":ability["mana_cost"]},excluded_id=permanent["instance_id"] if ability["taps"] else None)
+        if ability["life_cost"]:player["life"]-=ability["life_cost"]
+        if ability["counter_cost"]:
+            name,amount=ability["counter_cost"]["name"],ability["counter_cost"]["amount"];permanent["counters"][name]-=amount
         if ability["taps"]:permanent["tapped"]=True
         stack_item={"id":_id(),"kind":"ability","card":ability["card"],"controller_id":player_id,"target_id":target_id,"source_id":permanent["instance_id"]};state["stack"].append(stack_item);state["consecutive_passes"]=0;state["pending_phase_advance"]=False;_queue_ward(state,player,target_id,stack_item)
-        if _multiplayer(state) and not state.get("pending_ward"):state["priority_player_id"]=opponent(state,player_id)["id"]
+        if ability["self_sacrifice"]:_leave_battlefield(state,player,permanent,"graveyard")
+        if _multiplayer(state) and not state.get("pending_ward") and not state.get("pending_trigger_targets"):state["priority_player_id"]=opponent(state,player_id)["id"]
         _log(state,f"{player['name']} activated {permanent['name']}: {ability['effect']}")
     elif action_type == "activate_loyalty":
         permanent=next((card for card in player["battlefield"] if card["instance_id"]==action.get("card_id") and "Planeswalker" in card.get("type_line","")),None);index=action.get("ability_index")

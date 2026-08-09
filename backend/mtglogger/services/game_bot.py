@@ -90,6 +90,23 @@ def _choose_blocks(state:dict,action:dict,difficulty:str)->dict[str,str]:
     return result
 
 
+def _ability_score(state:dict,action:dict)->float:
+    text=(action.get("label") or "").casefold();source=_card(state,"bot",action["card_id"]);score=0.5
+    draw=re.search(r"draw (?:a|one|two|three|four|five|\d+) cards?",text)
+    if draw:
+        word=draw.group(0).split()[1];score+={"a":2,"one":2,"two":4,"three":6,"four":8,"five":10}.get(word,int(word)*2 if word.isdigit() else 2)
+    if any(term in text for term in ("destroy target","exile target","counter target")):score+=7
+    if "create " in text and " token" in text:score+=4
+    if "deals " in text and " damage" in text:score+=4
+    if "you gain " in text and " life" in text:score+=2
+    if action.get("self_sacrifice"):score-=_threat_score(state,source)*.65
+    score-=float(action.get("life_cost") or 0)*1.25
+    counter_cost=action.get("counter_cost") or {};score-=float(counter_cost.get("amount") or 0)*.75
+    bot=next(player for player in state["players"] if player["id"]=="bot")
+    if action.get("life_cost",0)>=bot["life"]:score-=100
+    return score
+
+
 def choose_bot_action(state: dict, difficulty: str = "standard") -> dict | None:
     actions = legal_actions(state, "bot")
     if not actions:
@@ -151,10 +168,11 @@ def choose_bot_action(state: dict, difficulty: str = "standard") -> dict | None:
             choice = {**choice, "target_id":_choose_target(state,choice)}
         return choice
     if "activate" in by_type:
-        choices=by_type["activate"];choice=max(choices,key=lambda action:len(action.get("label", "")))
-        if choice.get("targets"):
-            choice={**choice,"target_id":_choose_target(state,choice)}
-        return choice
+        choices=by_type["activate"];choice=max(choices,key=lambda action:_ability_score(state,action))
+        if difficulty=="beginner" or _ability_score(state,choice)>0:
+            if choice.get("targets"):
+                choice={**choice,"target_id":_choose_target(state,choice)}
+            return choice
     if "activate_loyalty" in by_type:
         choices=by_type["activate_loyalty"];choice=max(choices,key=lambda action:len(action.get("label","")))
         if choice.get("targets"):
