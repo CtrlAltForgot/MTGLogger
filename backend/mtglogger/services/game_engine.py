@@ -419,6 +419,24 @@ def _consume_shield(state:dict,card:dict,reason:str)->bool:
     return True
 
 
+def _queue_damage_event(state:dict,source:dict,target:dict,amount:int,combat:bool=False)->None:
+    if amount<=0:return
+    controller=_player(state,source.get("controller_id",source.get("owner_id",state["active_player_id"])))
+    source["damage_event_target_id"]=target.get("instance_id") or target.get("id");source["damage_event_target_kind"]="player" if target.get("id") else "permanent";source["damage_event_amount"]=amount;source["damage_event_combat"]=combat
+    _queue_triggers(state,"damage",source,controller)
+    for key in ("damage_event_target_id","damage_event_target_kind","damage_event_amount","damage_event_combat"):source.pop(key,None)
+
+
+def _damage_player(state:dict,target:dict,amount:int,source:dict,combat:bool=False)->int:
+    if amount<=0:return 0
+    if _player_protected_from(state,target,source):_log(state,f"Protection prevented {amount} damage to {target['name']}.");return 0
+    if _has_keyword(source,"Infect"):target["poison"]=target.get("poison",0)+amount
+    else:target["life"]-=amount
+    if _has_keyword(source,"Lifelink"):_gain_life(state,_player(state,source.get("controller_id",source.get("owner_id"))),amount)
+    _queue_damage_event(state,source,target,amount,combat)
+    return amount
+
+
 def _damage_permanent(state:dict,target:dict,amount:int,source:dict)->int:
     if amount<=0:return 0
     if _protected_from(target,source):
@@ -429,6 +447,9 @@ def _damage_permanent(state:dict,target:dict,amount:int,source:dict)->int:
     elif "Planeswalker" in target.get("type_line",""):
         target["counters"]["loyalty"]=max(0,target["counters"].get("loyalty",0)-amount)
     else:target["damage"]+=amount
+    if _has_keyword(source,"Deathtouch"):target["deathtouch_damage"]=True
+    if _has_keyword(source,"Lifelink"):_gain_life(state,_player(state,source.get("controller_id",source.get("owner_id"))),amount)
+    _queue_damage_event(state,source,target,amount)
     return amount
 
 
@@ -444,7 +465,7 @@ def _destroy_permanent(state:dict,owner:dict,card:dict,cant_regenerate:bool=Fals
     if _consume_shield(state,card,"destruction"):return False
     regenerations=card.get("regeneration_shields",0)
     if regenerations and not cant_regenerate:
-        card["regeneration_shields"]=regenerations-1;card["tapped"]=True;card["damage"]=0;_remove_from_combat(state,card["instance_id"]);_log(state,f"{card['name']} regenerated instead of being destroyed.");return False
+        card["regeneration_shields"]=regenerations-1;card["tapped"]=True;card["damage"]=0;card.pop("deathtouch_damage",None);_remove_from_combat(state,card["instance_id"]);_log(state,f"{card['name']} regenerated instead of being destroyed.");return False
     _leave_battlefield(state,owner,card,"graveyard",trigger_sources,trigger_dedupe);return True
 
 
@@ -1331,8 +1352,7 @@ def _resolve_spell(state: dict) -> None:
     damage_match = re.search(r"deals (\d+) damage to (?:target opponent|each opponent)", effect_text)
     if damage_match:
         amount=int(damage_match.group(1))
-        if _player_protected_from(state,other,card):_log(state,f"Protection prevented {amount} damage to {other['name']}.")
-        else:other["life"]-=amount
+        _damage_player(state,other,amount,source_permanent or card)
     lose_life = re.search(r"(?:target opponent|each opponent) loses (\d+) life", effect_text)
     if lose_life: other["life"] -= int(lose_life.group(1))
     you_lose = re.search(r"you lose (\d+) life", effect_text)
@@ -1341,10 +1361,8 @@ def _resolve_spell(state: dict) -> None:
     if targeted_damage and (target_player or target):
         amount = int(targeted_damage.group(1))
         if target_player:
-            if _player_protected_from(state,target_player,card):_log(state,f"Protection prevented {amount} damage to {target_player['name']}.")
-            elif _has_keyword(card,"Infect"):target_player["poison"]=target_player.get("poison",0)+amount
-            else:target_player["life"] -= amount
-        elif target:_damage_permanent(state,target,amount,card)
+            _damage_player(state,target_player,amount,source_permanent or card)
+        elif target:_damage_permanent(state,target,amount,source_permanent or card)
     if fight_steps and len(valid_fight_ids)==len(fight_steps):
         fighters=([source_permanent,next((permanent for owner in state["players"] for permanent in owner["battlefield"] if permanent["instance_id"]==valid_fight_ids[0]),None)] if len(fight_steps)==1 else [next((permanent for owner in state["players"] for permanent in owner["battlefield"] if permanent["instance_id"]==fighter_id),None) for fighter_id in valid_fight_ids[:2]])
         if all(fighters) and fighters[0] is not fighters[1]:
@@ -1512,7 +1530,7 @@ def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str, t
     earthbend_controller=card.get("earthbend_controller") if destination in {"graveyard","exile"} else None
     _queue_triggers(state,"leaves",card,owner,trigger_dedupe,trigger_sources)
     if destination=="graveyard":_queue_triggers(state,"dies",card,owner,trigger_dedupe,trigger_sources)
-    card["damage"] = 0; card["tapped"] = False;card.pop("crewed_turn",None);card.pop("temporary_control_return_to",None);card.pop("activated_ability_usage",None)
+    card["damage"] = 0; card["tapped"] = False;card.pop("deathtouch_damage",None);card.pop("crewed_turn",None);card.pop("temporary_control_return_to",None);card.pop("activated_ability_usage",None)
     if card.get("base_type_line") is not None:card["type_line"]=card.pop("base_type_line")
     if card.get("earthbend_base_type_line") is not None:
         card["type_line"]=card.pop("earthbend_base_type_line");card["power"]=card.pop("earthbend_base_power",None);card["toughness"]=card.pop("earthbend_base_toughness",None)
@@ -1554,7 +1572,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
     if event=="upkeep":
         for owner,permanent in sources:
             if permanent.pop("transform_next_upkeep",False):_transform(state,permanent)
-    if event in {"dies","cycling","discard","cast"} and event_card:
+    if event in {"dies","cycling","discard","cast","damage"} and event_card:
         if not any(source is event_card for _,source in sources):
             insert_at=max((index+1 for index,(owner,_) in enumerate(sources) if owner["id"]==event_owner["id"]),default=len(sources));sources.insert(insert_at,(event_owner,event_card))
     for owner, source in sources:
@@ -1659,6 +1677,16 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 dedupe_key=f"combat-damage:{source.get('instance_id')}"
                 matches=source_match or each_creature or (one_or_more and (dedupe is None or dedupe_key not in dedupe))
                 if matches and one_or_more and dedupe is not None:dedupe.add(dedupe_key)
+            elif event == "damage" and event_card:
+                target_id=event_card.get("damage_event_target_id");target_kind=event_card.get("damage_event_target_kind");combat=bool(event_card.get("damage_event_combat"));source_name=re.escape(event_card.get("name","").casefold());source_self=source is event_card;controlled_source=event_card.get("controller_id")==owner["id"]
+                target_is_source=source.get("instance_id")==target_id;target_player=next((player for player in state["players"] if player["id"]==target_id),None);opponent_target=bool(target_player and target_player["id"]!=owner["id"])
+                destination_ok="any target" in lower or (target_kind=="player" and (("an opponent" in lower and opponent_target) or "a player" in lower))
+                dealt_by_source=source_self and destination_ok and re.search(rf"whenever (?:~|this (?:creature|permanent)|{source_name}) deals (?:combat |noncombat )?damage to (?:a player|an opponent|any target)",lower) is not None
+                controlled_dealt=source is not event_card and controlled_source and (("whenever a source you control deals damage" in lower) or (destination_ok and "creature" in event_card.get("type_line","").casefold() and re.search(r"whenever a creature you control deals (?:combat |noncombat )?damage to (?:a player|an opponent)",lower) is not None))
+                was_dealt=target_is_source and re.search(rf"whenever (?:~|this (?:creature|permanent)|{re.escape(source.get('name','').casefold())}) is dealt damage",lower) is not None
+                player_dealt=target_kind=="player" and ((target_player and target_player["id"]==owner["id"] and "whenever you are dealt damage" in lower) or (opponent_target and "whenever an opponent is dealt damage" in lower))
+                requires_noncombat="noncombat damage" in lower;requires_combat=not requires_noncombat and "combat damage" in lower;qualifier_ok=(not requires_noncombat or not combat) and (not requires_combat or combat)
+                matches=qualifier_ok and not requires_combat and (dealt_by_source or controlled_dealt or was_dealt or player_dealt)
             elif event == "cycling" and event_card:
                 cycled_name=re.escape(event_card.get("name","").casefold());same_card=source is event_card and re.search(rf"when you cycle (?:~|this card|{cycled_name})\b",lower) is not None
                 matches=same_card or (source is not event_card and owner["id"]==event_owner["id"] and "whenever you cycle a card" in lower)
@@ -1692,14 +1720,10 @@ def _combat_damage(state: dict) -> None:
     originally_blocked = set(state["combat"]["blocks"].values())
     def hit_defender(creature:dict, amount:int,target_id:str,trigger_dedupe:set[str])->None:
         planeswalker=next((card for card in defender["battlefield"] if card["instance_id"]==target_id and "Planeswalker" in card.get("type_line","")),None)
-        if not planeswalker and _player_protected_from(state,defender,creature):
-            _log(state,f"Protection prevented {amount} combat damage to {defender['name']}.");return
-        if planeswalker:planeswalker["counters"]["loyalty"]=max(0,planeswalker["counters"].get("loyalty",0)-amount)
-        elif _has_keyword(creature,"Infect"):defender["poison"]=defender.get("poison",0)+amount
-        else:defender["life"] -= amount
+        if planeswalker:_damage_permanent(state,planeswalker,amount,creature)
+        elif not _damage_player(state,defender,amount,creature,True):return
         toxic=_toxic_value(creature)
         if not planeswalker and amount>0 and toxic:defender["poison"]=defender.get("poison",0)+toxic
-        if _has_keyword(creature,"Lifelink"):_gain_life(state,attacker,amount)
         if not planeswalker and creature.get("commander"):
             source = creature["instance_id"];damage=defender.setdefault("commander_damage", {});names=defender.setdefault("commander_damage_names", {})
             # Games saved before individual commander tracking used the owner's id.
@@ -1729,19 +1753,17 @@ def _combat_damage(state: dict) -> None:
             for blocker in blockers:
                 _,toughness=_parse_stats(blocker,state);lethal=1 if _has_keyword(creature,"Deathtouch") else max(1,toughness-blocker.get("damage",0));assigned=min(remaining,lethal);dealt=_damage_permanent(state,blocker,assigned,creature);remaining-=assigned
                 if dealt and _has_keyword(creature,"Deathtouch"):deathtouch_hit.add(blocker["instance_id"])
-                if dealt and _has_keyword(creature,"Lifelink"):_gain_life(state,attacker,dealt)
             if remaining and _has_keyword(creature,"Trample"):hit_defender(creature,remaining,attack_target,trigger_dedupe)
         for blocker_id,attacker_id in state["combat"]["blocks"].items():
             blocker,creature=battlefield.get(blocker_id),battlefield.get(attacker_id)
             if not blocker or not creature or not strikes(blocker):continue
             amount=max(0,_parse_stats(blocker,state)[0]);dealt=_damage_permanent(state,creature,amount,blocker)
             if dealt and _has_keyword(blocker,"Deathtouch"):deathtouch_hit.add(creature["instance_id"])
-            if dealt and _has_keyword(blocker,"Lifelink"):_gain_life(state,defender,dealt)
         for owner in (attacker,defender):
             for creature in list(owner["battlefield"]):
                 if "Creature" not in creature.get("type_line",""):continue
                 _,toughness=_parse_stats(creature,state)
-                if creature.get("damage",0)>=toughness or creature["instance_id"] in deathtouch_hit:_destroy_permanent(state,owner,creature)
+                if creature.get("damage",0)>=toughness or creature["instance_id"] in deathtouch_hit or creature.get("deathtouch_damage"):_destroy_permanent(state,owner,creature)
 
     participants=[card for owner in (attacker,defender) for card in owner["battlefield"] if card["instance_id"] in state["combat"]["attackers"] or card["instance_id"] in state["combat"]["blocks"]]
     if state["combat"].get("damage_step") is None:
@@ -1787,7 +1809,7 @@ def _state_based_actions(state: dict) -> None:
                         _detach(state,permanent)
                         if aura:_leave_battlefield(state,owner,permanent,"graveyard",trigger_sources,trigger_dedupe);changed=True;continue
                 _,toughness=_parse_stats(permanent,state)
-                if "Creature" in permanent.get("type_line","") and (toughness<=0 or (permanent.get("damage",0)>=toughness and not _has_keyword(permanent,"Indestructible"))):
+                if "Creature" in permanent.get("type_line","") and (toughness<=0 or ((permanent.get("damage",0)>=toughness or permanent.get("deathtouch_damage")) and not _has_keyword(permanent,"Indestructible"))):
                     if toughness<=0:_leave_battlefield(state,owner,permanent,"graveyard",trigger_sources,trigger_dedupe)
                     else:_destroy_permanent(state,owner,permanent,trigger_sources=trigger_sources,trigger_dedupe=trigger_dedupe)
                     changed=True
@@ -1816,7 +1838,7 @@ def _begin_next_turn(state:dict)->None:
     for owner in state["players"]:
         owner["firebending_mana"]=0;owner["bent_this_turn"]=[]
         for permanent in owner["battlefield"]:
-            permanent.pop("temporary_power",None);permanent.pop("temporary_toughness",None);permanent.pop("temporary_keywords",None);permanent.pop("cant_attack_until_turn",None);permanent.pop("cant_block_until_turn",None);permanent.pop("regeneration_shields",None);permanent.pop("crewed_turn",None);permanent["damage"]=0
+            permanent.pop("temporary_power",None);permanent.pop("temporary_toughness",None);permanent.pop("temporary_keywords",None);permanent.pop("cant_attack_until_turn",None);permanent.pop("cant_block_until_turn",None);permanent.pop("regeneration_shields",None);permanent.pop("deathtouch_damage",None);permanent.pop("crewed_turn",None);permanent["damage"]=0
             if permanent.get("base_type_line") is not None:permanent["type_line"]=permanent.pop("base_type_line")
     for permanent in active["battlefield"]: permanent["tapped"] = False; permanent["summoning_sick"] = False
     _log(state, f"Turn {state['turn']} began for {active['name']}. Untap and upkeep started."); _queue_triggers(state,"upkeep",None,active)
