@@ -1,7 +1,7 @@
 import pytest
 
 from mtglogger.services.game_bot import _choose_blocks, choose_bot_action, run_bot
-from mtglogger.services.game_engine import RuleViolation, _add_counters, _add_saga_lore, _amass, _change_control, _combat_damage, _counter_stack_item, _enter_battlefield, _face_down_ability, _has_keyword, _leave_graveyard, _put_into_exile, _queue_triggers, _set_tapped, _venture_undercity, _ward_details, legal_actions, new_game, perform_action, public_state
+from mtglogger.services.game_engine import RuleViolation, _add_counters, _add_saga_lore, _amass, _change_control, _combat_damage, _counter_stack_item, _enter_battlefield, _explore, _face_down_ability, _has_keyword, _leave_graveyard, _put_into_exile, _queue_triggers, _set_tapped, _venture_undercity, _ward_details, legal_actions, new_game, perform_action, public_state
 
 
 def card(index:int,name:str,type_line:str,mana_cost:str="",power:str|None=None,toughness:str|None=None,quantity:int=1):
@@ -2106,3 +2106,15 @@ def test_suspend_free_cast_preserves_target_choice():
 def test_bot_uses_suspend_when_it_cannot_cast_the_spell_normally():
     state=kept_game();state["active_player_id"]="bot";state["priority_player_id"]="bot";state["phase"]="precombat_main";bot=next(p for p in state["players"] if p["id"]=="bot");mountain={**card(1680,"Mountain","Basic Land — Mountain"),"instance_id":"bot-suspend-land","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};spell={**card(1681,"Greater Gargadon","Creature — Beast","{9}{R}","9","7"),"oracle_text":"Suspend 10—{R}","instance_id":"gargadon","owner_id":"bot","controller_id":"bot"};bot["battlefield"].append(mountain);bot["hand"]=[spell];choice=choose_bot_action(state,"expert")
     assert choice and choice["type"]=="suspend" and choice["card_id"]=="gargadon"
+
+
+def test_explore_moves_lands_to_hand_and_pauses_for_the_nonland_choice():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player");scout={**card(1690,"Pathfinder","Creature — Scout","","2","2"),"instance_id":"pathfinder","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};land={**card(1691,"Explore Forest","Basic Land — Forest"),"instance_id":"explore-forest","owner_id":"player","controller_id":"player"};spell={**card(1692,"Explore Prize","Sorcery","{5}{G}"),"instance_id":"explore-prize","owner_id":"player","controller_id":"player"};player["battlefield"].append(scout);player["library"].extend([spell,land]);_explore(state,player,[scout,scout]);assert land in player["hand"] and scout["counters"]["+1/+1"]==1
+    actions=legal_actions(state,"player");assert {action["type"] for action in actions}=={"keep_explored","graveyard_explored","concede"} and next(action for action in actions if action["type"]=="keep_explored")["card"]["name"]=="Explore Prize"
+    visible=public_state(state,"bot");assert visible["pending_explore"]["card"]["name"]=="Explore Prize"
+    state=perform_action(state,"player",{"type":"graveyard_explored"});player=next(p for p in state["players"] if p["id"]=="player");assert spell in player["graveyard"] and not state.get("pending_explore")
+
+
+def test_targeted_explore_resolves_and_bot_makes_the_keep_or_mill_decision():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot");scout={**card(1700,"Explorer","Creature — Scout","","1","1"),"instance_id":"explorer","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};source={**card(1701,"Explore Source","Ability"),"oracle_text":"Target creature you control explores.","instance_id":"explore-source","owner_id":"player","controller_id":"player"};top={**card(1702,"Useful Spell","Instant","{1}{U}"),"instance_id":"useful-spell","owner_id":"player","controller_id":"player"};player["battlefield"].append(scout);player["library"].append(top);state["stack"].append({"id":"explore-stack","kind":"ability","card":source,"controller_id":"player","target_id":"explorer","source_id":"missing"});state=perform_action(state,"player",{"type":"resolve"});assert state["pending_explore"] and next(card for card in next(p for p in state["players"] if p["id"]=="player")["battlefield"] if card["instance_id"]=="explorer")["counters"]["+1/+1"]==1
+    bot_scout={**scout,"instance_id":"bot-explorer","owner_id":"bot","controller_id":"bot","counters":{}};expensive={**card(1703,"Uncastable Future","Sorcery","{9}{U}"),"mana_value":10,"instance_id":"bot-expensive","owner_id":"bot","controller_id":"bot"};bot["battlefield"]=[bot_scout];bot["library"].append(expensive);state["pending_explore"]=None;state["pending_explore_queue"]=[];_explore(state,bot,[bot_scout]);choice=choose_bot_action(state,"expert");assert choice["type"]=="graveyard_explored"

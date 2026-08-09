@@ -830,6 +830,26 @@ def _amass(state:dict,player:dict,subtype:str,amount:int,source_name:str)->None:
     state["pending_amass"]={"player_id":player["id"],"source_name":source_name,"subtype":subtype,"amount":amount,"card_ids":[army["instance_id"] for army in armies]};state["priority_player_id"]=player["id"]
 
 
+def _continue_explore(state:dict,player:dict)->None:
+    queue=state.setdefault("pending_explore_queue",[])
+    while queue:
+        creature_id=queue.pop(0);creature=next((card for card in player["battlefield"] if card["instance_id"]==creature_id and "Creature" in card.get("type_line","")),None)
+        if not creature:continue
+        if not player["library"]:_log(state,f"{creature['name']} explored, but {player['name']}'s library was empty.");continue
+        revealed=player["library"][-1];_log(state,f"{player['name']} revealed {revealed['name']} as {creature['name']} explored.")
+        if "Land" in revealed.get("type_line",""):
+            player["library"].pop();player["hand"].append(revealed);_log(state,f"{player['name']} put the revealed land into their hand.");continue
+        _add_counters(state,creature,"+1/+1",1,player["id"],"explore")
+        state["pending_explore"]={"player_id":player["id"],"creature_id":creature_id,"creature_name":creature["name"],"card_id":revealed["instance_id"],"card":revealed};state["priority_player_id"]=player["id"]
+        _log(state,f"{creature['name']} received a +1/+1 counter. {player['name']} may put {revealed['name']} into their graveyard.");return
+    state["pending_explore"]=None;state["pending_explore_queue"]=[]
+
+
+def _explore(state:dict,player:dict,creatures:list[dict])->None:
+    state.setdefault("pending_explore_queue",[]).extend(card["instance_id"] for card in creatures)
+    if not state.get("pending_explore"):_continue_explore(state,player)
+
+
 def _bottom_randomized_exiled(state:dict,player:dict,card_ids:list[str])->None:
     cards=[card for card in player["exile"] if card["instance_id"] in set(card_ids)]
     if cards:_leave_exile(state,player,cards)
@@ -1011,6 +1031,7 @@ def new_game(player_deck: list[dict], opponent_deck: list[dict], play_first: boo
     human_id, bot_id = "player", "bot"
     players = [_new_player(human_id, "You", player_deck, False, player_format), _new_player(bot_id, "Bot" if opponent_is_bot else "Guest", opponent_deck, opponent_is_bot, opponent_format)]
     state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "beginning_draw_pending":True,"first_turn_draw_skipped":False,"active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id,"monarch_id":None,"initiative_id":None, "players": players, "stack": [], "combat": {"attackers": [], "attackers_declared":False,"blocks": {}, "attack_targets": {},"block_orders":{},"damage_pending":False,"damage_step":None,"first_strike_damage_ids":[],"block_triggers_pending":False}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "pending_legendary": None,"pending_commander_zone":[],"pending_library_search":None,"pending_scry":None,"pending_damage_order":None,"pending_ward":None,"pending_blight":None,"pending_proliferate":None,"pending_amass":None,"pending_discovery":None,"pending_manifest":None,"pending_transform":None,"pending_dungeon":None,"pending_trigger_targets":[], "log": []}
+    state["pending_explore"]=None;state["pending_explore_queue"]=[]
     for player in players:
         _draw(state, player, 7,False)
     _log(state, "Opening hands drawn. Choose whether to keep or mulligan.")
@@ -1200,6 +1221,7 @@ def _multiplayer(state: dict) -> bool:
 
 
 def _pending_decision(state:dict)->bool:
+    if state.get("pending_explore"):return True
     return bool(state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_discovery") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
 
 
@@ -1299,6 +1321,11 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
         if pending_amass["player_id"]!=player_id:return []
         cards_by_id={card["instance_id"]:card for card in player["battlefield"]};targets=[{"id":card_id,"name":cards_by_id[card_id]["name"],"kind":"permanent","controller_id":player_id} for card_id in pending_amass["card_ids"] if card_id in cards_by_id]
         return [{"type":"choose_amass_army","targets":targets,"source_name":pending_amass["source_name"],"amount":pending_amass["amount"],"subtype":pending_amass["subtype"]},{"type":"concede"}]
+    pending_explore=state.get("pending_explore")
+    if pending_explore:
+        if pending_explore["player_id"]!=player_id:return []
+        common={"card_id":pending_explore["card_id"],"card":pending_explore["card"],"creature_name":pending_explore["creature_name"]}
+        return [{"type":"keep_explored",**common},{"type":"graveyard_explored",**common},{"type":"concede"}]
     pending_discovery=state.get("pending_discovery")
     if pending_discovery:
         if pending_discovery["player_id"]!=player_id:return []
@@ -1616,6 +1643,12 @@ def _resolve_spell(state: dict) -> None:
     incubate_match=re.search(r"\bincubates? (\d+)\b",keyword_text)
     if incubate_match:
         amount=int(incubate_match.group(1));token=_incubator_token(caster);_enter_battlefield(state,caster,[token],"token");_add_counters(state,token,"+1/+1",amount,caster["id"],"incubate");_log(state,f"{caster['name']} incubated {amount}.")
+    each_explores=re.search(r"\b(?:each creature|creatures) you control explores?\b",keyword_text)
+    explore_match=re.search(r"\b(?:(?:up to one )?target creature(?: you control)?|this creature|it) explores?(?: (twice|three times|\d+ times))?\b",keyword_text)
+    if each_explores:_explore(state,caster,[permanent for permanent in caster["battlefield"] if "Creature" in permanent.get("type_line","")])
+    elif explore_match:
+        repeats={"twice":2,"three times":3}.get(explore_match.group(1),int(explore_match.group(1).split()[0]) if explore_match.group(1) and explore_match.group(1)[0].isdigit() else 1);explorer=target or source_permanent or event_permanent
+        if explorer:_explore(state,_player(state,explorer["controller_id"]),[explorer]*repeats)
     discover_match=re.search(r"\bdiscover (\d+)\b",keyword_text)
     if discover_match:_start_discovery(state,caster,int(discover_match.group(1)),"discover",source_permanent.get("name",card["name"]) if source_permanent else card["name"])
     face_down_text=re.sub(r"\([^()]*(?:to manifest|to cloak)[^()]*\)","",effect_text);source_name=source_permanent.get("name",card["name"]) if source_permanent else card["name"]
@@ -2536,6 +2569,14 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
             chosen=next(card for card in top if card["instance_id"]==card_id);player["library"].remove(chosen);top.remove(chosen);chosen["controller_id"]=player_id;chosen["summoning_sick"]=True;chosen["hexproof_until_turn"]=state["turn"]+1;_add_counters(state,chosen,"+1/+1",3,player_id,"dungeon");_enter_battlefield(state,player,[chosen],"library")
         for card in top:player["library"].remove(card)
         random.SystemRandom().shuffle(top);player["library"][0:0]=top;state["priority_player_id"]=state["active_player_id"];_log(state,f"{player['name']} completed the Undercity.")
+    elif action_type in {"keep_explored","graveyard_explored"}:
+        pending=state.get("pending_explore") or {};card=next((card for card in player["library"] if card["instance_id"]==pending.get("card_id")),None)
+        if pending.get("player_id")!=player_id or not card or player["library"][-1] is not card:raise RuleViolation("That explored card is no longer on top of the library")
+        state["pending_explore"]=None
+        if action_type=="graveyard_explored":player["library"].pop();player["graveyard"].append(card);_log(state,f"{player['name']} put {card['name']} into their graveyard after exploring.")
+        else:_log(state,f"{player['name']} kept {card['name']} on top of their library after exploring.")
+        _continue_explore(state,player)
+        if not state.get("pending_explore"):state["priority_player_id"]=(state.get("pending_trigger_targets") or [{"controller_id":state["active_player_id"]}])[0]["controller_id"]
     elif action_type=="cast_face_down":
         card=next((card for card in player["hand"] if card["instance_id"]==action.get("card_id")),None);ability=_face_down_ability(card or {})
         if not card or not ability or not (state["active_player_id"]==player_id and state["phase"] in {"precombat_main","postcombat_main"} and not state["stack"]):raise RuleViolation("That card cannot be cast face down now")
