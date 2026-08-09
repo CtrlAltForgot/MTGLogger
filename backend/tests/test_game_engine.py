@@ -348,6 +348,23 @@ def test_spells_fizzle_when_their_only_target_becomes_illegal():
     assert any(card["instance_id"]=="future-hexproof" for card in bot["battlefield"]) and any(card["instance_id"]=="doom-attempt" for card in player["graveyard"]) and "no longer legal" in state["log"][-1]["message"]
 
 
+def test_ward_requires_a_persisted_pay_or_counter_decision():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
+    warded={**card(724,"Warded Sage","Creature — Wizard","","2","2"),"oracle_text":"Ward {2}","instance_id":"warded","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};removal={**card(725,"Ward Breaker","Instant"),"oracle_text":"Destroy target creature.","instance_id":"ward-breaker","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};lands=[]
+    for index in range(2):land=next(card for card in player["library"] if "Land" in card["type_line"]);player["library"].remove(land);land["instance_id"]=f"ward-land-{index}";land["tapped"]=False;lands.append(land)
+    player["battlefield"].extend(lands);player["hand"].append(removal);bot["battlefield"].append(warded);state=perform_action(state,"player",{"type":"cast","card_id":"ward-breaker","target_id":"warded"});actions=legal_actions(state,"player")
+    assert {action["type"] for action in actions}>={"pay_ward","decline_ward"} and state["pending_ward"]["mana_cost"]=="{2}"
+    state=perform_action(state,"player",{"type":"pay_ward"});player=next(p for p in state["players"] if p["id"]=="player");assert all(land["tapped"] for land in player["battlefield"] if land["instance_id"].startswith("ward-land"));state=perform_action(state,"player",{"type":"resolve"});bot=next(p for p in state["players"] if p["id"]=="bot");assert any(card["instance_id"]=="warded" for card in bot["graveyard"])
+
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot");player["hand"].append(removal);bot["battlefield"].append(warded);state=perform_action(state,"player",{"type":"cast","card_id":"ward-breaker","target_id":"warded"});assert "pay_ward" not in {action["type"] for action in legal_actions(state,"player")}
+    state=perform_action(state,"player",{"type":"decline_ward"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot");assert not state["stack"] and any(card["instance_id"]=="ward-breaker" for card in player["graveyard"]) and any(card["instance_id"]=="warded" for card in bot["battlefield"])
+
+    state=kept_game();bot=next(p for p in state["players"] if p["id"]=="bot");state["active_player_id"]="bot";state["priority_player_id"]="bot";bot_lands=[]
+    for index in range(2):land=next(card for card in bot["library"] if "Land" in card["type_line"]);bot["library"].remove(land);land["instance_id"]=f"bot-ward-land-{index}";land["tapped"]=False;bot_lands.append(land)
+    bot["battlefield"].extend(bot_lands);state["stack"]=[{"id":"bot-ward-spell","card":removal,"controller_id":"bot","target_id":"warded"}];state["pending_ward"]={"player_id":"bot","stack_id":"bot-ward-spell","mana_cost":"{2}","source_name":"Warded Sage"}
+    assert choose_bot_action(state,"expert")["type"]=="pay_ward" and choose_bot_action(state,"beginner")["type"]=="decline_ward"
+
+
 def test_countered_commander_spell_returns_to_command_zone():
     first,second=decks();state=new_game(first,second,opponent_is_bot=False,player_format="Commander");state=perform_action(state,"player",{"type":"keep"});state=perform_action(state,"bot",{"type":"keep"});state["phase"]="precombat_main";player=next(p for p in state["players"] if p["id"]=="player");guest=next(p for p in state["players"] if p["id"]=="bot")
     commander={**card(722,"Test Commander","Legendary Creature — Wizard","","2","2"),"instance_id":"test-commander","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False,"commander":True};counter={**card(723,"Command Denial","Instant"),"oracle_text":"Counter target spell.","instance_id":"command-denial","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["command"].append(commander);guest["hand"].append(counter)

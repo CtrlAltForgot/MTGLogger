@@ -47,6 +47,9 @@ def choose_bot_action(state: dict, difficulty: str = "standard") -> dict | None:
     by_type = {kind: [action for action in actions if action["type"] == kind] for kind in {action["type"] for action in actions}}
     if "keep" in by_type:
         return by_type.get("mulligan",by_type["keep"])[0] if _should_mulligan(state,difficulty) else by_type["keep"][0]
+    if "pay_ward" in by_type or "decline_ward" in by_type:
+        if "pay_ward" in by_type and difficulty!="beginner":return by_type["pay_ward"][0]
+        return by_type["decline_ward"][0]
     if "bottom_mulligan_cards" in by_type:
         action=by_type["bottom_mulligan_cards"][0];amount=action["amount"]
         ranked=sorted(action["card_ids"],key=lambda card_id:("Land" in _card(state,"bot",card_id).get("type_line",""),-(_card(state,"bot",card_id).get("mana_value") or 0)))

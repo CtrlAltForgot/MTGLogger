@@ -96,6 +96,11 @@ def _protected_from(card: dict, source: dict) -> bool:
     return any(f"protection from {names[color]}" in text for color in colors)
 
 
+def _ward_cost(card:dict)->str:
+    match=re.search(r"\bward\s*[—-]?\s*((?:\{[^}]+\})+)",card.get("oracle_text") or "",re.IGNORECASE)
+    return match.group(1).upper() if match else ""
+
+
 def _activated_abilities(card: dict) -> list[dict]:
     abilities = []
     for line in (card.get("oracle_text") or "").splitlines():
@@ -181,7 +186,7 @@ def _new_player(player_id: str, name: str, deck: list[dict], is_bot: bool, forma
 def new_game(player_deck: list[dict], opponent_deck: list[dict], play_first: bool = True, opponent_is_bot: bool = True, player_format: str = "", opponent_format: str = "") -> dict:
     human_id, bot_id = "player", "bot"
     players = [_new_player(human_id, "You", player_deck, False, player_format), _new_player(bot_id, "Bot" if opponent_is_bot else "Guest", opponent_deck, opponent_is_bot, opponent_format)]
-    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id, "players": players, "stack": [], "combat": {"attackers": [], "blocks": {}, "attack_targets": {},"block_orders":{},"damage_pending":False}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "pending_legendary": None,"pending_scry":None,"pending_damage_order":None, "log": []}
+    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id, "players": players, "stack": [], "combat": {"attackers": [], "blocks": {}, "attack_targets": {},"block_orders":{},"damage_pending":False}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "pending_legendary": None,"pending_scry":None,"pending_damage_order":None,"pending_ward":None, "log": []}
     for player in players:
         _draw(state, player, 7)
     _log(state, "Opening hands drawn. Choose whether to keep or mulligan.")
@@ -246,7 +251,15 @@ def _multiplayer(state: dict) -> bool:
 
 
 def _pending_decision(state:dict)->bool:
-    return bool(state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_scry") or state.get("pending_damage_order"))
+    return bool(state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward"))
+
+
+def _queue_ward(state:dict,caster:dict,target_id:str|None,stack_item:dict)->None:
+    if not target_id:return
+    target_owner=next((owner for owner in state["players"] if any(card["instance_id"]==target_id for card in owner["battlefield"])),None)
+    target=next((card for owner in state["players"] for card in owner["battlefield"] if card["instance_id"]==target_id),None);cost=_ward_cost(target or {})
+    if target and target_owner and target_owner["id"]!=caster["id"] and cost:
+        state["pending_ward"]={"player_id":caster["id"],"stack_id":stack_item["id"],"mana_cost":cost,"source_name":target["name"]};state["priority_player_id"]=caster["id"];_log(state,f"{target['name']}'s ward requires {cost}.")
 
 
 def _commander_tax(player: dict, card: dict) -> int:
@@ -287,6 +300,12 @@ def legal_actions(state: dict, player_id: str) -> list[dict]:
         battlefield={card["instance_id"]:card for owner in state["players"] for card in owner["battlefield"]}
         groups=[{"attacker":battlefield[attacker_id],"blockers":[battlefield[blocker_id] for blocker_id in blocker_ids if blocker_id in battlefield]} for attacker_id,blocker_ids in pending_damage["groups"].items() if attacker_id in battlefield]
         return [{"type":"order_blockers","groups":groups},{"type":"concede"}]
+    pending_ward=state.get("pending_ward")
+    if pending_ward:
+        if pending_ward["player_id"]!=player_id:return []
+        actions=[{"type":"decline_ward","mana_cost":pending_ward["mana_cost"],"source_name":pending_ward["source_name"]},{"type":"concede"}]
+        if _can_pay(player,{"mana_cost":pending_ward["mana_cost"]}):actions.insert(0,{"type":"pay_ward","mana_cost":pending_ward["mana_cost"],"source_name":pending_ward["source_name"]})
+        return actions
     if state["status"] == "mulligan":
         if player["kept_hand"]:
             return []
@@ -669,8 +688,9 @@ def perform_action(state: dict, player_id: str, action: dict) -> dict:
         if _target_kind(card) and target_id not in {target["id"] for target in targets}: raise RuleViolation("Choose a legal target")
         _pay_mana(player, card, tax); player[source].remove(card)
         if card.get("commander"): player["commander_casts"] = player.get("commander_casts", 0) + 1
-        state["stack"].append({"id": _id(), "card": card, "controller_id": player_id, "target_id": target_id}); state["consecutive_passes"] = 0; state["pending_phase_advance"] = False
-        if _multiplayer(state): state["priority_player_id"] = opponent(state, player_id)["id"]
+        stack_item={"id": _id(), "card": card, "controller_id": player_id, "target_id": target_id};state["stack"].append(stack_item); state["consecutive_passes"] = 0; state["pending_phase_advance"] = False
+        _queue_ward(state,player,target_id,stack_item)
+        if _multiplayer(state) and not state.get("pending_ward"): state["priority_player_id"] = opponent(state, player_id)["id"]
         _log(state, f"{player['name']} cast {card['name']}{f' with {tax} commander tax' if tax else ''}{' targeting '+next((target['name'] for target in targets if target['id']==target_id),'') if target_id else ''}.")
     elif action_type == "activate":
         permanent=next((card for card in player["battlefield"] if card["instance_id"]==action.get("card_id")),None);index=action.get("ability_index")
@@ -680,8 +700,8 @@ def perform_action(state: dict, player_id: str, action: dict) -> dict:
         if targets and target_id not in {target["id"] for target in targets}:raise RuleViolation("Choose a legal target")
         if ability["mana_cost"]:_pay_mana(player,{"mana_cost":ability["mana_cost"]},excluded_id=permanent["instance_id"] if ability["taps"] else None)
         if ability["taps"]:permanent["tapped"]=True
-        state["stack"].append({"id":_id(),"kind":"ability","card":ability["card"],"controller_id":player_id,"target_id":target_id,"source_id":permanent["instance_id"]});state["consecutive_passes"]=0;state["pending_phase_advance"]=False
-        if _multiplayer(state):state["priority_player_id"]=opponent(state,player_id)["id"]
+        stack_item={"id":_id(),"kind":"ability","card":ability["card"],"controller_id":player_id,"target_id":target_id,"source_id":permanent["instance_id"]};state["stack"].append(stack_item);state["consecutive_passes"]=0;state["pending_phase_advance"]=False;_queue_ward(state,player,target_id,stack_item)
+        if _multiplayer(state) and not state.get("pending_ward"):state["priority_player_id"]=opponent(state,player_id)["id"]
         _log(state,f"{player['name']} activated {permanent['name']}: {ability['effect']}")
     elif action_type == "activate_loyalty":
         permanent=next((card for card in player["battlefield"] if card["instance_id"]==action.get("card_id") and "Planeswalker" in card.get("type_line","")),None);index=action.get("ability_index")
@@ -689,8 +709,8 @@ def perform_action(state: dict, player_id: str, action: dict) -> dict:
         if not permanent or not available:raise RuleViolation("That loyalty ability cannot be activated")
         ability=_loyalty_abilities(permanent)[index];target_id=action.get("target_id");targets=available.get("targets",[])
         if targets and target_id not in {target["id"] for target in targets}:raise RuleViolation("Choose a legal target")
-        permanent["counters"]["loyalty"]=permanent["counters"].get("loyalty",0)+ability["cost"];permanent["loyalty_activated_turn"]=state["turn"];state["stack"].append({"id":_id(),"kind":"ability","card":ability["card"],"controller_id":player_id,"target_id":target_id,"source_id":permanent["instance_id"]});state["consecutive_passes"]=0;state["pending_phase_advance"]=False
-        if _multiplayer(state):state["priority_player_id"]=opponent(state,player_id)["id"]
+        permanent["counters"]["loyalty"]=permanent["counters"].get("loyalty",0)+ability["cost"];permanent["loyalty_activated_turn"]=state["turn"];stack_item={"id":_id(),"kind":"ability","card":ability["card"],"controller_id":player_id,"target_id":target_id,"source_id":permanent["instance_id"]};state["stack"].append(stack_item);state["consecutive_passes"]=0;state["pending_phase_advance"]=False;_queue_ward(state,player,target_id,stack_item)
+        if _multiplayer(state) and not state.get("pending_ward"):state["priority_player_id"]=opponent(state,player_id)["id"]
         _log(state,f"{player['name']} activated {permanent['name']} ({ability['cost']:+d}): {ability['effect']}")
     elif action_type == "resolve":
         _resolve_spell(state)
@@ -733,6 +753,17 @@ def perform_action(state: dict, player_id: str, action: dict) -> dict:
     elif action_type == "resolve_combat_damage":
         if _multiplayer(state) or not state["combat"].get("damage_pending"):raise RuleViolation("Combat damage is not ready")
         _combat_damage(state)
+    elif action_type in {"pay_ward","decline_ward"}:
+        pending=state.get("pending_ward") or {}
+        if pending.get("player_id")!=player_id:raise RuleViolation("There is no ward cost for this player")
+        stack_item=next((item for item in state["stack"] if item["id"]==pending["stack_id"]),None)
+        if not stack_item:raise RuleViolation("The warded spell or ability is no longer on the stack")
+        if action_type=="pay_ward":_pay_mana(player,{"mana_cost":pending["mana_cost"]});_log(state,f"{player['name']} paid {pending['mana_cost']} for {pending['source_name']}'s ward.")
+        else:
+            state["stack"].remove(stack_item)
+            if stack_item.get("kind","spell")=="spell":_countered_spell_destination(state,player,stack_item["card"])
+            _log(state,f"{stack_item['card']['name']} was countered by {pending['source_name']}'s ward.")
+        state["pending_ward"]=None;state["priority_player_id"]=opponent(state,player_id)["id"] if _multiplayer(state) else player_id
     elif action_type == "advance_phase":
         if _multiplayer(state):
             state["pending_phase_advance"] = True; state["consecutive_passes"] = 1; state["priority_player_id"] = opponent(state, player_id)["id"]; _log(state, f"{player['name']} is ready to leave {state['phase'].replace('_', ' ')}.")
