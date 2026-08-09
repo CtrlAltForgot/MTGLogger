@@ -3,15 +3,10 @@ import { ArrowDownward, ArrowUpward, AutoAwesome, Bolt, Build, ContentCopy, Dele
 import { Alert, Box, Button, Card, CardContent, Chip, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle, Divider, FormControlLabel, Grid, IconButton, MenuItem, Paper, Stack, Switch, TextField, Tooltip, Typography } from '@mui/material'
 import { request } from '../api'
 import type { Deck, Game, GameCard, GameMode, GamePlayer, GameTarget, LegalGameAction } from '../types'
+import { automaticGameAction,isMeaningfulGameChoice } from '../play/automaticAction'
 import { classifyNoticeTone,visualStateDiff } from '../play/visualTransition'
 
 const phases=[['beginning','Upkeep · draw next'],['precombat_main','Main 1'],['combat','Combat'],['postcombat_main','Main 2'],['ending','End turn']]
-const isMeaningfulChoice=(action:LegalGameAction)=>{
-  if(['advance_phase','pass_priority','resolve_combat_damage','adjust_life','add_counter','move_zone','create_token','concede'].includes(action.type))return false
-  if(['declare_attackers','declare_blockers'].includes(action.type))return !!action.card_ids?.length
-  return true
-}
-
 function ZoneCard({card,legal,onClick,attacking=false,blocked=false,selected=false,entering=false}:{card:GameCard;legal?:boolean;onClick?:()=>void;attacking?:boolean;blocked?:boolean;selected?:boolean;entering?:boolean}){
   return <Tooltip title={<><b>{card.name}</b><br/>{card.type_line}{card.effective_power!==undefined&&<><br/><b>{card.effective_power}/{card.effective_toughness}</b></>}<br/>{card.oracle_text}</>} placement="top" arrow>
     <Box className={`play-card ${card.tapped?'is-tapped':''} ${legal?'is-legal':''} ${attacking?'is-attacking':''} ${selected?'is-selected':''} ${entering?'is-entering':''}`} onClick={onClick} role={legal?'button':undefined} aria-label={card.name}>
@@ -63,9 +58,8 @@ export default function Play(){
   useEffect(()=>{if(!game||game.opponent_type!=='human')return;const timer=setInterval(()=>request<Game>(gamePath,{headers:authHeaders}).then(setGame).catch(()=>undefined),1800);return()=>clearInterval(timer)},[game?.id,gamePath,accessToken])
   useEffect(()=>{
     if(!game||busy||game.state.status!=='active'||game.state.priority_player_id!==viewerId)return
-    const automatic=game.legal_actions.find(action=>action.type==='pass_priority')||game.legal_actions.find(action=>action.type==='resolve_combat_damage')||game.legal_actions.find(action=>action.type==='advance_phase')
-    const decisions=game.legal_actions.filter(isMeaningfulChoice)
-    if(!automatic||decisions.length)return
+    const automatic=automaticGameAction(game.legal_actions)
+    if(!automatic)return
     const timer=setTimeout(()=>void act({type:automatic.type}),350)
     return()=>clearTimeout(timer)
   },[game?.state.version,busy,viewerId])
@@ -105,7 +99,7 @@ export default function Play(){
   const proliferateAction=game?.legal_actions.find(action=>action.type==='choose_proliferate')
   const acceptTransformAction=game?.legal_actions.find(action=>action.type==='accept_transform'),declineTransformAction=game?.legal_actions.find(action=>action.type==='decline_transform')
   const moveCommanderAction=game?.legal_actions.find(action=>action.type==='move_commander'),keepCommanderAction=game?.legal_actions.find(action=>action.type==='keep_commander'),commanderZoneAction=moveCommanderAction||keepCommanderAction
-  const autoAdvancing=!!game?.legal_actions.some(action=>action.type==='advance_phase'||action.type==='pass_priority'||action.type==='resolve_combat_damage')&&!game?.legal_actions.some(isMeaningfulChoice)&&game.state.priority_player_id===viewerId
+  const autoAdvancing=!!game&&!!automaticGameAction(game.legal_actions)&&game.state.priority_player_id===viewerId
   const humanActive=game?.state.active_player_id===viewerId
   const winner=game?.state.players.find(item=>item.id===game.state.winner_id)
   const gameTitle=useMemo(()=>decks.find(deck=>deck.id===game?.player_deck_id)?.name,[decks,game])

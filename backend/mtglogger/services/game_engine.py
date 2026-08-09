@@ -353,7 +353,7 @@ def _queue_saga_chapter(state:dict,owner:dict,saga:dict,chapter:int)->None:
     ability={"name":f"{saga['name']} — chapter {chapter}","oracle_text":effect,"type_line":"Ability","mana_cost":""};trigger={"id":_id(),"kind":"trigger","card":ability,"controller_id":owner["id"],"target_id":None,"source_id":saga["instance_id"],"saga_final":chapter==max(chapters)};targets=_targets(state,owner["id"],ability)
     if _target_kind(ability):
         if targets:state.setdefault("pending_trigger_targets",[]).append({"controller_id":owner["id"],"source_name":saga["name"],"trigger":trigger,"card":ability});state["priority_player_id"]=owner["id"]
-        else:_log(state,f"{saga['name']}'s chapter {chapter} had no legal target.")
+        else:_log(state,f"{saga['name']}'s chapter {chapter} had no legal target.");_finish_saga_final_chapter(state,trigger)
     else:state["stack"].append(trigger)
     _log(state,f"{saga['name']} reached chapter {chapter}: {effect}")
 
@@ -628,7 +628,9 @@ def _target_kind(card: dict) -> str | None:
         if len(allowed)==1:return next(iter(allowed))
         if allowed=={"player"}:return "player"
         if allowed or re.search(r"\benchant (?:nonland )?permanent\b",text):return "permanent"
-    if "counter target spell" in text: return "spell"
+    if re.search(r"counter target (?:spell or (?:activated or triggered )?ability|spell or ability)",text):return "stack"
+    if re.search(r"counter target (?:activated or triggered|activated|triggered) ability",text):return "ability"
+    if "counter target spell" in text:return "spell"
     if re.search(r"\bairbend (?:up to one )?target creature or spell\b",text):return "creature_or_spell"
     if re.search(r"\bairbend (?:up to one )?target spell\b",text):return "spell"
     if re.search(r"\bairbend (?:up to one )?target creature\b",text):return "creature"
@@ -686,8 +688,11 @@ def _targets(state: dict, caster_id: str, card: dict) -> list[dict]:
     if not kind: return []
     text = (card.get("oracle_text") or "").casefold()
     targets = []
-    if kind == "spell":
-        return [{"id": item["id"], "name": item["card"]["name"], "kind": "spell", "controller_id": item["controller_id"]} for item in state["stack"]]
+    if kind in {"spell","ability","stack"}:
+        def allowed(item:dict)->bool:
+            is_spell=item.get("kind","spell")=="spell"
+            return kind=="stack" or (kind=="spell" and is_spell) or (kind=="ability" and not is_spell)
+        return [{"id":item["id"],"name":item["card"]["name"],"kind":"spell" if item.get("kind","spell")=="spell" else "ability","controller_id":item["controller_id"]} for item in state["stack"] if allowed(item)]
     if kind == "creature_or_spell":
         targets=[{"id":item["id"],"name":item["card"]["name"],"kind":"spell","controller_id":item["controller_id"]} for item in state["stack"]]
     if kind in {"graveyard_creature","graveyard_card"}:
@@ -733,6 +738,18 @@ def _countered_spell_destination(state:dict,controller:dict,card:dict,flashback:
     owner=_player(state,card.get("owner_id",controller["id"]));card["controller_id"]=owner["id"]
     destination="exile" if flashback else "graveyard";owner[destination].append(card)
     _queue_commander_zone_choice(state,owner,card,destination)
+
+
+def _finish_saga_final_chapter(state:dict,item:dict)->None:
+    if not item.get("saga_final"):return
+    saga=next((permanent for owner in state["players"] for permanent in owner["battlefield"] if permanent["instance_id"]==item.get("source_id") and "Saga" in permanent.get("type_line","")),None)
+    if not saga:return
+    owner=next(owner for owner in state["players"] if saga in owner["battlefield"]);_leave_battlefield(state,owner,saga,"graveyard");_log(state,f"{saga['name']} was sacrificed after its final chapter.")
+
+
+def _counter_stack_item(state:dict,item:dict)->None:
+    if item.get("kind","spell")=="spell":_countered_spell_destination(state,_player(state,item["controller_id"]),item["card"],item.get("flashback",False))
+    _finish_saga_final_chapter(state,item)
 
 
 def _multiplayer(state: dict) -> bool:
@@ -1031,9 +1048,11 @@ def _resolve_spell(state: dict) -> None:
     source_permanent=next((permanent for player in state["players"] for permanent in player["battlefield"] if permanent["instance_id"]==item.get("source_id")),None);target_ids=item.get("target_ids") or [];fight_steps=_fight_target_steps(state,caster["id"],rules_card,source_permanent);valid_fight_ids=[target_value for position,target_value in enumerate(target_ids) if position<len(fight_steps) and target_value in {target["id"] for target in fight_steps[position]["targets"]}]
     if target_ids and not valid_fight_ids:
         if item.get("kind","spell")=="spell":_countered_spell_destination(state,caster,card,item.get("flashback",False))
+        _finish_saga_final_chapter(state,item)
         _log(state,f"{card['name']} was countered because all of its fight targets were no longer legal.");return
     if target_kind and target_id not in {target["id"] for target in _targets(state,caster["id"],targeting_card)}:
         if item.get("kind","spell")=="spell":_countered_spell_destination(state,caster,card,item.get("flashback",False))
+        _finish_saga_final_chapter(state,item)
         _log(state,f"{card['name']} was countered because its target was no longer legal.");return
     text = (rules_card.get("oracle_text") or "").casefold()
     is_permanent_spell = item.get("kind", "spell") == "spell" and any(kind in card.get("type_line", "") for kind in ("Creature", "Artifact", "Enchantment", "Planeswalker", "Battle"))
@@ -1180,9 +1199,8 @@ def _resolve_spell(state: dict) -> None:
     elif re.search(r"(?:then |you )?discard (?:a|one|two|three|four|\d+) cards?",effect_text):
         match=re.search(r"discard (a|one|two|three|four|\d+) cards?",effect_text);word=match.group(1);words={"a":1,"one":1,"two":2,"three":3,"four":4};amount=words.get(word,int(word) if word.isdigit() else 1);required=min(amount,len(caster["hand"]))
         if required:state["pending_discard"]={"player_id":caster["id"],"amount":required,"reason":"effect"};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} must discard {required} card(s).")
-    if target_stack_item and "counter target spell" in effect_text:
-        state["stack"].remove(target_stack_item); countered=target_stack_item["card"]
-        if target_stack_item.get("kind", "spell") == "spell": _countered_spell_destination(state,_player(state,target_stack_item["controller_id"]),countered,target_stack_item.get("flashback",False))
+    if target_stack_item and target_kind in {"spell","ability","stack"} and "counter target" in effect_text:
+        state["stack"].remove(target_stack_item);countered=target_stack_item["card"];_counter_stack_item(state,target_stack_item)
         _log(state, f"{countered['name']} was countered.")
     if graveyard_target and graveyard_owner:
         if re.search(r"(?:return|put) target (?:creature )?card .*graveyard (?:to|into|onto) (?:the battlefield|play)",effect_text):
@@ -1250,10 +1268,7 @@ def _resolve_spell(state: dict) -> None:
     _log(state, f"{card['name']} resolved.")
     if entered: _queue_triggers(state, "enters", card, caster)
     if entered and "Saga" in card.get("type_line",""):_add_saga_lore(state,caster,card)
-    if item.get("saga_final") and not saga_transformed:
-        saga=next((permanent for owner in state["players"] for permanent in owner["battlefield"] if permanent["instance_id"]==item.get("source_id") and "Saga" in permanent.get("type_line","")),None)
-        if saga:
-            saga_owner=next(owner for owner in state["players"] if saga in owner["battlefield"]);_leave_battlefield(state,saga_owner,saga,"graveyard");_log(state,f"{saga['name']} was sacrificed after its final chapter.")
+    if not saga_transformed:_finish_saga_final_chapter(state,item)
 
 
 def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str) -> None:
@@ -1740,7 +1755,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
             _log(state,f"{player['name']} paid {pending.get('label',pending.get('mana_cost',''))} for {pending['source_name']}'s ward.")
         else:
             state["stack"].remove(stack_item)
-            if stack_item.get("kind","spell")=="spell":_countered_spell_destination(state,player,stack_item["card"],stack_item.get("flashback",False))
+            _counter_stack_item(state,stack_item)
             _log(state,f"{stack_item['card']['name']} was countered by {pending['source_name']}'s ward.")
         remaining=pending.get("remaining") or []
         if action_type=="pay_ward" and remaining:

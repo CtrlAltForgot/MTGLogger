@@ -367,6 +367,17 @@ def test_counterspell_targets_and_counters_a_spell_on_the_stack():
     bot=next(item for item in state["players"] if item["id"]=="bot");assert any(item["name"]=="Threat" for item in bot["graveyard"]) and not state["stack"]
 
 
+def test_stack_counters_distinguish_spells_from_abilities_and_finish_countered_saga():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player")
+    saga={**card(612,"Doomed Chronicle","Enchantment — Saga"),"oracle_text":"I — You gain 1 life.","instance_id":"doomed-chronicle","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{"lore":1},"summoning_sick":False};player["battlefield"].append(saga)
+    chapter={"id":"chapter-trigger","kind":"trigger","card":{"name":"Doomed Chronicle — chapter 1","type_line":"Ability","oracle_text":"You gain 1 life.","mana_cost":""},"controller_id":"player","source_id":"doomed-chronicle","target_id":None,"saga_final":True};spell_item={"id":"creature-spell","kind":"spell","card":{**card(613,"Stack Bear","Creature — Bear","","2","2"),"instance_id":"stack-bear","owner_id":"bot","controller_id":"bot","counters":{}},"controller_id":"bot","target_id":None};state["stack"]=[chapter,spell_item]
+    spell_counter={**card(614,"Narrow Denial","Instant"),"oracle_text":"Counter target spell.","instance_id":"narrow-denial","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};ability_counter={**card(615,"Stifle Test","Instant"),"oracle_text":"Counter target triggered ability.","instance_id":"stifle-test","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"].extend([spell_counter,ability_counter])
+    actions=legal_actions(state,"player");narrow=next(action for action in actions if action.get("card_id")=="narrow-denial");stifle=next(action for action in actions if action.get("card_id")=="stifle-test")
+    assert {target["id"] for target in narrow["targets"]}=={"creature-spell"} and {target["id"] for target in stifle["targets"]}=={"chapter-trigger"}
+    state["stack"].remove(spell_item);state=perform_action(state,"player",{"type":"cast","card_id":"stifle-test","target_id":"chapter-trigger"});state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player")
+    assert not state["stack"] and any(card["instance_id"]=="doomed-chronicle" for card in player["graveyard"])
+
+
 def test_spells_fizzle_when_their_only_target_becomes_illegal():
     state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
     target={**card(720,"Future Hexproof","Creature — Wizard","","2","2"),"instance_id":"future-hexproof","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};removal={**card(721,"Doom Attempt","Instant"),"oracle_text":"Destroy target creature.","instance_id":"doom-attempt","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};bot["battlefield"].append(target);player["hand"].append(removal)
