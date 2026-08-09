@@ -31,7 +31,7 @@ def _target_card(state:dict,target_id:str)->dict|None:
 
 def _choose_target(state:dict,action:dict)->str:
     text=" ".join(filter(None,(action.get("label") or "",_card(state,"bot",action["card_id"]).get("oracle_text","") if action.get("card_id") else ""))).casefold()
-    harmful=any(word in text for word in ("damage","destroy","exile","tap target","gets -","loses","counter target","gain control of target"));targets=action["targets"]
+    harmful=any(word in text for word in ("damage","destroy","exile","tap target","gets -","loses","counter target","gain control of target","control enchanted"));targets=action["targets"]
     preferred=[target for target in targets if (target["controller_id"]!="bot")==harmful] or targets
     damage=re.search(r"deals (\d+) damage",text)
     if harmful and damage:

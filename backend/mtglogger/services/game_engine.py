@@ -111,11 +111,14 @@ def _attachment_keywords(card:dict)->list[str]:
     return [keyword for keyword in supported if any(re.search(rf"\b{re.escape(keyword)}\b",clause) for clause in clauses)]
 
 
-def _detach(state:dict,attachment:dict)->None:
+def _detach(state:dict,attachment:dict,restore_control:bool=True)->None:
     target_id=attachment.pop("attached_to",None)
     if not target_id:return
     target=next((permanent for owner in state["players"] for permanent in owner["battlefield"] if permanent["instance_id"]==target_id),None)
-    if target:target.get("attachment_keywords",{}).pop(attachment["instance_id"],None);target.get("attachment_rules",{}).pop(attachment["instance_id"],None)
+    return_to=attachment.pop("control_aura_return_to",None)
+    if target:
+        target.get("attachment_keywords",{}).pop(attachment["instance_id"],None);target.get("attachment_rules",{}).pop(attachment["instance_id"],None)
+        if restore_control and return_to:_change_control(state,target,_player(state,return_to))
 
 
 def _attach(state:dict,attachment:dict,target:dict)->None:
@@ -123,6 +126,10 @@ def _attach(state:dict,attachment:dict,target:dict)->None:
     if target.get("instance_id"):
         target.setdefault("attachment_rules",{})[attachment["instance_id"]]=attachment.get("oracle_text") or ""
         if keywords:target.setdefault("attachment_keywords",{})[attachment["instance_id"]]=keywords
+        if re.search(r"\byou control enchanted (?:creature|permanent)\b",attachment.get("oracle_text") or "",re.IGNORECASE):
+            current=next(owner for owner in state["players"] if target in owner["battlefield"]);controller=_player(state,attachment["controller_id"])
+            attachment["control_aura_return_to"]=current["id"]
+            _change_control(state,target,controller)
 
 
 def _equip_cost(card:dict)->str|None:
@@ -188,7 +195,7 @@ def _kicked_rules_card(card:dict,kicked:bool)->dict:
             effect=re.sub(r"\s+instead(?=[,.]|$)","",effect,flags=re.IGNORECASE)
             if resolved:resolved.pop()
         resolved.append(effect)
-    return {**card,"oracle_text":" ".join(filter(None,resolved))}
+    return {**card,"oracle_text":"\n".join(filter(None,resolved))}
 
 
 def _aura_allowed_types(card:dict)->set[str]:
@@ -650,7 +657,7 @@ def _target_kind(card: dict) -> str | None:
 
 def _spell_targeting_card(card:dict)->dict:
     if not any(kind in card.get("type_line","") for kind in ("Creature","Artifact","Enchantment","Planeswalker","Battle")):return card
-    clauses=re.split(r"(?<=[.!])\s+|\n",card.get("oracle_text") or "");spell_text=" ".join(clause for clause in clauses if not re.match(r"\s*(?:when|whenever|at the beginning)\b",clause,re.IGNORECASE))
+    clauses=re.split(r"(?<=[.!])\s+|\n",card.get("oracle_text") or "");spell_text="\n".join(clause for clause in clauses if not re.match(r"\s*(?:when|whenever|at the beginning)\b",clause,re.IGNORECASE))
     return {**card,"oracle_text":spell_text}
 
 
@@ -687,6 +694,7 @@ def _targets(state: dict, caster_id: str, card: dict) -> list[dict]:
     kind = _target_kind(card)
     if not kind: return []
     text = (card.get("oracle_text") or "").casefold()
+    own_target_only=bool(re.search(r"(?:target|enchant)[^.\n]*\byou control\b",text));opponent_target_only=bool(re.search(r"(?:target|enchant)[^.\n]*\b(?:an opponent|opponents?) controls?\b",text))
     targets = []
     if kind in {"spell","ability","stack"}:
         def allowed(item:dict)->bool:
@@ -705,8 +713,8 @@ def _targets(state: dict, caster_id: str, card: dict) -> list[dict]:
             if kind in {"any", "permanent"} or (kind=="creature_or_spell" and "Creature" in permanent.get("type_line","")) or (kind in {"creature","artifact","enchantment","land","planeswalker"} and kind in permanent.get("type_line", "").casefold()):
                 aura_types=_aura_allowed_types(card)
                 if "Aura" in card.get("type_line","") and aura_types and not any(allowed in permanent.get("type_line","").casefold() for allowed in aura_types if allowed!="player"):continue
-                if "you control" in text and player["id"] != caster_id: continue
-                if "an opponent controls" in text and player["id"] == caster_id: continue
+                if own_target_only and player["id"] != caster_id: continue
+                if opponent_target_only and player["id"] == caster_id: continue
                 if "nonland permanent" in text and "Land" in permanent.get("type_line", ""): continue
                 if _has_keyword(permanent,"Shroud") or (player["id"] != caster_id and _has_keyword(permanent,"Hexproof")): continue
                 if _protected_from(permanent,card): continue
@@ -1307,7 +1315,7 @@ def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str) -
     if card.get("attached_to"):_detach(state,card)
     attachments=[(attachment_owner,attachment) for attachment_owner in state["players"] for attachment in list(attachment_owner["battlefield"]) if attachment.get("attached_to")==card.get("instance_id")]
     for attachment_owner,attachment in attachments:
-        _detach(state,attachment)
+        _detach(state,attachment,restore_control=False)
         if "Aura" in attachment.get("type_line",""):_leave_battlefield(state,attachment_owner,attachment,"graveyard")
     if card in owner["battlefield"]: owner["battlefield"].remove(card)
     earthbend_controller=card.get("earthbend_controller") if destination in {"graveyard","exile"} else None
@@ -1500,6 +1508,7 @@ def _state_based_actions(state: dict) -> None:
             for permanent in list(owner["battlefield"]):
                 if permanent.get("attached_to"):
                     target=next((target for target_owner in state["players"] for target in target_owner["battlefield"] if target["instance_id"]==permanent["attached_to"]),None) or next((player for player in state["players"] if player["id"]==permanent["attached_to"]),None);aura="Aura" in permanent.get("type_line","");aura_text=(permanent.get("oracle_text") or "").casefold();allowed_types=_aura_allowed_types(permanent);target_types=(target or {}).get("type_line","").casefold();type_illegal=bool(aura and allowed_types and not (("player" in allowed_types and target and target.get("id")) or any(kind in target_types for kind in allowed_types-{"player"})));wrong_controller=bool(aura and target and (("enchant creature you control" in aura_text and target.get("controller_id")!=permanent.get("controller_id")) or ("enchant creature an opponent controls" in aura_text and target.get("controller_id")==permanent.get("controller_id"))));illegal=not target or type_illegal or wrong_controller or (target is not None and target.get("instance_id") is not None and _protected_from(target,permanent))
+                    if target and target.get("instance_id") and permanent.get("control_aura_return_to") and target.get("controller_id")!=permanent.get("controller_id"):_change_control(state,target,_player(state,permanent["controller_id"]))
                     if illegal:
                         _detach(state,permanent)
                         if aura:_leave_battlefield(state,owner,permanent,"graveyard");changed=True;continue
