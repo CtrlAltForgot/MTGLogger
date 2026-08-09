@@ -1,7 +1,7 @@
 import pytest
 
 from mtglogger.services.game_bot import _choose_blocks, choose_bot_action, run_bot
-from mtglogger.services.game_engine import RuleViolation, _add_saga_lore, _has_keyword, _leave_graveyard, _queue_triggers, legal_actions, new_game, perform_action, public_state
+from mtglogger.services.game_engine import RuleViolation, _add_saga_lore, _has_keyword, _leave_graveyard, _put_into_exile, _queue_triggers, legal_actions, new_game, perform_action, public_state
 
 
 def card(index:int,name:str,type_line:str,mana_cost:str="",power:str|None=None,toughness:str|None=None,quantity:int=1):
@@ -164,6 +164,40 @@ def test_reanimation_and_manual_graveyard_moves_emit_exit_events_only_on_true_ex
     state=perform_action(state,"player",{"type":"cast","card_id":"raise-friend","target_id":"returning-friend"});state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");assert any(card["instance_id"]=="returning-friend" for card in player["battlefield"]) and state["stack"][-1]["card"]["name"]=="Return Witness trigger"
     state=perform_action(state,"player",{"type":"resolve"});state=perform_action(state,"player",{"type":"move_zone","target_id":"returning-friend","destination":"graveyard"});state=perform_action(state,"player",{"type":"move_zone","target_id":"returning-friend","destination":"graveyard"});assert not state["stack"]
     state=perform_action(state,"player",{"type":"move_zone","target_id":"returning-friend","destination":"exile"});assert state["stack"][-1]["card"]["name"]=="Return Witness trigger"
+
+
+def test_exile_events_preserve_origin_batch_counts_and_once_each_turn_limits():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player");player["battlefield"]=[]
+    def watcher(index,name,text):return {**card(index,name,"Creature — Test","","2","2"),"oracle_text":text,"instance_id":name.casefold().replace(" ","-"),"owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    familiar=watcher(697,"Stonebinder Test","Whenever one or more cards are put into exile during your turn, put a +1/+1 counter on this creature. This ability triggers only once each turn.");vizier=watcher(698,"Rakshasa Test","Whenever one or more cards are put into exile from your graveyard, put that many +1/+1 counters on this creature.");doctor=watcher(699,"War Doctor Test","Whenever one or more other cards are put into exile from anywhere, put a time counter on War Doctor Test.");player["battlefield"].extend([familiar,vizier,doctor])
+    departing=[{**card(700+index,f"Memory {index}","Creature — Spirit"),"instance_id":f"memory-{index}","owner_id":"player","controller_id":"player"} for index in range(2)];player["graveyard"].extend(departing);_leave_graveyard(state,player,departing);_put_into_exile(state,player,departing,"graveyard","player",batch_size=2)
+    assert {item["card"]["name"] for item in state["stack"]}=={"Stonebinder Test trigger","Rakshasa Test trigger","War Doctor Test trigger"}
+    while state["stack"]:state=perform_action(state,"player",{"type":"resolve"})
+    player=next(p for p in state["players"] if p["id"]=="player");resolved={card["instance_id"]:card for card in player["battlefield"]};assert resolved["stonebinder-test"]["counters"].get("+1/+1")==1 and resolved["rakshasa-test"]["counters"].get("+1/+1")==2 and resolved["war-doctor-test"]["counters"].get("time")==1
+    hand_card={**card(702,"Future Memory","Sorcery"),"instance_id":"future-memory","owner_id":"player","controller_id":"player"};player["hand"].append(hand_card);player["hand"].remove(hand_card);_put_into_exile(state,player,[hand_card],"hand","player")
+    assert [item["card"]["name"] for item in state["stack"]]==["War Doctor Test trigger"]
+
+
+def test_exile_actor_and_card_ownership_drive_ranar_and_opponent_payoffs():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot");player["battlefield"]=[];bot["battlefield"]=[]
+    ranar={**card(703,"Ranar Test","Creature — Spirit Warrior","","2","3"),"oracle_text":"Whenever one or more cards are put into exile from your hand or a spell or ability you control exiles one or more permanents from the battlefield, create a 1/1 white Spirit creature token with flying.","instance_id":"ranar-test","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};heron={**card(704,"Heron Moon Test","Legendary Land"),"oracle_text":"Whenever one or more cards an opponent owns are put into exile, put a release counter on Heron Moon Test.","instance_id":"heron-moon-test","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};victim={**card(705,"Exile Victim","Creature — Beast","","4","4"),"instance_id":"exile-victim","owner_id":"player","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};removal={**card(706,"Clean Departure","Sorcery"),"oracle_text":"Exile target creature.","instance_id":"clean-departure","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].append(ranar);bot["battlefield"].extend([heron,victim]);player["hand"].append(removal)
+    state=perform_action(state,"player",{"type":"cast","card_id":"clean-departure","target_id":"exile-victim"});state=perform_action(state,"player",{"type":"resolve"});assert {item["card"]["name"] for item in state["stack"]}=={"Ranar Test trigger","Heron Moon Test trigger"}
+    while state["stack"]:state=perform_action(state,"player",{"type":"resolve"})
+    player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot");assert any(card.get("token") and "Spirit" in card["name"] for card in player["battlefield"]) and next(card for card in bot["battlefield"] if card["instance_id"]=="heron-moon-test")["counters"].get("release")==1
+
+
+def test_creature_exile_payoffs_use_last_known_controller_and_exclude_self_when_required():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player");player["battlefield"]=[]
+    vondam={**card(707,"Syr Vondam Test","Legendary Creature — Human Knight","","2","2"),"oracle_text":"Whenever another creature you control dies or is put into exile, put a +1/+1 counter on Syr Vondam Test and you gain 1 life.","instance_id":"syr-vondam-test","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};ally={**card(708,"Exiled Ally","Creature — Ally","","1","1"),"instance_id":"exiled-ally","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].extend([vondam,ally]);life=player["life"]
+    state=perform_action(state,"player",{"type":"move_zone","target_id":"exiled-ally","destination":"exile"});assert [item["card"]["name"] for item in state["stack"]]==["Syr Vondam Test trigger"]
+    state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");survivor=next(card for card in player["battlefield"] if card["instance_id"]=="syr-vondam-test");assert survivor["counters"].get("+1/+1")==1 and player["life"]==life+1
+    state=perform_action(state,"player",{"type":"move_zone","target_id":"syr-vondam-test","destination":"exile"});assert not state["stack"]
+
+
+def test_self_exile_trigger_uses_last_known_information_and_final_effect_clause():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot");squire={**card(709,"Syr Konrad's Squire","Creature — Human Knight","","2","2"),"oracle_text":"Whenever Syr Konrad's Squire dies, or is put into a graveyard from anywhere other than the battlefield, or leaves your graveyard, or is put into exile, or is put into your library, or is returned to your hand from the battlefield or graveyard, or is phased out, it deals 1 damage to each opponent.","instance_id":"konrad-squire","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].append(squire);life=bot["life"]
+    state=perform_action(state,"player",{"type":"move_zone","target_id":"konrad-squire","destination":"exile"});assert state["stack"][-1]["card"]["oracle_text"]=="it deals 1 damage to each opponent."
+    state=perform_action(state,"player",{"type":"resolve"});assert next(p for p in state["players"] if p["id"]=="bot")["life"]==life-1
 
 
 def test_opponent_chooses_forced_sacrifice_and_bot_picks_lowest_value():
