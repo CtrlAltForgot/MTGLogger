@@ -119,6 +119,23 @@ def _choose_ability_cost(state:dict,action:dict)->list[str]:
     return [card["instance_id"] for card in cards[:amount]]
 
 
+def _mode_score(state:dict,mode:dict)->float:
+    text=(mode.get("label") or "").casefold();score=0.2
+    draw=re.search(r"draw (?:a|one|two|three|four|five|\d+) cards?",text)
+    if draw:
+        word=draw.group(0).split()[1];score+={"a":2,"one":2,"two":4,"three":6,"four":8,"five":10}.get(word,int(word)*2 if word.isdigit() else 2)
+    targets=mode.get("targets",[])
+    if any(term in text for term in ("destroy target","exile target","return target")) and targets:
+        score+=max((_threat_score(state,_target_card(state,target["id"]) or {}) for target in targets if target.get("controller_id")!="bot"),default=1)
+    damage=re.search(r"deals (\d+) damage",text)
+    if damage:
+        amount=int(damage.group(1));score+=amount
+        if any(target["kind"]=="player" and target["controller_id"]!="bot" and next(player for player in state["players"] if player["id"]==target["id"])["life"]<=amount for target in targets):score+=100
+    if "you gain " in text and " life" in text:score+=2
+    if "create " in text and " token" in text:score+=4
+    return score
+
+
 def choose_bot_action(state: dict, difficulty: str = "standard") -> dict | None:
     actions = legal_actions(state, "bot")
     if not actions:
@@ -176,6 +193,8 @@ def choose_bot_action(state: dict, difficulty: str = "standard") -> dict | None:
             choice = random.choice(spells)
         else:
             choice = max(spells, key=lambda action: (_card(state, "bot", action["card_id"]).get("mana_value") or 0, len(_card(state, "bot", action["card_id"]).get("oracle_text") or "")))
+        if choice.get("modes"):
+            mode=max(choice["modes"],key=lambda candidate:_mode_score(state,candidate));choice={**choice,"chosen_modes":[mode["index"]],"label":mode["label"],"targets":mode.get("targets",[])}
         if choice.get("targets"):
             choice = {**choice, "target_id":_choose_target(state,choice)}
         return choice

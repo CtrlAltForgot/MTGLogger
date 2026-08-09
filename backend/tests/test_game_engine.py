@@ -651,3 +651,28 @@ def test_expert_bot_uses_profitable_costly_abilities_but_never_pays_lethal_life(
     state=kept_game();state["active_player_id"]="bot";state["priority_player_id"]="bot";state["phase"]="precombat_main";bot=next(p for p in state["players"] if p["id"]=="bot");bot["hand"]=[];bot["land_plays_remaining"]=0
     altar={**card(932,"Bot Altar","Artifact"),"oracle_text":"Sacrifice a creature: Draw two cards.","instance_id":"bot-altar","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};cheap={**card(933,"Cheap Token","Token Creature — Citizen","","1","1"),"instance_id":"cheap-token","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False,"token":True};valuable={**card(934,"Valuable Dragon","Creature — Dragon","","6","6"),"instance_id":"valuable-dragon","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};bot["battlefield"]=[altar,cheap,valuable];choice=choose_bot_action(state,"expert")
     assert choice["type"]=="activate" and choice["card_id"]=="bot-altar" and choice["cost_card_ids"]==["cheap-token"]
+
+
+def test_choose_one_spells_require_a_legal_mode_and_resolve_only_that_mode():
+    def setup():
+        state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");charm={**card(940,"Test Charm","Instant"),"oracle_text":"Choose one —\n• Draw two cards.\n• Test Charm deals 3 damage to any target.","instance_id":"test-charm","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"].append(charm);return state
+
+    state=setup();action=next(action for action in legal_actions(state,"player") if action.get("card_id")=="test-charm")
+    assert action["mode_count"]==1 and [mode["index"] for mode in action["modes"]]==[0,1]
+    try:perform_action(state,"player",{"type":"cast","card_id":"test-charm"})
+    except RuleViolation:pass
+    else:raise AssertionError("modal spell accepted without a chosen mode")
+    player=next(p for p in state["players"] if p["id"]=="player");library_before=len(player["library"])
+    state=perform_action(state,"player",{"type":"cast","card_id":"test-charm","chosen_modes":[1],"target_id":"bot"});assert state["stack"][-1]["mode_indices"]==[1]
+    state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
+    assert bot["life"]==17 and len(player["library"])==library_before
+    state=setup();player=next(p for p in state["players"] if p["id"]=="player");library_before=len(player["library"])
+    state=perform_action(state,"player",{"type":"cast","card_id":"test-charm","chosen_modes":[0]});state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
+    assert len(player["library"])==library_before-2 and bot["life"]==20
+
+
+def test_modal_modes_without_legal_targets_are_hidden_and_bot_chooses_lethal_mode():
+    state=kept_game();state["active_player_id"]="bot";state["priority_player_id"]="bot";state["phase"]="precombat_main";bot=next(p for p in state["players"] if p["id"]=="bot");enemy=next(p for p in state["players"] if p["id"]=="player");bot["hand"]=[];bot["land_plays_remaining"]=0;enemy["battlefield"]=[];enemy["life"]=3
+    command={**card(941,"Bot Command","Sorcery"),"oracle_text":"Choose one —\n• Draw a card.\n• Destroy target creature.\n• Bot Command deals 3 damage to any target.","instance_id":"bot-command","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};bot["hand"].append(command)
+    action=next(action for action in legal_actions(state,"bot") if action.get("card_id")=="bot-command");assert [mode["index"] for mode in action["modes"]]==[0,2]
+    choice=choose_bot_action(state,"expert");assert choice["type"]=="cast" and choice["chosen_modes"]==[2] and choice["target_id"]=="player"

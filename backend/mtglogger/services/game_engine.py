@@ -313,6 +313,24 @@ def _spell_targeting_card(card:dict)->dict:
     return {**card,"oracle_text":spell_text}
 
 
+def _modal_options(card:dict)->list[dict]:
+    lines=(card.get("oracle_text") or "").splitlines();header=next((index for index,line in enumerate(lines) if re.search(r"\bchoose one\s*[—-]\s*$",line.strip(),re.IGNORECASE)),None)
+    if header is None:return []
+    options=[]
+    for line in lines[header+1:]:
+        stripped=line.strip()
+        if stripped.startswith(("•","-")):options.append(stripped[1:].strip())
+        elif options and stripped:options[-1]=f"{options[-1]} {stripped}"
+    return [{"index":index,"label":text} for index,text in enumerate(options)]
+
+
+def _selected_mode_card(card:dict,indices:list[int]|None)->dict:
+    options=_modal_options(card)
+    if not options:return card
+    selected=[option["label"] for option in options if option["index"] in set(indices or [])]
+    return {**card,"oracle_text":" ".join(selected)}
+
+
 def _targets(state: dict, caster_id: str, card: dict) -> list[dict]:
     kind = _target_kind(card)
     if not kind: return []
@@ -428,10 +446,20 @@ def legal_actions(state: dict, player_id: str) -> list[dict]:
     for card, source in castable:
         instant_speed = "Instant" in card.get("type_line", "") or _has_keyword(card, "Flash")
         if "Land" in card.get("type_line", "") or not ((active and main and not state["stack"]) or instant_speed) or not _can_pay(player, card, _commander_tax(player, card)): continue
-        targeting_card=_spell_targeting_card(card);targets = _targets(state, player_id, targeting_card)
-        if _target_kind(targeting_card) and not targets: continue
         action = {"type": "cast", "card_id": card["instance_id"], "source": source, "commander_tax": _commander_tax(player, card)}
-        if targets: action["targets"] = targets
+        modal_options=_modal_options(card)
+        if modal_options:
+            modes=[]
+            for option in modal_options:
+                mode_card={**card,"oracle_text":option["label"]};targeting_card=_spell_targeting_card(mode_card);targets=_targets(state,player_id,targeting_card)
+                if _target_kind(targeting_card) and not targets:continue
+                modes.append({**option,"targets":targets})
+            if not modes:continue
+            action["mode_count"]=1;action["modes"]=modes
+        else:
+            targeting_card=_spell_targeting_card(card);targets = _targets(state, player_id, targeting_card)
+            if _target_kind(targeting_card) and not targets: continue
+            if targets: action["targets"] = targets
         actions.append(action)
     for permanent in player["battlefield"]:
         for index, ability in enumerate(_activated_abilities(permanent)):
@@ -485,11 +513,11 @@ def legal_actions(state: dict, player_id: str) -> list[dict]:
 def _resolve_spell(state: dict) -> None:
     item = state["stack"].pop()
     card, caster = item["card"], _player(state, item["controller_id"])
-    targeting_card=_spell_targeting_card(card) if item.get("kind","spell")=="spell" else card;target_kind=_target_kind(targeting_card);target_id=item.get("target_id")
+    rules_card=_selected_mode_card(card,item.get("mode_indices")) if item.get("kind","spell")=="spell" else card;targeting_card=_spell_targeting_card(rules_card) if item.get("kind","spell")=="spell" else rules_card;target_kind=_target_kind(targeting_card);target_id=item.get("target_id")
     if target_kind and target_id not in {target["id"] for target in _targets(state,caster["id"],targeting_card)}:
         if item.get("kind","spell")=="spell":_countered_spell_destination(state,caster,card)
         _log(state,f"{card['name']} was countered because its target was no longer legal.");return
-    text = (card.get("oracle_text") or "").casefold()
+    text = (rules_card.get("oracle_text") or "").casefold()
     is_permanent_spell = item.get("kind", "spell") == "spell" and any(kind in card.get("type_line", "") for kind in ("Creature", "Artifact", "Enchantment", "Planeswalker", "Battle"))
     effect_text = "" if is_permanent_spell and re.search(r"\b(?:when|whenever|at the beginning)\b", text) else text
     other = opponent(state, caster["id"])
@@ -838,15 +866,21 @@ def perform_action(state: dict, player_id: str, action: dict) -> dict:
         card = next((card for card in player.get(source or "hand", []) if card["instance_id"] == action.get("card_id")), None)
         tax = _commander_tax(player, card) if card else 0
         if not card or not _can_pay(player, card, tax): raise RuleViolation("That spell cannot be cast")
-        targeting_card=_spell_targeting_card(card);targets = _targets(state, player_id, targeting_card); target_id = action.get("target_id")
+        modal_options=_modal_options(card);chosen_modes=action.get("chosen_modes") or []
+        if modal_options:
+            available=next((entry for entry in legal_actions(state,player_id) if entry["type"]=="cast" and entry["card_id"]==card["instance_id"]),None);legal_modes={mode["index"] for mode in (available or {}).get("modes",[])}
+            if len(chosen_modes)!=1 or len(set(chosen_modes))!=1 or chosen_modes[0] not in legal_modes:raise RuleViolation("Choose exactly one legal mode")
+        elif chosen_modes:raise RuleViolation("That spell has no modal choice")
+        rules_card=_selected_mode_card(card,chosen_modes);targeting_card=_spell_targeting_card(rules_card);targets = _targets(state, player_id, targeting_card); target_id = action.get("target_id")
         if _target_kind(targeting_card) and target_id not in {target["id"] for target in targets}: raise RuleViolation("Choose a legal target")
         _pay_mana(player, card, tax); player[source].remove(card)
         if card.get("commander"): player["commander_casts"] = player.get("commander_casts", 0) + 1
-        stack_item={"id": _id(), "card": card, "controller_id": player_id, "target_id": target_id};state["stack"].append(stack_item); state["consecutive_passes"] = 0; state["pending_phase_advance"] = False
+        stack_item={"id": _id(), "card": card, "controller_id": player_id, "target_id": target_id,"mode_indices":chosen_modes};state["stack"].append(stack_item); state["consecutive_passes"] = 0; state["pending_phase_advance"] = False
         _queue_triggers(state,"cast",card,player)
         _queue_ward(state,player,target_id,stack_item)
         if _multiplayer(state) and not state.get("pending_ward") and not state.get("pending_trigger_targets"): state["priority_player_id"] = opponent(state, player_id)["id"]
-        _log(state, f"{player['name']} cast {card['name']}{f' with {tax} commander tax' if tax else ''}{' targeting '+next((target['name'] for target in targets if target['id']==target_id),'') if target_id else ''}.")
+        mode_label=next((mode["label"] for mode in modal_options if mode["index"] in chosen_modes),"")
+        _log(state, f"{player['name']} cast {card['name']}{f' choosing {mode_label}' if mode_label else ''}{f' with {tax} commander tax' if tax else ''}{' targeting '+next((target['name'] for target in targets if target['id']==target_id),'') if target_id else ''}.")
     elif action_type == "activate":
         permanent=next((card for card in player["battlefield"] if card["instance_id"]==action.get("card_id")),None);index=action.get("ability_index")
         available=next((entry for entry in legal_actions(state,player_id) if entry["type"]=="activate" and entry["card_id"]==action.get("card_id") and entry["ability_index"]==index),None)
