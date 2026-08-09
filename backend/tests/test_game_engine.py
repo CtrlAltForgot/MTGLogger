@@ -1,7 +1,7 @@
 import pytest
 
 from mtglogger.services.game_bot import _choose_blocks, choose_bot_action, run_bot
-from mtglogger.services.game_engine import RuleViolation, _add_counters, _add_saga_lore, _amass, _change_control, _combat_damage, _connive, _counter_stack_item, _enter_battlefield, _explore, _face_down_ability, _has_keyword, _leave_graveyard, _put_into_exile, _queue_triggers, _set_day_night, _set_tapped, _venture_undercity, _ward_details, legal_actions, new_game, perform_action, public_state
+from mtglogger.services.game_engine import RuleViolation, _add_counters, _add_saga_lore, _amass, _change_control, _combat_damage, _connive, _counter_stack_item, _enter_battlefield, _explore, _face_down_ability, _has_keyword, _leave_battlefield, _leave_graveyard, _put_into_exile, _queue_triggers, _set_day_night, _set_tapped, _venture_undercity, _ward_details, legal_actions, new_game, perform_action, public_state
 
 
 def card(index:int,name:str,type_line:str,mana_cost:str="",power:str|None=None,toughness:str|None=None,quantity:int=1):
@@ -2248,3 +2248,27 @@ def test_bot_casts_an_affordable_madness_card_and_selects_its_target():
     mountain={**card(1830,"Mountain","Basic Land — Mountain"),"instance_id":"bot-madness-mountain","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};temper={**card(1831,"Bot Temper","Instant","{2}{R}"),"oracle_text":"Bot Temper deals 3 damage to any target.\nMadness {R}","instance_id":"bot-temper","owner_id":"bot","controller_id":"bot"};bot["battlefield"]=[mountain];bot["hand"]=[temper];state["pending_discard"]={"player_id":"bot","amount":1,"reason":"effect"}
     state=perform_action(state,"bot",{"type":"discard_cards","card_ids":["bot-temper"]});state=perform_action(state,"bot",{"type":"resolve"});choice=choose_bot_action(state,"expert")
     assert choice["type"]=="cast_madness" and choice["card_id"]=="bot-temper" and choice["target_id"]=="player"
+
+
+def test_unearth_is_a_sorcery_speed_graveyard_ability_that_returns_with_haste():
+    state=kept_game();state["phase"]="precombat_main";player=next(p for p in state["players"] if p["id"]=="player");lands=[{**card(1840+index,"Swamp","Basic Land — Swamp"),"instance_id":f"unearth-land-{index}","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False} for index in range(2)];creature={**card(1842,"Dregscape Zombie","Creature — Zombie","{1}{B}","2","1"),"oracle_text":"Unearth {1}{B}","instance_id":"dregscape-zombie","owner_id":"player","controller_id":"player"};player["battlefield"]=lands;player["graveyard"].append(creature)
+    action=next(entry for entry in legal_actions(state,"player") if entry["type"]=="unearth");assert action["card_id"]=="dregscape-zombie" and action["mana_cost"]=="{1}{B}"
+    state=perform_action(state,"player",{"type":"unearth","card_id":"dregscape-zombie"});assert state["stack"][-1]["kind"]=="unearth_ability" and any(card["instance_id"]=="dregscape-zombie" for card in next(p for p in state["players"] if p["id"]=="player")["graveyard"])
+    state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");returned=next(card for card in player["battlefield"] if card["instance_id"]=="dregscape-zombie");assert returned["unearthed"] and _has_keyword(returned,"Haste")
+    state=perform_action(state,"player",{"type":"advance_phase"});attack=next(entry for entry in legal_actions(state,"player") if entry["type"]=="declare_attackers");assert "dregscape-zombie" in attack["card_ids"]
+
+
+def test_unearthed_creature_is_exiled_instead_of_dying_or_returning_to_hand():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player");creature={**card(1850,"Unearthed Target","Creature — Zombie","","3","2"),"instance_id":"unearth-target","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False,"unearthed":True,"unearth_controller_id":"player"};player["battlefield"].append(creature);_leave_battlefield(state,player,creature,"graveyard");assert any(card["instance_id"]=="unearth-target" for card in player["exile"]) and not any(card["instance_id"]=="unearth-target" for card in player["graveyard"])
+    second={**creature,"instance_id":"unearth-bounce","unearthed":True,"unearth_controller_id":"player"};player["battlefield"].append(second);_leave_battlefield(state,player,second,"hand");assert any(card["instance_id"]=="unearth-bounce" for card in player["exile"]) and not any(card["instance_id"]=="unearth-bounce" for card in player["hand"])
+
+
+def test_unearth_creates_one_next_end_step_trigger_and_energy_variant_is_payable():
+    state=kept_game();state["phase"]="postcombat_main";player=next(p for p in state["players"] if p["id"]=="player");player["energy"]=8;creature={**card(1860,"Energy Revenant","Creature — Spirit","","5","5"),"oracle_text":"Unearth—Pay eight {E}.","instance_id":"energy-revenant","owner_id":"player","controller_id":"player"};player["graveyard"].append(creature);action=next(entry for entry in legal_actions(state,"player") if entry["type"]=="unearth");assert action["energy_cost"]==8
+    state=perform_action(state,"player",{"type":"unearth","card_id":"energy-revenant"});state=perform_action(state,"player",{"type":"resolve"});assert next(p for p in state["players"] if p["id"]=="player")["energy"]==0
+    state=perform_action(state,"player",{"type":"advance_phase"});assert state["phase"]=="ending" and sum(item["kind"]=="unearth_exile_trigger" for item in state["stack"])==1
+    state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");assert any(card["instance_id"]=="energy-revenant" for card in player["exile"])
+
+
+def test_bot_prefers_a_powerful_affordable_unearth_over_a_weaker_hand_spell():
+    state=kept_game();state["active_player_id"]="bot";state["priority_player_id"]="bot";state["phase"]="precombat_main";bot=next(p for p in state["players"] if p["id"]=="bot");bot["land_plays_remaining"]=0;lands=[{**card(1870+index,"Swamp","Basic Land — Swamp"),"instance_id":f"bot-unearth-land-{index}","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False} for index in range(2)];revenant={**card(1872,"Bot Revenant","Creature — Giant","{6}{B}","7","7"),"oracle_text":"Unearth {1}{B}","instance_id":"bot-revenant","owner_id":"bot","controller_id":"bot"};weak={**card(1873,"Weak Bear","Creature — Bear","{1}{B}","2","2"),"instance_id":"weak-bear","owner_id":"bot","controller_id":"bot"};bot["battlefield"]=lands;bot["graveyard"]=[revenant];bot["hand"]=[weak];choice=choose_bot_action(state,"expert");assert choice["type"]=="unearth" and choice["card_id"]=="bot-revenant"

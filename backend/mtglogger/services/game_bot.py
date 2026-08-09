@@ -350,6 +350,10 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
         if "cast" not in by_type or lands_in_hand<2 or (difficulty=="expert" and stranded):return choice
     if "cast_face_down" in by_type and "cast" not in by_type:
         choices=by_type["cast_face_down"];return random.choice(choices) if difficulty=="beginner" else max(choices,key=lambda action:_threat_score(state,_card(state,"bot",action["card_id"])))
+    if "unearth" in by_type:
+        choice=max(by_type["unearth"],key=lambda action:_threat_score(state,_card(state,"bot",action["card_id"])))
+        best_cast=max((_threat_score(state,_card(state,"bot",action["card_id"])) for action in by_type.get("cast",[])),default=-1)
+        if difficulty=="beginner" and random.random()<.5 or "cast" not in by_type or _threat_score(state,_card(state,"bot",choice["card_id"]))>=best_cast:return choice
     if "cast" in by_type:
         spells = by_type["cast"]
         if state["stack"]:

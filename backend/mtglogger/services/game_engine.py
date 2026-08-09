@@ -405,6 +405,16 @@ def _madness_ability(card:dict)->dict|None:
     return {"mana_cost":mana_cost,"life_cost":int(life.group(1)) if life else 0}
 
 
+def _unearth_ability(card:dict)->dict|None:
+    line=next((line.strip() for line in (card.get("oracle_text") or "").splitlines() if re.match(r"^Unearth\b",line.strip(),re.IGNORECASE)),None)
+    if not line:return None
+    energy=re.search(r"Pay (\w+|\d+) \{E\}",line,re.IGNORECASE)
+    if energy:
+        words={"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10};value=energy.group(1).casefold();return {"mana_cost":"","energy_cost":words.get(value,int(value) if value.isdigit() else 0)}
+    match=re.search(r"Unearth\s*[—-]*\s*((?:\{[^}]+\})+)",line,re.IGNORECASE)
+    return {"mana_cost":match.group(1).upper(),"energy_cost":0} if match else None
+
+
 def _flashback_ability(card:dict)->dict|None:
     match=re.search(r"(?:^|\n)Flashback[ —-]*((?:\{[^}]+\})+)(?:,\s*Behold\s+(a|one|two|three|four|five|\d+)\s+([A-Za-z]+))?",card.get("oracle_text") or "",re.IGNORECASE)
     if not match:return None
@@ -1487,6 +1497,10 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
             for hand_card in player["hand"]:
                 face_down=_face_down_ability(hand_card)
                 if face_down:actions.append({"type":"cast_face_down","card_id":hand_card["instance_id"],"mana_cost":"{3}","label":f"Cast {hand_card['name']} face down for {{3}} · {face_down['mechanic'].title()} {face_down['mana_cost'] or face_down['cost_text']}"})
+        for grave_card in player["graveyard"]:
+            unearth=_unearth_ability(grave_card)
+            if unearth and player.get("energy",0)>=unearth["energy_cost"] and _can_pay(player,{"mana_cost":unearth["mana_cost"]}):
+                cost_label=unearth["mana_cost"] or f"{unearth['energy_cost']} energy";actions.append({"type":"unearth","card_id":grave_card["instance_id"],"source":"graveyard","mana_cost":unearth["mana_cost"],"energy_cost":unearth["energy_cost"],"label":f"Unearth {grave_card['name']} · {cost_label}"})
     castable = [(card, "hand") for card in player["hand"]]
     castable.extend((card, "command") for card in player.get("command", []))
     castable.extend((card,"flashback") for card in player["graveyard"] if _flashback_ability(card))
@@ -1681,6 +1695,15 @@ def _resolve_spell(state: dict) -> None:
         candidate=next((candidate for candidate in caster["exile"] if candidate["instance_id"]==item.get("source_id")),None)
         if not candidate:_log(state,f"{card['name']} resolved, but the discarded card was no longer in exile.");return
         state["pending_madness"]={"player_id":caster["id"],"card_id":candidate["instance_id"],"card_name":candidate["name"]};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} may cast {candidate['name']} for its madness cost.");return
+    if item.get("kind")=="unearth_ability":
+        candidate=next((candidate for candidate in caster["graveyard"] if candidate["instance_id"]==item.get("source_id")),None)
+        if not candidate:_log(state,f"{card['name']} did not resolve because the card left the graveyard.");return
+        _leave_graveyard(state,caster,[candidate]);candidate["summoning_sick"]=True;candidate.setdefault("temporary_keywords",[]).append("Haste");candidate["unearthed"]=True;candidate["unearth_controller_id"]=caster["id"];_enter_battlefield(state,caster,[candidate],"graveyard");_log(state,f"{candidate['name']} returned with haste. It will be exiled at the beginning of the next end step.");return
+    if item.get("kind")=="unearth_exile_trigger":
+        permanent=next((permanent for owner in state["players"] for permanent in owner["battlefield"] if permanent["instance_id"]==item.get("source_id") and permanent.get("unearthed")),None)
+        if permanent:
+            owner=next(owner for owner in state["players"] if permanent in owner["battlefield"]);_leave_battlefield(state,owner,permanent,"exile",exile_actor_id=caster["id"]);_log(state,f"{permanent['name']} was exiled by unearth.")
+        return
     if item.get("kind")=="ninjutsu_ability":
         source=item.get("source_zone","hand");ninja=next((candidate for candidate in caster.get(source,[]) if candidate["instance_id"]==item.get("source_id")),None)
         if not ninja:_log(state,f"{card['name']} did not resolve because the Ninja was no longer in {source}.");return
@@ -1998,6 +2021,7 @@ def _resolve_spell(state: dict) -> None:
 
 
 def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str, trigger_sources:list[tuple[dict,dict]]|None=None, trigger_dedupe:set[str]|None=None, exile_actor_id:str|None=None, exile_batch_size:int|None=None) -> None:
+    if card.get("unearthed") and destination!="exile":destination="exile";exile_actor_id=card.get("unearth_controller_id",exile_actor_id)
     exile_sources=trigger_sources or ([(source_owner,source) for source_owner in state["players"] for source in source_owner["battlefield"]] if destination=="exile" else None)
     if card.get("attached_to"):_detach(state,card)
     attachments=[(attachment_owner,attachment) for attachment_owner in state["players"] for attachment in list(attachment_owner["battlefield"]) if attachment.get("attached_to")==card.get("instance_id")]
@@ -2008,7 +2032,7 @@ def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str, t
     earthbend_controller=card.get("earthbend_controller") if destination in {"graveyard","exile"} else None
     _queue_triggers(state,"leaves",card,owner,trigger_dedupe,trigger_sources)
     if destination=="graveyard":_queue_triggers(state,"dies",card,owner,trigger_dedupe,trigger_sources)
-    card["damage"] = 0; card["tapped"] = False;card.pop("deathtouch_damage",None);card.pop("crewed_turn",None);card.pop("temporary_control_return_to",None);card.pop("activated_ability_usage",None)
+    card["damage"] = 0; card["tapped"] = False;card.pop("deathtouch_damage",None);card.pop("crewed_turn",None);card.pop("temporary_control_return_to",None);card.pop("activated_ability_usage",None);card.pop("temporary_power",None);card.pop("temporary_toughness",None);card.pop("temporary_keywords",None);card.pop("unearthed",None);card.pop("unearth_controller_id",None);card.pop("unearth_end_triggered",None)
     if card.get("face_down"):
         values=card.pop("face_down_values",{})
         for key,value in values.items():card[key]=value
@@ -2625,6 +2649,8 @@ def _advance_turn_phase(state: dict) -> None:
             for owner in state["players"]:owner["firebending_mana"]=0
         if state["phase"] == "ending":
             active=_player(state,state["active_player_id"]);_queue_triggers(state,"end_step",None,active)
+            for permanent in [card for owner in state["players"] for card in owner["battlefield"] if card.get("unearthed") and not card.get("unearth_end_triggered")]:
+                permanent["unearth_end_triggered"]=True;controller=_player(state,permanent.get("unearth_controller_id",permanent["controller_id"]));ability_card={**permanent,"name":f"{permanent['name']} — Unearth exile","type_line":"Ability","mana_cost":"","oracle_text":f"Exile {permanent['name']}."};state["stack"].append({"id":_id(),"kind":"unearth_exile_trigger","card":ability_card,"controller_id":controller["id"],"source_id":permanent["instance_id"]});_log(state,f"{permanent['name']}'s unearth exile trigger was put on the stack.")
             if state.get("monarch_id")==active["id"]:
                 emblem={"instance_id":_id(),"scryfall_id":"monarch","name":"The Monarch","image_url":None,"type_line":"Emblem Ability","oracle_text":"Draw a card.","mana_cost":"","mana_value":0,"keywords":[],"power":None,"toughness":None,"owner_id":active["id"],"controller_id":active["id"],"tapped":False,"damage":0,"counters":{},"summoning_sick":False}
                 state["stack"].append({"id":_id(),"kind":"trigger","card":emblem,"controller_id":active["id"],"target_id":None});_log(state,"The monarch's end-step draw triggered.")
@@ -2840,6 +2866,14 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         count=int(action.get("x_value") or 0) if ability["count"]=="X" else int(ability["count"])
         if ability["count"]=="X" and not available.get("x_min",1)<=count<=available.get("x_max",0):raise RuleViolation("Choose a legal number of time counters")
         _pay_mana(state,player,{"mana_cost":ability["mana_cost"]},x_value=count);player["hand"].remove(card);card["suspended"]=True;card.setdefault("counters",{})["time"]=count;_put_into_exile(state,player,[card],"hand",player_id);state["consecutive_passes"]=0;state["pending_phase_advance"]=False;_log(state,f"{player['name']} suspended {card['name']} with {count} time counter{'s' if count!=1 else ''}.")
+    elif action_type == "unearth":
+        card=next((card for card in player["graveyard"] if card["instance_id"]==action.get("card_id")),None);ability=_unearth_ability(card or {});available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="unearth" and entry["card_id"]==action.get("card_id")),None)
+        if not card or not ability or not available:raise RuleViolation("That card cannot be unearthed now")
+        if ability["mana_cost"]:_pay_mana(state,player,{"mana_cost":ability["mana_cost"]})
+        if ability["energy_cost"]:_pay_energy(state,player,ability["energy_cost"])
+        ability_card={**card,"name":f"{card['name']} — Unearth","type_line":"Ability","mana_cost":"","oracle_text":f"Return {card['name']} from your graveyard to the battlefield. It gains haste. Exile it at the beginning of the next end step or if it would leave the battlefield."};state["stack"].append({"id":_id(),"kind":"unearth_ability","card":ability_card,"controller_id":player_id,"source_id":card["instance_id"]});state["consecutive_passes"]=0;state["pending_phase_advance"]=False
+        if _multiplayer(state) or not allow_direct_resolution:state["priority_player_id"]=opponent(state,player_id)["id"]
+        _log(state,f"{player['name']} activated {card['name']}'s unearth ability.")
     elif action_type == "foretell":
         card=next((card for card in player["hand"] if card["instance_id"]==action.get("card_id")),None);available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="foretell" and entry["card_id"]==action.get("card_id")),None)
         if not card or not _foretell_cost(card) or not available:raise RuleViolation("That card cannot be foretold now")
