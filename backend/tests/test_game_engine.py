@@ -431,6 +431,41 @@ def test_commander_can_remain_in_graveyard_while_its_dies_trigger_uses_the_stack
     assert bot["life"]==life+3 and any(card["instance_id"]=="last-gift" for card in bot["graveyard"])
 
 
+def test_library_search_reveals_only_matching_cards_and_puts_chosen_land_onto_battlefield_tapped():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player")
+    forest={**card(728,"Forest","Basic Land — Forest"),"instance_id":"search-forest","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};island={**card(729,"Island","Basic Land — Island"),"instance_id":"search-island","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};creature={**card(730,"Search Bear","Creature — Bear","","2","2"),"instance_id":"search-bear","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["library"]=[creature,island,forest]
+    ramp={**card(731,"Test Ramp","Sorcery"),"oracle_text":"Search your library for a basic land card, put it onto the battlefield tapped, then shuffle.","instance_id":"test-ramp","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"].append(ramp)
+    state=perform_action(state,"player",{"type":"cast","card_id":"test-ramp"});state=perform_action(state,"player",{"type":"resolve"});action=next(action for action in legal_actions(state,"player") if action["type"]=="search_library")
+    assert set(action["card_ids"])=={"search-forest","search-island"} and action["max_amount"]==1 and action["destination"]=="battlefield"
+    state=perform_action(state,"player",{"type":"search_library","card_ids":["search-forest"]});player=next(p for p in state["players"] if p["id"]=="player")
+    found=next(card for card in player["battlefield"] if card["instance_id"]=="search-forest");assert found["tapped"] and not state.get("pending_library_search") and len(player["library"])==2
+
+
+def test_library_search_can_put_a_tutored_card_in_hand_or_on_top_and_hides_choices_from_opponent():
+    def setup(oracle:str):
+        state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");aura={**card(732,"Search Aura","Enchantment — Aura"),"instance_id":"search-aura","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["library"]=[aura];spell={**card(733,"Test Tutor","Sorcery"),"oracle_text":oracle,"instance_id":"test-tutor","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"].append(spell);state=perform_action(state,"player",{"type":"cast","card_id":"test-tutor"});return perform_action(state,"player",{"type":"resolve"})
+    hand_state=setup("Search your library for an Aura card, reveal it, put it into your hand, then shuffle.");public=public_state(hand_state,"bot");assert public["pending_library_search"]["card_ids"]==[]
+    hand_state=perform_action(hand_state,"player",{"type":"search_library","card_ids":["search-aura"]});player=next(p for p in hand_state["players"] if p["id"]=="player");assert any(card["instance_id"]=="search-aura" for card in player["hand"])
+    top_state=setup("Search your library for an Aura card, reveal it, then shuffle and put that card on top.");top_state=perform_action(top_state,"player",{"type":"search_library","card_ids":["search-aura"]});player=next(p for p in top_state["players"] if p["id"]=="player");assert player["library"][-1]["instance_id"]=="search-aura"
+
+
+def test_bot_completes_library_search_without_revealing_its_library_to_the_human():
+    state=kept_game();state["active_player_id"]="bot";state["priority_player_id"]="bot";state["phase"]="precombat_main";bot=next(p for p in state["players"] if p["id"]=="bot")
+    forest={**card(734,"Forest","Basic Land — Forest"),"instance_id":"bot-search-forest","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};bot["library"]=[forest];ramp={**card(735,"Bot Ramp","Sorcery"),"oracle_text":"Search your library for a basic land card, put it onto the battlefield tapped, then shuffle.","instance_id":"bot-ramp","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};bot["hand"].append(ramp)
+    state=perform_action(state,"bot",{"type":"cast","card_id":"bot-ramp"});state=perform_action(state,"bot",{"type":"resolve"});state=run_bot(state,"expert",limit=4);bot=next(p for p in state["players"] if p["id"]=="bot")
+    assert any(card["instance_id"]=="bot-search-forest" and card["tapped"] for card in bot["battlefield"])
+
+
+def test_enter_the_battlefield_tutor_waits_for_its_trigger_and_basic_subtype_search_excludes_nonbasics():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player")
+    basic={**card(736,"Forest","Basic Land — Forest"),"instance_id":"basic-forest","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};nonbasic={**card(737,"Fancy Forest","Land — Forest"),"instance_id":"fancy-forest","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["library"]=[basic,nonbasic]
+    guide={**card(738,"Forest Guide","Creature — Scout","","2","2"),"oracle_text":"When Forest Guide enters, search your library for a basic Forest card, reveal it, put it into your hand, then shuffle.","instance_id":"forest-guide","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"].append(guide)
+    state=perform_action(state,"player",{"type":"cast","card_id":"forest-guide"});state=perform_action(state,"player",{"type":"resolve"})
+    assert not state.get("pending_library_search") and state["stack"][-1]["card"]["name"]=="Forest Guide trigger"
+    state=perform_action(state,"player",{"type":"resolve"});action=next(action for action in legal_actions(state,"player") if action["type"]=="search_library")
+    assert action["card_ids"]==["basic-forest"]
+
+
 def test_defender_unblockable_hexproof_protection_and_indestructible_are_enforced():
     state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
     def permanent(index,name,text="",keywords=None,owner="player"):

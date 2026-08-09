@@ -298,6 +298,32 @@ def _x_rules_card(card:dict,x_value:int|None)->dict:
     return {**card,"oracle_text":re.sub(r"\bX\b",str(max(0,x_value)),card.get("oracle_text") or "",flags=re.IGNORECASE)}
 
 
+def _library_search_spec(card:dict)->dict|None:
+    text=card.get("oracle_text") or "";match=re.search(r"(?:may )?search your library for (up to )?(a|an|one|two|three|four|five|six|seven|eight|nine|ten|\d+) (.+?) cards?\b",text,re.IGNORECASE)
+    if not match:return None
+    tail=text[match.start():];clause=re.split(r"\bthen shuffle\b",tail,maxsplit=1,flags=re.IGNORECASE)[0].casefold();lower_tail=tail.casefold()
+    battlefield="onto the battlefield" in clause;hand="into your hand" in clause or "put it into your hand" in clause or "put them into your hand" in clause;top="shuffle and put that card on top" in lower_tail
+    if "into your graveyard" in clause:return None
+    if sum((battlefield,hand,top))!=1:return None
+    words={"a":1,"an":1,"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10};word=match.group(2).casefold();amount=words.get(word,int(word) if word.isdigit() else 1);descriptor=match.group(3).strip().casefold()
+    return {"amount":amount,"descriptor":descriptor,"destination":"battlefield" if battlefield else "library_top" if top else "hand","tapped":battlefield and "battlefield tapped" in clause,"different_names":"different names" in descriptor,"shared_land_type":"share a land type" in clause,"label":match.group(0)}
+
+
+def _matches_library_search(card:dict,descriptor:str)->bool:
+    type_line=card.get("type_line","").casefold();name=card.get("name","").casefold();descriptor=descriptor.casefold()
+    named=re.search(r"card named ([^,.]+)",descriptor)
+    if named:return name==named.group(1).strip()
+    value=re.search(r"mana value (\d+) or less",descriptor)
+    if value and float(card.get("mana_value") or 0)>int(value.group(1)):return False
+    if "basic " in descriptor and "basic" not in type_line:return False
+    if "basic land" in descriptor and not ("basic" in type_line and "land" in type_line):return False
+    elif "land" in descriptor and "land" not in type_line:return False
+    if "creature" in descriptor and "creature" not in type_line:return False
+    qualities=[quality for quality in ("aura","equipment","shrine","lesson","noble","forest","island","mountain","plains","swamp","cave") if re.search(rf"\b{quality}\b",descriptor)]
+    if qualities and not any(quality in type_line for quality in qualities):return False
+    return any(term in descriptor for term in ("card","land","creature","aura","equipment","shrine","lesson","noble","forest","island","mountain","plains","swamp","cave"))
+
+
 def _new_player(player_id: str, name: str, deck: list[dict], is_bot: bool, format_name: str = "") -> dict:
     library = []
     for source in deck:
@@ -328,7 +354,7 @@ def _new_player(player_id: str, name: str, deck: list[dict], is_bot: bool, forma
 def new_game(player_deck: list[dict], opponent_deck: list[dict], play_first: bool = True, opponent_is_bot: bool = True, player_format: str = "", opponent_format: str = "") -> dict:
     human_id, bot_id = "player", "bot"
     players = [_new_player(human_id, "You", player_deck, False, player_format), _new_player(bot_id, "Bot" if opponent_is_bot else "Guest", opponent_deck, opponent_is_bot, opponent_format)]
-    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "beginning_draw_pending":True,"first_turn_draw_skipped":False,"active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id, "players": players, "stack": [], "combat": {"attackers": [], "blocks": {}, "attack_targets": {},"block_orders":{},"damage_pending":False}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "pending_legendary": None,"pending_commander_zone":[],"pending_scry":None,"pending_damage_order":None,"pending_ward":None,"pending_trigger_targets":[], "log": []}
+    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "beginning_draw_pending":True,"first_turn_draw_skipped":False,"active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id, "players": players, "stack": [], "combat": {"attackers": [], "blocks": {}, "attack_targets": {},"block_orders":{},"damage_pending":False}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "pending_legendary": None,"pending_commander_zone":[],"pending_library_search":None,"pending_scry":None,"pending_damage_order":None,"pending_ward":None,"pending_trigger_targets":[], "log": []}
     for player in players:
         _draw(state, player, 7)
     _log(state, "Opening hands drawn. Choose whether to keep or mulligan.")
@@ -346,6 +372,8 @@ def public_state(state: dict, viewer_id: str = "player") -> dict:
         if player["id"] != viewer_id:
             player["hand_count"] = len(player["hand"])
             player["hand"] = []
+    pending_search=visible.get("pending_library_search")
+    if pending_search and pending_search.get("player_id")!=viewer_id:pending_search["card_ids"]=[]
     return visible
 
 
@@ -443,7 +471,7 @@ def _multiplayer(state: dict) -> bool:
 
 
 def _pending_decision(state:dict)->bool:
-    return bool(state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_trigger_targets"))
+    return bool(state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_trigger_targets"))
 
 
 def _queue_commander_zone_choice(state:dict,owner:dict,card:dict,zone:str)->None:
@@ -499,6 +527,11 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
         if pending["player_id"]!=player_id:return []
         common={"card_id":pending["card_id"],"card_name":pending["card_name"],"zone":pending["zone"]}
         return [{"type":"move_commander",**common},{"type":"keep_commander",**common},{"type":"concede"}]
+    pending_search=state.get("pending_library_search")
+    if pending_search:
+        if pending_search["player_id"]!=player_id:return []
+        cards_by_id={card["instance_id"]:card for card in player["library"]};cards=[cards_by_id[card_id] for card_id in pending_search["card_ids"] if card_id in cards_by_id]
+        return [{"type":"search_library","card_ids":pending_search["card_ids"],"cards":cards,"min_amount":pending_search["min_amount"],"max_amount":pending_search["max_amount"],"destination":pending_search["destination"],"tapped":pending_search["tapped"],"label":pending_search["label"],"different_names":pending_search.get("different_names",False),"shared_land_type":pending_search.get("shared_land_type",False)},{"type":"concede"}]
     pending_scry=state.get("pending_scry")
     if pending_scry:
         if pending_scry["player_id"]!=player_id:return []
@@ -697,6 +730,11 @@ def _resolve_spell(state: dict) -> None:
     if library_match and not state.get("pending_scry"):
         words={"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10};requested=words.get(library_match.group(1),int(library_match.group(1)) if library_match.group(1).isdigit() else 0);amount=min(requested,len(caster["library"]));ids=[card["instance_id"] for card in reversed(caster["library"][-amount:])] if amount else []
         if ids:state["pending_scry"]={"player_id":caster["id"],"amount":amount,"card_ids":ids,"mode":mode};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} is {mode}ing {amount}.")
+    search_spec=_library_search_spec({**rules_card,"oracle_text":effect_text})
+    if search_spec and not state.get("pending_library_search"):
+        eligible=[library_card["instance_id"] for library_card in caster["library"] if _matches_library_search(library_card,search_spec["descriptor"])];maximum=min(search_spec["amount"],len(eligible))
+        state["pending_library_search"]={"player_id":caster["id"],"card_ids":eligible,"min_amount":0,"max_amount":maximum,**search_spec};state["priority_player_id"]=caster["id"]
+        _log(state,f"{caster['name']} is searching their library for up to {maximum} matching card(s).")
     discard_match = re.search(r"(?:(target|each) opponent|you) discards? (a|one|two|three|four|five|six|seven|eight|nine|ten|\d+) cards?", effect_text)
     if discard_match:
         amount_word=discard_match.group(2);words={"a":1,"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10};amount=words.get(amount_word,int(amount_word) if amount_word.isdigit() else 0);affected=caster if discard_match.group(0).startswith("you") else other;required=min(amount,len(affected["hand"]))
@@ -1183,6 +1221,22 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if pending_list:state["priority_player_id"]=pending_list[0]["player_id"]
         elif state.get("pending_trigger_targets"):state["priority_player_id"]=state["pending_trigger_targets"][0]["controller_id"]
         else:state["priority_player_id"]=state["active_player_id"]
+    elif action_type == "search_library":
+        pending=state.get("pending_library_search") or {};requested=action.get("card_ids") or [];allowed_ids=set(pending.get("card_ids",[]));minimum=pending.get("min_amount",0);maximum=pending.get("max_amount",0)
+        if pending.get("player_id")!=player_id or not minimum<=len(requested)<=maximum or len(set(requested))!=len(requested) or not set(requested).issubset(allowed_ids):raise RuleViolation(f"Choose between {minimum} and {maximum} matching card(s)")
+        chosen=[card for card in player["library"] if card["instance_id"] in set(requested)]
+        if pending.get("different_names") and len({card["name"].casefold() for card in chosen})!=len(chosen):raise RuleViolation("Choose cards with different names")
+        if pending.get("shared_land_type") and len(chosen)>1:
+            subtype_sets=[set(re.split(r"\s+",card.get("type_line","").split("—",1)[-1].casefold())) for card in chosen]
+            if not set.intersection(*subtype_sets):raise RuleViolation("Choose lands that share a land type")
+        for card in chosen:player["library"].remove(card)
+        random.SystemRandom().shuffle(player["library"]);destination=pending.get("destination","hand")
+        for card in chosen:
+            if destination=="battlefield":
+                card["controller_id"]=player_id;card["tapped"]=bool(pending.get("tapped"));card["summoning_sick"]="Creature" in card.get("type_line","");player["battlefield"].append(card);_queue_triggers(state,"enters",card,player)
+            elif destination=="library_top":player["library"].append(card)
+            else:player["hand"].append(card)
+        state["pending_library_search"]=None;state["priority_player_id"]=(state.get("pending_trigger_targets") or [{"controller_id":state["active_player_id"]}])[0]["controller_id"];_log(state,f"{player['name']} found {len(chosen)} card(s), moved them to {destination.replace('_',' ')}, and shuffled.")
     elif action_type in {"scry","surveil"}:
         pending=state.get("pending_scry") or {};top_ids=action.get("top_ids") or [];away_ids=(action.get("graveyard_ids") if action_type=="surveil" else action.get("bottom_ids")) or [];expected=pending.get("card_ids",[])
         if pending.get("player_id")!=player_id or pending.get("mode","scry")!=action_type or len(top_ids)+len(away_ids)!=len(expected) or len(set(top_ids+away_ids))!=len(expected) or set(top_ids+away_ids)!=set(expected):raise RuleViolation(f"Choose each {action_type}ed card exactly once")

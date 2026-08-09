@@ -188,6 +188,18 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
         # Preserve graveyard recursion when the commander can immediately be recovered; otherwise avoid losing access to it.
         recursion=any("return target creature card" in (card.get("oracle_text") or "").casefold() and "graveyard" in (card.get("oracle_text") or "").casefold() for card in bot["hand"])
         return keep if difficulty=="expert" and keep and keep.get("zone")=="graveyard" and recursion else move or keep
+    if "search_library" in by_type:
+        action=by_type["search_library"][0];cards=action.get("cards",[]);amount=action.get("max_amount",0)
+        ranked=sorted(cards,key=lambda card:(("Land" not in card.get("type_line","") if action.get("destination")=="battlefield" else True),_threat_score(state,card),-(card.get("mana_value") or 0)),reverse=True)
+        chosen=[]
+        for card in ranked:
+            if action.get("different_names") and any(other["name"].casefold()==card["name"].casefold() for other in chosen):continue
+            if action.get("shared_land_type") and chosen:
+                current=set.intersection(*(set(re.split(r"\s+",other.get("type_line","").split("—",1)[-1].casefold())) for other in chosen));candidate=set(re.split(r"\s+",card.get("type_line","").split("—",1)[-1].casefold()))
+                if not current&candidate:continue
+            chosen.append(card)
+            if len(chosen)>=amount:break
+        return {"type":"search_library","card_ids":[card["instance_id"] for card in chosen]}
     if "scry" in by_type or "surveil" in by_type:
         kind="surveil" if "surveil" in by_type else "scry";action=by_type[kind][0];cards={card["instance_id"]:card for card in action.get("cards",[])};bot=next(player for player in state["players"] if player["id"]=="bot");lands_in_hand=sum("Land" in card.get("type_line","") for card in bot["hand"])
         if difficulty=="beginner":bottom=[]
