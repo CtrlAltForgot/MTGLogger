@@ -99,3 +99,52 @@ def test_human_opponent_game_exposes_each_viewer_only_their_own_hand():
     assert next(player for player in host["players"] if player["id"]=="bot")["hand"]==[]
     assert next(player for player in guest["players"] if player["id"]=="player")["hand"]==[]
     assert len(next(player for player in guest["players"] if player["id"]=="bot")["hand"])==7
+
+
+def test_private_game_priority_allows_instant_response_and_two_pass_resolution():
+    first,second=decks();state=new_game(first,second,opponent_is_bot=False)
+    state=perform_action(state,"player",{"type":"keep"});state=perform_action(state,"bot",{"type":"keep"})
+    state=perform_action(state,"player",{"type":"advance_phase"})
+    assert state["pending_phase_advance"] and state["priority_player_id"]=="bot"
+    state=perform_action(state,"bot",{"type":"pass_priority"})
+    assert state["phase"]=="precombat_main"
+    for owner_id,name in (("player","Host Response"),("bot","Guest Response")):
+        owner=next(player for player in state["players"] if player["id"]==owner_id)
+        spell={**card(200 if owner_id=="player" else 201,name,"Instant"),"instance_id":name,"owner_id":owner_id,"controller_id":owner_id,"tapped":False,"damage":0,"counters":{},"summoning_sick":False};owner["hand"].append(spell)
+    state=perform_action(state,"player",{"type":"cast","card_id":"Host Response"})
+    assert state["priority_player_id"]=="bot" and len(state["stack"])==1
+    assert any(action.get("card_id")=="Guest Response" for action in legal_actions(state,"bot"))
+    state=perform_action(state,"bot",{"type":"cast","card_id":"Guest Response"})
+    state=perform_action(state,"player",{"type":"pass_priority"});state=perform_action(state,"bot",{"type":"pass_priority"})
+    assert len(state["stack"])==1
+    assert any(item["name"]=="Guest Response" for item in next(player for player in state["players"] if player["id"]=="bot")["graveyard"])
+
+
+def test_commander_setup_tax_recast_and_automatic_command_zone_return():
+    commander=card(300,"Test Commander","Legendary Creature — Wizard","", "3","3")
+    commander_deck=[commander,card(301,"Island","Basic Land — Island",quantity=99)]
+    opponent_deck=[card(302,"Other Commander","Legendary Creature — Soldier","","2","2"),card(303,"Plains","Basic Land — Plains",quantity=99)]
+    state=new_game(commander_deck,opponent_deck,player_format="Commander",opponent_format="Commander")
+    player=next(item for item in state["players"] if item["id"]=="player")
+    assert player["life"]==40 and len(player["command"])==1 and len(player["library"])==92
+    state=perform_action(state,"player",{"type":"keep"});state=perform_action(state,"bot",{"type":"keep"});state=perform_action(state,"player",{"type":"advance_phase"})
+    commander_id=next(item for item in state["players"] if item["id"]=="player")["command"][0]["instance_id"]
+    state=perform_action(state,"player",{"type":"cast","card_id":commander_id});state=perform_action(state,"player",{"type":"resolve"})
+    player=next(item for item in state["players"] if item["id"]=="player");commander_card=next(item for item in player["battlefield"] if item.get("commander"))
+    removal={**card(304,"Self Removal","Instant"),"oracle_text":"Destroy target creature.","instance_id":"self-removal","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"].append(removal)
+    state=perform_action(state,"player",{"type":"cast","card_id":"self-removal","target_id":commander_card["instance_id"]});state=perform_action(state,"player",{"type":"resolve"})
+    player=next(item for item in state["players"] if item["id"]=="player");assert player["command"] and player["commander_casts"]==1
+    for index in range(2):
+        land=next(item for item in player["library"] if "Land" in item["type_line"]);player["library"].remove(land);player["battlefield"].append(land)
+    recast=next(action for action in legal_actions(state,"player") if action.get("card_id")==commander_id)
+    assert recast["commander_tax"]==2
+
+
+def test_twenty_one_unblocked_commander_damage_ends_game():
+    first,second=decks();state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});state=perform_action(state,"player",{"type":"advance_phase"})
+    player=next(item for item in state["players"] if item["id"]=="player")
+    commander={**card(400,"Huge Commander","Legendary Creature — Giant","","21","21"),"instance_id":"huge-commander","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False,"commander":True};player["battlefield"].append(commander)
+    state=perform_action(state,"player",{"type":"declare_attackers","attacker_ids":["huge-commander"]});state=perform_action(state,"bot",{"type":"advance_phase"})
+    defender=next(item for item in state["players"] if item["id"]=="bot")
+    assert defender["commander_damage"]["player"]==21
+    assert state["status"]=="complete" and state["winner_id"]=="player"

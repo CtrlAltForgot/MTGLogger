@@ -315,6 +315,7 @@ class GameAction(BaseModel):
     power: int | None = Field(None, ge=0, le=99)
     toughness: int | None = Field(None, ge=1, le=99)
     destination: str | None = Field(None, pattern="^(hand|battlefield|graveyard|exile)$")
+    source: str | None = Field(None, pattern="^(hand|command)$")
 
 
 class GameRead(BaseModel):

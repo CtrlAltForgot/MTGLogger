@@ -60,14 +60,14 @@ def _land_colors(card: dict) -> set[str]:
     return {color.upper() for color in colors}
 
 
-def _can_pay(player: dict, card: dict) -> bool:
+def _can_pay(player: dict, card: dict, extra_generic: int = 0) -> bool:
     available = []
     for permanent in player["battlefield"]:
         if not permanent.get("tapped") and "Land" in permanent.get("type_line", ""):
             available.append(_land_colors(permanent) or {"C"})
     symbols = _mana_symbols(card)
     colored = [symbol for symbol in symbols if symbol in "WUBRG"]
-    generic = sum(int(symbol) for symbol in symbols if symbol.isdigit())
+    generic = sum(int(symbol) for symbol in symbols if symbol.isdigit()) + extra_generic
     for symbol in colored:
         match = next((colors for colors in available if symbol in colors), None)
         if not match:
@@ -76,10 +76,10 @@ def _can_pay(player: dict, card: dict) -> bool:
     return len(available) >= generic
 
 
-def _pay_mana(player: dict, card: dict) -> None:
+def _pay_mana(player: dict, card: dict, extra_generic: int = 0) -> None:
     symbols = _mana_symbols(card)
     colored = [symbol for symbol in symbols if symbol in "WUBRG"]
-    generic = sum(int(symbol) for symbol in symbols if symbol.isdigit())
+    generic = sum(int(symbol) for symbol in symbols if symbol.isdigit()) + extra_generic
     lands = [permanent for permanent in player["battlefield"] if not permanent.get("tapped") and "Land" in permanent.get("type_line", "")]
     chosen = []
     for symbol in colored:
@@ -95,7 +95,7 @@ def _pay_mana(player: dict, card: dict) -> None:
         land["tapped"] = True
 
 
-def _new_player(player_id: str, name: str, deck: list[dict], is_bot: bool) -> dict:
+def _new_player(player_id: str, name: str, deck: list[dict], is_bot: bool, format_name: str = "") -> dict:
     library = []
     for source in deck:
         for _ in range(source.get("quantity", 1)):
@@ -109,14 +109,20 @@ def _new_player(player_id: str, name: str, deck: list[dict], is_bot: bool) -> di
             card["summoning_sick"] = False
             card.pop("quantity", None)
             library.append(card)
+    command = []
+    is_commander = "commander" in (format_name or "").casefold()
+    if is_commander:
+        commander = next((card for card in library if "Legendary" in card.get("type_line", "") and "Creature" in card.get("type_line", "")), None)
+        if commander:
+            library.remove(commander); commander["commander"] = True; command.append(commander)
     random.SystemRandom().shuffle(library)
-    return {"id": player_id, "name": name, "is_bot": is_bot, "life": 20, "library": library, "hand": [], "battlefield": [], "graveyard": [], "exile": [], "command": [], "land_plays_remaining": 1, "kept_hand": False, "lost": False}
+    return {"id": player_id, "name": name, "is_bot": is_bot, "format": format_name, "life": 40 if is_commander else 20, "library": library, "hand": [], "battlefield": [], "graveyard": [], "exile": [], "command": command, "commander_casts": 0, "commander_damage": {}, "land_plays_remaining": 1, "kept_hand": False, "lost": False}
 
 
-def new_game(player_deck: list[dict], opponent_deck: list[dict], play_first: bool = True, opponent_is_bot: bool = True) -> dict:
+def new_game(player_deck: list[dict], opponent_deck: list[dict], play_first: bool = True, opponent_is_bot: bool = True, player_format: str = "", opponent_format: str = "") -> dict:
     human_id, bot_id = "player", "bot"
-    players = [_new_player(human_id, "You", player_deck, False), _new_player(bot_id, "Bot" if opponent_is_bot else "Guest", opponent_deck, opponent_is_bot)]
-    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id, "players": players, "stack": [], "combat": {"attackers": [], "blocks": {}}, "log": []}
+    players = [_new_player(human_id, "You", player_deck, False, player_format), _new_player(bot_id, "Bot" if opponent_is_bot else "Guest", opponent_deck, opponent_is_bot, opponent_format)]
+    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id, "players": players, "stack": [], "combat": {"attackers": [], "blocks": {}}, "consecutive_passes": 0, "pending_phase_advance": False, "log": []}
     for player in players:
         _draw(state, player, 7)
     _log(state, "Opening hands drawn. Choose whether to keep or mulligan.")
@@ -153,6 +159,14 @@ def _targets(state: dict, caster_id: str, card: dict) -> list[dict]:
     return targets
 
 
+def _multiplayer(state: dict) -> bool:
+    return not any(player.get("is_bot") for player in state["players"])
+
+
+def _commander_tax(player: dict, card: dict) -> int:
+    return player.get("commander_casts", 0) * 2 if card.get("commander") else 0
+
+
 def legal_actions(state: dict, player_id: str) -> list[dict]:
     if state["status"] == "complete":
         return []
@@ -169,14 +183,21 @@ def legal_actions(state: dict, player_id: str) -> list[dict]:
     if active and main and not state["stack"]:
         if player["land_plays_remaining"]:
             actions.extend({"type": "play_land", "card_id": card["instance_id"]} for card in player["hand"] if "Land" in card.get("type_line", ""))
-        for card in player["hand"]:
-            if "Land" in card.get("type_line", "") or not _can_pay(player, card): continue
+    castable = [(card, "hand") for card in player["hand"]]
+    castable.extend((card, "command") for card in player.get("command", []))
+    for card, source in castable:
+            instant_speed = "Instant" in card.get("type_line", "") or "Flash" in (card.get("oracle_text") or "")
+            if "Land" in card.get("type_line", "") or not ((active and main and not state["stack"]) or instant_speed) or not _can_pay(player, card, _commander_tax(player, card)): continue
             targets = _targets(state, player_id, card)
             if _target_kind(card) and not targets: continue
-            action = {"type": "cast", "card_id": card["instance_id"]}
+            action = {"type": "cast", "card_id": card["instance_id"], "source": source, "commander_tax": _commander_tax(player, card)}
             if targets: action["targets"] = targets
             actions.append(action)
-    if state["stack"]:
+    if _multiplayer(state):
+        actions.append({"type": "pass_priority"})
+        if active and not state["stack"] and not state.get("pending_phase_advance"):
+            actions.append({"type": "advance_phase"})
+    elif state["stack"]:
         actions.append({"type": "resolve"})
     else:
         actions.append({"type": "advance_phase"})
@@ -216,9 +237,9 @@ def _resolve_spell(state: dict) -> None:
         if target_player: target_player["life"] -= amount
         elif target: target["damage"] += amount
     if target and target_owner and re.search(r"destroy target (?:creature|permanent|nonland permanent)", text):
-        target_owner["battlefield"].remove(target); target_owner["graveyard"].append(target); _log(state, f"{target['name']} was destroyed.")
+        _leave_battlefield(target_owner, target, "graveyard"); _log(state, f"{target['name']} was destroyed.")
     if target and target_owner and re.search(r"exile target (?:creature|permanent|nonland permanent)", text):
-        target_owner["battlefield"].remove(target); target_owner["exile"].append(target); _log(state, f"{target['name']} was exiled.")
+        _leave_battlefield(target_owner, target, "exile"); _log(state, f"{target['name']} was exiled.")
     token_match = re.search(r"create (a|one|two|three|four) (\d+)/(\d+) ([^.]*?) creature tokens?", text)
     if token_match:
         amount = {"a":1,"one":1,"two":2,"three":3,"four":4}[token_match.group(1)]
@@ -235,8 +256,18 @@ def _resolve_spell(state: dict) -> None:
             _, toughness = _parse_stats(permanent)
             plus = permanent.get("counters", {}).get("+1/+1", 0); minus = permanent.get("counters", {}).get("-1/-1", 0)
             if toughness + plus - minus > 0 and permanent.get("damage", 0) >= toughness + plus - minus:
-                owner["battlefield"].remove(permanent); owner["graveyard"].append(permanent)
+                _leave_battlefield(owner, permanent, "graveyard")
     _log(state, f"{card['name']} resolved.")
+
+
+def _leave_battlefield(owner: dict, card: dict, destination: str) -> None:
+    if card in owner["battlefield"]: owner["battlefield"].remove(card)
+    card["damage"] = 0; card["tapped"] = False
+    if card.get("token"): return
+    if card.get("commander"):
+        owner["command"].append(card)
+    else:
+        owner[destination].append(card)
 
 
 def _combat_damage(state: dict) -> None:
@@ -251,6 +282,8 @@ def _combat_damage(state: dict) -> None:
         power, _ = _parse_stats(creature)
         if attacker_id not in blocked_attackers:
             defender["life"] -= power
+            if creature.get("commander"):
+                source = creature.get("owner_id", attacker["id"]); defender.setdefault("commander_damage", {})[source] = defender.setdefault("commander_damage", {}).get(source, 0) + power
     for blocker_id, attacker_id in state["combat"]["blocks"].items():
         blocker, attacking = battlefield.get(blocker_id), battlefield.get(attacker_id)
         if not blocker or not attacking:
@@ -260,19 +293,33 @@ def _combat_damage(state: dict) -> None:
         attacking["damage"] += blocker_power
         blocker["damage"] += attacking_power
         if attacking["damage"] >= attacking_toughness:
-            attacker["battlefield"].remove(attacking); attacker["graveyard"].append(attacking)
+            _leave_battlefield(attacker, attacking, "graveyard")
         if blocker["damage"] >= blocker_toughness:
-            defender["battlefield"].remove(blocker); defender["graveyard"].append(blocker)
+            _leave_battlefield(defender, blocker, "graveyard")
     _log(state, "Combat damage resolved.")
     state["combat"] = {"attackers": [], "blocks": {}}
 
 
 def _check_winner(state: dict) -> None:
-    losers = [player for player in state["players"] if player["life"] <= 0 or player.get("lost")]
+    losers = [player for player in state["players"] if player["life"] <= 0 or player.get("lost") or any(amount >= 21 for amount in player.get("commander_damage", {}).values())]
     if losers:
         state["status"] = "complete"
         state["winner_id"] = opponent(state, losers[0]["id"])["id"]
         _log(state, f"{opponent(state, losers[0]['id'])['name']} wins the game.")
+
+
+def _advance_turn_phase(state: dict) -> None:
+    if state["phase"] == "combat" and state["combat"]["attackers"]: _combat_damage(state)
+    index = PHASES.index(state["phase"])
+    if index == len(PHASES) - 1:
+        state["turn"] += 1; state["phase"] = PHASES[0]; state["active_player_id"] = opponent(state, state["active_player_id"])["id"]
+        active = _player(state, state["active_player_id"]); active["land_plays_remaining"] = 1
+        for permanent in active["battlefield"]: permanent["tapped"] = False; permanent["damage"] = 0; permanent["summoning_sick"] = False
+        _draw(state, active); _log(state, f"Turn {state['turn']} began for {active['name']}.")
+    else:
+        state["phase"] = PHASES[index + 1]
+    state["priority_player_id"] = state["active_player_id"]
+    state["pending_phase_advance"] = False; state["consecutive_passes"] = 0
 
 
 def perform_action(state: dict, player_id: str, action: dict) -> dict:
@@ -295,13 +342,28 @@ def perform_action(state: dict, player_id: str, action: dict) -> dict:
         if not card: raise RuleViolation("That land is not in your hand")
         player["hand"].remove(card); player["battlefield"].append(card); player["land_plays_remaining"] -= 1; _log(state, f"{player['name']} played {card['name']}.")
     elif action_type == "cast":
-        card = next((card for card in player["hand"] if card["instance_id"] == action.get("card_id")), None)
-        if not card or not _can_pay(player, card): raise RuleViolation("That spell cannot be cast")
+        source = next((zone for zone in ("hand", "command") if any(card["instance_id"] == action.get("card_id") for card in player.get(zone, []))), None)
+        card = next((card for card in player.get(source or "hand", []) if card["instance_id"] == action.get("card_id")), None)
+        tax = _commander_tax(player, card) if card else 0
+        if not card or not _can_pay(player, card, tax): raise RuleViolation("That spell cannot be cast")
         targets = _targets(state, player_id, card); target_id = action.get("target_id")
         if _target_kind(card) and target_id not in {target["id"] for target in targets}: raise RuleViolation("Choose a legal target")
-        _pay_mana(player, card); player["hand"].remove(card); state["stack"].append({"id": _id(), "card": card, "controller_id": player_id, "target_id": target_id}); _log(state, f"{player['name']} cast {card['name']}{' targeting '+next((target['name'] for target in targets if target['id']==target_id),'') if target_id else ''}.")
+        _pay_mana(player, card, tax); player[source].remove(card)
+        if card.get("commander"): player["commander_casts"] = player.get("commander_casts", 0) + 1
+        state["stack"].append({"id": _id(), "card": card, "controller_id": player_id, "target_id": target_id}); state["consecutive_passes"] = 0; state["pending_phase_advance"] = False
+        if _multiplayer(state): state["priority_player_id"] = opponent(state, player_id)["id"]
+        _log(state, f"{player['name']} cast {card['name']}{f' with {tax} commander tax' if tax else ''}{' targeting '+next((target['name'] for target in targets if target['id']==target_id),'') if target_id else ''}.")
     elif action_type == "resolve":
         _resolve_spell(state)
+    elif action_type == "pass_priority":
+        state["consecutive_passes"] = state.get("consecutive_passes", 0) + 1
+        if state["consecutive_passes"] >= 2:
+            state["consecutive_passes"] = 0
+            if state["stack"]: _resolve_spell(state)
+            elif state.get("pending_phase_advance"): _advance_turn_phase(state)
+            state["priority_player_id"] = state["active_player_id"]
+        else:
+            state["priority_player_id"] = opponent(state, player_id)["id"]
     elif action_type == "declare_attackers":
         requested = set(action.get("attacker_ids") or [])
         eligible = {card_id for entry in legal_actions(state, player_id) if entry["type"] == "declare_attackers" for card_id in entry.get("card_ids", [])}
@@ -316,16 +378,10 @@ def perform_action(state: dict, player_id: str, action: dict) -> dict:
         if not set(blocks).issubset(available) or not set(blocks.values()).issubset(set(state["combat"]["attackers"])): raise RuleViolation("One or more blocks are illegal")
         state["combat"]["blocks"] = blocks; _combat_damage(state); state["priority_player_id"] = state["active_player_id"]
     elif action_type == "advance_phase":
-        if state["phase"] == "combat" and state["combat"]["attackers"]: _combat_damage(state)
-        index = PHASES.index(state["phase"])
-        if index == len(PHASES) - 1:
-            state["turn"] += 1; state["phase"] = PHASES[0]; state["active_player_id"] = opponent(state, state["active_player_id"])["id"]
-            active = _player(state, state["active_player_id"]); active["land_plays_remaining"] = 1
-            for permanent in active["battlefield"]: permanent["tapped"] = False; permanent["damage"] = 0; permanent["summoning_sick"] = False
-            _draw(state, active); _log(state, f"Turn {state['turn']} began for {active['name']}.")
+        if _multiplayer(state):
+            state["pending_phase_advance"] = True; state["consecutive_passes"] = 1; state["priority_player_id"] = opponent(state, player_id)["id"]; _log(state, f"{player['name']} is ready to leave {state['phase'].replace('_', ' ')}.")
         else:
-            state["phase"] = PHASES[index + 1]
-        state["priority_player_id"] = state["active_player_id"]
+            _advance_turn_phase(state)
     elif action_type == "concede":
         state["status"] = "complete"; state["winner_id"] = opponent(state, player_id)["id"]; _log(state, f"{player['name']} conceded.")
     elif action_type == "adjust_life":

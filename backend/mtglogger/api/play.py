@@ -76,7 +76,7 @@ async def create_game(payload: GameCreate, db: Session = Depends(get_db)):
     if len(player_cards) == 0 or len(opponent_cards) == 0:
         raise HTTPException(422, "Both decks need cards before starting a game")
     invite_token = secrets.token_urlsafe(24) if payload.opponent_type == "human" else None
-    state = new_game(player_cards, opponent_cards, payload.play_first, payload.opponent_type == "bot")
+    state = new_game(player_cards, opponent_cards, payload.play_first, payload.opponent_type == "bot", player_deck.format or "", opponent_deck.format or "")
     game = GameSession(name=payload.name, player_deck_id=player_deck.id, opponent_deck_id=opponent_deck.id, bot_difficulty=payload.bot_difficulty, opponent_type=payload.opponent_type, invite_code=secrets.token_urlsafe(9) if invite_token else None, guest_token_hash=hashlib.sha256(invite_token.encode()).hexdigest() if invite_token else None, state_json=json.dumps(state), history_json="[]", status=state["status"])
     db.add(game); db.commit(); db.refresh(game)
     return _serialize(game, invite_token=invite_token)
