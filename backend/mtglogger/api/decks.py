@@ -127,7 +127,7 @@ async def _auto_deck_proposal(payload: AutoDeckBuildRequest, db: Session) -> dic
     missing_metadata = [
         card_id
         for card_id, reference in references.items()
-        if reference.mana_value is None or not reference.legalities or not reference.oracle_text
+        if reference.mana_value is None or not reference.legalities
     ]
     if missing_metadata:
         try:
