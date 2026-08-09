@@ -136,6 +136,14 @@ def _mode_score(state:dict,mode:dict)->float:
     return score
 
 
+def _choose_x(state:dict,action:dict)->int:
+    maximum=int(action.get("x_max") or 0);text=(action.get("label") or (_card(state,"bot",action["card_id"]).get("oracle_text","") if action.get("card_id") else "")).casefold();enemy=next(player for player in state["players"] if player["id"]!="bot")
+    if re.search(r"deals? x damage",text):return min(maximum,max(0,enemy["life"]))
+    if re.search(r"draw x cards?",text):
+        bot=next(player for player in state["players"] if player["id"]=="bot");return min(maximum,max(0,len(bot["library"])-1))
+    return maximum
+
+
 def choose_bot_action(state: dict, difficulty: str = "standard") -> dict | None:
     actions = legal_actions(state, "bot")
     if not actions:
@@ -193,6 +201,7 @@ def choose_bot_action(state: dict, difficulty: str = "standard") -> dict | None:
             choice = random.choice(spells)
         else:
             choice = max(spells, key=lambda action: (_card(state, "bot", action["card_id"]).get("mana_value") or 0, len(_card(state, "bot", action["card_id"]).get("oracle_text") or "")))
+        if choice.get("x_max") is not None:choice={**choice,"x_value":_choose_x(state,choice)}
         if choice.get("modes"):
             maximum=choice.get("mode_max",choice.get("mode_count",1));minimum=choice.get("mode_min",choice.get("mode_count",1));ranked=sorted(choice["modes"],key=lambda candidate:_mode_score(state,candidate),reverse=True)
             chosen=([ranked[0]]*maximum if choice.get("mode_repeatable") and ranked else ranked[:maximum])
@@ -211,6 +220,7 @@ def choose_bot_action(state: dict, difficulty: str = "standard") -> dict | None:
         choices=by_type["activate"];choice=max(choices,key=lambda action:_ability_score(state,action))
         if difficulty=="beginner" or _ability_score(state,choice)>0:
             choice={**choice,"cost_card_ids":_choose_ability_cost(state,choice)}
+            if choice.get("x_max") is not None:choice={**choice,"x_value":_choose_x(state,choice)}
             if choice.get("targets"):
                 choice={**choice,"target_id":_choose_target(state,choice)}
             return choice

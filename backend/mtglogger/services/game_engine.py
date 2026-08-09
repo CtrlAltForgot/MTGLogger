@@ -86,10 +86,11 @@ def _mana_source(card: dict) -> bool:
     return "Land" in card.get("type_line", "") or re.search(r"\{T\}:\s*Add ", card.get("oracle_text") or "", re.IGNORECASE) is not None
 
 
-def _mana_requirements(card: dict, extra_generic: int = 0) -> tuple[list[set[str]], int]:
+def _mana_requirements(card: dict, extra_generic: int = 0, x_value:int=0) -> tuple[list[set[str]], int]:
     colored=[];generic=extra_generic
     for symbol in _mana_symbols(card):
         if symbol.isdigit():generic+=int(symbol);continue
+        if symbol.upper()=="X":generic+=x_value;continue
         choices={part for part in symbol.upper().split("/") if part in "WUBRGC"}
         if choices:colored.append(choices)
     return colored,generic
@@ -211,12 +212,12 @@ def _activated_cost_options(player:dict,source:dict,selection_cost:dict|None)->l
     return [card for card in player["battlefield"] if (not selection_cost.get("exclude_source") or card["instance_id"]!=source["instance_id"]) and (kind=="permanent" or kind in card.get("type_line","").casefold())]
 
 
-def _can_pay(player: dict, card: dict, extra_generic: int = 0, excluded_id: str | None = None) -> bool:
+def _can_pay(player: dict, card: dict, extra_generic: int = 0, excluded_id: str | None = None,x_value:int=0) -> bool:
     available = []
     for permanent in player["battlefield"]:
         if permanent.get("instance_id")!=excluded_id and not permanent.get("tapped") and _mana_source(permanent) and not ("Creature" in permanent.get("type_line", "") and permanent.get("summoning_sick") and not _has_keyword(permanent,"Haste")):
             available.append(_land_colors(permanent) or {"C"})
-    colored,generic=_mana_requirements(card,extra_generic)
+    colored,generic=_mana_requirements(card,extra_generic,x_value)
     for choices in colored:
         match = next((colors for colors in available if colors & choices), None)
         if not match:
@@ -225,8 +226,8 @@ def _can_pay(player: dict, card: dict, extra_generic: int = 0, excluded_id: str 
     return len(available) >= generic
 
 
-def _pay_mana(player: dict, card: dict, extra_generic: int = 0, excluded_id: str | None = None) -> None:
-    colored,generic=_mana_requirements(card,extra_generic)
+def _pay_mana(player: dict, card: dict, extra_generic: int = 0, excluded_id: str | None = None,x_value:int=0) -> None:
+    colored,generic=_mana_requirements(card,extra_generic,x_value)
     lands = [permanent for permanent in player["battlefield"] if permanent.get("instance_id")!=excluded_id and not permanent.get("tapped") and _mana_source(permanent) and not ("Creature" in permanent.get("type_line", "") and permanent.get("summoning_sick") and not _has_keyword(permanent,"Haste"))]
     chosen = []
     for choices in colored:
@@ -240,6 +241,22 @@ def _pay_mana(player: dict, card: dict, extra_generic: int = 0, excluded_id: str
         raise RuleViolation("Not enough mana")
     for land in chosen:
         land["tapped"] = True
+
+
+def _has_x_cost(card:dict)->bool:
+    return any(symbol.upper()=="X" for symbol in _mana_symbols(card))
+
+
+def _maximum_x(player:dict,card:dict,extra_generic:int=0,excluded_id:str|None=None)->int:
+    if not _has_x_cost(card):return 0
+    value=0
+    while value<99 and _can_pay(player,card,extra_generic,excluded_id,x_value=value+1):value+=1
+    return value
+
+
+def _x_rules_card(card:dict,x_value:int|None)->dict:
+    if x_value is None:return card
+    return {**card,"oracle_text":re.sub(r"\bX\b",str(max(0,x_value)),card.get("oracle_text") or "",flags=re.IGNORECASE)}
 
 
 def _new_player(player_id: str, name: str, deck: list[dict], is_bot: bool, format_name: str = "") -> dict:
@@ -301,9 +318,9 @@ def _target_kind(card: dict) -> str | None:
     if re.search(r"target player mills?", text): return "player"
     if re.search(r"target player sacrifices?",text):return "player"
     if re.search(r"(?:destroy|exile) target (?:artifact, creature, enchantment, planeswalker|nonland permanent|permanent)", text): return "permanent"
-    if re.search(r"(?:destroy|exile|tap|untap|return) target creature", text) or re.search(r"target creature .*(?:gets [+-]\d+/[+-]\d+|gains? [^.]+ until end of turn)", text) or re.search(r"(?:deals \d+ damage|put .+ counters?) (?:to|on) target creature", text): return "creature"
+    if re.search(r"(?:destroy|exile|tap|untap|return) target creature", text) or re.search(r"target creature .*(?:gets [+-](?:\d+|x)/[+-](?:\d+|x)|gains? [^.]+ until end of turn)", text) or re.search(r"(?:deals (?:\d+|x) damage|put .+ counters?) (?:to|on) target creature", text): return "creature"
     if re.search(r"return target (?:nonland )?permanent", text): return "permanent"
-    if re.search(r"deals \d+ damage to any target", text): return "any"
+    if re.search(r"deals (?:\d+|x) damage to any target", text): return "any"
     return None
 
 
@@ -461,6 +478,7 @@ def legal_actions(state: dict, player_id: str) -> list[dict]:
         instant_speed = "Instant" in card.get("type_line", "") or _has_keyword(card, "Flash")
         if "Land" in card.get("type_line", "") or not ((active and main and not state["stack"]) or instant_speed) or not _can_pay(player, card, _commander_tax(player, card)): continue
         action = {"type": "cast", "card_id": card["instance_id"], "source": source, "commander_tax": _commander_tax(player, card)}
+        if _has_x_cost(card):action.update({"x_min":0,"x_max":_maximum_x(player,card,_commander_tax(player,card))})
         modal_spec=_modal_spec(card);modal_options=(modal_spec or {}).get("options",[])
         if modal_spec:
             modes=[]
@@ -486,6 +504,7 @@ def legal_actions(state: dict, player_id: str) -> list[dict]:
             targets = _targets(state, player_id, ability["card"])
             if _target_kind(ability["card"]) and not targets: continue
             action = {"type": "activate", "card_id": permanent["instance_id"], "ability_index": index, "label": f"{ability['cost']}: {ability['effect']}","life_cost":ability["life_cost"],"self_sacrifice":ability["self_sacrifice"],"counter_cost":ability["counter_cost"],"cost_kind":ability["selection_cost"]["kind"] if ability["selection_cost"] else None,"cost_amount":ability["selection_cost"]["amount"] if ability["selection_cost"] else 0,"cost_options":[card["instance_id"] for card in cost_options]}
+            if _has_x_cost({"mana_cost":ability["mana_cost"]}):action.update({"x_min":0,"x_max":_maximum_x(player,{"mana_cost":ability["mana_cost"]},excluded_id=permanent["instance_id"] if ability["taps"] else None)})
             if targets: action["targets"] = targets
             actions.append(action)
     if active and main and not state["stack"]:
@@ -530,9 +549,9 @@ def _resolve_spell(state: dict) -> None:
     if item.get("kind","spell")=="spell" and len(item.get("mode_indices") or [])>1:
         options={option["index"]:option for option in _modal_options(card)};targets=item.get("mode_targets") or []
         for position,index in enumerate(item["mode_indices"]):
-            option=options[index];mode_card={**card,"name":f"{card['name']} — mode {position+1}","oracle_text":option["label"]};state["stack"].append({"id":_id(),"kind":"modal_effect","card":mode_card,"controller_id":caster["id"],"target_id":targets[position] if position<len(targets) else None});_resolve_spell(state)
+            option=options[index];mode_card=_x_rules_card({**card,"name":f"{card['name']} — mode {position+1}","oracle_text":option["label"]},item.get("x_value"));state["stack"].append({"id":_id(),"kind":"modal_effect","card":mode_card,"controller_id":caster["id"],"target_id":targets[position] if position<len(targets) else None,"x_value":item.get("x_value")});_resolve_spell(state)
         caster["graveyard"].append(card);_log(state,f"{card['name']} resolved with {len(item['mode_indices'])} modes.");return
-    rules_card=_selected_mode_card(card,item.get("mode_indices")) if item.get("kind","spell")=="spell" else card;targeting_card=_spell_targeting_card(rules_card) if item.get("kind","spell")=="spell" else rules_card;target_kind=_target_kind(targeting_card);target_id=item.get("target_id")
+    rules_card=_selected_mode_card(card,item.get("mode_indices")) if item.get("kind","spell")=="spell" else card;rules_card=_x_rules_card(rules_card,item.get("x_value"));targeting_card=_spell_targeting_card(rules_card) if item.get("kind","spell")=="spell" else rules_card;target_kind=_target_kind(targeting_card);target_id=item.get("target_id")
     if target_kind and target_id not in {target["id"] for target in _targets(state,caster["id"],targeting_card)}:
         if item.get("kind","spell")=="spell":_countered_spell_destination(state,caster,card)
         _log(state,f"{card['name']} was countered because its target was no longer legal.");return
@@ -547,10 +566,10 @@ def _resolve_spell(state: dict) -> None:
     target_stack_item = next((entry for entry in state["stack"] if entry["id"] == target_id), None)
     graveyard_owner=next((player for player in state["players"] if any(graveyard_card["instance_id"]==target_id for graveyard_card in player["graveyard"])),None)
     graveyard_target=next((graveyard_card for player in state["players"] for graveyard_card in player["graveyard"] if graveyard_card["instance_id"]==target_id),None)
-    draw_match = re.search(r"draw (?:a|one|two|three|four) cards?", effect_text)
+    draw_match = re.search(r"draw (?:a|one|two|three|four|\d+) cards?", effect_text)
     if draw_match:
         word = draw_match.group(0).split()[1]
-        _draw(state, caster, {"a": 1, "one": 1, "two": 2, "three": 3, "four": 4}[word])
+        _draw(state, caster, {"a": 1, "one": 1, "two": 2, "three": 3, "four": 4}.get(word,int(word) if word.isdigit() else 0))
     life_match = re.search(r"you gain (\d+) life", effect_text)
     if life_match:
         caster["life"] += int(life_match.group(1))
@@ -647,9 +666,9 @@ def _resolve_spell(state: dict) -> None:
             if own_only and owner["id"]!=caster["id"] or opponents_only and owner["id"]==caster["id"]:continue
             for permanent in owner["battlefield"]:
                 if "Creature" in permanent.get("type_line",""):permanent["temporary_power"]=permanent.get("temporary_power",0)+int(global_stats.group(1));permanent["temporary_toughness"]=permanent.get("temporary_toughness",0)+int(global_stats.group(2))
-    token_match = re.search(r"create (a|one|two|three|four) (\d+)/(\d+) ([^.]*?) creature tokens?", effect_text)
+    token_match = re.search(r"create (a|one|two|three|four|\d+) (\d+)/(\d+) ([^.]*?) creature tokens?", effect_text)
     if token_match:
-        amount = {"a":1,"one":1,"two":2,"three":3,"four":4}[token_match.group(1)]
+        amount = {"a":1,"one":1,"two":2,"three":3,"four":4}.get(token_match.group(1),int(token_match.group(1)) if token_match.group(1).isdigit() else 0)
         for _ in range(amount):
             caster["battlefield"].append({"instance_id":_id(),"scryfall_id":"token","name":f"{token_match.group(4).title()} Token","image_url":None,"type_line":f"Token Creature — {token_match.group(4).title()}","oracle_text":"","mana_cost":"","mana_value":0,"power":token_match.group(2),"toughness":token_match.group(3),"owner_id":caster["id"],"controller_id":caster["id"],"tapped":False,"damage":0,"counters":{},"summoning_sick":True,"token":True})
         _log(state, f"{caster['name']} created {amount} token(s).")
@@ -657,6 +676,9 @@ def _resolve_spell(state: dict) -> None:
     if is_permanent_spell:
         card["summoning_sick"] = "Creature" in card.get("type_line", "")
         if re.search(r"\benters (?:the battlefield )?tapped\b",text):card["tapped"]=True
+        enters_counters=re.search(r"enters(?: the battlefield)? with (\d+) ([+−-]\d+/[+−-]\d+|loyalty|charge|shield|stun) counters?",text)
+        if enters_counters:
+            counter_name=enters_counters.group(2).replace("−","-");card["counters"][counter_name]=card["counters"].get(counter_name,0)+int(enters_counters.group(1))
         caster["battlefield"].append(card); entered = True
     elif item.get("kind", "spell") == "spell":
         caster["graveyard"].append(card)
@@ -884,7 +906,10 @@ def perform_action(state: dict, player_id: str, action: dict) -> dict:
         source = next((zone for zone in ("hand", "command") if any(card["instance_id"] == action.get("card_id") for card in player.get(zone, []))), None)
         card = next((card for card in player.get(source or "hand", []) if card["instance_id"] == action.get("card_id")), None)
         tax = _commander_tax(player, card) if card else 0
-        if not card or not _can_pay(player, card, tax): raise RuleViolation("That spell cannot be cast")
+        if not card:raise RuleViolation("That spell cannot be cast")
+        x_value=int(action.get("x_value") or 0);x_max=_maximum_x(player,card,tax)
+        if (_has_x_cost(card) and not 0<=x_value<=x_max) or (not _has_x_cost(card) and action.get("x_value") is not None): raise RuleViolation("That spell cannot be cast with the chosen X value")
+        if not _can_pay(player,card,tax,x_value=x_value):raise RuleViolation("That spell cannot be cast")
         modal_spec=_modal_spec(card);modal_options=(modal_spec or {}).get("options",[]);chosen_modes=action.get("chosen_modes") or [];mode_targets=action.get("mode_targets") or []
         if modal_spec and len(chosen_modes)==1 and not mode_targets:mode_targets=[action.get("target_id")]
         if modal_spec:
@@ -901,32 +926,34 @@ def perform_action(state: dict, player_id: str, action: dict) -> dict:
         elif chosen_modes or mode_targets:raise RuleViolation("That spell has no modal choice")
         rules_card=_selected_mode_card(card,chosen_modes);targeting_card=_spell_targeting_card(rules_card);targets = _targets(state, player_id, targeting_card); target_id = action.get("target_id")
         if not modal_spec and _target_kind(targeting_card) and target_id not in {target["id"] for target in targets}: raise RuleViolation("Choose a legal target")
-        _pay_mana(player, card, tax); player[source].remove(card)
+        _pay_mana(player, card, tax,x_value=x_value); player[source].remove(card)
         if card.get("commander"): player["commander_casts"] = player.get("commander_casts", 0) + 1
-        effective_target=target_id or (mode_targets[0] if len(mode_targets)==1 else None);stack_item={"id": _id(), "card": card, "controller_id": player_id, "target_id": effective_target,"mode_indices":chosen_modes,"mode_targets":mode_targets};state["stack"].append(stack_item); state["consecutive_passes"] = 0; state["pending_phase_advance"] = False
+        effective_target=target_id or (mode_targets[0] if len(mode_targets)==1 else None);stack_item={"id": _id(), "card": card, "controller_id": player_id, "target_id": effective_target,"mode_indices":chosen_modes,"mode_targets":mode_targets,"x_value":x_value};state["stack"].append(stack_item); state["consecutive_passes"] = 0; state["pending_phase_advance"] = False
         _queue_triggers(state,"cast",card,player)
         ward_targets=[effective_target] if effective_target else []
         ward_targets.extend(target for target in mode_targets if target and target not in ward_targets)
         for ward_target in ward_targets:_queue_ward(state,player,ward_target,stack_item)
         if _multiplayer(state) and not state.get("pending_ward") and not state.get("pending_trigger_targets"): state["priority_player_id"] = opponent(state, player_id)["id"]
         mode_label="; ".join(next(mode["label"] for mode in modal_options if mode["index"]==index) for index in chosen_modes)
-        _log(state, f"{player['name']} cast {card['name']}{f' choosing {mode_label}' if mode_label else ''}{f' with {tax} commander tax' if tax else ''}{' targeting '+next((target['name'] for target in targets if target['id']==target_id),'') if target_id else ''}.")
+        _log(state, f"{player['name']} cast {card['name']}{f' with X={x_value}' if _has_x_cost(card) else ''}{f' choosing {mode_label}' if mode_label else ''}{f' with {tax} commander tax' if tax else ''}{' targeting '+next((target['name'] for target in targets if target['id']==target_id),'') if target_id else ''}.")
     elif action_type == "activate":
         permanent=next((card for card in player["battlefield"] if card["instance_id"]==action.get("card_id")),None);index=action.get("ability_index")
         available=next((entry for entry in legal_actions(state,player_id) if entry["type"]=="activate" and entry["card_id"]==action.get("card_id") and entry["ability_index"]==index),None)
         if not permanent or not available:raise RuleViolation("That ability cannot be activated")
         ability=_activated_abilities(permanent)[index];target_id=action.get("target_id");targets=available.get("targets",[])
+        x_value=int(action.get("x_value") or 0);x_card={"mana_cost":ability["mana_cost"]};x_max=_maximum_x(player,x_card,excluded_id=permanent["instance_id"] if ability["taps"] else None)
+        if (_has_x_cost(x_card) and not 0<=x_value<=x_max) or (not _has_x_cost(x_card) and action.get("x_value") is not None):raise RuleViolation("That ability cannot be activated with the chosen X value")
         if targets and target_id not in {target["id"] for target in targets}:raise RuleViolation("Choose a legal target")
         selected_cost_ids=action.get("cost_card_ids") or [];required_cost=available.get("cost_amount",0);cost_options=set(available.get("cost_options",[]))
         if len(selected_cost_ids)!=required_cost or len(set(selected_cost_ids))!=required_cost or not set(selected_cost_ids).issubset(cost_options):raise RuleViolation(f"Choose exactly {required_cost} legal card(s) for the activation cost")
         selected_cost_cards=[card for zone in (player["hand"],player["battlefield"]) for card in zone if card["instance_id"] in set(selected_cost_ids)]
         if len(selected_cost_cards)!=required_cost:raise RuleViolation("One or more activation cost cards are no longer available")
-        if ability["mana_cost"]:_pay_mana(player,{"mana_cost":ability["mana_cost"]},excluded_id=permanent["instance_id"] if ability["taps"] else None)
+        if ability["mana_cost"]:_pay_mana(player,{"mana_cost":ability["mana_cost"]},excluded_id=permanent["instance_id"] if ability["taps"] else None,x_value=x_value)
         if ability["life_cost"]:player["life"]-=ability["life_cost"]
         if ability["counter_cost"]:
             name,amount=ability["counter_cost"]["name"],ability["counter_cost"]["amount"];permanent["counters"][name]-=amount
         if ability["taps"]:permanent["tapped"]=True
-        stack_item={"id":_id(),"kind":"ability","card":ability["card"],"controller_id":player_id,"target_id":target_id,"source_id":permanent["instance_id"]};state["stack"].append(stack_item);state["consecutive_passes"]=0;state["pending_phase_advance"]=False;_queue_ward(state,player,target_id,stack_item)
+        stack_item={"id":_id(),"kind":"ability","card":ability["card"],"controller_id":player_id,"target_id":target_id,"source_id":permanent["instance_id"],"x_value":x_value};state["stack"].append(stack_item);state["consecutive_passes"]=0;state["pending_phase_advance"]=False;_queue_ward(state,player,target_id,stack_item)
         if ability["self_sacrifice"]:_leave_battlefield(state,player,permanent,"graveyard")
         if available.get("cost_kind")=="discard":
             for card in selected_cost_cards:player["hand"].remove(card);player["graveyard"].append(card)

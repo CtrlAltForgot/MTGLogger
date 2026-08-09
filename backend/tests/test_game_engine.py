@@ -722,3 +722,40 @@ def test_triggered_modal_text_on_a_permanent_is_not_a_cast_mode():
     state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player")
     permanent={**card(972,"Modal Visitor","Creature — Citizen","","2","2"),"oracle_text":"When Modal Visitor enters, choose one —\n• You gain 2 life.\n• Draw a card.","instance_id":"modal-visitor","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"].append(permanent)
     action=next(action for action in legal_actions(state,"player") if action.get("card_id")=="modal-visitor");assert "modes" not in action
+
+
+def test_x_spell_range_payment_stack_value_and_damage_are_authoritative():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player")
+    player["battlefield"]=[{**card(980+index,f"Mountain {index}","Basic Land — Mountain"),"instance_id":f"x-land-{index}","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False} for index in range(5)]
+    blaze={**card(990,"Test Blaze","Sorcery"),"mana_cost":"{X}{R}","oracle_text":"Test Blaze deals X damage to any target.","instance_id":"test-blaze","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"].append(blaze)
+    action=next(action for action in legal_actions(state,"player") if action.get("card_id")=="test-blaze");assert action["x_min"]==0 and action["x_max"]==4 and {target["id"] for target in action["targets"]}>={"player","bot"}
+    try:perform_action(state,"player",{"type":"cast","card_id":"test-blaze","target_id":"bot","x_value":5})
+    except RuleViolation:pass
+    else:raise AssertionError("X spell accepted more mana than was available")
+    state=perform_action(state,"player",{"type":"cast","card_id":"test-blaze","target_id":"bot","x_value":4});assert state["stack"][-1]["x_value"]==4 and sum(card["tapped"] for card in next(p for p in state["players"] if p["id"]=="player")["battlefield"])==5
+    state=perform_action(state,"player",{"type":"resolve"});assert next(p for p in state["players"] if p["id"]=="bot")["life"]==16
+
+
+def test_x_activated_ability_and_x_entry_counters_resolve_from_stack_value():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
+    lands=[{**card(995+index,f"Island {index}","Basic Land — Island"),"instance_id":f"ability-land-{index}","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False} for index in range(3)];device={**card(999,"Mill Device","Artifact"),"oracle_text":"{X}, {T}: Target player mills X cards.","instance_id":"mill-device","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"]=[*lands,device]
+    action=next(action for action in legal_actions(state,"player") if action.get("card_id")=="mill-device");assert action["x_max"]==3
+    before=len(bot["library"]);state=perform_action(state,"player",{"type":"activate","card_id":"mill-device","ability_index":action["ability_index"],"target_id":"bot","x_value":3});assert state["stack"][-1]["x_value"]==3
+    state=perform_action(state,"player",{"type":"resolve"});bot=next(p for p in state["players"] if p["id"]=="bot");assert len(bot["library"])==before-3
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");player["battlefield"]=[{**card(1005+index,f"Forest {index}","Basic Land — Forest"),"instance_id":f"counter-land-{index}","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False} for index in range(3)]
+    hydra={**card(1010,"Test Hydra","Creature — Hydra","","0","0"),"mana_cost":"{X}{G}","oracle_text":"Test Hydra enters the battlefield with X +1/+1 counters on it.","instance_id":"test-hydra","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"].append(hydra)
+    state=perform_action(state,"player",{"type":"cast","card_id":"test-hydra","x_value":2});state=perform_action(state,"player",{"type":"resolve"});hydra=next(card for card in next(p for p in state["players"] if p["id"]=="player")["battlefield"] if card["instance_id"]=="test-hydra");assert hydra["counters"]["+1/+1"]==2
+
+
+def test_expert_bot_chooses_a_lethal_payable_x_value():
+    state=kept_game();state["active_player_id"]="bot";state["priority_player_id"]="bot";state["phase"]="precombat_main";bot=next(p for p in state["players"] if p["id"]=="bot");enemy=next(p for p in state["players"] if p["id"]=="player");bot["hand"]=[];bot["land_plays_remaining"]=0;enemy["life"]=3
+    bot["battlefield"]=[{**card(1020+index,f"Mountain {index}","Basic Land — Mountain"),"instance_id":f"bot-x-land-{index}","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False} for index in range(6)];blaze={**card(1030,"Bot Blaze","Sorcery"),"mana_cost":"{X}{R}","oracle_text":"Bot Blaze deals X damage to any target.","instance_id":"bot-blaze","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};bot["hand"].append(blaze)
+    choice=choose_bot_action(state,"expert");assert choice["type"]=="cast" and choice["x_value"]==3 and choice["target_id"]=="player"
+
+
+def test_x_value_is_reused_across_draw_life_tokens_and_temporary_stats():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player")
+    player["battlefield"]=[{**card(1040+index,f"Island {index}","Basic Land — Island"),"instance_id":f"multi-x-land-{index}","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False} for index in range(3)];recipient={**card(1045,"X Recipient","Creature — Wizard","","1","1"),"instance_id":"x-recipient","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].append(recipient)
+    flourish={**card(1046,"X Flourish","Sorcery"),"mana_cost":"{X}{U}","oracle_text":"Draw X cards. You gain X life. Create X 1/1 blue Bird creature tokens. Target creature gets +X/+X until end of turn.","instance_id":"x-flourish","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"].append(flourish);before_library=len(player["library"]);before_life=player["life"]
+    state=perform_action(state,"player",{"type":"cast","card_id":"x-flourish","target_id":"x-recipient","x_value":2});state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");recipient=next(card for card in player["battlefield"] if card["instance_id"]=="x-recipient")
+    assert len(player["library"])==before_library-2 and player["life"]==before_life+2 and sum(card.get("token",False) for card in player["battlefield"])==2 and (recipient["temporary_power"],recipient["temporary_toughness"])==(2,2)
