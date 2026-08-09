@@ -41,6 +41,12 @@ def _draw(state: dict, player: dict, amount: int = 1) -> None:
         player["hand"].append(player["library"].pop())
 
 
+def _gain_life(state:dict,player:dict,amount:int)->None:
+    if amount<=0:return
+    player["life"]+=amount
+    _queue_triggers(state,"life_gain",None,player)
+
+
 def _continuous_stats(state:dict|None,card:dict)->tuple[int,int]:
     if not state or "Creature" not in card.get("type_line",""):return 0,0
     power=toughness=0;controller=card.get("controller_id");type_line=card.get("type_line","").casefold()
@@ -1299,7 +1305,7 @@ def _resolve_spell(state: dict) -> None:
         _draw(state, caster, {"a": 1, "one": 1, "two": 2, "three": 3, "four": 4}.get(word,int(word) if word.isdigit() else 0))
     life_match = re.search(r"you gain (\d+) life", effect_text)
     if life_match:
-        caster["life"] += int(life_match.group(1))
+        _gain_life(state,caster,int(life_match.group(1)))
     damage_match = re.search(r"deals (\d+) damage to (?:target opponent|each opponent)", effect_text)
     if damage_match:
         amount=int(damage_match.group(1))
@@ -1552,6 +1558,8 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 another_ok="another" not in lower or source is not event_card
                 matches=kind_match and another_ok and (yours or opponent_sacrifice or any_player) and (not one_or_more or dedupe is None or dedupe_key not in dedupe)
                 if matches and one_or_more and dedupe is not None:dedupe.add(dedupe_key)
+            elif event == "life_gain":
+                matches=(owner["id"]==event_owner["id"] and re.search(r"whenever you gain life",lower) is not None) or (owner["id"]!=event_owner["id"] and re.search(r"whenever an opponent gains life",lower) is not None) or re.search(r"whenever a player gains life",lower) is not None
             elif event == "leaves" and event_card:
                 matches=source is not event_card and owner["id"]==event_owner["id"] and "Creature" in event_card.get("type_line","") and "when another creature you control leaves the battlefield" in lower
             elif event == "upkeep":
@@ -1632,7 +1640,7 @@ def _combat_damage(state: dict) -> None:
         else:defender["life"] -= amount
         toxic=_toxic_value(creature)
         if not planeswalker and amount>0 and toxic:defender["poison"]=defender.get("poison",0)+toxic
-        if _has_keyword(creature,"Lifelink"): attacker["life"] += amount
+        if _has_keyword(creature,"Lifelink"):_gain_life(state,attacker,amount)
         if not planeswalker and creature.get("commander"):
             source = creature["instance_id"];damage=defender.setdefault("commander_damage", {});names=defender.setdefault("commander_damage_names", {})
             # Games saved before individual commander tracking used the owner's id.
@@ -1647,7 +1655,7 @@ def _combat_damage(state: dict) -> None:
     first_strike_ids=set(state["combat"].get("first_strike_damage_ids") or [])
     def damage_step(first: bool) -> None:
         battlefield = {card["instance_id"]: card for player in state["players"] for card in player["battlefield"]}
-        deathtouch_hit:set[str]=set();trigger_dedupe:set[str]=set();life_gain={attacker["id"]:0,defender["id"]:0}
+        deathtouch_hit:set[str]=set();trigger_dedupe:set[str]=set()
         def strikes(card:dict)->bool:
             has_first=_has_keyword(card,"First strike");double=_has_keyword(card,"Double strike")
             return has_first or double if first else card["instance_id"] not in first_strike_ids or double
@@ -1662,15 +1670,14 @@ def _combat_damage(state: dict) -> None:
             for blocker in blockers:
                 _,toughness=_parse_stats(blocker,state);lethal=1 if _has_keyword(creature,"Deathtouch") else max(1,toughness-blocker.get("damage",0));assigned=min(remaining,lethal);dealt=_damage_permanent(state,blocker,assigned,creature);remaining-=assigned
                 if dealt and _has_keyword(creature,"Deathtouch"):deathtouch_hit.add(blocker["instance_id"])
-                if dealt and _has_keyword(creature,"Lifelink"):life_gain[attacker["id"]]+=dealt
+                if dealt and _has_keyword(creature,"Lifelink"):_gain_life(state,attacker,dealt)
             if remaining and _has_keyword(creature,"Trample"):hit_defender(creature,remaining,attack_target,trigger_dedupe)
         for blocker_id,attacker_id in state["combat"]["blocks"].items():
             blocker,creature=battlefield.get(blocker_id),battlefield.get(attacker_id)
             if not blocker or not creature or not strikes(blocker):continue
             amount=max(0,_parse_stats(blocker,state)[0]);dealt=_damage_permanent(state,creature,amount,blocker)
             if dealt and _has_keyword(blocker,"Deathtouch"):deathtouch_hit.add(creature["instance_id"])
-            if dealt and _has_keyword(blocker,"Lifelink"):life_gain[defender["id"]]+=dealt
-        attacker["life"]+=life_gain[attacker["id"]];defender["life"]+=life_gain[defender["id"]]
+            if dealt and _has_keyword(blocker,"Lifelink"):_gain_life(state,defender,dealt)
         for owner in (attacker,defender):
             for creature in list(owner["battlefield"]):
                 if "Creature" not in creature.get("type_line",""):continue
