@@ -319,6 +319,24 @@ def _apply_blight(state:dict,player:dict,creature:dict,amount:int)->None:
     _log(state,f"{player['name']} blighted {creature['name']} for {original}.")
 
 
+def _set_card_face(card:dict,index:int)->bool:
+    faces=card.get("card_faces") or []
+    if len(faces)<2 or not 0<=index<len(faces):return False
+    face=faces[index]
+    for key in ("name","oracle_text","mana_cost","type_line","power","toughness","loyalty","image_url","keywords"):
+        if key in face:card[key]=face[key]
+        elif key in {"power","toughness","loyalty"}:card[key]=None
+    card["current_face"]=index;return True
+
+
+def _transform(state:dict,card:dict)->bool:
+    faces=card.get("card_faces") or []
+    if len(faces)<2:return False
+    previous=card.get("name","This permanent");next_index=1 if int(card.get("current_face",0))==0 else 0
+    if not _set_card_face(card,next_index):return False
+    _log(state,f"{previous} transformed into {card['name']}.");return True
+
+
 def _activated_abilities(card: dict) -> list[dict]:
     abilities = []
     text=card.get("oracle_text") or "";quoted=re.findall(r'"([^"]+:[^"]+)"',text);lines=[*(line for line in text.splitlines() if '"' not in line),*quoted]
@@ -1002,6 +1020,7 @@ def _resolve_spell(state: dict) -> None:
         original_text=(source_permanent or card).get("oracle_text") or "";continuation_match=re.search(r"when you do,\s*(.+?)(?:\n|$)",original_text,re.IGNORECASE)
         state["pending_blight"]={"player_id":caster["id"],"amount":int(optional_blight.group(1)),"source_name":source_permanent.get("name",card["name"]) if source_permanent else card["name"],"source_id":source_permanent.get("instance_id") if source_permanent else item.get("source_id"),"continuation":continuation_match.group(1).strip() if continuation_match else ""};state["priority_player_id"]=caster["id"]
         _log(state,f"{caster['name']} may blight {optional_blight.group(1)} for {state['pending_blight']['source_name']}.");return
+    if source_permanent and re.search(r"\btransform (?:this (?:creature|permanent)|it|[a-z][^.]+)\b",effect_text):_transform(state,source_permanent)
     if re.search(r"\bproliferate\b",effect_text):
         state["pending_proliferate"]={"player_id":caster["id"],"source_name":source_permanent.get("name",card["name"]) if source_permanent else card["name"]};state["priority_player_id"]=caster["id"]
         _log(state,f"{caster['name']} will choose permanents and players to proliferate.")
@@ -1197,6 +1216,7 @@ def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str) -
     if card.get("earthbend_base_type_line") is not None:
         card["type_line"]=card.pop("earthbend_base_type_line");card["power"]=card.pop("earthbend_base_power",None);card["toughness"]=card.pop("earthbend_base_toughness",None)
     card.pop("earthbent",None);card.pop("earthbend_controller",None)
+    if card.get("card_faces"):_set_card_face(card,0)
     if card.get("token"): return
     zone_owner=_player(state,card.get("owner_id",owner["id"]));card["controller_id"]=zone_owner["id"]
     zone_owner[destination].append(card)
@@ -1781,7 +1801,13 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         destination = action.get("destination")
         if not source_owner or destination not in {"hand","battlefield","graveyard","exile"}: raise RuleViolation("Choose a card and destination zone")
         source = next(zone for zone in ("hand","battlefield","graveyard","exile") if any(card["instance_id"] == action.get("target_id") for card in source_owner[zone])); card = next(card for card in source_owner[source] if card["instance_id"] == action.get("target_id"))
-        source_owner[source].remove(card); source_owner[destination].append(card); _log(state, f"{card['name']} moved from {source} to {destination}.")
+        moved_name=card["name"]
+        if source=="battlefield":_leave_battlefield(state,source_owner,card,destination)
+        else:
+            source_owner[source].remove(card)
+            if card.get("card_faces"):_set_card_face(card,0)
+            source_owner[destination].append(card)
+        _log(state, f"{moved_name} moved from {source} to {destination}.")
     _state_based_actions(state);_check_winner(state)
     state["version"] += 1
     return state

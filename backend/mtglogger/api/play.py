@@ -20,6 +20,22 @@ from ..services.references import _reference_metadata
 router = APIRouter(prefix="/play", tags=["play"])
 
 
+def _reference_faces(reference:CardReference|None)->list[dict]:
+    if not reference or not reference.card_faces:return []
+    try:return json.loads(reference.card_faces)
+    except (TypeError,json.JSONDecodeError):return []
+
+
+def _apply_front_face(card:dict)->dict:
+    faces=card.get("card_faces") or []
+    if not faces:return card
+    face=faces[0]
+    for key in ("name","oracle_text","mana_cost","type_line","power","toughness","loyalty","image_url","keywords"):
+        if key in face:card[key]=face[key]
+    card["current_face"]=0
+    return card
+
+
 def _deck(db: Session, deck_id: str) -> Deck:
     deck = db.scalar(select(Deck).options(selectinload(Deck.entries).selectinload(DeckEntry.inventory)).where(Deck.id == deck_id))
     if not deck:
@@ -34,7 +50,7 @@ def _deck_cards(db: Session, deck: Deck) -> list[dict]:
     for entry in deck.entries:
         inventory = entry.inventory
         reference = references.get(inventory.scryfall_id)
-        cards.append({
+        cards.append(_apply_front_face({
             "scryfall_id": inventory.scryfall_id,
             "name": (reference.flavor_name or reference.printed_name or reference.name) if reference else inventory.card_name,
             "rules_name": reference.name if reference else inventory.card_name,
@@ -47,8 +63,9 @@ def _deck_cards(db: Session, deck: Deck) -> list[dict]:
             "power": getattr(reference, "power", None),
             "toughness": getattr(reference, "toughness", None),
             "loyalty": getattr(reference, "loyalty", None),
+            "card_faces": _reference_faces(reference),
             "quantity": entry.quantity,
-        })
+        }))
     return cards
 
 
@@ -59,7 +76,7 @@ def _generated_deck_cards(db: Session, proposal: dict) -> list[dict]:
     cards = []
     for inventory_id, quantity in quantities.items():
         item, reference = inventory[inventory_id], references.get(inventory[inventory_id].scryfall_id)
-        cards.append({
+        cards.append(_apply_front_face({
             "scryfall_id": item.scryfall_id,
             "name": (reference.flavor_name or reference.printed_name or reference.name) if reference else item.card_name,
             "rules_name": reference.name if reference else item.card_name,
@@ -70,8 +87,9 @@ def _generated_deck_cards(db: Session, proposal: dict) -> list[dict]:
             "mana_value": float((reference.mana_value if reference else 0) or 0),
             "keywords": json.loads(reference.keywords or "[]") if reference and reference.keywords else [],
             "power": getattr(reference, "power", None), "toughness": getattr(reference, "toughness", None), "loyalty": getattr(reference, "loyalty", None),
+            "card_faces": _reference_faces(reference),
             "quantity": quantity,
-        })
+        }))
     return cards
 
 

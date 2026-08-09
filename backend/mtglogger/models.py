@@ -176,6 +176,7 @@ class CardReference(Base):
     loyalty: Mapped[str | None] = mapped_column(String(16), nullable=True)
     keywords: Mapped[str | None] = mapped_column(Text, nullable=True)
     legalities: Mapped[str | None] = mapped_column(Text, nullable=True)
+    card_faces: Mapped[str | None] = mapped_column(Text, nullable=True)
     released_at: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
     image_url: Mapped[str] = mapped_column(Text)
     art_hash: Mapped[str] = mapped_column(String(16), index=True)

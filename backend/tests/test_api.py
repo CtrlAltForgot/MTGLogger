@@ -3449,6 +3449,8 @@ def test_reference_metadata_enrichment_reuses_finished_visual_profile(tmp_path, 
 
 def test_reference_metadata_refresh_does_not_download_images():
     """A precompiled visual catalog can receive searchable metadata in bulk."""
+    import json
+    from datetime import date
     from mtglogger.api.references import indexed_cards
     from mtglogger.database import Base, SessionLocal, engine
     from mtglogger.models import CardReference, CardVisualFingerprint
@@ -3503,10 +3505,17 @@ def test_reference_metadata_refresh_does_not_download_images():
                     "collector_number": "266",
                     "artist": "Christine Choi",
                     "released_at": "2020-07-03",
+                    "card_faces": [
+                        {"name":"Front Swamp","type_line":"Land","oracle_text":"{T}: Add {B}.","image_uris":{"normal":"https://example.test/front.jpg"}},
+                        {"name":"Back Swamp","type_line":"Creature — Shade","oracle_text":"Lifelink","power":"3","toughness":"3","image_uris":{"normal":"https://example.test/back.jpg"}},
+                    ],
                 }
             ],
         )
         enriched = db.get(CardReference, "printing")
+        stored_faces = json.loads(enriched.card_faces)
+        assert stored_faces[0]["name"] == "Front Swamp"
+        assert stored_faces[1]["image_url"] == "https://example.test/back.jpg"
         alias_results = indexed_cards(
             set_code=None,
             search="squidward",

@@ -614,6 +614,10 @@ def _reference_metadata(provider, card: dict, image_url: str | None = None) -> d
     )
     faces = card.get("card_faces") or []
     primary_face = next((face for face in faces if face.get("power") is not None), {})
+    serialized_faces=[]
+    for face in faces:
+        images=face.get("image_uris") or {}
+        serialized_faces.append({key:value for key,value in {"name":face.get("name"),"oracle_text":face.get("oracle_text") or "","mana_cost":face.get("mana_cost") or "","type_line":face.get("type_line") or "","power":face.get("power"),"toughness":face.get("toughness"),"loyalty":face.get("loyalty"),"image_url":images.get("normal") or images.get("large"),"keywords":face.get("keywords") or []}.items() if value is not None})
     return {
         "name": card["name"],
         "printed_name": card.get("printed_name"),
@@ -637,6 +641,7 @@ def _reference_metadata(provider, card: dict, image_url: str | None = None) -> d
         "loyalty": card.get("loyalty") or (faces[0].get("loyalty") if faces else None),
         "keywords": json.dumps(card.get("keywords") or []),
         "legalities": json.dumps(card.get("legalities") or {}),
+        "card_faces": json.dumps(serialized_faces) if len(serialized_faces)>1 else None,
         "released_at": _released_at(card),
         "image_url": image_url or provider.image_url(card),
         "market_price": provider.market_price(card),

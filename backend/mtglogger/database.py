@@ -80,6 +80,7 @@ def migrate_schema() -> None:
             "toughness": "VARCHAR(16)",
             "keywords": "TEXT",
             "legalities": "TEXT",
+            "card_faces": "TEXT",
         }
         for column_name, column_type in additive_reference_columns.items():
             if column_name not in reference_columns:
