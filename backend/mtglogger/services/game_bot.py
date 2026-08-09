@@ -53,6 +53,8 @@ def choose_bot_action(state: dict, difficulty: str = "standard") -> dict | None:
         return {"type":"bottom_mulligan_cards","card_ids":ranked[:amount]}
     if "resolve" in by_type:
         return by_type["resolve"][0]
+    if "resolve_combat_damage" in by_type:
+        return by_type["resolve_combat_damage"][0]
     if "discard_cards" in by_type:
         action=by_type["discard_cards"][0];amount=action["amount"]
         ranked=sorted(action["card_ids"],key=lambda card_id:(_card(state,"bot",card_id).get("mana_value") or 0,"Land" not in _card(state,"bot",card_id).get("type_line","")))

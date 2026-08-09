@@ -18,6 +18,10 @@ def kept_game():
     return state
 
 
+def deal_combat_damage(state):
+    return perform_action(state,state["active_player_id"],{"type":"resolve_combat_damage"})
+
+
 def test_public_state_hides_opponent_hand_and_library():
     first,second=decks();state=new_game(first,second);visible=public_state(state)
     bot=next(player for player in visible["players"] if player["id"]=="bot")
@@ -57,7 +61,7 @@ def test_combat_enforces_summoning_sickness_and_deals_damage():
     creature=next(card for card in player["library"] if "Creature" in card["type_line"]);player["library"].remove(creature);creature["summoning_sick"]=False;player["battlefield"].append(creature)
     assert any(action["type"]=="declare_attackers" for action in legal_actions(state,"player"))
     state=perform_action(state,"player",{"type":"declare_attackers","attacker_ids":[creature["instance_id"]]})
-    state=perform_action(state,"bot",{"type":"advance_phase"})
+    state=perform_action(state,"bot",{"type":"advance_phase"});state=deal_combat_damage(state)
     bot=next(player for player in state["players"] if player["id"]=="bot")
     assert bot["life"]==18
 
@@ -67,11 +71,28 @@ def test_attacker_orders_multiple_blockers_before_combat_damage():
     attacker={**card(90,"Heavy Hitter","Creature — Giant","","5","5"),"instance_id":"attacker","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};first={**card(91,"First Blocker","Creature — Beast","","3","3"),"instance_id":"first","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};second={**card(92,"Second Blocker","Creature — Beast","","3","3"),"instance_id":"second","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].append(attacker);bot["battlefield"].extend([first,second])
     state=perform_action(state,"player",{"type":"declare_attackers","attacker_ids":["attacker"]});state=perform_action(state,"bot",{"type":"declare_blockers","blocks":{"first":"attacker","second":"attacker"}});action=legal_actions(state,"player")[0]
     assert action["type"]=="order_blockers" and {card["instance_id"] for card in action["groups"][0]["blockers"]}=={"first","second"}
-    state=perform_action(state,"player",{"type":"order_blockers","block_orders":{"attacker":["second","first"]}});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
+    state=perform_action(state,"player",{"type":"order_blockers","block_orders":{"attacker":["second","first"]}});state=deal_combat_damage(state);player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
     assert any(card["instance_id"]=="attacker" for card in player["graveyard"]) and any(card["instance_id"]=="second" for card in bot["graveyard"]);survivor=next(card for card in bot["battlefield"] if card["instance_id"]=="first");assert survivor["damage"]==2
 
     state=kept_game();player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot");state["active_player_id"]="bot";state["priority_player_id"]="bot";bot["battlefield"].append(attacker);player["battlefield"].extend([first,second]);state["pending_damage_order"]={"player_id":"bot","groups":{"attacker":["first","second"]}}
     choice=choose_bot_action(state,"expert");assert choice["type"]=="order_blockers" and set(choice["block_orders"]["attacker"])=={"first","second"}
+
+
+def test_players_receive_a_post_block_combat_trick_window_before_damage():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
+    attacker={**card(93,"Trickster","Creature — Rogue","","3","3"),"instance_id":"trickster","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};blocker={**card(94,"Equal Blocker","Creature — Beast","","3","3"),"instance_id":"equal","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};trick={**card(95,"Sudden Strength","Instant"),"oracle_text":"Target creature gets +2/+2 until end of turn.","instance_id":"trick","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].append(attacker);player["hand"].append(trick);bot["battlefield"].append(blocker)
+    state=perform_action(state,"player",{"type":"declare_attackers","attacker_ids":["trickster"]});state=perform_action(state,"bot",{"type":"declare_blockers","blocks":{"equal":"trickster"}});actions=legal_actions(state,"player")
+    assert any(action["type"]=="resolve_combat_damage" for action in actions) and any(action.get("card_id")=="trick" for action in actions)
+    state=perform_action(state,"player",{"type":"cast","card_id":"trick","target_id":"trickster"});state=perform_action(state,"player",{"type":"resolve"});state=deal_combat_damage(state);player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
+    assert any(card["instance_id"]=="trickster" for card in player["battlefield"]) and any(card["instance_id"]=="equal" for card in bot["graveyard"])
+
+
+def test_private_games_require_both_players_to_pass_after_blocks_before_damage():
+    first,second=decks();state=new_game(first,second,opponent_is_bot=False);state=perform_action(state,"player",{"type":"keep"});state=perform_action(state,"bot",{"type":"keep"});state["phase"]="combat";player=next(p for p in state["players"] if p["id"]=="player");guest=next(p for p in state["players"] if p["id"]=="bot")
+    attacker={**card(96,"Private Attacker","Creature — Warrior","","3","3"),"instance_id":"private-attacker","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};blocker={**card(97,"Private Blocker","Creature — Warrior","","2","2"),"instance_id":"private-blocker","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].append(attacker);guest["battlefield"].append(blocker)
+    state=perform_action(state,"player",{"type":"declare_attackers","attacker_ids":["private-attacker"]});state=perform_action(state,"bot",{"type":"declare_blockers","blocks":{"private-blocker":"private-attacker"}});assert state["combat"]["damage_pending"] and state["priority_player_id"]=="player"
+    state=perform_action(state,"player",{"type":"pass_priority"});assert state["combat"]["attackers"] and state["priority_player_id"]=="bot";state=perform_action(state,"bot",{"type":"pass_priority"});guest=next(p for p in state["players"] if p["id"]=="bot")
+    assert not state["combat"]["attackers"] and any(card["instance_id"]=="private-blocker" for card in guest["graveyard"])
 
 
 def test_bot_prioritizes_playing_land_then_casting_spells():
@@ -139,7 +160,7 @@ def test_attackers_choose_planeswalker_defenders_and_remove_loyalty():
     state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
     attacker={**card(730,"Walker Hunter","Creature — Warrior","","4","4"),"instance_id":"hunter","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};walker={**card(731,"Enemy Walker","Legendary Planeswalker — Test"),"loyalty":"3","instance_id":"enemy-walker","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{"loyalty":3},"summoning_sick":False};player["battlefield"].append(attacker);bot["battlefield"].append(walker)
     attack=next(a for a in legal_actions(state,"player") if a["type"]=="declare_attackers");assert {target["id"] for target in attack["defenders"]}=={"bot","enemy-walker"}
-    state=perform_action(state,"player",{"type":"declare_attackers","attacker_ids":["hunter"],"attack_targets":{"hunter":"enemy-walker"}});state=perform_action(state,"bot",{"type":"advance_phase"});bot=next(p for p in state["players"] if p["id"]=="bot")
+    state=perform_action(state,"player",{"type":"declare_attackers","attacker_ids":["hunter"],"attack_targets":{"hunter":"enemy-walker"}});state=perform_action(state,"bot",{"type":"advance_phase"});state=deal_combat_damage(state);bot=next(p for p in state["players"] if p["id"]=="bot")
     assert bot["life"]==20 and any(c["instance_id"]=="enemy-walker" for c in bot["graveyard"])
 
 
@@ -220,7 +241,7 @@ def test_twenty_one_unblocked_commander_damage_ends_game():
     first,second=decks();state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});state=perform_action(state,"player",{"type":"advance_phase"})
     player=next(item for item in state["players"] if item["id"]=="player")
     commander={**card(400,"Huge Commander","Legendary Creature — Giant","","21","21"),"instance_id":"huge-commander","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False,"commander":True};player["battlefield"].append(commander)
-    state=perform_action(state,"player",{"type":"declare_attackers","attacker_ids":["huge-commander"]});state=perform_action(state,"bot",{"type":"advance_phase"})
+    state=perform_action(state,"player",{"type":"declare_attackers","attacker_ids":["huge-commander"]});state=perform_action(state,"bot",{"type":"advance_phase"});state=deal_combat_damage(state)
     defender=next(item for item in state["players"] if item["id"]=="bot")
     assert defender["commander_damage"]["player"]==21
     assert state["status"]=="complete" and state["winner_id"]=="player"
@@ -267,7 +288,7 @@ def test_flying_reach_vigilance_lifelink_and_trample_are_enforced():
     state=perform_action(state,"player",{"type":"declare_attackers","attacker_ids":["flyer"]});assert not next(item for item in state["players"] if item["id"]=="player")["battlefield"][-1]["tapped"]
     block=next(action for action in legal_actions(state,"bot") if action["type"]=="declare_blockers")
     assert "flyer" not in block["legal_blocks"]["ground"] and "flyer" in block["legal_blocks"]["reach"]
-    state=perform_action(state,"bot",{"type":"declare_blockers","blocks":{"reach":"flyer"}});attacker=next(item for item in state["players"] if item["id"]=="player");defender=next(item for item in state["players"] if item["id"]=="bot")
+    state=perform_action(state,"bot",{"type":"declare_blockers","blocks":{"reach":"flyer"}});state=deal_combat_damage(state);attacker=next(item for item in state["players"] if item["id"]=="player");defender=next(item for item in state["players"] if item["id"]=="bot")
     assert attacker["life"]==24 and defender["life"]==17 and any(item["instance_id"]=="reach" for item in defender["graveyard"])
 
 
@@ -343,7 +364,7 @@ def test_board_wipes_global_stat_effects_and_life_loss_resolve():
 def test_first_strike_kills_before_retaliation_and_double_strike_hits_twice():
     state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
     striker={**card(640,"First Striker","Creature — Knight","","2","2"),"keywords":["First strike"],"instance_id":"striker","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};double={**card(641,"Double Striker","Creature — Knight","","2","2"),"keywords":["Double strike"],"instance_id":"double","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};blocker={**card(642,"Blocker","Creature — Bear","","2","2"),"instance_id":"blocker","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].extend([striker,double]);bot["battlefield"].append(blocker)
-    state=perform_action(state,"player",{"type":"declare_attackers","attacker_ids":["striker","double"]});state=perform_action(state,"bot",{"type":"declare_blockers","blocks":{"blocker":"striker"}});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
+    state=perform_action(state,"player",{"type":"declare_attackers","attacker_ids":["striker","double"]});state=perform_action(state,"bot",{"type":"declare_blockers","blocks":{"blocker":"striker"}});state=deal_combat_damage(state);player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
     assert any(item["instance_id"]=="striker" and item["damage"]==0 for item in player["battlefield"])
     assert any(item["instance_id"]=="blocker" for item in bot["graveyard"])
     assert bot["life"]==16
@@ -352,7 +373,7 @@ def test_first_strike_kills_before_retaliation_and_double_strike_hits_twice():
 def test_infect_wither_toxic_and_poison_loss_are_enforced():
     state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
     infect={**card(650,"Infecter","Creature — Horror","","3","3"),"keywords":["Infect"],"instance_id":"infect","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};toxic={**card(651,"Toxic","Creature — Phyrexian","","1","1"),"oracle_text":"Toxic 2","keywords":["Toxic"],"instance_id":"toxic","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};durable={**card(652,"Durable","Creature — Golem","","3","3"),"keywords":["Indestructible"],"instance_id":"durable","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].extend([infect,toxic]);bot["battlefield"].append(durable)
-    state=perform_action(state,"player",{"type":"declare_attackers","attacker_ids":["infect","toxic"]});state=perform_action(state,"bot",{"type":"declare_blockers","blocks":{"durable":"infect"}});bot=next(p for p in state["players"] if p["id"]=="bot")
+    state=perform_action(state,"player",{"type":"declare_attackers","attacker_ids":["infect","toxic"]});state=perform_action(state,"bot",{"type":"declare_blockers","blocks":{"durable":"infect"}});state=deal_combat_damage(state);bot=next(p for p in state["players"] if p["id"]=="bot")
     assert bot["life"]==19 and bot["poison"]==2 and any(item["instance_id"]=="durable" for item in bot["graveyard"])
     bot["poison"]=10;state["status"]="active";state["winner_id"]=None
     state=perform_action(state,"player",{"type":"adjust_life","amount":0});assert state["status"]=="complete" and state["winner_id"]=="player"

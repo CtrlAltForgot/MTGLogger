@@ -6,7 +6,7 @@ import type { Deck, Game, GameCard, GamePlayer, GameTarget, LegalGameAction } fr
 
 const phases=[['beginning','Untap & draw'],['precombat_main','Main 1'],['combat','Combat'],['postcombat_main','Main 2'],['ending','End turn']]
 const isMeaningfulChoice=(action:LegalGameAction)=>{
-  if(['advance_phase','adjust_life','add_counter','move_zone','create_token','concede'].includes(action.type))return false
+  if(['advance_phase','resolve_combat_damage','adjust_life','add_counter','move_zone','create_token','concede'].includes(action.type))return false
   if(['declare_attackers','declare_blockers'].includes(action.type))return !!action.card_ids?.length
   return true
 }
@@ -53,10 +53,10 @@ export default function Play(){
   useEffect(()=>{if(!game||game.opponent_type!=='human')return;const timer=setInterval(()=>request<Game>(gamePath,{headers:authHeaders}).then(setGame).catch(()=>undefined),1800);return()=>clearInterval(timer)},[game?.id,gamePath,accessToken])
   useEffect(()=>{
     if(!game||busy||game.state.status!=='active'||game.state.priority_player_id!==viewerId)return
-    const automatic=game.legal_actions.find(action=>action.type==='advance_phase')
+    const automatic=game.legal_actions.find(action=>action.type==='resolve_combat_damage')||game.legal_actions.find(action=>action.type==='advance_phase')
     const decisions=game.legal_actions.filter(isMeaningfulChoice)
     if(!automatic||decisions.length)return
-    const timer=setTimeout(()=>void act({type:'advance_phase'}),350)
+    const timer=setTimeout(()=>void act({type:automatic.type}),350)
     return()=>clearTimeout(timer)
   },[game?.state.version,busy,viewerId])
   useEffect(()=>{setSelectedAttackers([]);setBlocks({});setChoosingBlocker(undefined);setAttackTargets({});setAttackDialog(false);setAbilityChoices([]);setSelectedDiscards([]);setSelectedSacrifices([]);setSelectedLegendary([]);setScryOrder([]);setScryBottom([]);setBlockOrders({})},[game?.state.version])
@@ -76,7 +76,7 @@ export default function Play(){
   const legendaryAction=game?.legal_actions.find(action=>action.type==='choose_legendary')
   const scryAction=game?.legal_actions.find(action=>action.type==='scry'||action.type==='surveil')
   const blockOrderAction=game?.legal_actions.find(action=>action.type==='order_blockers')
-  const autoAdvancing=!!game?.legal_actions.some(action=>action.type==='advance_phase')&&!game?.legal_actions.some(isMeaningfulChoice)&&game.state.priority_player_id===viewerId
+  const autoAdvancing=!!game?.legal_actions.some(action=>action.type==='advance_phase'||action.type==='resolve_combat_damage')&&!game?.legal_actions.some(isMeaningfulChoice)&&game.state.priority_player_id===viewerId
   const humanActive=game?.state.active_player_id===viewerId
   const winner=game?.state.players.find(item=>item.id===game.state.winner_id)
   const gameTitle=useMemo(()=>decks.find(deck=>deck.id===game?.player_deck_id)?.name,[decks,game])
@@ -134,6 +134,7 @@ export default function Play(){
         {sacrificeAction&&<><Chip color="error" label={`Sacrifice ${selectedSacrifices.length}/${sacrificeAction.amount}`}/><Button variant="contained" color="error" disabled={busy||selectedSacrifices.length!==sacrificeAction.amount} onClick={()=>void act({type:'sacrifice_permanents',card_ids:selectedSacrifices})}>Confirm sacrifice</Button></>}
         {legendaryAction&&<><Chip color="warning" label="Choose the legendary permanent to keep"/><Button variant="contained" color="warning" disabled={busy||selectedLegendary.length!==1} onClick={()=>void act({type:'choose_legendary',card_ids:selectedLegendary})}>Keep selected</Button></>}
         {legal('advance_phase')&&<Button variant="contained" disabled={busy} onClick={()=>void act({type:'advance_phase'})}>Next · {phases[(phases.findIndex(([key])=>key===game.state.phase)+1)%phases.length][1]}</Button>}
+        {legal('resolve_combat_damage')&&<Button variant="contained" color="warning" disabled={busy} onClick={()=>void act({type:'resolve_combat_damage'})}>Deal combat damage</Button>}
         <Button size="small" onClick={()=>void act({type:'adjust_life',target_id:viewerId,amount:-1})}>−1 life</Button><Button size="small" onClick={()=>void act({type:'adjust_life',target_id:viewerId,amount:1})}>+1 life</Button><Button size="small" startIcon={<Build/>} onClick={()=>setToolsOpen(true)}>Table tools</Button>{legal('concede')&&<Button color="error" disabled={busy} onClick={()=>void act({type:'concede'})}>Concede</Button>}
       </Stack>
       <Paper className="game-log" variant="outlined"><Typography variant="overline">Game log</Typography>{game.state.log.slice(-8).reverse().map(entry=><Typography key={entry.id} variant="caption" display="block"><b>T{entry.turn}</b> · {entry.message}</Typography>)}</Paper>
