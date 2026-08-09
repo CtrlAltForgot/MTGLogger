@@ -230,6 +230,9 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
             if cast.get("targets"):cast={**cast,"target_id":_choose_target(state,cast)}
             return cast
         return by_type.get("hand_discovered",by_type.get("decline_discovery",[None]))[0]
+    if "choose_manifest_dread" in by_type:
+        action=by_type["choose_manifest_dread"][0];choice=max(action.get("cards",[]),key=lambda card:("Creature" in card.get("type_line",""),_threat_score(state,card)),default=None)
+        return {"type":"choose_manifest_dread","card_id":choice["instance_id"]} if choice else by_type.get("concede",[None])[0]
     if "accept_transform" in by_type or "decline_transform" in by_type:
         return by_type["decline_transform"][0] if difficulty=="beginner" else by_type["accept_transform"][0]
     if "choose_trigger_target" in by_type:
@@ -290,6 +293,8 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
         return {"type":"order_blockers","block_orders":orders}
     if "play_land" in by_type:
         return by_type["play_land"][0]
+    if "turn_face_up" in by_type:
+        return max(by_type["turn_face_up"],key=lambda action:_threat_score(state,_card(state,"bot",action["card_id"])))
     if "crew" in by_type:
         usable=[]
         for action in by_type["crew"]:

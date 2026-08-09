@@ -114,6 +114,7 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .player-hand .play-card:hover { transform:translateY(-52px) scale(1.6); }
 .hidden-hand { height:75px; align-items:flex-start; }
 .card-back { width:54px; height:75px; border-radius:6px; border:3px solid #17100c; background:radial-gradient(circle,#351b11 12%,#100907 15%,#100907 31%,#6d321b 33%,#1b0d08 37%,#080504 55%,#5a2919 58%,#0b0706 62%); box-shadow:0 5px 10px rgba(0,0,0,.45); }
+.manifest-card-back { width:100%; height:100%; border-radius:7px; box-shadow:0 8px 16px rgba(0,0,0,.55); }
 .table-divider { position:relative; z-index:2; color:rgba(255,255,255,.35) !important; }
 .player-hud { position:absolute; left:18px; bottom:24px; z-index:5; display:flex; align-items:center; gap:7px; padding:9px 12px; border-radius:14px; background:rgba(10,12,10,.8); border:1px solid rgba(255,255,255,.13); backdrop-filter:blur(10px); }
 .player-hud.is-impacted { animation:hud-impact .62s ease-out; }

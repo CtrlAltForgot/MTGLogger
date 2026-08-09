@@ -470,6 +470,7 @@ def _destroy_permanent(state:dict,owner:dict,card:dict,cant_regenerate:bool=Fals
 
 
 def _ward_details(card:dict)->dict|None:
+    if card.get("face_down") and card.get("cloaked"):return {"cost_type":"mana","mana_cost":"{2}","amount":0,"label":"{2}"}
     text=card.get("oracle_text") or "";mana=re.search(r"\bward\s*[—-]?\s*((?:\{[^}]+\})+)",text,re.IGNORECASE)
     if mana:return {"cost_type":"mana","mana_cost":mana.group(1).upper(),"amount":0,"label":mana.group(1).upper()}
     life=re.search(r"\bward\s*[—-]?\s*pay (\d+) life\b",text,re.IGNORECASE)
@@ -771,6 +772,30 @@ def _queue_cascade_triggers(state:dict,player:dict,card:dict)->None:
         _log(state,f"{card['name']}'s cascade ability triggered.")
 
 
+_FACE_DOWN_KEYS=("name","image_url","type_line","oracle_text","mana_cost","mana_value","power","toughness","loyalty","keywords","colors")
+
+
+def _manifest_card(state:dict,controller:dict,card:dict,cloaked:bool=False,origin:str="library")->dict:
+    card["face_down_values"]={key:deepcopy(card.get(key)) for key in _FACE_DOWN_KEYS};card["face_down"]=True;card["cloaked"]=cloaked
+    card.update({"name":"Face-Down Creature","image_url":None,"type_line":"Creature","oracle_text":"","mana_cost":"","mana_value":0,"power":"2","toughness":"2","loyalty":None,"keywords":[],"colors":[]});card["controller_id"]=controller["id"];card["summoning_sick"]=True;card["tapped"]=False;card["damage"]=0;card["counters"]={}
+    _enter_battlefield(state,controller,[card],origin);_log(state,f"{controller['name']} put a card onto the battlefield face down{' with cloak' if cloaked else ''}.");return card
+
+
+def _turn_face_up(state:dict,player:dict,card:dict)->None:
+    values=card.pop("face_down_values",None)
+    if not values:return
+    for key,value in values.items():card[key]=value
+    card.pop("face_down",None);card.pop("cloaked",None);_log(state,f"{player['name']} turned {card['name']} face up.");_queue_triggers(state,"turned_face_up",card,player)
+
+
+def _start_manifest_dread(state:dict,player:dict,source_name:str,repeats:int=1)->None:
+    ids=[card["instance_id"] for card in reversed(player["library"][-2:])]
+    if not ids:return
+    if len(ids)==1:
+        card=player["library"].pop();_manifest_card(state,player,card,False,"library");return
+    state["pending_manifest"]={"player_id":player["id"],"source_name":source_name,"card_ids":ids,"repeats":repeats};state["priority_player_id"]=player["id"]
+
+
 def _has_x_cost(card:dict)->bool:
     return any(symbol.upper()=="X" for symbol in _mana_symbols(card))
 
@@ -843,7 +868,7 @@ def _new_player(player_id: str, name: str, deck: list[dict], is_bot: bool, forma
 def new_game(player_deck: list[dict], opponent_deck: list[dict], play_first: bool = True, opponent_is_bot: bool = True, player_format: str = "", opponent_format: str = "") -> dict:
     human_id, bot_id = "player", "bot"
     players = [_new_player(human_id, "You", player_deck, False, player_format), _new_player(bot_id, "Bot" if opponent_is_bot else "Guest", opponent_deck, opponent_is_bot, opponent_format)]
-    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "beginning_draw_pending":True,"first_turn_draw_skipped":False,"active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id, "players": players, "stack": [], "combat": {"attackers": [], "attackers_declared":False,"blocks": {}, "attack_targets": {},"block_orders":{},"damage_pending":False,"damage_step":None,"first_strike_damage_ids":[],"block_triggers_pending":False}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "pending_legendary": None,"pending_commander_zone":[],"pending_library_search":None,"pending_scry":None,"pending_damage_order":None,"pending_ward":None,"pending_blight":None,"pending_proliferate":None,"pending_amass":None,"pending_discovery":None,"pending_transform":None,"pending_trigger_targets":[], "log": []}
+    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "beginning_draw_pending":True,"first_turn_draw_skipped":False,"active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id, "players": players, "stack": [], "combat": {"attackers": [], "attackers_declared":False,"blocks": {}, "attack_targets": {},"block_orders":{},"damage_pending":False,"damage_step":None,"first_strike_damage_ids":[],"block_triggers_pending":False}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "pending_legendary": None,"pending_commander_zone":[],"pending_library_search":None,"pending_scry":None,"pending_damage_order":None,"pending_ward":None,"pending_blight":None,"pending_proliferate":None,"pending_amass":None,"pending_discovery":None,"pending_manifest":None,"pending_transform":None,"pending_trigger_targets":[], "log": []}
     for player in players:
         _draw(state, player, 7,False)
     _log(state, "Opening hands drawn. Choose whether to keep or mulligan.")
@@ -861,6 +886,8 @@ def public_state(state: dict, viewer_id: str = "player") -> dict:
         if player["id"] != viewer_id:
             player["hand_count"] = len(player["hand"])
             player["hand"] = []
+            for card in player["battlefield"]:
+                if card.get("face_down"):card.pop("face_down_values",None)
     pending_search=visible.get("pending_library_search")
     if pending_search and pending_search.get("player_id")!=viewer_id:pending_search["card_ids"]=[]
     return visible
@@ -1024,7 +1051,7 @@ def _multiplayer(state: dict) -> bool:
 
 
 def _pending_decision(state:dict)->bool:
-    return bool(state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_discovery") or state.get("pending_transform") or state.get("pending_trigger_targets"))
+    return bool(state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_discovery") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_trigger_targets"))
 
 
 def _queue_commander_zone_choice(state:dict,owner:dict,card:dict,zone:str)->None:
@@ -1134,6 +1161,11 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
         if pending_discovery["mode"]=="discover":actions.append({"type":"hand_discovered",**common})
         else:actions.append({"type":"decline_discovery",**common})
         actions.append({"type":"concede"});return actions
+    pending_manifest=state.get("pending_manifest")
+    if pending_manifest:
+        if pending_manifest["player_id"]!=player_id:return []
+        cards_by_id={card["instance_id"]:card for card in player["library"]};cards=[cards_by_id[card_id] for card_id in pending_manifest["card_ids"] if card_id in cards_by_id]
+        return [{"type":"choose_manifest_dread","card_ids":pending_manifest["card_ids"],"cards":cards,"source_name":pending_manifest["source_name"]},{"type":"concede"}]
     pending_transform=state.get("pending_transform")
     if pending_transform:
         if pending_transform["player_id"]!=player_id:return []
@@ -1155,6 +1187,9 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
         return []
     actions = [{"type": "concede"}]
     active = state["active_player_id"] == player_id
+    for permanent in player["battlefield"]:
+        values=permanent.get("face_down_values") or {};cost=values.get("mana_cost") or "";underlying_type=values.get("type_line") or ""
+        if permanent.get("face_down") and "Creature" in underlying_type and cost and _can_pay(player,{"mana_cost":cost}):actions.append({"type":"turn_face_up","card_id":permanent["instance_id"],"mana_cost":cost,"label":f"Turn {values.get('name','card')} face up · {cost}"})
     main = state["phase"] in {"precombat_main", "postcombat_main"}
     if active and main and not state["stack"]:
         if player["land_plays_remaining"]:
@@ -1408,6 +1443,16 @@ def _resolve_spell(state: dict) -> None:
         amount=int(incubate_match.group(1));token=_incubator_token(caster);_enter_battlefield(state,caster,[token],"token");_add_counters(state,token,"+1/+1",amount,caster["id"],"incubate");_log(state,f"{caster['name']} incubated {amount}.")
     discover_match=re.search(r"\bdiscover (\d+)\b",keyword_text)
     if discover_match:_start_discovery(state,caster,int(discover_match.group(1)),"discover",source_permanent.get("name",card["name"]) if source_permanent else card["name"])
+    face_down_text=re.sub(r"\([^()]*(?:to manifest|to cloak)[^()]*\)","",effect_text);source_name=source_permanent.get("name",card["name"]) if source_permanent else card["name"]
+    dread_match=re.search(r"\bmanifest dread(?: (twice|three times))?\b",face_down_text)
+    if dread_match:_start_manifest_dread(state,caster,source_name,{"twice":2,"three times":3}.get(dread_match.group(1),1))
+    elif re.search(r"\bmanifest(?:s)? the top card of (?:your|their|that player's) library\b",face_down_text):
+        recipient=target_player or caster
+        if recipient["library"]:_manifest_card(state,recipient,recipient["library"].pop(),False,"library")
+    cloak_match=re.search(r"\bcloak(?:s)? the top card of (?:your|their|that player's) library\b",face_down_text)
+    if cloak_match:
+        recipient=target_player or caster
+        if recipient["library"]:_manifest_card(state,recipient,recipient["library"].pop(),True,"library")
     if re.search(r"\bairbend (?:up to one )?target (?:creature|spell|creature or spell)\b",effect_text):
         airbent=None;airbend_owner=None
         if target and target_owner:
@@ -1620,6 +1665,10 @@ def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str, t
     _queue_triggers(state,"leaves",card,owner,trigger_dedupe,trigger_sources)
     if destination=="graveyard":_queue_triggers(state,"dies",card,owner,trigger_dedupe,trigger_sources)
     card["damage"] = 0; card["tapped"] = False;card.pop("deathtouch_damage",None);card.pop("crewed_turn",None);card.pop("temporary_control_return_to",None);card.pop("activated_ability_usage",None)
+    if card.get("face_down"):
+        values=card.pop("face_down_values",{})
+        for key,value in values.items():card[key]=value
+        card.pop("face_down",None);card.pop("cloaked",None)
     if card.get("base_type_line") is not None:card["type_line"]=card.pop("base_type_line")
     if card.get("earthbend_base_type_line") is not None:
         card["type_line"]=card.pop("earthbend_base_type_line");card["power"]=card.pop("earthbend_base_power",None);card["toughness"]=card.pop("earthbend_base_toughness",None)
@@ -1946,6 +1995,11 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                     if one_or_more and dedupe is not None:dedupe.add(dedupe_key)
             elif event=="discover":
                 matches=owner["id"]==event_owner["id"] and "whenever you discover" in lower
+            elif event=="turned_face_up" and event_card:
+                same_controller=event_owner["id"]==owner["id"];self_event=source is event_card and ("this creature is turned face up" in lower or "is turned face up" in lower and (source.get("name") or "").casefold() in lower)
+                controlled=same_controller and re.search(r"whenever (?:a|another) (?:creature|permanent) you control is turned face up",lower) is not None
+                global_event=re.search(r"whenever (?:a|another) (?:creature|permanent) is turned face up",lower) is not None
+                matches=self_event or controlled or global_event
             elif event == "leaves" and event_card:
                 matches=source is not event_card and owner["id"]==event_owner["id"] and "Creature" in event_card.get("type_line","") and "when another creature you control leaves the battlefield" in lower
             elif event == "upkeep":
@@ -2032,7 +2086,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
             fight_steps=_fight_target_steps(state,owner["id"],ability_card,source);targets=[] if fight_steps else _targets(state, owner["id"], ability_card)
             for _ in range(trigger_count):
                 trigger={"id":_id(),"kind":"trigger","card":ability_card,"controller_id":owner["id"],"target_id":None,"source_id":source["instance_id"]}
-                if event_card and event in {"enters","exile","tapped","untapped","counter_added","dies","discard","graveyard_leave","damage","combat_damage_player"}:trigger["event_card_id"]=event_card.get("instance_id");trigger["event_owner_id"]=event_owner.get("id")
+                if event_card and event in {"enters","exile","tapped","untapped","counter_added","turned_face_up","dies","discard","graveyard_leave","damage","combat_damage_player"}:trigger["event_card_id"]=event_card.get("instance_id");trigger["event_owner_id"]=event_owner.get("id")
                 if fight_steps:
                     if all(step["targets"] for step in fight_steps):state.setdefault("pending_trigger_targets",[]).append({"controller_id":owner["id"],"source_name":source["name"],"trigger":trigger,"card":ability_card,"target_steps":fight_steps});state["priority_player_id"]=state["pending_trigger_targets"][0]["controller_id"]
                     else:_log(state,f"{source['name']}'s fight trigger had no legal targets and was removed.")
@@ -2248,6 +2302,18 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         _bottom_randomized_exiled(state,player,remaining);state["consecutive_passes"]=0;state["pending_phase_advance"]=False
         if pending["mode"]=="discover":player["discover_event_value"]=pending["value"];_queue_triggers(state,"discover",None,player);player.pop("discover_event_value",None)
         if not state.get("pending_trigger_targets"):state["priority_player_id"]=opponent(state,player_id)["id"] if (_multiplayer(state) or not allow_direct_resolution) and action_type=="cast_discovered" else state["active_player_id"]
+    elif action_type=="choose_manifest_dread":
+        pending=state.get("pending_manifest") or {};card_id=action.get("card_id")
+        if pending.get("player_id")!=player_id or card_id not in pending.get("card_ids",[]):raise RuleViolation("Choose one of the cards seen while manifesting dread")
+        chosen=next((card for card in player["library"] if card["instance_id"]==card_id),None);other=next((card for card in player["library"] if card["instance_id"] in pending["card_ids"] and card["instance_id"]!=card_id),None)
+        if not chosen or not other:raise RuleViolation("The top of the library changed before manifest dread finished")
+        player["library"].remove(chosen);player["library"].remove(other);player["graveyard"].append(other);state["pending_manifest"]=None;_manifest_card(state,player,chosen,False,"library");_log(state,f"{player['name']} put one of the cards seen with manifest dread into their graveyard.")
+        if pending.get("repeats",1)>1:_start_manifest_dread(state,player,pending["source_name"],pending["repeats"]-1)
+        elif not state.get("pending_trigger_targets"):state["priority_player_id"]=state["active_player_id"]
+    elif action_type=="turn_face_up":
+        permanent=next((card for card in player["battlefield"] if card["instance_id"]==action.get("card_id") and card.get("face_down")),None);values=(permanent or {}).get("face_down_values") or {};cost=values.get("mana_cost") or ""
+        if not permanent or "Creature" not in (values.get("type_line") or "") or not cost:raise RuleViolation("That card cannot be turned face up by paying its mana cost")
+        _pay_mana(state,player,{"mana_cost":cost});_turn_face_up(state,player,permanent)
     elif action_type == "play_land":
         card = next((card for card in player["hand"] if card["instance_id"] == action.get("card_id") and "Land" in card.get("type_line", "")), None)
         if not card: raise RuleViolation("That land is not in your hand")

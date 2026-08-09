@@ -1,7 +1,7 @@
 import pytest
 
 from mtglogger.services.game_bot import _choose_blocks, choose_bot_action, run_bot
-from mtglogger.services.game_engine import RuleViolation, _add_counters, _add_saga_lore, _amass, _enter_battlefield, _has_keyword, _leave_graveyard, _put_into_exile, _queue_triggers, _set_tapped, legal_actions, new_game, perform_action, public_state
+from mtglogger.services.game_engine import RuleViolation, _add_counters, _add_saga_lore, _amass, _enter_battlefield, _has_keyword, _leave_graveyard, _put_into_exile, _queue_triggers, _set_tapped, _ward_details, legal_actions, new_game, perform_action, public_state
 
 
 def card(index:int,name:str,type_line:str,mana_cost:str="",power:str|None=None,toughness:str|None=None,quantity:int=1):
@@ -2001,3 +2001,26 @@ def test_discover_again_trigger_waits_until_the_first_choice_finishes():
     state=perform_action(state,"player",{"type":"resolve"});assert state["pending_discovery"] and not state["stack"]
     state=perform_action(state,"player",{"type":"hand_discovered"});assert not state["pending_discovery"] and state["stack"][-1]["card"]["oracle_text"].casefold().startswith("discover 3")
     state=perform_action(state,"player",{"type":"resolve"});assert state["pending_discovery"] and state["pending_discovery"]["candidate_id"]=="second-discovery"
+
+
+def test_manifest_creates_an_anonymous_two_two_and_reveals_it_when_it_leaves():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player");hidden={**card(1520,"Hidden Dragon","Creature — Dragon","{3}{R}","4","4"),"instance_id":"hidden-dragon","owner_id":"player","controller_id":"player"};source={**card(1521,"Manifest Source","Ability"),"oracle_text":"Manifest the top card of your library.","instance_id":"manifest-source","owner_id":"player","controller_id":"player"};player["library"].append(hidden);state["stack"].append({"id":"manifest-stack","kind":"ability","card":source,"controller_id":"player","target_id":None,"source_id":"missing"})
+    state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");manifested=next(card for card in player["battlefield"] if card["instance_id"]=="hidden-dragon")
+    assert manifested["face_down"] and manifested["name"]=="Face-Down Creature" and manifested["type_line"]=="Creature" and manifested["power"]==manifested["toughness"]=="2"
+    opponent_view=public_state(state,"bot");hidden_view=next(card for owner in opponent_view["players"] if owner["id"]=="player" for card in owner["battlefield"] if card["instance_id"]=="hidden-dragon");assert "face_down_values" not in hidden_view and "Hidden Dragon" not in repr(hidden_view)
+    state=perform_action(state,"player",{"type":"move_zone","target_id":"hidden-dragon","destination":"graveyard"});player=next(p for p in state["players"] if p["id"]=="player");revealed=next(card for card in player["graveyard"] if card["instance_id"]=="hidden-dragon");assert revealed["name"]=="Hidden Dragon" and not revealed.get("face_down")
+
+
+def test_cloak_grants_ward_and_face_up_special_action_restores_identity_and_triggers():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player");hidden={**card(1530,"Cloaked Elf","Creature — Elf","{1}{G}","3","3"),"instance_id":"cloaked-elf","owner_id":"player","controller_id":"player"};source={**card(1531,"Cloak Source","Ability"),"oracle_text":"Cloak the top card of your library.","instance_id":"cloak-source","owner_id":"player","controller_id":"player"};watcher={**card(1532,"Reveal Watcher","Enchantment"),"oracle_text":"Whenever another creature you control is turned face up, draw a card.","instance_id":"reveal-watcher","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};lands=[{**card(1533+index,"Forest","Basic Land — Forest"),"instance_id":f"reveal-forest-{index}","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False} for index in range(2)];player["battlefield"].extend([watcher,*lands]);player["library"].append(hidden);state["stack"].append({"id":"cloak-stack","kind":"ability","card":source,"controller_id":"player","target_id":None,"source_id":"missing"})
+    state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");cloaked=next(card for card in player["battlefield"] if card["instance_id"]=="cloaked-elf");assert _ward_details(cloaked)["mana_cost"]=="{2}"
+    action=next(action for action in legal_actions(state,"player") if action["type"]=="turn_face_up");before=len(player["library"]);state=perform_action(state,"player",{"type":"turn_face_up","card_id":action["card_id"]});player=next(p for p in state["players"] if p["id"]=="player");revealed=next(card for card in player["battlefield"] if card["instance_id"]=="cloaked-elf")
+    assert revealed["name"]=="Cloaked Elf" and not revealed.get("face_down") and sum(land["tapped"] for land in player["battlefield"] if "Land" in land["type_line"])==2 and state["stack"]
+    state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");assert len(player["library"])==before-1
+
+
+def test_manifest_dread_requires_owner_choice_and_bot_prefers_the_creature():
+    state=kept_game();state["active_player_id"]="bot";state["priority_player_id"]="bot";bot=next(p for p in state["players"] if p["id"]=="bot");creature={**card(1540,"Dread Creature","Creature — Horror","{2}{B}","3","3"),"instance_id":"dread-creature","owner_id":"bot","controller_id":"bot"};land={**card(1541,"Dread Land","Land"),"instance_id":"dread-land","owner_id":"bot","controller_id":"bot"};source={**card(1542,"Dread Source","Ability"),"oracle_text":"Manifest dread.","instance_id":"dread-source","owner_id":"bot","controller_id":"bot"};bot["library"].extend([land,creature]);state["stack"].append({"id":"dread-stack","kind":"ability","card":source,"controller_id":"bot","target_id":None,"source_id":"missing"})
+    state=perform_action(state,"bot",{"type":"resolve"});action=legal_actions(state,"bot")[0];assert action["type"]=="choose_manifest_dread" and {card["instance_id"] for card in action["cards"]}=={"dread-creature","dread-land"}
+    choice=choose_bot_action(state,"expert");assert choice=={"type":"choose_manifest_dread","card_id":"dread-creature"};state=perform_action(state,"bot",choice);bot=next(p for p in state["players"] if p["id"]=="bot")
+    assert any(card["instance_id"]=="dread-creature" and card.get("face_down") for card in bot["battlefield"]) and any(card["instance_id"]=="dread-land" for card in bot["graveyard"])
