@@ -415,8 +415,24 @@ def _activated_abilities(card: dict) -> list[dict]:
         if unsupported or (not taps and not mana_cost and not waterbend_symbol and not self_sacrifice and not life_cost and not counter_cost and not selection_costs):continue
         if re.match(r"add (?:\{|one mana)", effect, re.IGNORECASE): continue
         ability_card = {**card, "name": f"{card['name']} ability", "oracle_text": effect, "source_type_line":card.get("type_line",""),"source_mana_cost":card.get("mana_cost",""), "type_line": "Ability", "mana_cost": ""}
-        abilities.append({"cost":cost,"mana_cost":mana_cost,"waterbend_symbol":waterbend_symbol,"taps":taps,"self_sacrifice":self_sacrifice,"life_cost":life_cost,"counter_cost":counter_cost,"selection_cost":selection_costs[0] if len(selection_costs)==1 else None,"selection_costs":selection_costs,"effect":effect,"card":ability_card})
+        lower_effect=effect.casefold();restrictions={"sorcery":bool(re.search(r"activate (?:this ability )?only (?:as a sorcery|any time you could cast a sorcery)",lower_effect)),"your_turn":bool(re.search(r"activate (?:this ability )?only during your turn",lower_effect)),"opponent_turn":bool(re.search(r"activate (?:this ability )?only during an opponent's turn",lower_effect)),"combat":bool(re.search(r"activate (?:this ability )?only during combat",lower_effect)),"before_attackers":bool(re.search(r"activate (?:this ability )?only before attackers are declared",lower_effect)),"upkeep":bool(re.search(r"activate (?:this ability )?only during your upkeep",lower_effect)),"end_step":bool(re.search(r"activate (?:this ability )?only during your end step",lower_effect)),"once_each_turn":bool(re.search(r"activate (?:this ability )?(?:only |no more than )?once (?:each|per) turn",lower_effect)),"once":bool(re.search(r"activate (?:this ability )?only once(?:\.|$)",lower_effect))}
+        abilities.append({"cost":cost,"mana_cost":mana_cost,"waterbend_symbol":waterbend_symbol,"taps":taps,"self_sacrifice":self_sacrifice,"life_cost":life_cost,"counter_cost":counter_cost,"selection_cost":selection_costs[0] if len(selection_costs)==1 else None,"selection_costs":selection_costs,"restrictions":restrictions,"effect":effect,"card":ability_card})
     return abilities
+
+
+def _activation_timing_legal(state:dict,player_id:str,permanent:dict,index:int,ability:dict)->bool:
+    restrictions=ability.get("restrictions",{});active=state["active_player_id"]==player_id;phase=state["phase"]
+    if restrictions.get("sorcery") and not (active and phase in {"precombat_main","postcombat_main"} and not state["stack"]):return False
+    if restrictions.get("your_turn") and not active:return False
+    if restrictions.get("opponent_turn") and active:return False
+    if restrictions.get("combat") and phase!="combat":return False
+    if restrictions.get("before_attackers") and (phase!="combat" or state["combat"].get("attackers_declared")):return False
+    if restrictions.get("upkeep") and not (active and phase=="beginning" and state.get("beginning_draw_pending")):return False
+    if restrictions.get("end_step") and not (active and phase=="ending"):return False
+    usage=permanent.get("activated_ability_usage",{}).get(str(index),{})
+    if restrictions.get("once_each_turn") and usage.get("turn")==state["turn"]:return False
+    if restrictions.get("once") and usage.get("ever"):return False
+    return True
 
 
 def _permanent_abilities(state:dict,card:dict)->list[dict]:
@@ -641,7 +657,7 @@ def _new_player(player_id: str, name: str, deck: list[dict], is_bot: bool, forma
 def new_game(player_deck: list[dict], opponent_deck: list[dict], play_first: bool = True, opponent_is_bot: bool = True, player_format: str = "", opponent_format: str = "") -> dict:
     human_id, bot_id = "player", "bot"
     players = [_new_player(human_id, "You", player_deck, False, player_format), _new_player(bot_id, "Bot" if opponent_is_bot else "Guest", opponent_deck, opponent_is_bot, opponent_format)]
-    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "beginning_draw_pending":True,"first_turn_draw_skipped":False,"active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id, "players": players, "stack": [], "combat": {"attackers": [], "blocks": {}, "attack_targets": {},"block_orders":{},"damage_pending":False,"damage_step":None,"first_strike_damage_ids":[],"block_triggers_pending":False}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "pending_legendary": None,"pending_commander_zone":[],"pending_library_search":None,"pending_scry":None,"pending_damage_order":None,"pending_ward":None,"pending_blight":None,"pending_proliferate":None,"pending_transform":None,"pending_trigger_targets":[], "log": []}
+    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "beginning_draw_pending":True,"first_turn_draw_skipped":False,"active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id, "players": players, "stack": [], "combat": {"attackers": [], "attackers_declared":False,"blocks": {}, "attack_targets": {},"block_orders":{},"damage_pending":False,"damage_step":None,"first_strike_damage_ids":[],"block_triggers_pending":False}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "pending_legendary": None,"pending_commander_zone":[],"pending_library_search":None,"pending_scry":None,"pending_damage_order":None,"pending_ward":None,"pending_blight":None,"pending_proliferate":None,"pending_transform":None,"pending_trigger_targets":[], "log": []}
     for player in players:
         _draw(state, player, 7)
     _log(state, "Opening hands drawn. Choose whether to keep or mulligan.")
@@ -1020,6 +1036,7 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
             actions.append({"type":"cycle","card_id":card["instance_id"],"label":f"{cycling['keyword']} · {cycling['mana_cost']}","mana_cost":cycling["mana_cost"]})
     for permanent in player["battlefield"]:
         for index, ability in enumerate(_permanent_abilities(state,permanent)):
+            if not _activation_timing_legal(state,player_id,permanent,index,ability):continue
             if ability["taps"] and (permanent.get("tapped") or ("Creature" in permanent.get("type_line", "") and permanent.get("summoning_sick") and not _has_keyword(permanent,"Haste"))):continue
             waterbend_symbol=ability.get("waterbend_symbol");excluded={permanent["instance_id"]} if ability["taps"] else set();waterbend_x_max=_maximum_waterbend_x(player,{"mana_cost":ability["mana_cost"]},excluded) if waterbend_symbol=="X" else None;waterbend_amount=int(waterbend_symbol) if waterbend_symbol and waterbend_symbol.isdigit() else waterbend_x_max or 0;waterbend_combinations=_waterbend_combinations(player,{"mana_cost":ability["mana_cost"]},waterbend_amount,excluded) if waterbend_symbol else []
             if (waterbend_symbol and not waterbend_combinations) or (not waterbend_symbol and ability["mana_cost"] and not _can_pay(player,{"mana_cost":ability["mana_cost"]},excluded_id=permanent["instance_id"] if ability["taps"] else None)):continue
@@ -1082,7 +1099,7 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
         actions.append({"type":"resolve_combat_damage","damage_step":"first_strike" if first_step else "regular"})
     else:
         actions.append({"type": "advance_phase"})
-    if active and state["phase"] == "combat" and not state["combat"]["attackers"]:
+    if active and state["phase"] == "combat" and not state["combat"].get("attackers_declared"):
         defender=opponent(state,player_id);eligible = [card["instance_id"] for card in player["battlefield"] if "Creature" in card.get("type_line", "") and not card.get("tapped") and _can_attack(state,card,player,defender) and (not card.get("summoning_sick") or _has_keyword(card, "Haste"))]
         if eligible:
             defending=opponent(state,player_id);defenders=[{"id":defending["id"],"name":defending["name"],"kind":"player","controller_id":defending["id"]}]
@@ -1371,7 +1388,7 @@ def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str) -
     earthbend_controller=card.get("earthbend_controller") if destination in {"graveyard","exile"} else None
     _queue_triggers(state,"leaves",card,owner)
     if destination=="graveyard":_queue_triggers(state,"dies",card,owner)
-    card["damage"] = 0; card["tapped"] = False;card.pop("crewed_turn",None);card.pop("temporary_control_return_to",None)
+    card["damage"] = 0; card["tapped"] = False;card.pop("crewed_turn",None);card.pop("temporary_control_return_to",None);card.pop("activated_ability_usage",None)
     if card.get("base_type_line") is not None:card["type_line"]=card.pop("base_type_line")
     if card.get("earthbend_base_type_line") is not None:
         card["type_line"]=card.pop("earthbend_base_type_line");card["power"]=card.pop("earthbend_base_power",None);card["toughness"]=card.pop("earthbend_base_toughness",None)
@@ -1541,7 +1558,7 @@ def _combat_damage(state: dict) -> None:
             _log(state,"First-strike combat damage resolved. Players may respond before regular combat damage.");return
     damage_step(False)
     _log(state, "Combat damage resolved.")
-    state["combat"] = {"attackers": [], "blocks": {},"attack_targets":{},"block_orders":{},"damage_pending":False,"damage_step":None,"first_strike_damage_ids":[],"block_triggers_pending":False}
+    state["combat"] = {"attackers": [], "attackers_declared":False,"blocks": {},"attack_targets":{},"block_orders":{},"damage_pending":False,"damage_step":None,"first_strike_damage_ids":[],"block_triggers_pending":False}
 
 
 def _check_winner(state: dict) -> None:
@@ -1626,6 +1643,7 @@ def _advance_turn_phase(state: dict) -> None:
         if state["phase"] == "ending":
             _queue_triggers(state,"end_step",None,_player(state,state["active_player_id"]))
         elif state["phase"] == "combat":
+            state["combat"]={"attackers":[],"attackers_declared":False,"blocks":{},"attack_targets":{},"block_orders":{},"damage_pending":False,"damage_step":None,"first_strike_damage_ids":[],"block_triggers_pending":False}
             _queue_triggers(state,"beginning_combat",None,_player(state,state["active_player_id"]))
     if not state.get("pending_trigger_targets"):
         state["priority_player_id"] = state["active_player_id"]
@@ -1796,6 +1814,8 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if blight_cost:
             blight_options={card["instance_id"] for card in _activated_cost_options(player,permanent,blight_cost)};blight_target=next(card for card in selected_cost_cards if card["instance_id"] in blight_options);_apply_blight(state,player,blight_target,blight_cost["blight_amount"])
         if ability["taps"]:permanent["tapped"]=True
+        if ability.get("restrictions",{}).get("once_each_turn") or ability.get("restrictions",{}).get("once"):
+            permanent.setdefault("activated_ability_usage",{})[str(index)]={"turn":state["turn"],"ever":True}
         stack_item={"id":_id(),"kind":"ability","card":ability["card"],"controller_id":player_id,"target_id":target_id,"target_ids":target_ids,"source_id":permanent["instance_id"],"x_value":x_value};state["stack"].append(stack_item);state["consecutive_passes"]=0;state["pending_phase_advance"]=False
         if waterbend_symbol:_queue_triggers(state,"waterbend",permanent,player)
         for ward_target in ([target_id] if target_id else [])+target_ids:_queue_ward(state,player,ward_target,stack_item)
@@ -1839,7 +1859,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
             if "can't attack or block alone" in _effective_rules_text(state,lone):raise RuleViolation(f"{lone['name']} can't attack alone")
         attack_action=next(entry for entry in legal_actions(state,player_id) if entry["type"]=="declare_attackers");defender_ids={target["id"] for target in attack_action.get("defenders",[])};requested_targets=action.get("attack_targets") or {};default_target=opponent(state,player_id)["id"]
         if any(requested_targets.get(attacker_id,default_target) not in defender_ids for attacker_id in requested):raise RuleViolation("Choose a legal defender for every attacker")
-        state["combat"]["attackers"] = list(requested)
+        state["combat"]["attackers"] = list(requested);state["combat"]["attackers_declared"]=True
         state["combat"]["attack_targets"]={attacker_id:requested_targets.get(attacker_id,default_target) for attacker_id in requested}
         for card in player["battlefield"]:
             if card["instance_id"] in requested and not _has_keyword(card,"Vigilance"): card["tapped"] = True

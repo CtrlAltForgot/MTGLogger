@@ -1109,6 +1109,33 @@ def test_expert_bot_chooses_x_and_the_matching_variable_payment():
     assert set(choice["cost_card_ids"])=={"bot-spare-one","bot-spare-two"}
 
 
+def test_activation_sorcery_turn_combat_and_upkeep_timing_restrictions():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player")
+    sorcery={**card(946,"Sorcery Device","Artifact"),"oracle_text":"Pay 1 life: Draw a card. Activate only as a sorcery.","instance_id":"sorcery-device","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};turn={**card(947,"Turn Device","Artifact"),"oracle_text":"Pay 1 life: Draw a card. Activate only during your turn.","instance_id":"turn-device","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};combat={**card(948,"Combat Device","Artifact"),"oracle_text":"Pay 1 life: Draw a card. Activate only during combat.","instance_id":"combat-device","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};upkeep={**card(949,"Upkeep Device","Artifact"),"oracle_text":"Pay 1 life: Draw a card. Activate only during your upkeep.","instance_id":"upkeep-device","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};opponent_turn={**card(950,"Opponent Turn Device","Artifact"),"oracle_text":"Pay 1 life: Draw a card. Activate only during an opponent's turn.","instance_id":"opponent-turn-device","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};end_step={**card(951,"End Step Device","Artifact"),"oracle_text":"Pay 1 life: Draw a card. Activate only during your end step.","instance_id":"end-step-device","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].extend([sorcery,turn,combat,upkeep,opponent_turn,end_step])
+    ids=lambda current:{action.get("card_id") for action in legal_actions(current,"player") if action["type"]=="activate"}
+    assert "upkeep-device" in ids(state) and "sorcery-device" not in ids(state) and "combat-device" not in ids(state)
+    state["phase"]="precombat_main";state["beginning_draw_pending"]=False;assert {"sorcery-device","turn-device"}.issubset(ids(state)) and "upkeep-device" not in ids(state)
+    state["stack"].append({"id":"timing-stack","card":card(952,"Waiting Spell","Instant"),"controller_id":"player","target_id":None});assert "sorcery-device" not in ids(state);state["stack"]=[]
+    state["phase"]="combat";assert "combat-device" in ids(state) and "sorcery-device" not in ids(state)
+    state["active_player_id"]="bot";state["priority_player_id"]="player";assert "turn-device" not in ids(state) and "opponent-turn-device" in ids(state)
+    state["active_player_id"]="player";state["phase"]="ending";assert "end-step-device" in ids(state)
+
+
+def test_once_each_turn_and_once_ever_activation_limits_are_authoritative():
+    state=kept_game();state["phase"]="precombat_main";player=next(p for p in state["players"] if p["id"]=="player")
+    each={**card(951,"Turn Limited Device","Artifact"),"oracle_text":"Pay 1 life: Draw a card. Activate only once each turn.","instance_id":"turn-limited","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};ever={**card(952,"Single Use Device","Artifact"),"oracle_text":"Pay 1 life: Draw a card. Activate only once.","instance_id":"single-use","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].extend([each,ever])
+    action=next(action for action in legal_actions(state,"player") if action.get("card_id")=="turn-limited");state=perform_action(state,"player",{"type":"activate","card_id":"turn-limited","ability_index":action["ability_index"]});state=perform_action(state,"player",{"type":"resolve"})
+    assert not any(action.get("card_id")=="turn-limited" for action in legal_actions(state,"player"));state["turn"]+=1;assert any(action.get("card_id")=="turn-limited" for action in legal_actions(state,"player"))
+    action=next(action for action in legal_actions(state,"player") if action.get("card_id")=="single-use");state=perform_action(state,"player",{"type":"activate","card_id":"single-use","ability_index":action["ability_index"]});state=perform_action(state,"player",{"type":"resolve"});state["turn"]+=1
+    assert not any(action.get("card_id")=="single-use" for action in legal_actions(state,"player"))
+
+
+def test_declaring_no_attackers_is_recorded_and_cannot_reopen_attack_selection():
+    state=kept_game();state["phase"]="combat";state["combat"]["attackers_declared"]=False;player=next(p for p in state["players"] if p["id"]=="player");attacker={**card(953,"Patient Attacker","Creature — Soldier","","2","2"),"instance_id":"patient-attacker","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};device={**card(954,"Before Attackers Device","Artifact"),"oracle_text":"Pay 1 life: Draw a card. Activate only before attackers are declared.","instance_id":"before-attackers-device","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].extend([attacker,device])
+    assert any(action["type"]=="declare_attackers" for action in legal_actions(state,"player")) and any(action.get("card_id")=="before-attackers-device" for action in legal_actions(state,"player"));state=perform_action(state,"player",{"type":"declare_attackers","attacker_ids":[]})
+    assert state["combat"]["attackers_declared"] is True and not any(action["type"]=="declare_attackers" or action.get("card_id")=="before-attackers-device" for action in legal_actions(state,"player"))
+
+
 def test_expert_bot_uses_profitable_costly_abilities_but_never_pays_lethal_life():
     state=kept_game();state["active_player_id"]="bot";state["priority_player_id"]="bot";state["phase"]="precombat_main";bot=next(p for p in state["players"] if p["id"]=="bot");bot["hand"]=[];bot["land_plays_remaining"]=0;bot["life"]=2
     fatal={**card(930,"Fatal Bargain","Artifact"),"oracle_text":"Pay 2 life: Draw a card.","instance_id":"fatal-bargain","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};relic={**card(931,"Scholar Relic","Artifact"),"oracle_text":"Sacrifice Scholar Relic: Draw three cards.","instance_id":"scholar-relic","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};bot["battlefield"].append(fatal)
