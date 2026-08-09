@@ -337,6 +337,32 @@ def _transform(state:dict,card:dict)->bool:
     _log(state,f"{previous} transformed into {card['name']}.");return True
 
 
+def _saga_chapters(card:dict)->dict[int,str]:
+    chapters={};roman={"I":1,"II":2,"III":3,"IV":4,"V":5}
+    for line in (card.get("oracle_text") or "").splitlines():
+        match=re.match(r"^((?:I|V)+(?:\s*,\s*(?:I|V)+)*)\s*[—-]\s*(.+)$",line.strip())
+        if not match:continue
+        for numeral in re.split(r"\s*,\s*",match.group(1)):
+            if numeral in roman:chapters[roman[numeral]]=match.group(2).strip()
+    return chapters
+
+
+def _queue_saga_chapter(state:dict,owner:dict,saga:dict,chapter:int)->None:
+    chapters=_saga_chapters(saga);effect=chapters.get(chapter)
+    if not effect:return
+    ability={"name":f"{saga['name']} — chapter {chapter}","oracle_text":effect,"type_line":"Ability","mana_cost":""};trigger={"id":_id(),"kind":"trigger","card":ability,"controller_id":owner["id"],"target_id":None,"source_id":saga["instance_id"],"saga_final":chapter==max(chapters)};targets=_targets(state,owner["id"],ability)
+    if _target_kind(ability):
+        if targets:state.setdefault("pending_trigger_targets",[]).append({"controller_id":owner["id"],"source_name":saga["name"],"trigger":trigger,"card":ability});state["priority_player_id"]=owner["id"]
+        else:_log(state,f"{saga['name']}'s chapter {chapter} had no legal target.")
+    else:state["stack"].append(trigger)
+    _log(state,f"{saga['name']} reached chapter {chapter}: {effect}")
+
+
+def _add_saga_lore(state:dict,owner:dict,saga:dict)->None:
+    if "Saga" not in saga.get("type_line","") or int(saga.get("current_face",0))!=0:return
+    saga.setdefault("counters",{})["lore"]=saga["counters"].get("lore",0)+1;_queue_saga_chapter(state,owner,saga,saga["counters"]["lore"])
+
+
 def _activated_abilities(card: dict) -> list[dict]:
     abilities = []
     text=card.get("oracle_text") or "";quoted=re.findall(r'"([^"]+:[^"]+)"',text);lines=[*(line for line in text.splitlines() if '"' not in line),*quoted]
@@ -1058,8 +1084,8 @@ def _resolve_spell(state: dict) -> None:
             parts=target["type_line"].split(" — ",1);target["type_line"]=f"{parts[0]} Creature"+(f" — {parts[1]}" if len(parts)>1 else "")
         target["power"]="0";target["toughness"]="0";target["earthbent"]=True;target["earthbend_controller"]=caster["id"];target["counters"]["+1/+1"]=target["counters"].get("+1/+1",0)+earthbend
         _log(state,f"{caster['name']} earthbent {target['name']} for {earthbend}.");_queue_triggers(state,"earthbend",target,caster)
-    draw_match = re.search(r"draw (?:a|one|two|three|four|\d+) cards?", effect_text)
-    if draw_match:
+    draw_match = re.search(r"draw (?:a|one|two|three|four|\d+) cards?", effect_text);ordered_scry_draw=bool(draw_match and re.search(r"(?:scry|surveil) [^,.]+, then draw",effect_text))
+    if draw_match and not ordered_scry_draw:
         word = draw_match.group(0).split()[1]
         _draw(state, caster, {"a": 1, "one": 1, "two": 2, "three": 3, "four": 4}.get(word,int(word) if word.isdigit() else 0))
     life_match = re.search(r"you gain (\d+) life", effect_text)
@@ -1139,7 +1165,9 @@ def _resolve_spell(state: dict) -> None:
     library_match,mode=(surveil_match,"surveil") if surveil_match else (scry_match,"scry")
     if library_match and not state.get("pending_scry"):
         words={"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10};requested=words.get(library_match.group(1),int(library_match.group(1)) if library_match.group(1).isdigit() else 0);amount=min(requested,len(caster["library"]));ids=[card["instance_id"] for card in reversed(caster["library"][-amount:])] if amount else []
-        if ids:state["pending_scry"]={"player_id":caster["id"],"amount":amount,"card_ids":ids,"mode":mode};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} is {mode}ing {amount}.")
+        if ids:
+            state["pending_scry"]={"player_id":caster["id"],"amount":amount,"card_ids":ids,"mode":mode,"draw_after":1 if ordered_scry_draw else 0};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} is {mode}ing {amount}.")
+        elif ordered_scry_draw:_draw(state,caster,1)
     search_spec=_library_search_spec({**rules_card,"oracle_text":effect_text})
     if search_spec and not state.get("pending_library_search"):
         eligible=[library_card["instance_id"] for library_card in caster["library"] if _matches_library_search(library_card,search_spec["descriptor"])];maximum=min(search_spec["amount"],len(eligible))
@@ -1199,6 +1227,13 @@ def _resolve_spell(state: dict) -> None:
         word=predefined.group(1).casefold();amount={"a":1,"one":1,"two":2,"three":3,"four":4,"five":5}.get(word,int(word) if word.isdigit() else 1);kind=predefined.group(3).title()
         for _ in range(amount):caster["battlefield"].append(_predefined_token(caster,kind,bool(predefined.group(2))))
         _log(state,f"{caster['name']} created {amount} {kind} token(s).")
+    saga_transformed=False
+    if source_permanent and "exile this saga, then return it to the battlefield transformed under your control" in effect_text:
+        saga_owner=next((owner for owner in state["players"] if source_permanent in owner["battlefield"]),None)
+        if saga_owner:
+            _leave_battlefield(state,saga_owner,source_permanent,"exile");zone_owner=_player(state,source_permanent.get("owner_id",saga_owner["id"]))
+            if source_permanent in zone_owner["exile"]:zone_owner["exile"].remove(source_permanent)
+            source_permanent["controller_id"]=caster["id"];source_permanent["counters"]={};source_permanent["summoning_sick"]=True;source_permanent["tapped"]=False;_set_card_face(source_permanent,1);caster["battlefield"].append(source_permanent);_queue_triggers(state,"enters",source_permanent,caster);saga_transformed=True;_log(state,f"{source_permanent['name']} returned transformed under {caster['name']}'s control.")
     entered = False
     if is_permanent_spell:
         card["was_kicked"]=bool(item.get("kicked"))
@@ -1214,6 +1249,11 @@ def _resolve_spell(state: dict) -> None:
         caster["exile" if item.get("flashback") else "graveyard"].append(card)
     _log(state, f"{card['name']} resolved.")
     if entered: _queue_triggers(state, "enters", card, caster)
+    if entered and "Saga" in card.get("type_line",""):_add_saga_lore(state,caster,card)
+    if item.get("saga_final") and not saga_transformed:
+        saga=next((permanent for owner in state["players"] for permanent in owner["battlefield"] if permanent["instance_id"]==item.get("source_id") and "Saga" in permanent.get("type_line","")),None)
+        if saga:
+            saga_owner=next(owner for owner in state["players"] if saga in owner["battlefield"]);_leave_battlefield(state,saga_owner,saga,"graveyard");_log(state,f"{saga['name']} was sacrificed after its final chapter.")
 
 
 def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str) -> None:
@@ -1442,6 +1482,8 @@ def _advance_turn_phase(state: dict) -> None:
                 if state["status"]=="complete":return
                 _log(state,f"{active['name']} drew for the turn.")
             state["beginning_draw_pending"]=False
+            for saga in list(active["battlefield"]):
+                _add_saga_lore(state,active,saga)
         leaving_combat=state["phase"]=="combat";state["phase"] = PHASES[index + 1]
         if leaving_combat:
             for owner in state["players"]:owner["firebending_mana"]=0
@@ -1827,7 +1869,8 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         player["library"]=[card for card in player["library"] if card["instance_id"] not in cards]
         if action_type=="scry":player["library"][0:0]=[cards[card_id] for card_id in reversed(away_ids)]
         else:player["graveyard"].extend(cards[card_id] for card_id in away_ids)
-        player["library"].extend(cards[card_id] for card_id in reversed(top_ids));state["pending_scry"]=None;state["priority_player_id"]=state["active_player_id"]
+        player["library"].extend(cards[card_id] for card_id in reversed(top_ids));draw_after=int(pending.get("draw_after",0));state["pending_scry"]=None;state["priority_player_id"]=state["active_player_id"]
+        if draw_after:_draw(state,player,draw_after)
         _log(state,f"{player['name']} kept {len(top_ids)} card(s) on top and put {len(away_ids)} in {'the graveyard' if action_type=='surveil' else 'the bottom of the library'}.")
     elif action_type == "adjust_life":
         target_player = _player(state, action.get("target_id") or player_id); amount = max(-100, min(100, int(action.get("amount") or 0))); target_player["life"] += amount; _log(state, f"{target_player['name']}'s life was adjusted by {amount:+d}.")

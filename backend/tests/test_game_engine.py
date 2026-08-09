@@ -1,7 +1,7 @@
 import pytest
 
 from mtglogger.services.game_bot import _choose_blocks, choose_bot_action, run_bot
-from mtglogger.services.game_engine import RuleViolation, _has_keyword, _queue_triggers, legal_actions, new_game, perform_action, public_state
+from mtglogger.services.game_engine import RuleViolation, _add_saga_lore, _has_keyword, _queue_triggers, legal_actions, new_game, perform_action, public_state
 
 
 def card(index:int,name:str,type_line:str,mana_cost:str="",power:str|None=None,toughness:str|None=None,quantity:int=1):
@@ -1250,3 +1250,21 @@ def test_optional_upkeep_transform_resolves_if_you_do_followup_and_bot_choice():
     _queue_triggers(state,"upkeep",None,player);state=perform_action(state,"player",{"type":"resolve"});assert {action["type"] for action in legal_actions(state,"player")}>={"accept_transform","decline_transform"}
     state=perform_action(state,"player",{"type":"accept_transform"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot");aang=next(card for card in player["battlefield"] if card["instance_id"]=="master-aang");assert aang["current_face"]==0 and player["life"]==before_life+4 and len(player["library"])==before_library-4 and aang["counters"]["+1/+1"]==4 and bot["life"]==16
     state["pending_transform"]={"player_id":"bot","source_id":"missing","source_name":"Bot Face","continuation":""};state["priority_player_id"]="bot";assert choose_bot_action(state,"beginner")["type"]=="decline_transform" and choose_bot_action(state,"expert")["type"]=="accept_transform"
+
+
+def test_transforming_saga_orders_scry_before_draw_and_returns_back_face():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player")
+    faces=[{"name":"Test Avatar Legend","type_line":"Enchantment — Saga","oracle_text":"I, II — Scry 2, then draw a card.\nIII — Exile this Saga, then return it to the battlefield transformed under your control.","image_url":"https://example.test/saga-front.jpg"},{"name":"Test Avatar Hero","type_line":"Legendary Creature — Avatar","oracle_text":"Vigilance","power":"4","toughness":"4","image_url":"https://example.test/saga-back.jpg"}]
+    saga={**card(1250,faces[0]["name"],faces[0]["type_line"]),**faces[0],"card_faces":faces,"current_face":0,"instance_id":"avatar-saga","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].append(saga);before=len(player["library"])
+    _add_saga_lore(state,player,saga);state=perform_action(state,"player",{"type":"resolve"});assert state["pending_scry"] and len(player["library"])==before
+    ids=state["pending_scry"]["card_ids"];state=perform_action(state,"player",{"type":"scry","top_ids":ids,"bottom_ids":[]});player=next(p for p in state["players"] if p["id"]=="player");saga=next(card for card in player["battlefield"] if card["instance_id"]=="avatar-saga");assert len(player["library"])==before-1
+    _add_saga_lore(state,player,saga);state=perform_action(state,"player",{"type":"resolve"});ids=state["pending_scry"]["card_ids"];state=perform_action(state,"player",{"type":"scry","top_ids":ids,"bottom_ids":[]});player=next(p for p in state["players"] if p["id"]=="player");saga=next(card for card in player["battlefield"] if card["instance_id"]=="avatar-saga")
+    _add_saga_lore(state,player,saga);state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");transformed=next(card for card in player["battlefield"] if card["instance_id"]=="avatar-saga")
+    assert transformed["current_face"]==1 and transformed["name"]=="Test Avatar Hero" and transformed["counters"]=={} and not any(card["instance_id"]=="avatar-saga" for card in player["graveyard"])
+
+
+def test_saga_gains_lore_after_draw_and_sacrifices_after_final_chapter():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player");state["turn"]=2;state["phase"]="beginning";state["beginning_draw_pending"]=True
+    saga={**card(1260,"Short History","Enchantment — Saga"),"oracle_text":"I — You gain 1 life.\nII — You gain 2 life.","instance_id":"short-saga","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{"lore":1},"summoning_sick":False};player["battlefield"].append(saga);before=len(player["library"])
+    state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");saga=next(card for card in player["battlefield"] if card["instance_id"]=="short-saga");assert len(player["library"])==before-1 and saga["counters"]["lore"]==2 and state["stack"][-1]["saga_final"]
+    state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");assert not any(card["instance_id"]=="short-saga" for card in player["battlefield"]) and any(card["instance_id"]=="short-saga" for card in player["graveyard"])
