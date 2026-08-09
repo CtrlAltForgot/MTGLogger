@@ -212,3 +212,24 @@ def test_counterspell_targets_and_counters_a_spell_on_the_stack():
     action=next(item for item in legal_actions(state,"player") if item.get("card_id")=="counter");assert action["targets"][0]["id"]==target
     state=perform_action(state,"player",{"type":"cast","card_id":"counter","target_id":target});state=perform_action(state,"bot",{"type":"pass_priority"});state=perform_action(state,"player",{"type":"pass_priority"})
     bot=next(item for item in state["players"] if item["id"]=="bot");assert any(item["name"]=="Threat" for item in bot["graveyard"]) and not state["stack"]
+
+
+def test_defender_unblockable_hexproof_protection_and_indestructible_are_enforced():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
+    def permanent(index,name,text="",keywords=None,owner="player"):
+        return {**card(index,name,"Creature — Test","","2","2"),"oracle_text":text,"keywords":keywords or [],"instance_id":name,"owner_id":owner,"controller_id":owner,"tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    wall=permanent(620,"Wall",keywords=["Defender"]);ghost=permanent(621,"Ghost","Ghost can't be blocked.");player["battlefield"].extend([wall,ghost])
+    shielded=permanent(622,"Shielded",keywords=["Hexproof"],owner="bot");durable=permanent(623,"Durable",keywords=["Indestructible"],owner="bot");blocker=permanent(624,"Blocker",owner="bot");bot["battlefield"].extend([shielded,durable,blocker])
+    attackers=next(action for action in legal_actions(state,"player") if action["type"]=="declare_attackers")["card_ids"];assert "Wall" not in attackers and "Ghost" in attackers
+    removal={**card(625,"Removal","Instant"),"oracle_text":"Destroy target creature.","instance_id":"removal","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"].append(removal)
+    targets=next(action for action in legal_actions(state,"player") if action.get("card_id")=="removal")["targets"];assert "Shielded" not in {target["id"] for target in targets}
+    state=perform_action(state,"player",{"type":"cast","card_id":"removal","target_id":"Durable"});state=perform_action(state,"player",{"type":"resolve"});assert any(item["instance_id"]=="Durable" for item in next(p for p in state["players"] if p["id"]=="bot")["battlefield"])
+    state=perform_action(state,"player",{"type":"declare_attackers","attacker_ids":["Ghost"]});block_actions=[action for action in legal_actions(state,"bot") if action["type"]=="declare_blockers"];assert not block_actions
+
+
+def test_board_wipes_global_stat_effects_and_life_loss_resolve():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
+    normal={**card(630,"Normal","Creature — Test","","2","2"),"instance_id":"normal","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};indestructible={**normal,"name":"Indestructible","instance_id":"indestructible","keywords":["Indestructible"]};bot["battlefield"].extend([normal,indestructible])
+    wipe={**card(631,"Wrath","Sorcery"),"oracle_text":"Destroy all creatures. Each opponent loses 3 life.","instance_id":"wipe","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"].append(wipe)
+    state=perform_action(state,"player",{"type":"cast","card_id":"wipe"});state=perform_action(state,"player",{"type":"resolve"});bot=next(p for p in state["players"] if p["id"]=="bot")
+    assert bot["life"]==17 and [item["instance_id"] for item in bot["battlefield"]]==["indestructible"] and any(item["instance_id"]=="normal" for item in bot["graveyard"])

@@ -78,6 +78,18 @@ def _has_keyword(card: dict, keyword: str) -> bool:
     return keyword.casefold() in {value.casefold() for value in card.get("keywords", [])} or re.search(rf"\b{re.escape(keyword.casefold())}\b", (card.get("oracle_text") or "").casefold()) is not None
 
 
+def _card_colors(card: dict) -> set[str]:
+    return {part for symbol in _mana_symbols(card) for part in symbol.upper().split("/") if part in "WUBRG"}
+
+
+def _protected_from(card: dict, source: dict) -> bool:
+    text = (card.get("oracle_text") or "").casefold()
+    if _has_keyword(card, "Shroud"): return True
+    colors = _card_colors(source)
+    names = {"W":"white","U":"blue","B":"black","R":"red","G":"green"}
+    return any(f"protection from {names[color]}" in text for color in colors)
+
+
 def _activated_abilities(card: dict) -> list[dict]:
     abilities = []
     for line in (card.get("oracle_text") or "").splitlines():
@@ -190,6 +202,8 @@ def _targets(state: dict, caster_id: str, card: dict) -> list[dict]:
                 if "you control" in text and player["id"] != caster_id: continue
                 if "an opponent controls" in text and player["id"] == caster_id: continue
                 if "nonland permanent" in text and "Land" in permanent.get("type_line", ""): continue
+                if player["id"] != caster_id and _has_keyword(permanent,"Hexproof"): continue
+                if _protected_from(permanent,card): continue
                 targets.append({"id": permanent["instance_id"], "name": permanent["name"], "kind": "permanent", "controller_id": player["id"]})
     return targets
 
@@ -245,14 +259,14 @@ def legal_actions(state: dict, player_id: str) -> list[dict]:
     else:
         actions.append({"type": "advance_phase"})
     if active and state["phase"] == "combat" and not state["combat"]["attackers"]:
-        eligible = [card["instance_id"] for card in player["battlefield"] if "Creature" in card.get("type_line", "") and not card.get("tapped") and (not card.get("summoning_sick") or _has_keyword(card, "Haste"))]
+        eligible = [card["instance_id"] for card in player["battlefield"] if "Creature" in card.get("type_line", "") and not card.get("tapped") and not _has_keyword(card,"Defender") and "can't attack" not in (card.get("oracle_text") or "").casefold() and (not card.get("summoning_sick") or _has_keyword(card, "Haste"))]
         if eligible:
             actions.append({"type": "declare_attackers", "card_ids": eligible})
     elif not active and state["phase"] == "combat" and state["combat"]["attackers"]:
         attackers = [card for card in opponent(state, player_id)["battlefield"] if card["instance_id"] in state["combat"]["attackers"]]
         blockers = [card["instance_id"] for card in player["battlefield"] if "Creature" in card.get("type_line", "") and not card.get("tapped")]
         if blockers:
-            legal_blocks = {blocker["instance_id"]:[attacker["instance_id"] for attacker in attackers if not _has_keyword(attacker,"Flying") or _has_keyword(blocker,"Flying") or _has_keyword(blocker,"Reach")] for blocker in player["battlefield"] if blocker["instance_id"] in blockers}
+            legal_blocks = {blocker["instance_id"]:[attacker["instance_id"] for attacker in attackers if "can't be blocked" not in (attacker.get("oracle_text") or "").casefold() and "unblockable" not in (attacker.get("oracle_text") or "").casefold() and (not _has_keyword(attacker,"Flying") or _has_keyword(blocker,"Flying") or _has_keyword(blocker,"Reach")) and not _protected_from(attacker,blocker)] for blocker in player["battlefield"] if blocker["instance_id"] in blockers}
             if any(legal_blocks.values()): actions.append({"type": "declare_blockers", "card_ids": blockers, "legal_blocks": legal_blocks})
     return actions
 
@@ -279,13 +293,17 @@ def _resolve_spell(state: dict) -> None:
     damage_match = re.search(r"deals (\d+) damage to (?:target opponent|each opponent)", effect_text)
     if damage_match:
         other["life"] -= int(damage_match.group(1))
+    lose_life = re.search(r"(?:target opponent|each opponent) loses (\d+) life", effect_text)
+    if lose_life: other["life"] -= int(lose_life.group(1))
+    you_lose = re.search(r"you lose (\d+) life", effect_text)
+    if you_lose: caster["life"] -= int(you_lose.group(1))
     targeted_damage = re.search(r"deals (\d+) damage to (?:any target|target creature)", effect_text)
     if targeted_damage and (target_player or target):
         amount = int(targeted_damage.group(1))
         if target_player: target_player["life"] -= amount
         elif target: target["damage"] += amount
     if target and target_owner and re.search(r"destroy target (?:creature|permanent|nonland permanent)", effect_text):
-        _leave_battlefield(state, target_owner, target, "graveyard"); _log(state, f"{target['name']} was destroyed.")
+        if not _has_keyword(target,"Indestructible"): _leave_battlefield(state, target_owner, target, "graveyard"); _log(state, f"{target['name']} was destroyed.")
     if target and target_owner and re.search(r"exile target (?:creature|permanent|nonland permanent)", effect_text):
         _leave_battlefield(state, target_owner, target, "exile"); _log(state, f"{target['name']} was exiled.")
     if target and target_owner and re.search(r"return target (?:creature|permanent|nonland permanent).* to (?:its|their) owner'?s hand", effect_text):
@@ -310,6 +328,23 @@ def _resolve_spell(state: dict) -> None:
         state["stack"].remove(target_stack_item); countered=target_stack_item["card"]
         if target_stack_item.get("kind", "spell") == "spell": _player(state,target_stack_item["controller_id"])["graveyard"].append(countered)
         _log(state, f"{countered['name']} was countered.")
+    destroy_all = re.search(r"destroy all (creatures|artifacts|enchantments|nonland permanents)", effect_text)
+    exile_all = re.search(r"exile all (creatures|artifacts|enchantments|nonland permanents)", effect_text)
+    for match,destination in ((destroy_all,"graveyard"),(exile_all,"exile")):
+        if not match: continue
+        kind=match.group(1)
+        for owner in state["players"]:
+            for permanent in list(owner["battlefield"]):
+                type_line=permanent.get("type_line","").casefold();matches=(kind=="nonland permanents" and "land" not in type_line) or kind[:-1] in type_line
+                if matches and not (destination=="graveyard" and _has_keyword(permanent,"Indestructible")): _leave_battlefield(state,owner,permanent,destination)
+        _log(state,f"All {kind} were {'destroyed' if destination=='graveyard' else 'exiled'}.")
+    global_stats=re.search(r"(?:all|each) creatures?(?: you control| your opponents control)? get ([+-]\d+)/([+-]\d+) until end of turn",effect_text)
+    if global_stats:
+        own_only="you control" in global_stats.group(0);opponents_only="opponents control" in global_stats.group(0)
+        for owner in state["players"]:
+            if own_only and owner["id"]!=caster["id"] or opponents_only and owner["id"]==caster["id"]:continue
+            for permanent in owner["battlefield"]:
+                if "Creature" in permanent.get("type_line",""):permanent["temporary_power"]=permanent.get("temporary_power",0)+int(global_stats.group(1));permanent["temporary_toughness"]=permanent.get("temporary_toughness",0)+int(global_stats.group(2))
     token_match = re.search(r"create (a|one|two|three|four) (\d+)/(\d+) ([^.]*?) creature tokens?", effect_text)
     if token_match:
         amount = {"a":1,"one":1,"two":2,"three":3,"four":4}[token_match.group(1)]
@@ -389,7 +424,7 @@ def _combat_damage(state: dict) -> None:
         for creature in list(owner["battlefield"]):
             if "Creature" not in creature.get("type_line",""):continue
             _,toughness=_parse_stats(creature)
-            if creature.get("damage",0)>=toughness or creature["instance_id"] in deathtouch_hit:_leave_battlefield(state,owner,creature,"graveyard")
+            if (creature.get("damage",0)>=toughness or creature["instance_id"] in deathtouch_hit) and not _has_keyword(creature,"Indestructible"):_leave_battlefield(state,owner,creature,"graveyard")
     _log(state, "Combat damage resolved.")
     state["combat"] = {"attackers": [], "blocks": {}}
 
@@ -409,7 +444,7 @@ def _state_based_actions(state: dict) -> None:
         for owner in state["players"]:
             for permanent in list(owner["battlefield"]):
                 _,toughness=_parse_stats(permanent)
-                if "Creature" in permanent.get("type_line","") and (toughness<=0 or permanent.get("damage",0)>=toughness):
+                if "Creature" in permanent.get("type_line","") and (toughness<=0 or (permanent.get("damage",0)>=toughness and not _has_keyword(permanent,"Indestructible"))):
                     _leave_battlefield(state,owner,permanent,"graveyard");changed=True
 
 
