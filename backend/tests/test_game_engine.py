@@ -80,6 +80,17 @@ def test_bot_mulligans_bad_hands_by_difficulty_and_assigns_only_legal_blocks():
     blocks=_choose_blocks(state,action,"expert");assert blocks.get("reach")=="flyer" and list(blocks.values()).count("menace") in {0,2}
 
 
+def test_graveyard_targets_return_to_hand_reanimate_and_exile():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
+    creature={**card(680,"Fallen Hero","Creature — Soldier","","2","2"),"instance_id":"fallen","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};other={**card(681,"Enemy Corpse","Creature — Zombie","","3","3"),"instance_id":"enemy-corpse","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["graveyard"].append(creature);bot["graveyard"].append(other)
+    def spell(index,name,text):return {**card(index,name,"Sorcery"),"oracle_text":text,"instance_id":name,"owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    recover=spell(682,"Recover","Return target creature card from your graveyard to your hand.");player["hand"].append(recover);action=next(a for a in legal_actions(state,"player") if a.get("card_id")=="Recover");assert {target["id"] for target in action["targets"]}=={"fallen"}
+    state=perform_action(state,"player",{"type":"cast","card_id":"Recover","target_id":"fallen"});state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");assert any(c["instance_id"]=="fallen" for c in player["hand"])
+    reanimate=spell(683,"Reanimate","Put target creature card from a graveyard onto the battlefield under your control.");player["hand"].append(reanimate);state=perform_action(state,"player",{"type":"cast","card_id":"Reanimate","target_id":"enemy-corpse"});state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");assert any(c["instance_id"]=="enemy-corpse" and c["controller_id"]=="player" for c in player["battlefield"])
+    removal=spell(684,"Removal","Destroy target creature.");player["hand"].append(removal);state=perform_action(state,"player",{"type":"cast","card_id":"Removal","target_id":"enemy-corpse"});state=perform_action(state,"player",{"type":"resolve"});bot=next(p for p in state["players"] if p["id"]=="bot");assert any(c["instance_id"]=="enemy-corpse" for c in bot["graveyard"])
+    exile=spell(685,"Grave Hate","Exile target creature card from a graveyard.");player=next(p for p in state["players"] if p["id"]=="player");player["hand"].append(exile);state=perform_action(state,"player",{"type":"cast","card_id":"Grave Hate","target_id":"enemy-corpse"});state=perform_action(state,"player",{"type":"resolve"});bot=next(p for p in state["players"] if p["id"]=="bot");assert any(c["instance_id"]=="enemy-corpse" for c in bot["exile"])
+
+
 def test_targeted_removal_requires_and_resolves_a_legal_creature_target():
     state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"})
     player=next(player for player in state["players"] if player["id"]=="player");bot=next(player for player in state["players"] if player["id"]=="bot")

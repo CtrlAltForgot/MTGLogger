@@ -185,6 +185,8 @@ def public_state(state: dict, viewer_id: str = "player") -> dict:
 def _target_kind(card: dict) -> str | None:
     text = (card.get("oracle_text") or "").casefold()
     if "counter target spell" in text: return "spell"
+    if re.search(r"target creature card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_creature"
+    if re.search(r"target (?:nonland )?card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_card"
     if re.search(r"target player mills?", text): return "player"
     if re.search(r"(?:destroy|exile) target (?:artifact, creature, enchantment, planeswalker|nonland permanent|permanent)", text): return "permanent"
     if re.search(r"(?:destroy|exile|tap|untap|return) target creature", text) or re.search(r"target creature .*gets [+-]\d+/[+-]\d+", text) or re.search(r"deals \d+ damage to target creature", text): return "creature"
@@ -200,6 +202,9 @@ def _targets(state: dict, caster_id: str, card: dict) -> list[dict]:
     targets = []
     if kind == "spell":
         return [{"id": item["id"], "name": item["card"]["name"], "kind": "spell", "controller_id": item["controller_id"]} for item in state["stack"]]
+    if kind in {"graveyard_creature","graveyard_card"}:
+        own_only="your graveyard" in text
+        return [{"id":graveyard_card["instance_id"],"name":graveyard_card["name"],"kind":"card","controller_id":owner["id"]} for owner in state["players"] if not own_only or owner["id"]==caster_id for graveyard_card in owner["graveyard"] if kind=="graveyard_card" or "Creature" in graveyard_card.get("type_line","")]
     for player in state["players"]:
         if kind in {"any", "player"}: targets.append({"id": player["id"], "name": player["name"], "kind": "player", "controller_id": player["id"]})
         for permanent in player["battlefield"]:
@@ -301,6 +306,8 @@ def _resolve_spell(state: dict) -> None:
     target_owner = next((player for player in state["players"] if any(permanent["instance_id"] == target_id for permanent in player["battlefield"])), None)
     target = next((permanent for player in state["players"] for permanent in player["battlefield"] if permanent["instance_id"] == target_id), None)
     target_stack_item = next((entry for entry in state["stack"] if entry["id"] == target_id), None)
+    graveyard_owner=next((player for player in state["players"] if any(graveyard_card["instance_id"]==target_id for graveyard_card in player["graveyard"])),None)
+    graveyard_target=next((graveyard_card for player in state["players"] for graveyard_card in player["graveyard"] if graveyard_card["instance_id"]==target_id),None)
     draw_match = re.search(r"draw (?:a|one|two|three|four) cards?", effect_text)
     if draw_match:
         word = draw_match.group(0).split()[1]
@@ -350,6 +357,14 @@ def _resolve_spell(state: dict) -> None:
         state["stack"].remove(target_stack_item); countered=target_stack_item["card"]
         if target_stack_item.get("kind", "spell") == "spell": _player(state,target_stack_item["controller_id"])["graveyard"].append(countered)
         _log(state, f"{countered['name']} was countered.")
+    if graveyard_target and graveyard_owner:
+        if re.search(r"(?:return|put) target (?:creature )?card .*graveyard (?:to|into|onto) (?:the battlefield|play)",effect_text):
+            graveyard_owner["graveyard"].remove(graveyard_target);graveyard_target["controller_id"]=caster["id"];graveyard_target["summoning_sick"]="Creature" in graveyard_target.get("type_line","");caster["battlefield"].append(graveyard_target);_log(state,f"{graveyard_target['name']} returned to the battlefield under {caster['name']}'s control.")
+            _queue_triggers(state,"enters",graveyard_target,caster)
+        elif re.search(r"return target (?:creature )?card .*graveyard to (?:your|its owner'?s) hand",effect_text):
+            graveyard_owner["graveyard"].remove(graveyard_target);graveyard_target["controller_id"]=graveyard_target.get("owner_id",graveyard_owner["id"]);_player(state,graveyard_target["controller_id"])["hand"].append(graveyard_target);_log(state,f"{graveyard_target['name']} returned to its owner's hand.")
+        elif re.search(r"exile target (?:creature )?card .*graveyard",effect_text):
+            graveyard_owner["graveyard"].remove(graveyard_target);graveyard_owner["exile"].append(graveyard_target);_log(state,f"{graveyard_target['name']} was exiled from a graveyard.")
     destroy_all = re.search(r"destroy all (creatures|artifacts|enchantments|nonland permanents)", effect_text)
     exile_all = re.search(r"exile all (creatures|artifacts|enchantments|nonland permanents)", effect_text)
     for match,destination in ((destroy_all,"graveyard"),(exile_all,"exile")):
@@ -388,10 +403,11 @@ def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str) -
     card["damage"] = 0; card["tapped"] = False
     _queue_triggers(state, "dies" if destination == "graveyard" else "leaves", card, owner)
     if card.get("token"): return
+    zone_owner=_player(state,card.get("owner_id",owner["id"]));card["controller_id"]=zone_owner["id"]
     if card.get("commander"):
-        owner["command"].append(card)
+        zone_owner["command"].append(card)
     else:
-        owner[destination].append(card)
+        zone_owner[destination].append(card)
 
 
 def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owner: dict) -> None:
