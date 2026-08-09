@@ -45,6 +45,9 @@ def _continuous_stats(state:dict|None,card:dict)->tuple[int,int]:
     power=toughness=0;controller=card.get("controller_id");type_line=card.get("type_line","").casefold()
     for owner in state["players"]:
         for source in owner["battlefield"]:
+            if source.get("attached_to")==card.get("instance_id"):
+                attachment_text=(source.get("oracle_text") or "").casefold();attachment_match=re.search(r"(?:equipped|enchanted) creature gets ([+-]\d+)/([+-]\d+)(?! until end of turn)",attachment_text)
+                if attachment_match:power+=int(attachment_match.group(1));toughness+=int(attachment_match.group(2))
             clauses=re.split(r"(?<=[.!])\s+|\n",source.get("oracle_text") or "")
             for clause in clauses:
                 lower=clause.casefold()
@@ -97,8 +100,44 @@ def _mana_requirements(card: dict, extra_generic: int = 0, x_value:int=0) -> tup
 
 
 def _has_keyword(card: dict, keyword: str) -> bool:
-    printed={value.casefold() for value in card.get("keywords", [])};temporary={value.casefold() for value in card.get("temporary_keywords", [])}
-    return keyword.casefold() in printed|temporary or re.search(rf"\b{re.escape(keyword.casefold())}\b", (card.get("oracle_text") or "").casefold()) is not None
+    printed={value.casefold() for value in card.get("keywords", [])};temporary={value.casefold() for value in card.get("temporary_keywords", [])};attached={value.casefold() for values in card.get("attachment_keywords",{}).values() for value in values}
+    return keyword.casefold() in printed|temporary|attached or re.search(rf"\b{re.escape(keyword.casefold())}\b", (card.get("oracle_text") or "").casefold()) is not None
+
+
+def _attachment_keywords(card:dict)->list[str]:
+    text=(card.get("oracle_text") or "").casefold();supported=("defender","flying","first strike","double strike","deathtouch","haste","hexproof","indestructible","lifelink","menace","reach","trample","vigilance")
+    clauses=[clause for clause in re.split(r"(?<=[.!])\s+|\n",text) if re.search(r"(?:equipped|enchanted) creature .*?\b(?:has|gains?)\b",clause)]
+    return [keyword for keyword in supported if any(re.search(rf"\b{re.escape(keyword)}\b",clause) for clause in clauses)]
+
+
+def _detach(state:dict,attachment:dict)->None:
+    target_id=attachment.pop("attached_to",None)
+    if not target_id:return
+    target=next((permanent for owner in state["players"] for permanent in owner["battlefield"] if permanent["instance_id"]==target_id),None)
+    if target:target.get("attachment_keywords",{}).pop(attachment["instance_id"],None);target.get("attachment_rules",{}).pop(attachment["instance_id"],None)
+
+
+def _attach(state:dict,attachment:dict,target:dict)->None:
+    _detach(state,attachment);attachment["attached_to"]=target.get("instance_id",target.get("id"));keywords=_attachment_keywords(attachment)
+    if target.get("instance_id"):
+        target.setdefault("attachment_rules",{})[attachment["instance_id"]]=attachment.get("oracle_text") or ""
+        if keywords:target.setdefault("attachment_keywords",{})[attachment["instance_id"]]=keywords
+
+
+def _equip_cost(card:dict)->str|None:
+    match=re.search(r"(?:^|\n)Equip\s+((?:\{[^}]+\})+)",card.get("oracle_text") or "",re.IGNORECASE)
+    return match.group(1).upper() if match else None
+
+
+def _aura_allowed_types(card:dict)->set[str]:
+    match=re.search(r"(?:^|\n)Enchant ([^\n.]+)",card.get("oracle_text") or "",re.IGNORECASE)
+    if not match or "permanent" in match.group(1).casefold():return set()
+    return {kind for kind in ("artifact","creature","enchantment","land","planeswalker","player") if re.search(rf"\b{kind}\b",match.group(1),re.IGNORECASE)}
+
+
+def _effective_rules_text(state:dict,card:dict)->str:
+    attachment_texts=[attachment.get("oracle_text") or "" for owner in state["players"] for attachment in owner["battlefield"] if attachment.get("attached_to")==card.get("instance_id")]
+    return "\n".join([card.get("oracle_text") or "",*attachment_texts]).casefold()
 
 
 def _toxic_value(card: dict) -> int:
@@ -111,7 +150,7 @@ def _card_colors(card: dict) -> set[str]:
 
 
 def _protected_from(card: dict, source: dict) -> bool:
-    text = (card.get("oracle_text") or "").casefold()
+    text = "\n".join([card.get("oracle_text") or "",*card.get("attachment_rules",{}).values()]).casefold()
     if "protection from everything" in text:return True
     colors = _card_colors(source)
     names = {"W":"white","U":"blue","B":"black","R":"red","G":"green"}
@@ -312,6 +351,12 @@ def public_state(state: dict, viewer_id: str = "player") -> dict:
 
 def _target_kind(card: dict) -> str | None:
     text = (card.get("oracle_text") or "").casefold()
+    type_line=card.get("type_line","").casefold()
+    if "aura" in type_line:
+        allowed=_aura_allowed_types(card)
+        if len(allowed)==1:return next(iter(allowed))
+        if allowed=={"player"}:return "player"
+        if allowed or re.search(r"\benchant (?:nonland )?permanent\b",text):return "permanent"
     if "counter target spell" in text: return "spell"
     if re.search(r"target creature card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_creature"
     if re.search(r"target (?:nonland )?card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_card"
@@ -319,6 +364,8 @@ def _target_kind(card: dict) -> str | None:
     if re.search(r"target player sacrifices?",text):return "player"
     if re.search(r"(?:destroy|exile) target (?:artifact, creature, enchantment, planeswalker|nonland permanent|permanent)", text): return "permanent"
     if re.search(r"(?:destroy|exile|tap|untap|return) target creature", text) or re.search(r"target creature .*(?:gets [+-](?:\d+|x)/[+-](?:\d+|x)|gains? [^.]+ until end of turn)", text) or re.search(r"(?:deals (?:\d+|x) damage|put .+ counters?) (?:to|on) target creature", text): return "creature"
+    for kind in ("artifact","enchantment","land","planeswalker"):
+        if re.search(rf"(?:destroy|exile|tap|untap|return) target {kind}\b",text):return kind
     if re.search(r"return target (?:nonland )?permanent", text): return "permanent"
     if re.search(r"deals (?:\d+|x) damage to any target", text): return "any"
     return None
@@ -370,9 +417,12 @@ def _targets(state: dict, caster_id: str, card: dict) -> list[dict]:
         own_only="your graveyard" in text
         return [{"id":graveyard_card["instance_id"],"name":graveyard_card["name"],"kind":"card","controller_id":owner["id"]} for owner in state["players"] if not own_only or owner["id"]==caster_id for graveyard_card in owner["graveyard"] if kind=="graveyard_card" or "Creature" in graveyard_card.get("type_line","")]
     for player in state["players"]:
-        if kind in {"any", "player"}: targets.append({"id": player["id"], "name": player["name"], "kind": "player", "controller_id": player["id"]})
+        aura_types=_aura_allowed_types(card)
+        if kind in {"any", "player"} or (kind=="permanent" and "player" in aura_types): targets.append({"id": player["id"], "name": player["name"], "kind": "player", "controller_id": player["id"]})
         for permanent in player["battlefield"]:
-            if kind in {"any", "permanent"} or (kind == "creature" and "Creature" in permanent.get("type_line", "")):
+            if kind in {"any", "permanent"} or (kind in {"creature","artifact","enchantment","land","planeswalker"} and kind in permanent.get("type_line", "").casefold()):
+                aura_types=_aura_allowed_types(card)
+                if "Aura" in card.get("type_line","") and aura_types and not any(allowed in permanent.get("type_line","").casefold() for allowed in aura_types if allowed!="player"):continue
                 if "you control" in text and player["id"] != caster_id: continue
                 if "an opponent controls" in text and player["id"] == caster_id: continue
                 if "nonland permanent" in text and "Land" in permanent.get("type_line", ""): continue
@@ -518,6 +568,11 @@ def legal_actions(state: dict, player_id: str) -> list[dict]:
                 action={"type":"activate_loyalty","card_id":permanent["instance_id"],"ability_index":index,"label":f"{ability['cost']:+d}: {ability['effect']}"}
                 if targets:action["targets"]=targets
                 actions.append(action)
+        for equipment in player["battlefield"]:
+            equip_cost=_equip_cost(equipment)
+            if not equip_cost or not _can_pay(player,{"mana_cost":equip_cost}):continue
+            targets=[{"id":creature["instance_id"],"name":creature["name"],"kind":"permanent","controller_id":player_id} for creature in player["battlefield"] if "Creature" in creature.get("type_line","") and not _has_keyword(creature,"Shroud") and not _protected_from(creature,equipment)]
+            if targets:actions.append({"type":"equip","card_id":equipment["instance_id"],"label":f"Equip {equipment['name']} · {equip_cost}","mana_cost":equip_cost,"targets":targets})
     if _multiplayer(state):
         actions.append({"type": "pass_priority"})
         if active and not state["stack"] and not state.get("pending_phase_advance") and not state["combat"].get("damage_pending"):
@@ -529,16 +584,16 @@ def legal_actions(state: dict, player_id: str) -> list[dict]:
     else:
         actions.append({"type": "advance_phase"})
     if active and state["phase"] == "combat" and not state["combat"]["attackers"]:
-        eligible = [card["instance_id"] for card in player["battlefield"] if "Creature" in card.get("type_line", "") and not card.get("tapped") and not _has_keyword(card,"Defender") and "can't attack" not in (card.get("oracle_text") or "").casefold() and (not card.get("summoning_sick") or _has_keyword(card, "Haste"))]
+        eligible = [card["instance_id"] for card in player["battlefield"] if "Creature" in card.get("type_line", "") and not card.get("tapped") and not _has_keyword(card,"Defender") and "can't attack" not in _effective_rules_text(state,card) and (not card.get("summoning_sick") or _has_keyword(card, "Haste"))]
         if eligible:
             defending=opponent(state,player_id);defenders=[{"id":defending["id"],"name":defending["name"],"kind":"player","controller_id":defending["id"]}]
             defenders.extend({"id":card["instance_id"],"name":card["name"],"kind":"permanent","controller_id":defending["id"]} for card in defending["battlefield"] if "Planeswalker" in card.get("type_line",""))
             actions.append({"type": "declare_attackers", "card_ids": eligible,"defenders":defenders})
     elif not active and state["phase"] == "combat" and state["combat"]["attackers"] and not state["combat"].get("damage_pending"):
         attackers = [card for card in opponent(state, player_id)["battlefield"] if card["instance_id"] in state["combat"]["attackers"]]
-        blockers = [card["instance_id"] for card in player["battlefield"] if "Creature" in card.get("type_line", "") and not card.get("tapped")]
+        blockers = [card["instance_id"] for card in player["battlefield"] if "Creature" in card.get("type_line", "") and not card.get("tapped") and "can't block" not in _effective_rules_text(state,card)]
         if blockers:
-            legal_blocks = {blocker["instance_id"]:[attacker["instance_id"] for attacker in attackers if "can't be blocked" not in (attacker.get("oracle_text") or "").casefold() and "unblockable" not in (attacker.get("oracle_text") or "").casefold() and (not _has_keyword(attacker,"Flying") or _has_keyword(blocker,"Flying") or _has_keyword(blocker,"Reach")) and not _protected_from(attacker,blocker)] for blocker in player["battlefield"] if blocker["instance_id"] in blockers}
+            legal_blocks = {blocker["instance_id"]:[attacker["instance_id"] for attacker in attackers if "can't be blocked" not in _effective_rules_text(state,attacker) and "unblockable" not in _effective_rules_text(state,attacker) and (not _has_keyword(attacker,"Flying") or _has_keyword(blocker,"Flying") or _has_keyword(blocker,"Reach")) and not _protected_from(attacker,blocker)] for blocker in player["battlefield"] if blocker["instance_id"] in blockers}
             if any(legal_blocks.values()): actions.append({"type": "declare_blockers", "card_ids": blockers, "legal_blocks": legal_blocks})
     return actions
 
@@ -546,6 +601,10 @@ def legal_actions(state: dict, player_id: str) -> list[dict]:
 def _resolve_spell(state: dict) -> None:
     item = state["stack"].pop()
     card, caster = item["card"], _player(state, item["controller_id"])
+    if item.get("kind")=="equip_ability":
+        equipment=next((permanent for permanent in caster["battlefield"] if permanent["instance_id"]==item.get("source_id") and "Equipment" in permanent.get("type_line","")),None);target=next((permanent for permanent in caster["battlefield"] if permanent["instance_id"]==item.get("target_id") and "Creature" in permanent.get("type_line","")),None)
+        if not equipment or not target or _has_keyword(target,"Shroud") or _protected_from(target,equipment):_log(state,f"{card['name']} did not resolve because its source or target was no longer legal.");return
+        _attach(state,equipment,target);_log(state,f"{caster['name']} equipped {target['name']} with {equipment['name']}.");return
     if item.get("kind","spell")=="spell" and len(item.get("mode_indices") or [])>1:
         options={option["index"]:option for option in _modal_options(card)};targets=item.get("mode_targets") or []
         for position,index in enumerate(item["mode_indices"]):
@@ -679,7 +738,9 @@ def _resolve_spell(state: dict) -> None:
         enters_counters=re.search(r"enters(?: the battlefield)? with (\d+) ([+−-]\d+/[+−-]\d+|loyalty|charge|shield|stun) counters?",text)
         if enters_counters:
             counter_name=enters_counters.group(2).replace("−","-");card["counters"][counter_name]=card["counters"].get(counter_name,0)+int(enters_counters.group(1))
-        caster["battlefield"].append(card); entered = True
+        caster["battlefield"].append(card)
+        if "Aura" in card.get("type_line","") and (target or target_player):_attach(state,card,target or target_player)
+        entered = True
     elif item.get("kind", "spell") == "spell":
         caster["graveyard"].append(card)
     _log(state, f"{card['name']} resolved.")
@@ -687,6 +748,11 @@ def _resolve_spell(state: dict) -> None:
 
 
 def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str) -> None:
+    if card.get("attached_to"):_detach(state,card)
+    attachments=[(attachment_owner,attachment) for attachment_owner in state["players"] for attachment in list(attachment_owner["battlefield"]) if attachment.get("attached_to")==card.get("instance_id")]
+    for attachment_owner,attachment in attachments:
+        _detach(state,attachment)
+        if "Aura" in attachment.get("type_line",""):_leave_battlefield(state,attachment_owner,attachment,"graveyard")
     if card in owner["battlefield"]: owner["battlefield"].remove(card)
     card["damage"] = 0; card["tapped"] = False
     _queue_triggers(state, "dies" if destination == "graveyard" else "leaves", card, owner)
@@ -819,6 +885,11 @@ def _state_based_actions(state: dict) -> None:
         changed=False
         for owner in state["players"]:
             for permanent in list(owner["battlefield"]):
+                if permanent.get("attached_to"):
+                    target=next((target for target_owner in state["players"] for target in target_owner["battlefield"] if target["instance_id"]==permanent["attached_to"]),None) or next((player for player in state["players"] if player["id"]==permanent["attached_to"]),None);aura="Aura" in permanent.get("type_line","");aura_text=(permanent.get("oracle_text") or "").casefold();allowed_types=_aura_allowed_types(permanent);target_types=(target or {}).get("type_line","").casefold();type_illegal=bool(aura and allowed_types and not (("player" in allowed_types and target and target.get("id")) or any(kind in target_types for kind in allowed_types-{"player"})));wrong_controller=bool(aura and target and (("enchant creature you control" in aura_text and target.get("controller_id")!=permanent.get("controller_id")) or ("enchant creature an opponent controls" in aura_text and target.get("controller_id")==permanent.get("controller_id"))));illegal=not target or type_illegal or wrong_controller or (target is not None and target.get("instance_id") is not None and _protected_from(target,permanent))
+                    if illegal:
+                        _detach(state,permanent)
+                        if aura:_leave_battlefield(state,owner,permanent,"graveyard");changed=True;continue
                 _,toughness=_parse_stats(permanent,state)
                 if "Creature" in permanent.get("type_line","") and (toughness<=0 or (permanent.get("damage",0)>=toughness and not _has_keyword(permanent,"Indestructible"))):
                     if toughness<=0:_leave_battlefield(state,owner,permanent,"graveyard")
@@ -936,6 +1007,13 @@ def perform_action(state: dict, player_id: str, action: dict) -> dict:
         if _multiplayer(state) and not state.get("pending_ward") and not state.get("pending_trigger_targets"): state["priority_player_id"] = opponent(state, player_id)["id"]
         mode_label="; ".join(next(mode["label"] for mode in modal_options if mode["index"]==index) for index in chosen_modes)
         _log(state, f"{player['name']} cast {card['name']}{f' with X={x_value}' if _has_x_cost(card) else ''}{f' choosing {mode_label}' if mode_label else ''}{f' with {tax} commander tax' if tax else ''}{' targeting '+next((target['name'] for target in targets if target['id']==target_id),'') if target_id else ''}.")
+    elif action_type == "equip":
+        available=next((entry for entry in legal_actions(state,player_id) if entry["type"]=="equip" and entry["card_id"]==action.get("card_id")),None);target_id=action.get("target_id")
+        if not available or target_id not in {target["id"] for target in available["targets"]}:raise RuleViolation("That Equipment cannot be attached to that creature now")
+        equipment=next(card for card in player["battlefield"] if card["instance_id"]==action["card_id"]);target=next(card for card in player["battlefield"] if card["instance_id"]==target_id)
+        _pay_mana(player,{"mana_cost":available["mana_cost"]});stack_item={"id":_id(),"kind":"equip_ability","card":{**equipment,"name":f"{equipment['name']} equip ability","type_line":"Ability"},"controller_id":player_id,"target_id":target_id,"source_id":equipment["instance_id"]};state["stack"].append(stack_item);state["consecutive_passes"]=0;state["pending_phase_advance"]=False
+        if _multiplayer(state):state["priority_player_id"]=opponent(state,player_id)["id"]
+        _log(state,f"{player['name']} activated {equipment['name']}'s equip ability targeting {target['name']}.")
     elif action_type == "activate":
         permanent=next((card for card in player["battlefield"] if card["instance_id"]==action.get("card_id")),None);index=action.get("ability_index")
         available=next((entry for entry in legal_actions(state,player_id) if entry["type"]=="activate" and entry["card_id"]==action.get("card_id") and entry["ability_index"]==index),None)

@@ -1,5 +1,5 @@
 from mtglogger.services.game_bot import _choose_blocks, choose_bot_action
-from mtglogger.services.game_engine import RuleViolation, legal_actions, new_game, perform_action, public_state
+from mtglogger.services.game_engine import RuleViolation, _has_keyword, legal_actions, new_game, perform_action, public_state
 
 
 def card(index:int,name:str,type_line:str,mana_cost:str="",power:str|None=None,toughness:str|None=None,quantity:int=1):
@@ -759,3 +759,37 @@ def test_x_value_is_reused_across_draw_life_tokens_and_temporary_stats():
     flourish={**card(1046,"X Flourish","Sorcery"),"mana_cost":"{X}{U}","oracle_text":"Draw X cards. You gain X life. Create X 1/1 blue Bird creature tokens. Target creature gets +X/+X until end of turn.","instance_id":"x-flourish","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"].append(flourish);before_library=len(player["library"]);before_life=player["life"]
     state=perform_action(state,"player",{"type":"cast","card_id":"x-flourish","target_id":"x-recipient","x_value":2});state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");recipient=next(card for card in player["battlefield"] if card["instance_id"]=="x-recipient")
     assert len(player["library"])==before_library-2 and player["life"]==before_life+2 and sum(card.get("token",False) for card in player["battlefield"])==2 and (recipient["temporary_power"],recipient["temporary_toughness"])==(2,2)
+
+
+def test_aura_casting_targets_attaches_grants_bonuses_and_cleans_up_with_creature():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player")
+    land={**card(1050,"Plains","Basic Land — Plains"),"instance_id":"aura-land","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};creature={**card(1051,"Aura Bearer","Creature — Soldier","","2","2"),"instance_id":"aura-bearer","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};aura={**card(1052,"Test Wings","Enchantment — Aura","{W}"),"oracle_text":"Enchant creature you control\nEnchanted creature gets +2/+2 and has flying.","instance_id":"test-wings","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"]=[land,creature];player["hand"].append(aura)
+    action=next(action for action in legal_actions(state,"player") if action.get("card_id")=="test-wings");assert [target["id"] for target in action["targets"]]==["aura-bearer"]
+    state=perform_action(state,"player",{"type":"cast","card_id":"test-wings","target_id":"aura-bearer"});state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");aura=next(card for card in player["battlefield"] if card["instance_id"]=="test-wings");assert aura["attached_to"]=="aura-bearer"
+    visible=public_state(state);bearer=next(card for card in next(p for p in visible["players"] if p["id"]=="player")["battlefield"] if card["instance_id"]=="aura-bearer");assert (bearer["effective_power"],bearer["effective_toughness"])==(4,4) and _has_keyword(next(card for card in player["battlefield"] if card["instance_id"]=="aura-bearer"),"Flying")
+    state["phase"]="combat";attack=next(action for action in legal_actions(state,"player") if action["type"]=="declare_attackers");assert "aura-bearer" in attack["card_ids"]
+    state=perform_action(state,"player",{"type":"move_zone","target_id":"aura-bearer","destination":"graveyard"});player=next(p for p in state["players"] if p["id"]=="player");assert {card["instance_id"] for card in player["graveyard"]}>={"aura-bearer","test-wings"}
+
+
+def test_equipment_cost_timing_retargeting_bonuses_and_detachment_are_enforced():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player")
+    lands=[{**card(1060+index,f"Plains {index}","Basic Land — Plains"),"instance_id":f"equip-land-{index}","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False} for index in range(2)];small={**card(1063,"Small Bearer","Creature — Soldier","","1","1"),"instance_id":"small-bearer","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};large={**card(1064,"Large Bearer","Creature — Giant","","4","4"),"instance_id":"large-bearer","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};equipment={**card(1065,"Test Blade","Artifact — Equipment"),"oracle_text":"Equipped creature gets +1/+1 and has trample.\nEquip {2}","instance_id":"test-blade","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"]=[*lands,small,large,equipment]
+    action=next(action for action in legal_actions(state,"player") if action["type"]=="equip");assert {target["id"] for target in action["targets"]}=={"small-bearer","large-bearer"}
+    state=perform_action(state,"player",{"type":"equip","card_id":"test-blade","target_id":"large-bearer"});player=next(p for p in state["players"] if p["id"]=="player");assert state["stack"][-1]["kind"]=="equip_ability" and "attached_to" not in next(card for card in player["battlefield"] if card["instance_id"]=="test-blade") and sum(card["tapped"] for card in player["battlefield"] if "Land" in card["type_line"])==2
+    state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");assert next(card for card in player["battlefield"] if card["instance_id"]=="test-blade")["attached_to"]=="large-bearer"
+    visible=public_state(state);large_visible=next(card for card in next(p for p in visible["players"] if p["id"]=="player")["battlefield"] if card["instance_id"]=="large-bearer");assert (large_visible["effective_power"],large_visible["effective_toughness"])==(5,5)
+    state=perform_action(state,"player",{"type":"move_zone","target_id":"large-bearer","destination":"graveyard"});player=next(p for p in state["players"] if p["id"]=="player");equipment=next(card for card in player["battlefield"] if card["instance_id"]=="test-blade");assert "attached_to" not in equipment and equipment not in player["graveyard"]
+    state["phase"]="combat";assert not any(action["type"]=="equip" for action in legal_actions(state,"player"))
+
+
+def test_expert_bot_equips_its_strongest_available_creature_once():
+    state=kept_game();state["active_player_id"]="bot";state["priority_player_id"]="bot";state["phase"]="precombat_main";bot=next(p for p in state["players"] if p["id"]=="bot");bot["hand"]=[];bot["land_plays_remaining"]=0
+    land={**card(1070,"Swamp","Basic Land — Swamp"),"instance_id":"bot-equip-land","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};small={**card(1071,"Bot Small","Creature — Rat","","1","1"),"instance_id":"bot-small","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};large={**card(1072,"Bot Large","Creature — Demon","","5","5"),"instance_id":"bot-large","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};equipment={**card(1073,"Bot Blade","Artifact — Equipment"),"oracle_text":"Equipped creature gets +1/+1.\nEquip {1}","instance_id":"bot-blade","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};bot["battlefield"]=[land,small,large,equipment]
+    choice=choose_bot_action(state,"expert");assert choice["type"]=="equip" and choice["target_id"]=="bot-large"
+
+
+def test_attachment_restrictions_change_authoritative_combat_legality():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player")
+    creature={**card(1080,"Pacified Attacker","Creature — Warrior","","3","3"),"instance_id":"pacified-attacker","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};aura={**card(1081,"Test Pacifism","Enchantment — Aura"),"oracle_text":"Enchant creature\nEnchanted creature can't attack or block.","instance_id":"test-pacifism","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"]=[creature];player["hand"].append(aura)
+    state=perform_action(state,"player",{"type":"cast","card_id":"test-pacifism","target_id":"pacified-attacker"});state=perform_action(state,"player",{"type":"resolve"});state["phase"]="combat"
+    assert not any(action["type"]=="declare_attackers" for action in legal_actions(state,"player"))

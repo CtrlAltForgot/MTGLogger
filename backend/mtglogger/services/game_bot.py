@@ -1,7 +1,7 @@
 import random
 import re
 
-from .game_engine import _has_keyword, _parse_stats, _protected_from, legal_actions, perform_action
+from .game_engine import _effective_rules_text, _has_keyword, _parse_stats, _protected_from, legal_actions, perform_action
 
 
 def _card(state: dict, player_id: str, instance_id: str) -> dict:
@@ -43,8 +43,8 @@ def _choose_target(state:dict,action:dict)->str:
     return max(preferred,key=lambda target:_threat_score(state,_target_card(state,target["id"]) or {}))["id"]
 
 
-def _can_block(attacker:dict,blocker:dict)->bool:
-    text=(attacker.get("oracle_text") or "").casefold()
+def _can_block(state:dict,attacker:dict,blocker:dict)->bool:
+    text=_effective_rules_text(state,attacker)
     return "can't be blocked" not in text and "unblockable" not in text and (not _has_keyword(attacker,"Flying") or _has_keyword(blocker,"Flying") or _has_keyword(blocker,"Reach")) and not _protected_from(attacker,blocker)
 
 
@@ -53,7 +53,7 @@ def _choose_attackers(state:dict,ids:list[str],difficulty:str)->list[str]:
     if difficulty=="beginner":return ids[:max(1,len(ids)//2)]
     selected=[]
     for card_id in ids:
-        attacker=attackers[card_id];power,toughness=_stats(state,attacker);legal=[blocker for blocker in blockers if _can_block(attacker,blocker)]
+        attacker=attackers[card_id];power,toughness=_stats(state,attacker);legal=[blocker for blocker in blockers if _can_block(state,attacker,blocker)]
         if power>=enemy["life"] or not legal or _has_keyword(attacker,"Vigilance"):selected.append(card_id);continue
         favorable=all((power>=_stats(state,blocker)[1] or _has_keyword(attacker,"Deathtouch")) and (toughness>_stats(state,blocker)[0] or _has_keyword(attacker,"Indestructible") or attacker.get("counters",{}).get("shield",0)) for blocker in legal)
         if favorable or (difficulty=="standard" and power>=max(_stats(state,blocker)[1] for blocker in legal)):selected.append(card_id)
@@ -216,6 +216,13 @@ def choose_bot_action(state: dict, difficulty: str = "standard") -> dict | None:
         if choice.get("targets"):
             choice = {**choice, "target_id":_choose_target(state,choice)}
         return choice
+    if "equip" in by_type:
+        candidates=[]
+        for action in by_type["equip"]:
+            equipment=_card(state,"bot",action["card_id"]);target_id=_choose_target(state,action)
+            if equipment.get("attached_to")!=target_id:candidates.append((action,target_id,_threat_score(state,_target_card(state,target_id) or {})))
+        if candidates:
+            action,target_id,_=max(candidates,key=lambda candidate:candidate[2]);return {**action,"target_id":target_id}
     if "activate" in by_type:
         choices=by_type["activate"];choice=max(choices,key=lambda action:_ability_score(state,action))
         if difficulty=="beginner" or _ability_score(state,choice)>0:
