@@ -6,7 +6,7 @@ from .game_engine import _can_block_pair, _effective_rules_text, _has_keyword, _
 
 def _card(state: dict, player_id: str, instance_id: str) -> dict:
     player = next(player for player in state["players"] if player["id"] == player_id)
-    return next(card for zone in (player["hand"], player["battlefield"]) for card in zone if card["instance_id"] == instance_id)
+    return next(card for zone in (player["hand"],player["battlefield"],player["graveyard"],player.get("command",[])) for card in zone if card["instance_id"] == instance_id)
 
 
 def _stats(state:dict,card:dict)->tuple[int,int]:
@@ -245,6 +245,7 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
         else:
             choice = max(spells, key=lambda action: (_card(state, "bot", action["card_id"]).get("mana_value") or 0, len(_card(state, "bot", action["card_id"]).get("oracle_text") or "")))
         if choice.get("x_max") is not None:choice={**choice,"x_value":_choose_x(state,choice)}
+        if choice.get("cost_options"):choice={**choice,"cost_card_ids":_choose_ability_cost(state,choice)}
         if choice.get("modes"):
             maximum=choice.get("mode_max",choice.get("mode_count",1));minimum=choice.get("mode_min",choice.get("mode_count",1));ranked=sorted(choice["modes"],key=lambda candidate:_mode_score(state,candidate),reverse=True)
             chosen=([ranked[0]]*maximum if choice.get("mode_repeatable") and ranked else ranked[:maximum])
