@@ -311,6 +311,8 @@ class GameAction(BaseModel):
     attacker_ids: list[str] = Field(default_factory=list)
     attack_targets: dict[str, str] = Field(default_factory=dict)
     card_ids: list[str] = Field(default_factory=list)
+    top_ids: list[str] = Field(default_factory=list)
+    bottom_ids: list[str] = Field(default_factory=list)
     blocks: dict[str, str] = Field(default_factory=dict)
     amount: int | None = Field(None, ge=-100, le=100)
     counter_name: str | None = Field(None, max_length=32)

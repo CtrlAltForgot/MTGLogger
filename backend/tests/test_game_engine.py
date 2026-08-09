@@ -368,3 +368,18 @@ def test_bot_discards_automatically_and_no_maximum_hand_size_is_honored():
     state=kept_game();player=next(p for p in state["players"] if p["id"]=="player");player["battlefield"].append({**card(660,"Spellbook","Artifact"),"oracle_text":"You have no maximum hand size.","instance_id":"spellbook","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False})
     while len(player["hand"])<9:player["hand"].append(player["library"].pop())
     state["phase"]="ending";state=perform_action(state,"player",{"type":"advance_phase"});assert state["turn"]==2 and state.get("pending_discard") is None
+
+
+def test_scry_reveals_only_the_top_cards_and_persists_ordered_top_bottom_choices():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player")
+    spell={**card(800,"Clear the Mind","Sorcery"),"oracle_text":"Scry 3.","instance_id":"scry-spell","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"].append(spell);expected=[card["instance_id"] for card in reversed(player["library"][-3:])]
+    state=perform_action(state,"player",{"type":"cast","card_id":"scry-spell"});state=perform_action(state,"player",{"type":"resolve"});action=legal_actions(state,"player")[0]
+    assert action["type"]=="scry" and action["card_ids"]==expected and [card["instance_id"] for card in action["cards"]]==expected and legal_actions(state,"bot")==[]
+    state=perform_action(state,"player",{"type":"scry","top_ids":[expected[1]],"bottom_ids":[expected[2],expected[0]]});player=next(p for p in state["players"] if p["id"]=="player")
+    assert player["library"][-1]["instance_id"]==expected[1] and player["library"][0]["instance_id"]==expected[0] and state.get("pending_scry") is None
+
+
+def test_bot_makes_and_completes_scry_decisions():
+    state=kept_game();bot=next(p for p in state["players"] if p["id"]=="bot");state["active_player_id"]="bot";state["priority_player_id"]="bot";ids=[card["instance_id"] for card in reversed(bot["library"][-2:])];state["pending_scry"]={"player_id":"bot","amount":2,"card_ids":ids}
+    choice=choose_bot_action(state,"expert");assert choice["type"]=="scry" and set(choice["top_ids"]+choice["bottom_ids"])==set(ids)
+    state=perform_action(state,"bot",choice);assert state.get("pending_scry") is None

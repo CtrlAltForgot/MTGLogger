@@ -181,7 +181,7 @@ def _new_player(player_id: str, name: str, deck: list[dict], is_bot: bool, forma
 def new_game(player_deck: list[dict], opponent_deck: list[dict], play_first: bool = True, opponent_is_bot: bool = True, player_format: str = "", opponent_format: str = "") -> dict:
     human_id, bot_id = "player", "bot"
     players = [_new_player(human_id, "You", player_deck, False, player_format), _new_player(bot_id, "Bot" if opponent_is_bot else "Guest", opponent_deck, opponent_is_bot, opponent_format)]
-    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id, "players": players, "stack": [], "combat": {"attackers": [], "blocks": {}, "attack_targets": {}}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "pending_legendary": None, "log": []}
+    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id, "players": players, "stack": [], "combat": {"attackers": [], "blocks": {}, "attack_targets": {}}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "pending_legendary": None,"pending_scry":None, "log": []}
     for player in players:
         _draw(state, player, 7)
     _log(state, "Opening hands drawn. Choose whether to keep or mulligan.")
@@ -240,7 +240,7 @@ def _multiplayer(state: dict) -> bool:
 
 
 def _pending_decision(state:dict)->bool:
-    return bool(state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary"))
+    return bool(state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_scry"))
 
 
 def _commander_tax(player: dict, card: dict) -> int:
@@ -270,6 +270,11 @@ def legal_actions(state: dict, player_id: str) -> list[dict]:
     if pending_legendary:
         if pending_legendary["player_id"]!=player_id:return []
         return [{"type":"choose_legendary","card_ids":pending_legendary["card_ids"],"amount":1},{"type":"concede"}]
+    pending_scry=state.get("pending_scry")
+    if pending_scry:
+        if pending_scry["player_id"]!=player_id:return []
+        cards_by_id={card["instance_id"]:card for card in player["library"]};cards=[cards_by_id[card_id] for card_id in pending_scry["card_ids"] if card_id in cards_by_id]
+        return [{"type":"scry","card_ids":pending_scry["card_ids"],"cards":cards,"amount":pending_scry["amount"]},{"type":"concede"}]
     if state["status"] == "mulligan":
         if player["kept_hand"]:
             return []
@@ -401,6 +406,10 @@ def _resolve_spell(state: dict) -> None:
         words={"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10}; amount=words.get(mill_match.group(1),int(mill_match.group(1)) if mill_match.group(1).isdigit() else 0)
         for _ in range(min(amount,len(target_player["library"]))): target_player["graveyard"].append(target_player["library"].pop())
         _log(state, f"{target_player['name']} milled {amount} card(s).")
+    scry_match=re.search(r"\bscry (\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b",effect_text)
+    if scry_match and not state.get("pending_scry"):
+        words={"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10};requested=words.get(scry_match.group(1),int(scry_match.group(1)) if scry_match.group(1).isdigit() else 0);amount=min(requested,len(caster["library"]));ids=[card["instance_id"] for card in reversed(caster["library"][-amount:])] if amount else []
+        if ids:state["pending_scry"]={"player_id":caster["id"],"amount":amount,"card_ids":ids};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} is scrying {amount}.")
     discard_match = re.search(r"(?:(target|each) opponent|you) discards? (a|one|two|three|four|five|six|seven|eight|nine|ten|\d+) cards?", effect_text)
     if discard_match:
         amount_word=discard_match.group(2);words={"a":1,"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10};amount=words.get(amount_word,int(amount_word) if amount_word.isdigit() else 0);affected=caster if discard_match.group(0).startswith("you") else other;required=min(amount,len(affected["hand"]))
@@ -724,6 +733,14 @@ def perform_action(state: dict, player_id: str, action: dict) -> dict:
         for card in list(player["battlefield"]):
             if card["instance_id"] in pending["card_ids"] and card["instance_id"]!=keep:_leave_battlefield(state,player,card,"graveyard")
         state["pending_legendary"]=None;state["priority_player_id"]=state["active_player_id"];_log(state,f"{player['name']} chose a legendary permanent to keep.")
+    elif action_type == "scry":
+        pending=state.get("pending_scry") or {};top_ids=action.get("top_ids") or [];bottom_ids=action.get("bottom_ids") or [];expected=pending.get("card_ids",[])
+        if pending.get("player_id")!=player_id or len(top_ids)+len(bottom_ids)!=len(expected) or len(set(top_ids+bottom_ids))!=len(expected) or set(top_ids+bottom_ids)!=set(expected):raise RuleViolation("Choose each scried card exactly once")
+        cards={card["instance_id"]:card for card in player["library"] if card["instance_id"] in set(expected)}
+        if len(cards)!=len(expected):raise RuleViolation("The top of the library changed before scry resolved")
+        player["library"]=[card for card in player["library"] if card["instance_id"] not in cards]
+        player["library"][0:0]=[cards[card_id] for card_id in reversed(bottom_ids)];player["library"].extend(cards[card_id] for card_id in reversed(top_ids))
+        state["pending_scry"]=None;state["priority_player_id"]=state["active_player_id"];_log(state,f"{player['name']} kept {len(top_ids)} card(s) on top and put {len(bottom_ids)} on the bottom.")
     elif action_type == "adjust_life":
         target_player = _player(state, action.get("target_id") or player_id); amount = max(-100, min(100, int(action.get("amount") or 0))); target_player["life"] += amount; _log(state, f"{target_player['name']}'s life was adjusted by {amount:+d}.")
     elif action_type == "add_counter":
