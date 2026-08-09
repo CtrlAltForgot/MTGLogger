@@ -720,6 +720,26 @@ def _predefined_token(owner:dict,kind:str,tapped:bool=False)->dict:
     return {"instance_id":_id(),"scryfall_id":f"token-{kind.casefold()}","name":f"{kind} Token","image_url":None,"type_line":f"Token Artifact — {kind}","oracle_text":oracle,"mana_cost":"","mana_value":0,"power":None,"toughness":None,"owner_id":owner["id"],"controller_id":owner["id"],"tapped":tapped,"damage":0,"counters":{},"summoning_sick":True,"token":True,"keywords":[]}
 
 
+def _incubator_token(owner:dict)->dict:
+    front={"name":"Incubator Token","type_line":"Token Artifact — Incubator","oracle_text":"{2}: Transform this token.","mana_cost":"","power":None,"toughness":None,"image_url":None,"keywords":[]};back={"name":"Phyrexian Token","type_line":"Token Artifact Creature — Phyrexian","oracle_text":"","mana_cost":"","power":"0","toughness":"0","image_url":None,"keywords":[]}
+    return {"instance_id":_id(),"scryfall_id":"token-incubator","owner_id":owner["id"],"controller_id":owner["id"],"tapped":False,"damage":0,"counters":{},"summoning_sick":True,"token":True,"card_faces":[front,back],"current_face":0,**front}
+
+
+def _finish_amass(state:dict,player:dict,army:dict,subtype:str,amount:int)->None:
+    type_line=army.get("type_line","")
+    if not re.search(rf"\b{re.escape(subtype)}\b",type_line,re.IGNORECASE):army["type_line"]=f"{type_line} {subtype}".strip()
+    placed=_add_counters(state,army,"+1/+1",amount,player["id"],"amass")
+    _log(state,f"{player['name']} amassed {subtype}s {placed} on {army['name']}.")
+
+
+def _amass(state:dict,player:dict,subtype:str,amount:int,source_name:str)->None:
+    armies=[permanent for permanent in player["battlefield"] if "Creature" in permanent.get("type_line","") and re.search(r"\bArmy\b",permanent.get("type_line",""),re.IGNORECASE)]
+    if not armies:
+        army={"instance_id":_id(),"scryfall_id":f"token-{subtype.casefold()}-army","name":f"{subtype} Army Token","image_url":None,"type_line":f"Token Creature — {subtype} Army","oracle_text":"","mana_cost":"","mana_value":0,"colors":["B"],"power":"0","toughness":"0","owner_id":player["id"],"controller_id":player["id"],"tapped":False,"damage":0,"counters":{},"summoning_sick":True,"token":True,"keywords":[]};_enter_battlefield(state,player,[army],"token");_finish_amass(state,player,army,subtype,amount);return
+    if len(armies)==1:_finish_amass(state,player,armies[0],subtype,amount);return
+    state["pending_amass"]={"player_id":player["id"],"source_name":source_name,"subtype":subtype,"amount":amount,"card_ids":[army["instance_id"] for army in armies]};state["priority_player_id"]=player["id"]
+
+
 def _has_x_cost(card:dict)->bool:
     return any(symbol.upper()=="X" for symbol in _mana_symbols(card))
 
@@ -792,7 +812,7 @@ def _new_player(player_id: str, name: str, deck: list[dict], is_bot: bool, forma
 def new_game(player_deck: list[dict], opponent_deck: list[dict], play_first: bool = True, opponent_is_bot: bool = True, player_format: str = "", opponent_format: str = "") -> dict:
     human_id, bot_id = "player", "bot"
     players = [_new_player(human_id, "You", player_deck, False, player_format), _new_player(bot_id, "Bot" if opponent_is_bot else "Guest", opponent_deck, opponent_is_bot, opponent_format)]
-    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "beginning_draw_pending":True,"first_turn_draw_skipped":False,"active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id, "players": players, "stack": [], "combat": {"attackers": [], "attackers_declared":False,"blocks": {}, "attack_targets": {},"block_orders":{},"damage_pending":False,"damage_step":None,"first_strike_damage_ids":[],"block_triggers_pending":False}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "pending_legendary": None,"pending_commander_zone":[],"pending_library_search":None,"pending_scry":None,"pending_damage_order":None,"pending_ward":None,"pending_blight":None,"pending_proliferate":None,"pending_transform":None,"pending_trigger_targets":[], "log": []}
+    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "beginning_draw_pending":True,"first_turn_draw_skipped":False,"active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id, "players": players, "stack": [], "combat": {"attackers": [], "attackers_declared":False,"blocks": {}, "attack_targets": {},"block_orders":{},"damage_pending":False,"damage_step":None,"first_strike_damage_ids":[],"block_triggers_pending":False}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "pending_legendary": None,"pending_commander_zone":[],"pending_library_search":None,"pending_scry":None,"pending_damage_order":None,"pending_ward":None,"pending_blight":None,"pending_proliferate":None,"pending_amass":None,"pending_transform":None,"pending_trigger_targets":[], "log": []}
     for player in players:
         _draw(state, player, 7,False)
     _log(state, "Opening hands drawn. Choose whether to keep or mulligan.")
@@ -973,7 +993,7 @@ def _multiplayer(state: dict) -> bool:
 
 
 def _pending_decision(state:dict)->bool:
-    return bool(state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_transform") or state.get("pending_trigger_targets"))
+    return bool(state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_transform") or state.get("pending_trigger_targets"))
 
 
 def _queue_commander_zone_choice(state:dict,owner:dict,card:dict,zone:str)->None:
@@ -1067,6 +1087,11 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
             if owner.get("poison",0)>0:targets.append({"id":owner["id"],"name":owner["name"],"kind":"player","controller_id":owner["id"],"counters":{"poison":owner["poison"]}})
             targets.extend({"id":card["instance_id"],"name":card["name"],"kind":"permanent","controller_id":owner["id"],"counters":{name:amount for name,amount in card.get("counters",{}).items() if amount>0}} for card in owner["battlefield"] if any(amount>0 for amount in card.get("counters",{}).values()))
         return [{"type":"choose_proliferate","targets":targets,"source_name":pending_proliferate["source_name"]},{"type":"concede"}]
+    pending_amass=state.get("pending_amass")
+    if pending_amass:
+        if pending_amass["player_id"]!=player_id:return []
+        cards_by_id={card["instance_id"]:card for card in player["battlefield"]};targets=[{"id":card_id,"name":cards_by_id[card_id]["name"],"kind":"permanent","controller_id":player_id} for card_id in pending_amass["card_ids"] if card_id in cards_by_id]
+        return [{"type":"choose_amass_army","targets":targets,"source_name":pending_amass["source_name"],"amount":pending_amass["amount"],"subtype":pending_amass["subtype"]},{"type":"concede"}]
     pending_transform=state.get("pending_transform")
     if pending_transform:
         if pending_transform["player_id"]!=player_id:return []
@@ -1325,6 +1350,18 @@ def _resolve_spell(state: dict) -> None:
     if re.search(r"\bproliferate\b",effect_text):
         state["pending_proliferate"]={"player_id":caster["id"],"source_name":source_permanent.get("name",card["name"]) if source_permanent else card["name"]};state["priority_player_id"]=caster["id"]
         _log(state,f"{caster['name']} will choose permanents and players to proliferate.")
+    keyword_text=re.sub(r"\([^()]*(?:to investigate|to amass|to incubate)[^()]*\)","",effect_text)
+    investigate_match=re.search(r"\binvestigates?(?: (twice|three times|\d+ times))?\b",keyword_text)
+    if investigate_match:
+        count={"twice":2,"three times":3}.get(investigate_match.group(1),int(investigate_match.group(1).split()[0]) if investigate_match.group(1) and investigate_match.group(1)[0].isdigit() else 1)
+        recipients=state["players"] if "each player investigates" in keyword_text else [target_owner or event_controller] if ("its controller investigates" in keyword_text and (target_owner or event_controller)) else [caster]
+        for recipient in recipients:
+            clues=[_predefined_token(recipient,"Clue") for _ in range(count)];_enter_battlefield(state,recipient,clues,"token");_log(state,f"{recipient['name']} investigated {count} time(s).")
+    amass_match=re.search(r"\bamass(?:es)? (zombies|orcs|goblins|oozes|rats) (\d+)\b",keyword_text)
+    if amass_match:_amass(state,caster,amass_match.group(1).title().rstrip("s"),int(amass_match.group(2)),source_permanent.get("name",card["name"]) if source_permanent else card["name"])
+    incubate_match=re.search(r"\bincubates? (\d+)\b",keyword_text)
+    if incubate_match:
+        amount=int(incubate_match.group(1));token=_incubator_token(caster);_enter_battlefield(state,caster,[token],"token");_add_counters(state,token,"+1/+1",amount,caster["id"],"incubate");_log(state,f"{caster['name']} incubated {amount}.")
     if re.search(r"\bairbend (?:up to one )?target (?:creature|spell|creature or spell)\b",effect_text):
         airbent=None;airbend_owner=None
         if target and target_owner:
@@ -2430,6 +2467,12 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
                     for name in list(permanent.get("counters",{})):
                         if permanent["counters"][name]>0:_add_counters(state,permanent,name,1,player_id,"proliferate")
         state["pending_proliferate"]=None;state["priority_player_id"]=state["active_player_id"];_log(state,f"{player['name']} proliferated {len(requested)} permanent(s) and player(s).")
+    elif action_type=="choose_amass_army":
+        pending=state.get("pending_amass") or {};target_id=action.get("target_id")
+        if pending.get("player_id")!=player_id or target_id not in pending.get("card_ids",[]):raise RuleViolation("Choose one of your Armies to amass onto")
+        army=next((card for card in player["battlefield"] if card["instance_id"]==target_id and "Army" in card.get("type_line","")),None)
+        if not army:raise RuleViolation("That Army is no longer on the battlefield")
+        state["pending_amass"]=None;_finish_amass(state,player,army,pending["subtype"],pending["amount"]);state["priority_player_id"]=state["active_player_id"]
     elif action_type in {"accept_transform","decline_transform"}:
         pending=state.get("pending_transform") or {}
         if pending.get("player_id")!=player_id:raise RuleViolation("There is no optional transform decision for this player")

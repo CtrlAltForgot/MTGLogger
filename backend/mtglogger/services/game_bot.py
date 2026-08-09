@@ -221,6 +221,9 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
             beneficial=sum(amount for name,amount in counters.items() if name not in {"-1/-1","stun","poison"});harmful=sum(amount for name,amount in counters.items() if name in {"-1/-1","stun","poison"})
             if (own and beneficial>harmful) or (not own and harmful>=beneficial):chosen.append(target["id"])
         return {"type":"choose_proliferate","target_ids":chosen}
+    if "choose_amass_army" in by_type:
+        action=by_type["choose_amass_army"][0];choice=max(action.get("targets",[]),key=lambda target:_threat_score(state,_target_card(state,target["id"]) or {}),default=None)
+        return {"type":"choose_amass_army","target_id":choice["id"]} if choice else by_type.get("concede",[None])[0]
     if "accept_transform" in by_type or "decline_transform" in by_type:
         return by_type["decline_transform"][0] if difficulty=="beginner" else by_type["accept_transform"][0]
     if "choose_trigger_target" in by_type:

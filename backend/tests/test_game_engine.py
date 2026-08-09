@@ -1,7 +1,7 @@
 import pytest
 
 from mtglogger.services.game_bot import _choose_blocks, choose_bot_action, run_bot
-from mtglogger.services.game_engine import RuleViolation, _add_counters, _add_saga_lore, _enter_battlefield, _has_keyword, _leave_graveyard, _put_into_exile, _queue_triggers, _set_tapped, legal_actions, new_game, perform_action, public_state
+from mtglogger.services.game_engine import RuleViolation, _add_counters, _add_saga_lore, _amass, _enter_battlefield, _has_keyword, _leave_graveyard, _put_into_exile, _queue_triggers, _set_tapped, legal_actions, new_game, perform_action, public_state
 
 
 def card(index:int,name:str,type_line:str,mana_cost:str="",power:str|None=None,toughness:str|None=None,quantity:int=1):
@@ -1934,3 +1934,42 @@ def test_static_counter_prevention_blocks_permanent_and_player_counters():
     creature={**card(1441,"Prevented Creature","Creature — Human","","2","2"),"instance_id":"prevented-creature","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].append(solemnity);bot["battlefield"].append(creature)
     assert _add_counters(state,creature,"+1/+1",2,"bot")==0 and creature["counters"]=={}
     assert _add_counters(state,bot,"poison",2,"player")==0 and bot["poison"]==0 and not state["stack"]
+
+
+def test_investigate_creates_usable_clues_and_supports_twice():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player")
+    for index in range(2):
+        land=next(card for card in player["library"] if "Land" in card["type_line"]);player["library"].remove(land);land["instance_id"]=f"clue-land-{index}";land["tapped"]=False;player["battlefield"].append(land)
+    spell={**card(1450,"Double Investigation","Sorcery"),"oracle_text":"Investigate twice.","instance_id":"double-investigation","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"].append(spell)
+    state=perform_action(state,"player",{"type":"cast","card_id":"double-investigation"});state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");clues=[token for token in player["battlefield"] if "Clue" in token["type_line"]]
+    assert len(clues)==2 and all(any(action.get("card_id")==clue["instance_id"] for action in legal_actions(state,"player")) for clue in clues)
+
+
+def test_amass_creates_then_grows_a_typed_army_through_counter_rules():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player")
+    first={**card(1460,"Raise Orcs","Sorcery"),"oracle_text":"Amass Orcs 2.","instance_id":"raise-orcs","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};second={**card(1461,"Raise Zombies","Sorcery"),"oracle_text":"Amass Zombies 3.","instance_id":"raise-zombies","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"].extend([first,second])
+    state=perform_action(state,"player",{"type":"cast","card_id":"raise-orcs"});state=perform_action(state,"player",{"type":"resolve"});state=perform_action(state,"player",{"type":"cast","card_id":"raise-zombies"});state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");armies=[token for token in player["battlefield"] if "Army" in token["type_line"]]
+    assert len(armies)==1 and armies[0]["counters"]["+1/+1"]==5 and all(subtype in armies[0]["type_line"] for subtype in ("Orc","Zombie","Army"))
+
+
+def test_multiple_armies_require_a_choice_and_bot_selects_one():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player")
+    armies=[{**card(1470+index,f"Army {index}","Token Creature — Zombie Army","","0","0"),"instance_id":f"army-{index}","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{"+1/+1":index+1},"summoning_sick":False,"token":True} for index in range(2)];player["battlefield"].extend(armies)
+    _amass(state,player,"Orc",2,"Test Muster");actions=legal_actions(state,"player")
+    assert actions[0]["type"]=="choose_amass_army" and {target["id"] for target in actions[0]["targets"]}=={"army-0","army-1"}
+    state=perform_action(state,"player",{"type":"choose_amass_army","target_id":"army-1"});player=next(p for p in state["players"] if p["id"]=="player");chosen=next(card for card in player["battlefield"] if card["instance_id"]=="army-1")
+    assert chosen["counters"]["+1/+1"]==4 and "Orc" in chosen["type_line"] and state["pending_amass"] is None
+    bot=next(p for p in state["players"] if p["id"]=="bot");state["pending_amass"]={"player_id":"bot","source_name":"Bot Muster","subtype":"Goblin","amount":2,"card_ids":[]}
+    bot_armies=[{**army,"instance_id":f"bot-{army['instance_id']}","owner_id":"bot","controller_id":"bot"} for army in armies];bot["battlefield"].extend(bot_armies);state["pending_amass"]["card_ids"]=[army["instance_id"] for army in bot_armies];state["priority_player_id"]="bot"
+    choice=choose_bot_action(state,"expert");assert choice["type"]=="choose_amass_army" and choice["target_id"]=="bot-army-1"
+
+
+def test_incubate_creates_countered_transformable_incubator():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");lands=[]
+    for index in range(2):
+        land=next(card for card in player["library"] if "Land" in card["type_line"]);player["library"].remove(land);land["instance_id"]=f"incubate-land-{index}";land["tapped"]=False;player["battlefield"].append(land);lands.append(land)
+    spell={**card(1480,"Prepare New Life","Sorcery"),"oracle_text":"Incubate 3.","instance_id":"prepare-new-life","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"].append(spell)
+    state=perform_action(state,"player",{"type":"cast","card_id":"prepare-new-life"});state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");token=next(card for card in player["battlefield"] if "Incubator" in card["type_line"]);action=next(action for action in legal_actions(state,"player") if action.get("card_id")==token["instance_id"])
+    assert token["counters"]["+1/+1"]==3 and action["type"]=="activate"
+    state=perform_action(state,"player",{"type":"activate","card_id":token["instance_id"],"ability_index":action["ability_index"],"cost_card_ids":[]});state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");token=next(card for card in player["battlefield"] if card["instance_id"]==token["instance_id"])
+    assert token["current_face"]==1 and "Phyrexian" in token["type_line"] and token["counters"]["+1/+1"]==3
