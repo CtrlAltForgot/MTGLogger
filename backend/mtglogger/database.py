@@ -57,6 +57,8 @@ def migrate_schema() -> None:
             "type_line": "VARCHAR(255)",
             "mana_cost": "VARCHAR(255)",
             "mana_value": "FLOAT",
+            "power": "VARCHAR(16)",
+            "toughness": "VARCHAR(16)",
             "keywords": "TEXT",
             "legalities": "TEXT",
         }

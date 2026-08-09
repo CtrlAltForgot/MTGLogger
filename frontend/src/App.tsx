@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
-import { AutoStories, DarkMode, Download, Home, Inventory2, LightMode, Paid, Search, Style, Visibility } from '@mui/icons-material'
+import { AutoStories, DarkMode, Download, Home, Inventory2, LightMode, Paid, Search, SportsEsports, Style, Visibility } from '@mui/icons-material'
 import { AppBar, Box, Button, CircularProgress, CssBaseline, IconButton, Tab, Tabs, ThemeProvider, Toolbar, Tooltip, Typography } from '@mui/material'
 import { appTheme } from './theme'
 import { CardDetailsProvider } from './components/CardDetails'
@@ -11,6 +11,7 @@ const Decks=lazy(()=>import('./pages/Decks'))
 const ReviewQueue=lazy(()=>import('./pages/ReviewQueue'))
 const Scanner=lazy(()=>import('./pages/Scanner'))
 const Database=lazy(()=>import('./pages/Database'))
+const Play=lazy(()=>import('./pages/Play'))
 
 const pages=[
   {name:'Dashboard',icon:<Home/>,content:<Dashboard/>},
@@ -19,6 +20,7 @@ const pages=[
   {name:'Value',icon:<Paid/>,content:<Value/>},
   {name:'Database',icon:<AutoStories/>,content:<Database/>},
   {name:'Decks',icon:<Inventory2/>,content:<Decks/>},
+  {name:'Play',icon:<SportsEsports/>,content:<Play/>},
   {name:'Review',icon:<Search/>,content:<ReviewQueue/>},
 ]
 

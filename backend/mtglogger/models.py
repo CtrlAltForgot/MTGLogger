@@ -171,6 +171,8 @@ class CardReference(Base):
     type_line: Mapped[str | None] = mapped_column(String(255), nullable=True)
     mana_cost: Mapped[str | None] = mapped_column(String(255), nullable=True)
     mana_value: Mapped[float | None] = mapped_column(nullable=True)
+    power: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    toughness: Mapped[str | None] = mapped_column(String(16), nullable=True)
     keywords: Mapped[str | None] = mapped_column(Text, nullable=True)
     legalities: Mapped[str | None] = mapped_column(Text, nullable=True)
     released_at: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
@@ -271,3 +273,18 @@ class DeckEntry(Base):
     quantity: Mapped[int] = mapped_column(default=1)
     deck: Mapped[Deck] = relationship(back_populates="entries")
     inventory: Mapped[InventoryItem] = relationship(back_populates="deck_entries")
+
+
+class GameSession(Base):
+    __tablename__ = "game_sessions"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    name: Mapped[str] = mapped_column(String(255), default="Magic game")
+    status: Mapped[str] = mapped_column(String(32), default="active", index=True)
+    player_deck_id: Mapped[str] = mapped_column(ForeignKey("decks.id", ondelete="CASCADE"))
+    opponent_deck_id: Mapped[str] = mapped_column(ForeignKey("decks.id", ondelete="CASCADE"))
+    bot_difficulty: Mapped[str] = mapped_column(String(32), default="standard")
+    state_json: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )

@@ -292,3 +292,32 @@ class AutoDeckProposal(BaseModel):
     warnings: list[str]
     explanation: list[str]
     cards: list[AutoDeckCard]
+
+
+class GameCreate(BaseModel):
+    name: str = Field("Bot game", min_length=1, max_length=255)
+    player_deck_id: str
+    opponent_deck_id: str
+    bot_difficulty: str = Field("standard", pattern="^(beginner|standard|expert)$")
+    play_first: bool = True
+
+
+class GameAction(BaseModel):
+    type: str = Field(min_length=1, max_length=40)
+    card_id: str | None = None
+    target_id: str | None = None
+    attacker_ids: list[str] = Field(default_factory=list)
+    blocks: dict[str, str] = Field(default_factory=dict)
+
+
+class GameRead(BaseModel):
+    id: str
+    name: str
+    status: str
+    player_deck_id: str
+    opponent_deck_id: str
+    bot_difficulty: str
+    state: dict
+    legal_actions: list[dict]
+    created_at: datetime
+    updated_at: datetime

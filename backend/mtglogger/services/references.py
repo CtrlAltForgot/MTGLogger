@@ -630,6 +630,8 @@ def _reference_metadata(provider, card: dict, image_url: str | None = None) -> d
         "type_line": card.get("type_line"),
         "mana_cost": card.get("mana_cost"),
         "mana_value": card.get("cmc"),
+        "power": card.get("power"),
+        "toughness": card.get("toughness"),
         "keywords": json.dumps(card.get("keywords") or []),
         "legalities": json.dumps(card.get("legalities") or {}),
         "released_at": _released_at(card),

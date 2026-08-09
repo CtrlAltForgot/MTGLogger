@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from . import __version__
-from .api import dashboard, decks, inventory, prices, references, reviews, scanner, sealed
+from .api import dashboard, decks, inventory, play, prices, references, reviews, scanner, sealed
 from .config import get_settings
 from .database import Base, SessionLocal, engine, migrate_schema
 from .providers import close_scryfall_client
@@ -82,6 +82,7 @@ app.include_router(dashboard.router, prefix="/api")
 app.include_router(references.router, prefix="/api")
 app.include_router(prices.router, prefix="/api")
 app.include_router(decks.router, prefix="/api")
+app.include_router(play.router, prefix="/api")
 
 
 @app.get("/api/health")
