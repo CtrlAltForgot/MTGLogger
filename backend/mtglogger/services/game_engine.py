@@ -1315,7 +1315,7 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
         if _can_pay(player,{"mana_cost":"{3}"}):
             for hand_card in player["hand"]:
                 face_down=_face_down_ability(hand_card)
-                if face_down:actions.append({"type":"cast_face_down","card_id":hand_card["instance_id"],"mana_cost":"{3}","label":f"Cast {hand_card['name']} face down for {{3}} · {face_down['mechanic'].title()} {face_down['mana_cost']}"})
+                if face_down:actions.append({"type":"cast_face_down","card_id":hand_card["instance_id"],"mana_cost":"{3}","label":f"Cast {hand_card['name']} face down for {{3}} · {face_down['mechanic'].title()} {face_down['mana_cost'] or face_down['cost_text']}"})
     castable = [(card, "hand") for card in player["hand"]]
     castable.extend((card, "command") for card in player.get("command", []))
     castable.extend((card,"flashback") for card in player["graveyard"] if _flashback_ability(card))
