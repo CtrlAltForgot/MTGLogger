@@ -148,7 +148,7 @@ def _cycling_ability(card:dict)->dict|None:
         if not match:continue
         keyword,cost=match.group(1),match.group(2).upper();descriptor=keyword[:-7].strip()
         effect="Draw a card." if not descriptor else f"Search your library for a {descriptor} card, reveal it, put it into your hand, then shuffle."
-        return {"keyword":keyword,"mana_cost":cost,"effect":effect,"card":{**card,"name":f"{card['name']} — {keyword}","oracle_text":effect,"type_line":"Ability","mana_cost":""}}
+        return {"keyword":keyword,"mana_cost":cost,"effect":effect,"card":{**card,"name":f"{card['name']} — {keyword}","oracle_text":effect,"source_type_line":card.get("type_line",""),"source_mana_cost":card.get("mana_cost",""),"type_line":"Ability","mana_cost":""}}
     return None
 
 
@@ -245,19 +245,34 @@ def _toxic_value(card: dict) -> int:
 
 
 def _card_colors(card: dict) -> set[str]:
-    return {part for symbol in _mana_symbols(card) for part in symbol.upper().split("/") if part in "WUBRG"}
+    colors={part for symbol in re.findall(r"\{([^}]+)\}",(card.get("source_mana_cost") or card.get("mana_cost") or "")) for part in symbol.upper().split("/") if part in "WUBRG"}
+    colors.update(color for color in card.get("colors",[]) if color in "WUBRG")
+    return colors
+
+
+def _protection_text_matches(text:str,source:dict)->bool:
+    text=text.casefold()
+    if "protection from everything" in text:return True
+    colors=_card_colors(source);names={"W":"white","U":"blue","B":"black","R":"red","G":"green"}
+    if colors and ("protection from all colors" in text or "protection from each color" in text):return True
+    if any(re.search(rf"(?:protection from|and from) {names[color]}\b",text) for color in colors):return True
+    if not colors and "protection from colorless" in text:return True
+    source_types=(source.get("source_type_line") or source.get("type_line","")).casefold()
+    for kind in ("artifact","creature","enchantment","instant","land","planeswalker","sorcery"):
+        if kind in source_types and re.search(rf"protection from (?:all )?{kind}s?\b",text):return True
+    return len(colors)>1 and "protection from multicolored" in text
 
 
 def _protected_from(card: dict, source: dict) -> bool:
     text = "\n".join([card.get("oracle_text") or "",*card.get("attachment_rules",{}).values()]).casefold()
-    if "protection from everything" in text:return True
-    colors = _card_colors(source)
-    names = {"W":"white","U":"blue","B":"black","R":"red","G":"green"}
-    if any(f"protection from {names[color]}" in text for color in colors):return True
-    source_types=source.get("type_line","").casefold()
-    for kind in ("artifact","creature","enchantment","instant","land","planeswalker","sorcery"):
-        if kind in source_types and f"protection from {kind}s" in text:return True
-    return len(colors)>1 and "protection from multicolored" in text
+    return _protection_text_matches(text,source)
+
+
+def _player_protected_from(state:dict,player:dict,source:dict)->bool:
+    for permanent in player["battlefield"]:
+        text=(permanent.get("oracle_text") or "").casefold()
+        if re.search(r"\b(?:you|you and permanents you control) have protection from\b",text) and _protection_text_matches(text,source):return True
+    return False
 
 
 def _consume_shield(state:dict,card:dict,reason:str)->bool:
@@ -357,7 +372,7 @@ def _saga_chapters(card:dict)->dict[int,str]:
 def _queue_saga_chapter(state:dict,owner:dict,saga:dict,chapter:int)->None:
     chapters=_saga_chapters(saga);effect=chapters.get(chapter)
     if not effect:return
-    ability={"name":f"{saga['name']} — chapter {chapter}","oracle_text":effect,"type_line":"Ability","mana_cost":""};trigger={"id":_id(),"kind":"trigger","card":ability,"controller_id":owner["id"],"target_id":None,"source_id":saga["instance_id"],"saga_final":chapter==max(chapters)};targets=_targets(state,owner["id"],ability)
+    ability={"name":f"{saga['name']} — chapter {chapter}","oracle_text":effect,"source_type_line":saga.get("type_line",""),"source_mana_cost":saga.get("mana_cost",""),"type_line":"Ability","mana_cost":""};trigger={"id":_id(),"kind":"trigger","card":ability,"controller_id":owner["id"],"target_id":None,"source_id":saga["instance_id"],"saga_final":chapter==max(chapters)};targets=_targets(state,owner["id"],ability)
     if _target_kind(ability):
         if targets:state.setdefault("pending_trigger_targets",[]).append({"controller_id":owner["id"],"source_name":saga["name"],"trigger":trigger,"card":ability});state["priority_player_id"]=owner["id"]
         else:_log(state,f"{saga['name']}'s chapter {chapter} had no legal target.");_finish_saga_final_chapter(state,trigger)
@@ -399,7 +414,7 @@ def _activated_abilities(card: dict) -> list[dict]:
         unsupported=("discard" in cost.casefold() and not selection_cost) or ("sacrifice" in cost.casefold() and not self_sacrifice and not selection_cost) or ("remove" in cost.casefold() and "counter" in cost.casefold() and not counter_cost)
         if unsupported or (not taps and not mana_cost and not waterbend_symbol and not self_sacrifice and not life_cost and not counter_cost and not selection_cost):continue
         if re.match(r"add (?:\{|one mana)", effect, re.IGNORECASE): continue
-        ability_card = {**card, "name": f"{card['name']} ability", "oracle_text": effect, "type_line": "Ability", "mana_cost": ""}
+        ability_card = {**card, "name": f"{card['name']} ability", "oracle_text": effect, "source_type_line":card.get("type_line",""),"source_mana_cost":card.get("mana_cost",""), "type_line": "Ability", "mana_cost": ""}
         abilities.append({"cost":cost,"mana_cost":mana_cost,"waterbend_symbol":waterbend_symbol,"taps":taps,"self_sacrifice":self_sacrifice,"life_cost":life_cost,"counter_cost":counter_cost,"selection_cost":selection_cost,"effect":effect,"card":ability_card})
     return abilities
 
@@ -414,7 +429,7 @@ def _loyalty_abilities(card:dict)->list[dict]:
     for line in (card.get("oracle_text") or "").splitlines():
         match=re.match(r"^([+−-]?\d+):\s*(.+)$",line.strip())
         if not match:continue
-        cost=int(match.group(1).replace("−","-"));effect=match.group(2).strip();ability_card={**card,"name":f"{card['name']} loyalty ability","oracle_text":effect,"type_line":"Ability","mana_cost":""};abilities.append({"cost":cost,"effect":effect,"card":ability_card})
+        cost=int(match.group(1).replace("−","-"));effect=match.group(2).strip();ability_card={**card,"name":f"{card['name']} loyalty ability","oracle_text":effect,"source_type_line":card.get("type_line",""),"source_mana_cost":card.get("mana_cost",""),"type_line":"Ability","mana_cost":""};abilities.append({"cost":cost,"effect":effect,"card":ability_card})
     return abilities
 
 
@@ -646,6 +661,7 @@ def _target_kind(card: dict) -> str | None:
     if re.search(r"target (?:nonland )?card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_card"
     if re.search(r"target player mills?", text): return "player"
     if re.search(r"target player sacrifices?",text):return "player"
+    if re.search(r"deals (?:\d+|x) damage to target (?:opponent|player)",text):return "player"
     if re.search(r"(?:destroy|exile|gain control of) target (?:artifact, creature, enchantment, planeswalker|nonland permanent|permanent)", text): return "permanent"
     if re.search(r"(?:destroy|exile|tap|untap|return|regenerate|gain control of) target creature", text) or re.search(r"target creature .*(?:gets [+-](?:\d+|x)/[+-](?:\d+|x)|gains? [^.]+ until end of turn|can(?:not|'t) (?:attack|block))", text) or re.search(r"(?:deals (?:\d+|x) damage|put .+ counters?) (?:to|on) target creature", text): return "creature"
     for kind in ("artifact","enchantment","land","planeswalker"):
@@ -708,7 +724,7 @@ def _targets(state: dict, caster_id: str, card: dict) -> list[dict]:
         return [{"id":graveyard_card["instance_id"],"name":graveyard_card["name"],"kind":"card","controller_id":owner["id"]} for owner in state["players"] if not own_only or owner["id"]==caster_id for graveyard_card in owner["graveyard"] if kind=="graveyard_card" or "Creature" in graveyard_card.get("type_line","")]
     for player in state["players"]:
         aura_types=_aura_allowed_types(card)
-        if kind in {"any", "player"} or (kind=="permanent" and "player" in aura_types): targets.append({"id": player["id"], "name": player["name"], "kind": "player", "controller_id": player["id"]})
+        if (kind in {"any", "player"} or (kind=="permanent" and "player" in aura_types)) and not ("target opponent" in text and player["id"]==caster_id) and not _player_protected_from(state,player,card): targets.append({"id": player["id"], "name": player["name"], "kind": "player", "controller_id": player["id"]})
         for permanent in player["battlefield"]:
             if kind in {"any", "permanent"} or (kind=="creature_or_spell" and "Creature" in permanent.get("type_line","")) or (kind in {"creature","artifact","enchantment","land","planeswalker"} and kind in permanent.get("type_line", "").casefold()):
                 aura_types=_aura_allowed_types(card)
@@ -1148,16 +1164,19 @@ def _resolve_spell(state: dict) -> None:
         caster["life"] += int(life_match.group(1))
     damage_match = re.search(r"deals (\d+) damage to (?:target opponent|each opponent)", effect_text)
     if damage_match:
-        other["life"] -= int(damage_match.group(1))
+        amount=int(damage_match.group(1))
+        if _player_protected_from(state,other,card):_log(state,f"Protection prevented {amount} damage to {other['name']}.")
+        else:other["life"]-=amount
     lose_life = re.search(r"(?:target opponent|each opponent) loses (\d+) life", effect_text)
     if lose_life: other["life"] -= int(lose_life.group(1))
     you_lose = re.search(r"you lose (\d+) life", effect_text)
     if you_lose: caster["life"] -= int(you_lose.group(1))
-    targeted_damage = re.search(r"deals (\d+) damage to (?:any target|target creature)", effect_text)
+    targeted_damage = re.search(r"deals (\d+) damage to (?:any target|target creature|target opponent|target player)", effect_text)
     if targeted_damage and (target_player or target):
         amount = int(targeted_damage.group(1))
         if target_player:
-            if _has_keyword(card,"Infect"):target_player["poison"]=target_player.get("poison",0)+amount
+            if _player_protected_from(state,target_player,card):_log(state,f"Protection prevented {amount} damage to {target_player['name']}.")
+            elif _has_keyword(card,"Infect"):target_player["poison"]=target_player.get("poison",0)+amount
             else:target_player["life"] -= amount
         elif target:_damage_permanent(state,target,amount,card)
     if fight_steps and len(valid_fight_ids)==len(fight_steps):
@@ -1414,7 +1433,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
             if event=="enters" and re.match(r"if it was kicked,",effect,re.IGNORECASE):effect=effect.split(",",1)[1].strip()
             if event=="leaves" and "transform" in effect and "next upkeep" in effect:
                 source["transform_next_upkeep"]=True;_log(state,f"{source['name']} will transform at the beginning of the next upkeep.");continue
-            ability_card = {**source, "name": f"{source['name']} trigger", "oracle_text": effect, "type_line": "Ability", "mana_cost": ""}
+            ability_card = {**source, "name": f"{source['name']} trigger", "oracle_text": effect, "source_type_line":source.get("type_line",""),"source_mana_cost":source.get("mana_cost",""), "type_line": "Ability", "mana_cost": ""}
             if event=="attackers_declared" and "firebending" in lower and re.search(r"\badd\b[^.]*\{r\}",lower):ability_card["firebending_trigger"]=True
             fight_steps=_fight_target_steps(state,owner["id"],ability_card,source);targets=[] if fight_steps else _targets(state, owner["id"], ability_card)
             for _ in range(trigger_count):
@@ -1435,6 +1454,8 @@ def _combat_damage(state: dict) -> None:
     originally_blocked = set(state["combat"]["blocks"].values())
     def hit_defender(creature:dict, amount:int,target_id:str,trigger_dedupe:set[str])->None:
         planeswalker=next((card for card in defender["battlefield"] if card["instance_id"]==target_id and "Planeswalker" in card.get("type_line","")),None)
+        if not planeswalker and _player_protected_from(state,defender,creature):
+            _log(state,f"Protection prevented {amount} combat damage to {defender['name']}.");return
         if planeswalker:planeswalker["counters"]["loyalty"]=max(0,planeswalker["counters"].get("loyalty",0)-amount)
         elif _has_keyword(creature,"Infect"):defender["poison"]=defender.get("poison",0)+amount
         else:defender["life"] -= amount
@@ -1507,7 +1528,7 @@ def _state_based_actions(state: dict) -> None:
         for owner in state["players"]:
             for permanent in list(owner["battlefield"]):
                 if permanent.get("attached_to"):
-                    target=next((target for target_owner in state["players"] for target in target_owner["battlefield"] if target["instance_id"]==permanent["attached_to"]),None) or next((player for player in state["players"] if player["id"]==permanent["attached_to"]),None);aura="Aura" in permanent.get("type_line","");aura_text=(permanent.get("oracle_text") or "").casefold();allowed_types=_aura_allowed_types(permanent);target_types=(target or {}).get("type_line","").casefold();type_illegal=bool(aura and allowed_types and not (("player" in allowed_types and target and target.get("id")) or any(kind in target_types for kind in allowed_types-{"player"})));wrong_controller=bool(aura and target and (("enchant creature you control" in aura_text and target.get("controller_id")!=permanent.get("controller_id")) or ("enchant creature an opponent controls" in aura_text and target.get("controller_id")==permanent.get("controller_id"))));illegal=not target or type_illegal or wrong_controller or (target is not None and target.get("instance_id") is not None and _protected_from(target,permanent))
+                    target=next((target for target_owner in state["players"] for target in target_owner["battlefield"] if target["instance_id"]==permanent["attached_to"]),None) or next((player for player in state["players"] if player["id"]==permanent["attached_to"]),None);aura="Aura" in permanent.get("type_line","");aura_text=(permanent.get("oracle_text") or "").casefold();allowed_types=_aura_allowed_types(permanent);target_types=(target or {}).get("type_line","").casefold();type_illegal=bool(aura and allowed_types and not (("player" in allowed_types and target and target.get("id")) or any(kind in target_types for kind in allowed_types-{"player"})));wrong_controller=bool(aura and target and (("enchant creature you control" in aura_text and target.get("controller_id")!=permanent.get("controller_id")) or ("enchant creature an opponent controls" in aura_text and target.get("controller_id")==permanent.get("controller_id"))));illegal=not target or type_illegal or wrong_controller or (target is not None and target.get("instance_id") is not None and _protected_from(target,permanent)) or (target is not None and target.get("id") is not None and _player_protected_from(state,target,permanent))
                     if target and target.get("instance_id") and permanent.get("control_aura_return_to") and target.get("controller_id")!=permanent.get("controller_id"):_change_control(state,target,_player(state,permanent["controller_id"]))
                     if illegal:
                         _detach(state,permanent)
