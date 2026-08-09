@@ -2200,3 +2200,25 @@ def test_two_spell_turn_changes_night_back_to_day_and_nightbound_enters_transfor
 def test_day_night_transition_triggers_and_all_cast_paths_share_spell_counting():
     state=kept_game();player=next(p for p in state["players"] if p["id"]=="player");watcher={**card(1780,"Celestus Watcher","Enchantment"),"oracle_text":"Whenever day becomes night or whenever night becomes day, you gain 1 life.","instance_id":"celestus-watcher","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].append(watcher);before=player["life"];_set_day_night(state,"day");_set_day_night(state,"night");assert state["stack"][-1]["card"]["name"]=="Celestus Watcher trigger";state=perform_action(state,"player",{"type":"resolve"});assert next(p for p in state["players"] if p["id"]=="player")["life"]==before+1
     state["stack"]=[];state["turn"]=4;state["phase"]="precombat_main";player=next(p for p in state["players"] if p["id"]=="player");lands=[{**card(1781+index,"Island","Basic Land — Island"),"instance_id":f"day-count-land-{index}","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False} for index in range(3)];morph={**card(1785,"Counted Morph","Creature — Wizard","{4}{U}","3","3"),"oracle_text":"Morph {U}","instance_id":"counted-morph","owner_id":"player","controller_id":"player"};player["battlefield"].extend(lands);player["hand"].append(morph);state=perform_action(state,"player",{"type":"cast_face_down","card_id":"counted-morph"});player=next(p for p in state["players"] if p["id"]=="player");assert player["cast_event_turn"]==4 and player["spells_cast_this_turn"]==1
+
+
+def test_affinity_for_artifacts_reduces_only_generic_mana_and_updates_cast_legality():
+    state=kept_game();state["phase"]="precombat_main";player=next(p for p in state["players"] if p["id"]=="player");player["land_plays_remaining"]=0
+    artifacts=[{**card(1790+index,f"Relic {index}","Artifact"),"instance_id":f"affinity-relic-{index}","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False} for index in range(6)]
+    island={**card(1796,"Island","Basic Land — Island"),"instance_id":"affinity-island","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    monitor={**card(1797,"Thought Monitor","Artifact Creature — Construct","{6}{U}","2","2"),"oracle_text":"Affinity for artifacts\nFlying\nWhen Thought Monitor enters, draw two cards.","instance_id":"thought-monitor","owner_id":"player","controller_id":"player"}
+    player["battlefield"]=[*artifacts,island];player["hand"]=[monitor];action=next(entry for entry in legal_actions(state,"player") if entry.get("card_id")=="thought-monitor")
+    assert action["affinity_reduction"]==6 and "Affinity reduces {1}×6" in action["label"]
+    state=perform_action(state,"player",{"type":"cast","card_id":"thought-monitor","source":"hand"});player=next(p for p in state["players"] if p["id"]=="player")
+    assert next(card for card in player["battlefield"] if card["instance_id"]=="affinity-island")["tapped"] and not any(card["tapped"] for card in player["battlefield"] if card["instance_id"].startswith("affinity-relic"))
+
+
+def test_specialized_affinity_counts_matching_subtypes_and_bot_uses_reduced_cost():
+    state=kept_game();state["active_player_id"]="bot";state["priority_player_id"]="bot";state["phase"]="precombat_main";bot=next(p for p in state["players"] if p["id"]=="bot");bot["land_plays_remaining"]=0
+    forests=[{**card(1800+index,"Forest","Basic Land — Forest"),"instance_id":f"affinity-forest-{index}","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False} for index in range(2)]
+    relics=[{**card(1801+index,f"Bot Relic {index}","Artifact"),"instance_id":f"bot-relic-{index}","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False} for index in range(6)]
+    enforcer={**card(1807,"Myr Enforcer","Artifact Creature — Myr","{7}","4","4"),"oracle_text":"Affinity for artifacts","instance_id":"myr-enforcer","owner_id":"bot","controller_id":"bot"}
+    treefolk={**card(1808,"Forest Friend","Creature — Treefolk","{2}{G}","3","3"),"oracle_text":"Affinity for Forests","instance_id":"forest-friend","owner_id":"bot","controller_id":"bot"}
+    bot["battlefield"]=[*forests,*relics];bot["hand"]=[enforcer,treefolk]
+    actions=legal_actions(state,"bot");forest_action=next(entry for entry in actions if entry.get("card_id")=="forest-friend");assert forest_action["affinity_reduction"]==2
+    choice=choose_bot_action(state,"expert");assert choice and choice["type"]=="cast" and choice["card_id"]=="myr-enforcer"
