@@ -691,6 +691,29 @@ def test_waterbend_can_be_paid_entirely_with_mana():
     action=next(action for action in legal_actions(state,"player") if action.get("card_id")=="mana-waterbend");assert [] in action["cost_combinations"];state=perform_action(state,"player",{**action,"cost_card_ids":[]});player=next(p for p in state["players"] if p["id"]=="player");assert all(land["tapped"] for land in player["battlefield"])
 
 
+def test_firebending_uses_the_stack_adds_combat_mana_and_triggers_synergies():
+    state=kept_game();state["phase"]="combat";player=next(p for p in state["players"] if p["id"]=="player");player["battlefield"]=[]
+    bender={**card(920,"Flame Adept","Creature — Ally","","2","2"),"oracle_text":"Firebending 2 (Whenever this creature attacks, add {R}{R}. This mana lasts until end of combat.)","keywords":["Firebending"],"instance_id":"flame-adept","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};witness={**card(921,"Flame Witness","Creature — Ally","","1","1"),"oracle_text":"Whenever you firebend, draw a card.","instance_id":"flame-witness","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"]=[bender,witness];library_before=len(player["library"])
+    state=perform_action(state,"player",{"type":"declare_attackers","attacker_ids":["flame-adept"]});assert state["stack"][-1]["card"]["firebending_trigger"] and player.get("firebending_mana",0)==0
+    state=perform_action(state,state["priority_player_id"],{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");assert player["firebending_mana"]==2 and state["stack"][-1]["card"]["name"]=="Flame Witness trigger";state=perform_action(state,state["priority_player_id"],{"type":"resolve"});assert len(next(p for p in state["players"] if p["id"]=="player")["library"])==library_before-1
+
+
+def test_firebending_mana_pays_red_and_generic_costs_then_expires_after_combat():
+    state=kept_game();state["phase"]="combat";player=next(p for p in state["players"] if p["id"]=="player");player["battlefield"]=[];player["firebending_mana"]=2;spell={**card(922,"Combat Flame","Instant","{1}{R}"),"oracle_text":"You gain 2 life.","instance_id":"combat-flame","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"]=[spell]
+    assert any(action.get("card_id")=="combat-flame" for action in legal_actions(state,"player"));state=perform_action(state,"player",{"type":"cast","card_id":"combat-flame"});player=next(p for p in state["players"] if p["id"]=="player");assert player["firebending_mana"]==0
+    state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");player["firebending_mana"]=3;state=perform_action(state,"player",{"type":"advance_phase"});assert state["phase"]=="postcombat_main" and next(p for p in state["players"] if p["id"]=="player")["firebending_mana"]==0
+
+
+def test_expert_bot_spends_available_firebending_mana_during_combat():
+    state=kept_game();state["active_player_id"]="bot";state["priority_player_id"]="bot";state["phase"]="combat";bot=next(p for p in state["players"] if p["id"]=="bot");bot["battlefield"]=[];bot["hand"]=[];bot["firebending_mana"]=2;spell={**card(923,"Bot Combat Flame","Instant","{1}{R}"),"oracle_text":"You gain 2 life.","instance_id":"bot-combat-flame","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};bot["hand"]=[spell]
+    choice=choose_bot_action(state,"expert");assert choice["type"]=="cast" and choice["card_id"]=="bot-combat-flame"
+
+
+def test_multiple_firebending_instances_trigger_separately():
+    state=kept_game();state["phase"]="combat";player=next(p for p in state["players"] if p["id"]=="player");bender={**card(924,"Twin Flame","Creature — Ally","","2","2"),"oracle_text":"Firebending 1 (Whenever this creature attacks, add {R}. This mana lasts until end of combat.)\nFirebending 2 (Whenever this creature attacks, add {R}{R}. This mana lasts until end of combat.)","instance_id":"twin-flame","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"]=[bender]
+    state=perform_action(state,"player",{"type":"declare_attackers","attacker_ids":["twin-flame"]});assert len(state["stack"])==2;state=perform_action(state,state["priority_player_id"],{"type":"resolve"});state=perform_action(state,state["priority_player_id"],{"type":"resolve"});assert next(p for p in state["players"] if p["id"]=="player")["firebending_mana"]==3
+
+
 def test_defender_unblockable_hexproof_protection_and_indestructible_are_enforced():
     state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
     def permanent(index,name,text="",keywords=None,owner="player"):

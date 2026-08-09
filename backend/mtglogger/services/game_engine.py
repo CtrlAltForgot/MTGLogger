@@ -367,6 +367,7 @@ def _can_pay(player: dict, card: dict, extra_generic: int = 0, excluded_id: str 
     for permanent in player["battlefield"]:
         if permanent.get("instance_id") not in excluded and not permanent.get("tapped") and _mana_source(permanent) and not ("Creature" in permanent.get("type_line", "") and permanent.get("summoning_sick") and not _has_keyword(permanent,"Haste")):
             available.append(_land_colors(permanent) or {"C"})
+    available.extend({"R"} for _ in range(player.get("firebending_mana",0)))
     colored,generic=_mana_requirements(card,extra_generic,x_value)
     for choices in colored:
         match = next((colors for colors in available if colors & choices), None)
@@ -381,7 +382,8 @@ def _pay_mana(state:dict,player: dict, card: dict, extra_generic: int = 0, exclu
     if excluded_id:excluded.add(excluded_id)
     colored,generic=_mana_requirements(card,extra_generic,x_value)
     lands = [permanent for permanent in player["battlefield"] if permanent.get("instance_id") not in excluded and not permanent.get("tapped") and _mana_source(permanent) and not ("Creature" in permanent.get("type_line", "") and permanent.get("summoning_sick") and not _has_keyword(permanent,"Haste"))]
-    lands.sort(key=lambda permanent:any(kind in permanent.get("type_line","") for kind in ("Treasure","Gold")))
+    lands.extend({"instance_id":f"firebending-mana-{index}","name":"Firebending mana","type_line":"","oracle_text":"Add {R}.","firebending_mana":True} for index in range(player.get("firebending_mana",0)))
+    lands.sort(key=lambda permanent:0 if permanent.get("firebending_mana") else 2 if any(kind in permanent.get("type_line","") for kind in ("Treasure","Gold")) else 1)
     chosen = []
     for choices in colored:
         land = next((item for item in lands if (_land_colors(item) or {"C"}) & choices), None)
@@ -393,7 +395,8 @@ def _pay_mana(state:dict,player: dict, card: dict, extra_generic: int = 0, exclu
     if len(chosen) < len(colored) + generic:
         raise RuleViolation("Not enough mana")
     for land in chosen:
-        if any(kind in land.get("type_line","") for kind in ("Treasure","Gold")):
+        if land.get("firebending_mana"):player["firebending_mana"]=max(0,player.get("firebending_mana",0)-1)
+        elif any(kind in land.get("type_line","") for kind in ("Treasure","Gold")):
             _leave_battlefield(state,player,land,"graveyard");_log(state,f"{player['name']} sacrificed {land['name']} for mana.")
         else:land["tapped"] = True
 
@@ -530,7 +533,7 @@ def _new_player(player_id: str, name: str, deck: list[dict], is_bot: bool, forma
         if commander:
             library.remove(commander); commander["commander"] = True; command.append(commander)
     random.SystemRandom().shuffle(library)
-    return {"id": player_id, "name": name, "is_bot": is_bot, "format": format_name, "life": 40 if is_commander else 20, "poison": 0, "library": library, "hand": [], "battlefield": [], "graveyard": [], "exile": [], "command": command, "commander_casts": 0, "commander_damage": {}, "land_plays_remaining": 1, "kept_hand": False, "mulligans": 0, "lost": False}
+    return {"id": player_id, "name": name, "is_bot": is_bot, "format": format_name, "life": 40 if is_commander else 20, "poison": 0,"firebending_mana":0, "library": library, "hand": [], "battlefield": [], "graveyard": [], "exile": [], "command": command, "commander_casts": 0, "commander_damage": {}, "land_plays_remaining": 1, "kept_hand": False, "mulligans": 0, "lost": False}
 
 
 def new_game(player_deck: list[dict], opponent_deck: list[dict], play_first: bool = True, opponent_is_bot: bool = True, player_format: str = "", opponent_format: str = "") -> dict:
@@ -950,6 +953,11 @@ def _resolve_spell(state: dict) -> None:
     target_stack_item = next((entry for entry in state["stack"] if entry["id"] == target_id), None)
     graveyard_owner=next((player for player in state["players"] if any(graveyard_card["instance_id"]==target_id for graveyard_card in player["graveyard"])),None)
     graveyard_target=next((graveyard_card for player in state["players"] for graveyard_card in player["graveyard"] if graveyard_card["instance_id"]==target_id),None)
+    if (card.get("firebending_trigger") or "lasts until end of combat" in effect_text or "don't lose this mana as steps end" in effect_text) and re.search(r"\badd\b",effect_text):
+        fire_mana=len(re.findall(r"\{r\}",effect_text));number=re.search(r"add (\d+) \{r\}",effect_text)
+        if number:fire_mana=max(fire_mana,int(number.group(1)))
+        if fire_mana:
+            caster["firebending_mana"]=caster.get("firebending_mana",0)+fire_mana;_log(state,f"{caster['name']} added {fire_mana} firebending mana for this combat.");_queue_triggers(state,"firebend",source_permanent or card,caster)
     earthbend=_earthbend_value(rules_card)
     if earthbend is not None and target and target_owner and "Land" in target.get("type_line","") and target["controller_id"]==caster["id"]:
         if not target.get("earthbent"):
@@ -1184,6 +1192,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
             effect = clause.split(",", 1)[1].strip()
             if event=="enters" and re.match(r"if it was kicked,",effect,re.IGNORECASE):effect=effect.split(",",1)[1].strip()
             ability_card = {**source, "name": f"{source['name']} trigger", "oracle_text": effect, "type_line": "Ability", "mana_cost": ""}
+            if event=="attackers_declared" and "firebending" in lower and re.search(r"\badd\b[^.]*\{r\}",lower):ability_card["firebending_trigger"]=True
             fight_steps=_fight_target_steps(state,owner["id"],ability_card,source);targets=[] if fight_steps else _targets(state, owner["id"], ability_card)
             for _ in range(trigger_count):
                 trigger={"id":_id(),"kind":"trigger","card":ability_card,"controller_id":owner["id"],"target_id":None,"source_id":source["instance_id"]}
@@ -1294,6 +1303,7 @@ def _begin_next_turn(state:dict)->None:
     state["pending_discard"]=None;state["turn"] += 1; state["phase"] = PHASES[0];state["beginning_draw_pending"]=True; state["active_player_id"] = opponent(state, state["active_player_id"])["id"]
     active = _player(state, state["active_player_id"]); active["land_plays_remaining"] = 1
     for owner in state["players"]:
+        owner["firebending_mana"]=0
         for permanent in owner["battlefield"]:
             permanent.pop("temporary_power",None);permanent.pop("temporary_toughness",None);permanent.pop("temporary_keywords",None);permanent.pop("cant_attack_until_turn",None);permanent.pop("cant_block_until_turn",None);permanent.pop("regeneration_shields",None);permanent.pop("crewed_turn",None);permanent["damage"]=0
             if permanent.get("base_type_line") is not None:permanent["type_line"]=permanent.pop("base_type_line")
@@ -1319,7 +1329,9 @@ def _advance_turn_phase(state: dict) -> None:
                 if state["status"]=="complete":return
                 _log(state,f"{active['name']} drew for the turn.")
             state["beginning_draw_pending"]=False
-        state["phase"] = PHASES[index + 1]
+        leaving_combat=state["phase"]=="combat";state["phase"] = PHASES[index + 1]
+        if leaving_combat:
+            for owner in state["players"]:owner["firebending_mana"]=0
         if state["phase"] == "ending":
             _queue_triggers(state,"end_step",None,_player(state,state["active_player_id"]))
     if not state.get("pending_trigger_targets"):
