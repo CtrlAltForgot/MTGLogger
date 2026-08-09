@@ -63,7 +63,7 @@ export default function Play(){
     if(!game||busy||game.state.status!=='active'||game.state.priority_player_id!==viewerId)return
     const automatic=automaticGameAction(game.legal_actions)
     if(!automatic)return
-    const timer=setTimeout(()=>void act({type:automatic.type}),350)
+    const timer=setTimeout(()=>void act({type:automatic.type}),220)
     return()=>clearTimeout(timer)
   },[game?.state.version,busy,viewerId])
   useEffect(()=>{setSelectedAttackers([]);setBlocks({});setChoosingBlocker(undefined);setAttackTargets({});setAttackDialog(false);setAbilityChoices([]);setModeChoice(undefined);setSelectedModes([]);setModalTargetChoice(undefined);setMultiTargetChoice(undefined);setCostChoice(undefined);setBlightChoice(undefined);setSelectedCosts([]);setXChoice(undefined);setSelectedDiscards([]);setSelectedSacrifices([]);setSelectedLegendary([]);setSelectedSearch([]);setSelectedProliferate([]);setScryOrder([]);setScryBottom([]);setBlockOrders({})},[game?.state.version])

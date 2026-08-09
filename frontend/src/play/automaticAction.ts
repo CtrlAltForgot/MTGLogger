@@ -11,8 +11,8 @@ export const isMeaningfulGameChoice=(action:LegalGameAction)=>{
 
 export const automaticGameAction=(actions:LegalGameAction[])=>{
   if(actions.some(isMeaningfulGameChoice))return undefined
-  return actions.find(action=>action.type==='pass_priority')
-    ||actions.find(action=>action.type==='resolve_combat_damage')
+  return actions.find(action=>action.type==='resolve_combat_damage')
     ||actions.find(action=>action.type==='resolve')
     ||actions.find(action=>action.type==='advance_phase')
+    ||actions.find(action=>action.type==='pass_priority')
 }

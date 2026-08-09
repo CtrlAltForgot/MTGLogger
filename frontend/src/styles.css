@@ -86,8 +86,9 @@ body { margin: 0; min-width: 320px; }
 img { border-radius: 7px; }
 button, a { -webkit-tap-highlight-color: transparent; }
 
-.play-shell { width:calc(100vw - 24px); margin-left:calc(50% - 50vw + 12px); }
-.play-table { position: relative; width:100%; min-height:max(900px,calc(100dvh - 96px)); overflow: hidden; padding: 24px clamp(104px,7vw,150px); background: radial-gradient(ellipse at center,rgba(60,88,67,.92),rgba(24,43,34,.98) 58%,#101914),linear-gradient(120deg,#213a2c,#16231d) !important; border: 1px solid rgba(170,216,183,.16); }
+.play-shell { width:100vw; margin-left:calc(50% - 50vw); }
+.play-shell > .MuiStack-root:first-child,.play-shell > .MuiAlert-root { margin-inline:clamp(12px,2vw,32px); }
+.play-table { position: relative; width:100%; min-height:max(940px,calc(100dvh - 72px)); overflow: hidden; padding: 28px clamp(112px,7vw,168px); border-radius:0 !important; background: radial-gradient(ellipse at center,rgba(60,88,67,.92),rgba(24,43,34,.98) 58%,#101914),linear-gradient(120deg,#213a2c,#16231d) !important; border: 1px solid rgba(170,216,183,.16); }
 .play-table::before { content:""; position:absolute; inset:0; pointer-events:none; opacity:.18; background-image:repeating-linear-gradient(35deg,transparent 0 28px,rgba(255,255,255,.025) 29px 30px); }
 .battlefield-zone { position:relative; height:300px; display:grid; grid-template-rows:1fr 1fr; align-items:center; z-index:1; }
 .permanent-row,.land-row,.player-hand { min-height:122px; align-items:center; overflow:visible; }

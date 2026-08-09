@@ -10,6 +10,11 @@ describe('automatic game actions',()=>{
     expect(isMeaningfulGameChoice(action('declare_blockers',{card_ids:[]}))).toBe(false)
   })
 
+  it('takes the direct phase transition instead of yielding empty priority',()=>{
+    expect(automaticGameAction([action('pass_priority'),action('advance_phase'),action('concede')])?.type).toBe('advance_phase')
+    expect(automaticGameAction([action('pass_priority'),action('resolve_combat_damage')])?.type).toBe('resolve_combat_damage')
+  })
+
   it('resolves the stack when the player has no response',()=>{
     expect(automaticGameAction([action('resolve'),action('concede')])?.type).toBe('resolve')
   })
