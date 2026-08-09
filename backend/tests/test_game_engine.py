@@ -467,6 +467,24 @@ def test_cleanup_requires_exact_discard_to_seven_before_next_turn():
     assert len(player["hand"])==7 and all(any(card["instance_id"]==card_id for card in player["graveyard"]) for card_id in chosen) and state["turn"]==2 and state["active_player_id"]=="bot"
 
 
+def test_first_player_skips_draw_then_upkeep_triggers_resolve_before_later_draws():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot");player_hand,len_before=len(player["hand"]),len(player["library"])
+    state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player")
+    assert state["phase"]=="precombat_main" and len(player["hand"])==player_hand and len(player["library"])==len_before and state["first_turn_draw_skipped"] and not state["beginning_draw_pending"];bot=next(p for p in state["players"] if p["id"]=="bot")
+    upkeep={**card(940,"Upkeep Scholar","Creature — Wizard","","1","1"),"oracle_text":"At the beginning of your upkeep, draw a card.","instance_id":"upkeep-scholar","owner_id":"bot","controller_id":"bot","tapped":True,"damage":0,"counters":{},"summoning_sick":True};bot["battlefield"].append(upkeep);bot_hand=len(bot["hand"]);bot_library=len(bot["library"]);state["phase"]="ending"
+    state=perform_action(state,"player",{"type":"advance_phase"});bot=next(p for p in state["players"] if p["id"]=="bot")
+    assert state["turn"]==2 and state["phase"]=="beginning" and state["beginning_draw_pending"] and not bot["battlefield"][0]["tapped"] and len(bot["hand"])==bot_hand and state["stack"][-1]["card"]["name"]=="Upkeep Scholar trigger"
+    state=perform_action(state,"bot",{"type":"resolve"});bot=next(p for p in state["players"] if p["id"]=="bot");assert len(bot["hand"])==bot_hand+1 and len(bot["library"])==bot_library-1 and state["phase"]=="beginning"
+    state=perform_action(state,"bot",{"type":"advance_phase"});bot=next(p for p in state["players"] if p["id"]=="bot");assert state["phase"]=="precombat_main" and len(bot["hand"])==bot_hand+2 and len(bot["library"])==bot_library-2 and not state["beginning_draw_pending"]
+
+
+def test_empty_library_loss_waits_until_draw_after_upkeep_resolves():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot");upkeep={**card(941,"Last Upkeep","Enchantment"),"oracle_text":"At the beginning of your upkeep, you gain 3 life.","instance_id":"last-upkeep","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};bot["battlefield"].append(upkeep);bot["library"]=[];bot_life=bot["life"];state["phase"]="ending"
+    state=perform_action(state,"player",{"type":"advance_phase"});assert state["status"]=="active" and state["stack"]
+    state=perform_action(state,"bot",{"type":"resolve"});assert next(p for p in state["players"] if p["id"]=="bot")["life"]==bot_life+3 and state["status"]=="active"
+    state=perform_action(state,"bot",{"type":"advance_phase"});assert state["status"]=="complete" and state["winner_id"]=="player"
+
+
 def test_bot_discards_automatically_and_no_maximum_hand_size_is_honored():
     state=kept_game();bot=next(p for p in state["players"] if p["id"]=="bot");state["active_player_id"]="bot";state["priority_player_id"]="bot";state["phase"]="ending"
     while len(bot["hand"])<9:bot["hand"].append(bot["library"].pop())

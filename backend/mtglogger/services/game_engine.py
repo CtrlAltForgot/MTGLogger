@@ -272,7 +272,7 @@ def _new_player(player_id: str, name: str, deck: list[dict], is_bot: bool, forma
 def new_game(player_deck: list[dict], opponent_deck: list[dict], play_first: bool = True, opponent_is_bot: bool = True, player_format: str = "", opponent_format: str = "") -> dict:
     human_id, bot_id = "player", "bot"
     players = [_new_player(human_id, "You", player_deck, False, player_format), _new_player(bot_id, "Bot" if opponent_is_bot else "Guest", opponent_deck, opponent_is_bot, opponent_format)]
-    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id, "players": players, "stack": [], "combat": {"attackers": [], "blocks": {}, "attack_targets": {},"block_orders":{},"damage_pending":False}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "pending_legendary": None,"pending_scry":None,"pending_damage_order":None,"pending_ward":None,"pending_trigger_targets":[], "log": []}
+    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "beginning_draw_pending":True,"first_turn_draw_skipped":False,"active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id, "players": players, "stack": [], "combat": {"attackers": [], "blocks": {}, "attack_targets": {},"block_orders":{},"damage_pending":False}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "pending_legendary": None,"pending_scry":None,"pending_damage_order":None,"pending_ward":None,"pending_trigger_targets":[], "log": []}
     for player in players:
         _draw(state, player, 7)
     _log(state, "Opening hands drawn. Choose whether to keep or mulligan.")
@@ -769,12 +769,12 @@ def _state_based_actions(state: dict) -> None:
 
 
 def _begin_next_turn(state:dict)->None:
-    state["pending_discard"]=None;state["turn"] += 1; state["phase"] = PHASES[0]; state["active_player_id"] = opponent(state, state["active_player_id"])["id"]
+    state["pending_discard"]=None;state["turn"] += 1; state["phase"] = PHASES[0];state["beginning_draw_pending"]=True; state["active_player_id"] = opponent(state, state["active_player_id"])["id"]
     active = _player(state, state["active_player_id"]); active["land_plays_remaining"] = 1
     for owner in state["players"]:
         for permanent in owner["battlefield"]: permanent.pop("temporary_power",None); permanent.pop("temporary_toughness",None);permanent.pop("temporary_keywords",None); permanent["damage"] = 0
     for permanent in active["battlefield"]: permanent["tapped"] = False; permanent["summoning_sick"] = False
-    _draw(state, active); _log(state, f"Turn {state['turn']} began for {active['name']}."); _queue_triggers(state,"upkeep",None,active)
+    _log(state, f"Turn {state['turn']} began for {active['name']}. Untap and upkeep started."); _queue_triggers(state,"upkeep",None,active)
 
 
 def _advance_turn_phase(state: dict) -> None:
@@ -786,6 +786,15 @@ def _advance_turn_phase(state: dict) -> None:
             state["pending_discard"]={"player_id":ending["id"],"amount":excess};state["priority_player_id"]=ending["id"];state["pending_phase_advance"]=False;state["consecutive_passes"]=0;_log(state,f"{ending['name']} must discard {excess} card(s) to hand size.");return
         _begin_next_turn(state)
     else:
+        if state["phase"]=="beginning" and state.get("beginning_draw_pending",False):
+            active=_player(state,state["active_player_id"])
+            if state["turn"]==1 and not state.get("first_turn_draw_skipped"):
+                state["first_turn_draw_skipped"]=True;_log(state,f"{active['name']} skipped the first turn's draw.")
+            else:
+                _draw(state,active)
+                if state["status"]=="complete":return
+                _log(state,f"{active['name']} drew for the turn.")
+            state["beginning_draw_pending"]=False
         state["phase"] = PHASES[index + 1]
         if state["phase"] == "ending":
             _queue_triggers(state,"end_step",None,_player(state,state["active_player_id"]))
@@ -806,7 +815,8 @@ def perform_action(state: dict, player_id: str, action: dict) -> dict:
         if player.get("mulligans",0):state["pending_mulligan_bottom"]=player_id;_log(state,f"{player['name']} kept and must put {player['mulligans']} card(s) on the bottom.")
         else:
             player["kept_hand"] = True; _log(state, f"{player['name']} kept seven cards.")
-            if all(item["kept_hand"] for item in state["players"]):state["status"] = "active"; state["priority_player_id"] = state["active_player_id"]
+            if all(item["kept_hand"] for item in state["players"]):
+                state["status"] = "active"; state["priority_player_id"] = state["active_player_id"];active=_player(state,state["active_player_id"]);_log(state,f"Turn 1 began for {active['name']}. Untap and upkeep started.");_queue_triggers(state,"upkeep",None,active)
     elif action_type == "mulligan":
         player["mulligans"]=min(7,player.get("mulligans",0)+1);player["library"].extend(player["hand"]);player["hand"]=[]
         random.SystemRandom().shuffle(player["library"]);_draw(state,player,7);_log(state,f"{player['name']} took mulligan {player['mulligans']} and drew seven new cards.")
@@ -817,7 +827,8 @@ def perform_action(state: dict, player_id: str, action: dict) -> dict:
         if len(chosen)!=required:raise RuleViolation("One or more selected cards are not in your hand")
         for card in chosen:player["hand"].remove(card);player["library"].insert(0,card)
         state["pending_mulligan_bottom"]=None;player["kept_hand"]=True;_log(state,f"{player['name']} put {required} card(s) on the bottom and kept {len(player['hand'])}.")
-        if all(item["kept_hand"] for item in state["players"]):state["status"]="active";state["priority_player_id"]=state["active_player_id"]
+        if all(item["kept_hand"] for item in state["players"]):
+            state["status"]="active";state["priority_player_id"]=state["active_player_id"];active=_player(state,state["active_player_id"]);_log(state,f"Turn 1 began for {active['name']}. Untap and upkeep started.");_queue_triggers(state,"upkeep",None,active)
     elif action_type == "play_land":
         card = next((card for card in player["hand"] if card["instance_id"] == action.get("card_id") and "Land" in card.get("type_line", "")), None)
         if not card: raise RuleViolation("That land is not in your hand")

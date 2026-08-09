@@ -4,7 +4,7 @@ import { Alert, Box, Button, Card, CardContent, Chip, CircularProgress, Dialog, 
 import { request } from '../api'
 import type { Deck, Game, GameCard, GamePlayer, GameTarget, LegalGameAction } from '../types'
 
-const phases=[['beginning','Untap & draw'],['precombat_main','Main 1'],['combat','Combat'],['postcombat_main','Main 2'],['ending','End turn']]
+const phases=[['beginning','Upkeep · draw next'],['precombat_main','Main 1'],['combat','Combat'],['postcombat_main','Main 2'],['ending','End turn']]
 const isMeaningfulChoice=(action:LegalGameAction)=>{
   if(['advance_phase','resolve_combat_damage','adjust_life','add_counter','move_zone','create_token','concede'].includes(action.type))return false
   if(['declare_attackers','declare_blockers'].includes(action.type))return !!action.card_ids?.length
