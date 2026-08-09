@@ -235,6 +235,18 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
         return {"type":"choose_manifest_dread","card_id":choice["instance_id"]} if choice else by_type.get("concede",[None])[0]
     if "accept_transform" in by_type or "decline_transform" in by_type:
         return by_type["decline_transform"][0] if difficulty=="beginner" else by_type["accept_transform"][0]
+    if "choose_dungeon_room" in by_type:
+        rooms={action.get("room"):action for action in by_type["choose_dungeon_room"]};bot=next(player for player in state["players"] if player["id"]=="bot")
+        preferred="Lost Well" if len(bot["hand"])<4 else "Forge" if any("Creature" in card.get("type_line","") for card in bot["battlefield"]) else "Lost Well"
+        if "Throne of the Dead Three" in rooms:preferred="Throne of the Dead Three" if difficulty=="expert" else "Catacombs"
+        return rooms.get(preferred,by_type["choose_dungeon_room"][0])
+    if "choose_dungeon_target" in by_type:
+        action=by_type["choose_dungeon_target"][0];own=[target for target in action.get("targets",[]) if target.get("controller_id")=="bot"]
+        candidates=own if action.get("room")=="Forge" and own else [target for target in action.get("targets",[]) if target.get("controller_id")!="bot"] or action.get("targets",[])
+        choice=max(candidates,key=lambda target:_threat_score(state,_target_card(state,target["id"]) or {}),default=None);return {"type":"choose_dungeon_target","target_id":choice["id"]} if choice else by_type.get("concede",[None])[0]
+    if "choose_dungeon_card" in by_type or "skip_dungeon_card" in by_type:
+        action=by_type.get("choose_dungeon_card",[None])[0];choice=max((action or {}).get("cards",[]),key=lambda card:_threat_score(state,card),default=None)
+        return {"type":"choose_dungeon_card","card_id":choice["instance_id"]} if choice else by_type["skip_dungeon_card"][0]
     if "choose_trigger_target" in by_type:
         action=by_type["choose_trigger_target"][0]
         return {"type":"choose_trigger_target","target_id":_choose_target(state,action)}

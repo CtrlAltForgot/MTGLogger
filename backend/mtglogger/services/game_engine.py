@@ -69,6 +69,58 @@ def _gain_life(state:dict,player:dict,amount:int)->None:
     _queue_triggers(state,"life_gain",None,player)
 
 
+def _take_monarch(state:dict,player:dict)->None:
+    previous=state.get("monarch_id")
+    state["monarch_id"]=player["id"]
+    if previous!=player["id"]:_log(state,f"{player['name']} became the monarch.")
+
+
+def _dungeon_token(player:dict,name:str,power:str,toughness:str,subtype:str,keywords:list[str])->dict:
+    return {"instance_id":_id(),"scryfall_id":"token","name":name,"image_url":None,"type_line":f"Token Creature — {subtype}","oracle_text":"\n".join(keywords),"mana_cost":"","mana_value":0,"keywords":keywords,"power":power,"toughness":toughness,"owner_id":player["id"],"controller_id":player["id"],"tapped":False,"damage":0,"counters":{},"summoning_sick":True,"token":True}
+
+
+def _enter_undercity_room(state:dict,player:dict,room:str)->None:
+    player.setdefault("undercity_rooms",[]).append(room);_log(state,f"{player['name']} entered the Undercity room {room}.")
+    if room=="Secret Entrance":
+        cards=[card for card in player["library"] if "Basic Land" in card.get("type_line","")]
+        state["pending_library_search"]={"player_id":player["id"],"card_ids":[card["instance_id"] for card in cards],"min_amount":0,"max_amount":1,"destination":"hand","tapped":False,"label":"Secret Entrance — search for a basic land"}
+    elif room=="Forge":
+        targets=[card for card in player["battlefield"] if "Creature" in card.get("type_line","")]
+        if targets:state["pending_dungeon"]={"player_id":player["id"],"kind":"target","room":room,"targets":[{"id":card["instance_id"],"name":card["name"],"kind":"permanent","controller_id":player["id"]} for card in targets]}
+    elif room=="Lost Well":
+        amount=min(2,len(player["library"]));state["pending_scry"]={"player_id":player["id"],"amount":amount,"card_ids":[card["instance_id"] for card in player["library"][-amount:]],"mode":"scry"}
+    elif room=="Trap!":opponent(state,player["id"])["life"]-=5
+    elif room=="Arena":
+        targets=[card for owner in state["players"] for card in owner["battlefield"] if "Creature" in card.get("type_line","")]
+        if targets:state["pending_dungeon"]={"player_id":player["id"],"kind":"target","room":room,"targets":[{"id":card["instance_id"],"name":card["name"],"kind":"permanent","controller_id":card["controller_id"]} for card in targets]}
+    elif room=="Stash":
+        token=_dungeon_token(player,"Treasure Token","0","1","Treasure",[]);token["type_line"]="Token Artifact — Treasure";token["oracle_text"]="{T}, Sacrifice this artifact: Add one mana of any color.";_enter_battlefield(state,player,[token],"token")
+    elif room=="Archives":_draw(state,player)
+    elif room=="Catacombs":_enter_battlefield(state,player,[_dungeon_token(player,"Skeleton Token","4","1","Skeleton",["Menace"])],"token")
+    elif room=="Throne of the Dead Three":
+        top=player["library"][-10:];creatures=[card for card in top if "Creature" in card.get("type_line","")]
+        state["pending_dungeon"]={"player_id":player["id"],"kind":"throne","room":room,"card_ids":[card["instance_id"] for card in creatures],"cards":creatures,"top_ids":[card["instance_id"] for card in top]}
+    if state.get("pending_dungeon") or state.get("pending_library_search") or state.get("pending_scry"):state["priority_player_id"]=player["id"]
+
+
+def _venture_undercity(state:dict,player:dict)->None:
+    path=player.setdefault("undercity_rooms",[])
+    if path and path[-1] in {"Archives","Catacombs","Throne of the Dead Three"}:path.clear()
+    current=path[-1] if path else None
+    if current is None:_enter_undercity_room(state,player,"Secret Entrance")
+    elif current=="Secret Entrance":state["pending_dungeon"]={"player_id":player["id"],"kind":"room","options":["Forge","Lost Well"]};state["priority_player_id"]=player["id"]
+    elif current=="Forge":_enter_undercity_room(state,player,"Trap!")
+    elif current=="Lost Well":_enter_undercity_room(state,player,"Arena")
+    elif current in {"Trap!","Arena"}:_enter_undercity_room(state,player,"Stash")
+    elif current=="Stash":state["pending_dungeon"]={"player_id":player["id"],"kind":"room","options":["Archives","Catacombs","Throne of the Dead Three"]};state["priority_player_id"]=player["id"]
+
+
+def _take_initiative(state:dict,player:dict)->None:
+    previous=state.get("initiative_id");state["initiative_id"]=player["id"]
+    if previous!=player["id"]:_log(state,f"{player['name']} took the initiative.")
+    _venture_undercity(state,player)
+
+
 def _continuous_stats(state:dict|None,card:dict)->tuple[int,int]:
     if not state or "Creature" not in card.get("type_line",""):return 0,0
     power=toughness=0;controller=card.get("controller_id");type_line=card.get("type_line","").casefold()
@@ -862,13 +914,13 @@ def _new_player(player_id: str, name: str, deck: list[dict], is_bot: bool, forma
         if commander:
             library.remove(commander); commander["commander"] = True; command.append(commander)
     random.SystemRandom().shuffle(library)
-    return {"id": player_id, "name": name, "is_bot": is_bot, "format": format_name, "life": 40 if is_commander else 20, "poison": 0,"firebending_mana":0,"bent_this_turn":[], "library": library, "hand": [], "battlefield": [], "graveyard": [], "exile": [], "command": command, "commander_casts": 0, "commander_damage": {}, "commander_damage_names": {}, "land_plays_remaining": 1, "kept_hand": False, "mulligans": 0, "lost": False}
+    return {"id": player_id, "name": name, "is_bot": is_bot, "format": format_name, "life": 40 if is_commander else 20, "poison": 0,"firebending_mana":0,"bent_this_turn":[],"undercity_rooms":[], "library": library, "hand": [], "battlefield": [], "graveyard": [], "exile": [], "command": command, "commander_casts": 0, "commander_damage": {}, "commander_damage_names": {}, "land_plays_remaining": 1, "kept_hand": False, "mulligans": 0, "lost": False}
 
 
 def new_game(player_deck: list[dict], opponent_deck: list[dict], play_first: bool = True, opponent_is_bot: bool = True, player_format: str = "", opponent_format: str = "") -> dict:
     human_id, bot_id = "player", "bot"
     players = [_new_player(human_id, "You", player_deck, False, player_format), _new_player(bot_id, "Bot" if opponent_is_bot else "Guest", opponent_deck, opponent_is_bot, opponent_format)]
-    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "beginning_draw_pending":True,"first_turn_draw_skipped":False,"active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id, "players": players, "stack": [], "combat": {"attackers": [], "attackers_declared":False,"blocks": {}, "attack_targets": {},"block_orders":{},"damage_pending":False,"damage_step":None,"first_strike_damage_ids":[],"block_triggers_pending":False}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "pending_legendary": None,"pending_commander_zone":[],"pending_library_search":None,"pending_scry":None,"pending_damage_order":None,"pending_ward":None,"pending_blight":None,"pending_proliferate":None,"pending_amass":None,"pending_discovery":None,"pending_manifest":None,"pending_transform":None,"pending_trigger_targets":[], "log": []}
+    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "beginning_draw_pending":True,"first_turn_draw_skipped":False,"active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id,"monarch_id":None,"initiative_id":None, "players": players, "stack": [], "combat": {"attackers": [], "attackers_declared":False,"blocks": {}, "attack_targets": {},"block_orders":{},"damage_pending":False,"damage_step":None,"first_strike_damage_ids":[],"block_triggers_pending":False}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "pending_legendary": None,"pending_commander_zone":[],"pending_library_search":None,"pending_scry":None,"pending_damage_order":None,"pending_ward":None,"pending_blight":None,"pending_proliferate":None,"pending_amass":None,"pending_discovery":None,"pending_manifest":None,"pending_transform":None,"pending_dungeon":None,"pending_trigger_targets":[], "log": []}
     for player in players:
         _draw(state, player, 7,False)
     _log(state, "Opening hands drawn. Choose whether to keep or mulligan.")
@@ -890,6 +942,9 @@ def public_state(state: dict, viewer_id: str = "player") -> dict:
                 if card.get("face_down"):card.pop("face_down_values",None)
     pending_search=visible.get("pending_library_search")
     if pending_search and pending_search.get("player_id")!=viewer_id:pending_search["card_ids"]=[]
+    pending_dungeon=visible.get("pending_dungeon")
+    if pending_dungeon and pending_dungeon.get("player_id")!=viewer_id:
+        pending_dungeon.pop("cards",None);pending_dungeon["card_ids"]=[];pending_dungeon.pop("top_ids",None)
     return visible
 
 
@@ -983,7 +1038,7 @@ def _targets(state: dict, caster_id: str, card: dict) -> list[dict]:
                 if own_target_only and player["id"] != caster_id: continue
                 if opponent_target_only and player["id"] == caster_id: continue
                 if "nonland permanent" in text and "Land" in permanent.get("type_line", ""): continue
-                if _has_keyword(permanent,"Shroud") or (player["id"] != caster_id and _has_keyword(permanent,"Hexproof")): continue
+                if _has_keyword(permanent,"Shroud") or (player["id"] != caster_id and (_has_keyword(permanent,"Hexproof") or permanent.get("hexproof_until_turn",0)>=state["turn"])): continue
                 if _protected_from(permanent,card): continue
                 targets.append({"id": permanent["instance_id"], "name": permanent["name"], "kind": "permanent", "controller_id": player["id"]})
     return targets
@@ -1051,7 +1106,7 @@ def _multiplayer(state: dict) -> bool:
 
 
 def _pending_decision(state:dict)->bool:
-    return bool(state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_discovery") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_trigger_targets"))
+    return bool(state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_discovery") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
 
 
 def _queue_commander_zone_choice(state:dict,owner:dict,card:dict,zone:str)->None:
@@ -1170,6 +1225,12 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
     if pending_transform:
         if pending_transform["player_id"]!=player_id:return []
         return [{"type":"accept_transform","source_name":pending_transform["source_name"]},{"type":"decline_transform","source_name":pending_transform["source_name"]},{"type":"concede"}]
+    pending_dungeon=state.get("pending_dungeon")
+    if pending_dungeon:
+        if pending_dungeon["player_id"]!=player_id:return []
+        if pending_dungeon["kind"]=="room":return [{"type":"choose_dungeon_room","room":room,"label":room} for room in pending_dungeon["options"]]+[{"type":"concede"}]
+        if pending_dungeon["kind"]=="target":return [{"type":"choose_dungeon_target","room":pending_dungeon["room"],"targets":pending_dungeon["targets"],"label":f"{pending_dungeon['room']} — choose a creature"},{"type":"concede"}]
+        return [{"type":"choose_dungeon_card","room":pending_dungeon["room"],"card_ids":pending_dungeon["card_ids"],"cards":pending_dungeon["cards"],"label":"Choose a creature from the top ten cards"},{"type":"skip_dungeon_card","room":pending_dungeon["room"]},{"type":"concede"}]
     pending_triggers=state.get("pending_trigger_targets") or []
     if pending_triggers:
         pending=pending_triggers[0]
@@ -1423,6 +1484,8 @@ def _resolve_spell(state: dict) -> None:
         continuation_match=re.search(r"if you do,\s*(.+)",effect_text,re.IGNORECASE)
         state["pending_transform"]={"player_id":caster["id"],"source_id":source_permanent["instance_id"],"source_name":source_permanent["name"],"continuation":continuation_match.group(1).strip() if continuation_match else ""};state["priority_player_id"]=caster["id"]
         _log(state,f"{caster['name']} may transform {source_permanent['name']}.");return
+    if re.search(r"\b(?:you become|become) the monarch\b",effect_text):_take_monarch(state,caster)
+    if re.search(r"\b(?:you take|take) the initiative\b",effect_text):_take_initiative(state,caster)
     transform_instruction=source_permanent and re.search(r"\btransform (?:this (?:creature|permanent)|it|[a-z][^.]+)\b",effect_text)
     all_bending_required="if you've done all four this turn" in effect_text
     if transform_instruction and (not all_bending_required or set(caster.get("bent_this_turn",[]))>={"waterbend","earthbend","firebend","airbend"}):_transform(state,source_permanent)
@@ -2117,6 +2180,8 @@ def _combat_damage(state: dict) -> None:
             damage[source]=damage.get(source,0)+amount;names[source]=creature.get("rules_name") or creature["name"]
         if not planeswalker and amount > 0:
             _queue_triggers(state,"combat_damage_player",creature,attacker,trigger_dedupe)
+            if state.get("monarch_id")==defender["id"]:_take_monarch(state,attacker)
+            if state.get("initiative_id")==defender["id"]:_take_initiative(state,attacker)
 
     first_strike_ids=set(state["combat"].get("first_strike_damage_ids") or [])
     def damage_step(first: bool) -> None:
@@ -2222,10 +2287,13 @@ def _begin_next_turn(state:dict)->None:
         owner["firebending_mana"]=0;owner["bent_this_turn"]=[]
         for permanent in owner["battlefield"]:
             permanent.pop("temporary_power",None);permanent.pop("temporary_toughness",None);permanent.pop("temporary_keywords",None);permanent.pop("cant_attack_until_turn",None);permanent.pop("cant_block_until_turn",None);permanent.pop("regeneration_shields",None);permanent.pop("deathtouch_damage",None);permanent.pop("crewed_turn",None);permanent["damage"]=0
+            if permanent.get("goaded_until_turn",0)<state["turn"]:permanent.pop("goaded_until_turn",None);permanent.pop("goaded_by",None)
+            if permanent.get("hexproof_until_turn",0)<state["turn"]:permanent.pop("hexproof_until_turn",None)
             if permanent.get("base_type_line") is not None:permanent["type_line"]=permanent.pop("base_type_line")
     _set_tapped(state,list(active["battlefield"]),False,active["id"],"untap_step")
     for permanent in active["battlefield"]:permanent["summoning_sick"]=False
     _log(state, f"Turn {state['turn']} began for {active['name']}. Untap and upkeep started."); _queue_triggers(state,"upkeep",None,active)
+    if state.get("initiative_id")==active["id"]:_venture_undercity(state,active)
 
 
 def _advance_turn_phase(state: dict) -> None:
@@ -2252,7 +2320,10 @@ def _advance_turn_phase(state: dict) -> None:
         if leaving_combat:
             for owner in state["players"]:owner["firebending_mana"]=0
         if state["phase"] == "ending":
-            _queue_triggers(state,"end_step",None,_player(state,state["active_player_id"]))
+            active=_player(state,state["active_player_id"]);_queue_triggers(state,"end_step",None,active)
+            if state.get("monarch_id")==active["id"]:
+                emblem={"instance_id":_id(),"scryfall_id":"monarch","name":"The Monarch","image_url":None,"type_line":"Emblem Ability","oracle_text":"Draw a card.","mana_cost":"","mana_value":0,"keywords":[],"power":None,"toughness":None,"owner_id":active["id"],"controller_id":active["id"],"tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+                state["stack"].append({"id":_id(),"kind":"trigger","card":emblem,"controller_id":active["id"],"target_id":None});_log(state,"The monarch's end-step draw triggered.")
         elif state["phase"] == "combat":
             state["combat"]={"attackers":[],"attackers_declared":False,"blocks":{},"attack_targets":{},"block_orders":{},"damage_pending":False,"damage_step":None,"first_strike_damage_ids":[],"block_triggers_pending":False}
             _queue_triggers(state,"beginning_combat",None,_player(state,state["active_player_id"]))
@@ -2314,6 +2385,25 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         permanent=next((card for card in player["battlefield"] if card["instance_id"]==action.get("card_id") and card.get("face_down")),None);values=(permanent or {}).get("face_down_values") or {};cost=values.get("mana_cost") or ""
         if not permanent or "Creature" not in (values.get("type_line") or "") or not cost:raise RuleViolation("That card cannot be turned face up by paying its mana cost")
         _pay_mana(state,player,{"mana_cost":cost});_turn_face_up(state,player,permanent)
+    elif action_type=="choose_dungeon_room":
+        pending=state.get("pending_dungeon") or {};room=action.get("room")
+        if pending.get("player_id")!=player_id or pending.get("kind")!="room" or room not in pending.get("options",[]):raise RuleViolation("Choose a connected Undercity room")
+        state["pending_dungeon"]=None;_enter_undercity_room(state,player,room)
+    elif action_type=="choose_dungeon_target":
+        pending=state.get("pending_dungeon") or {};target_id=action.get("target_id");allowed={target["id"] for target in pending.get("targets",[])}
+        if pending.get("player_id")!=player_id or pending.get("kind")!="target" or target_id not in allowed:raise RuleViolation("Choose a legal creature for that Undercity room")
+        target=next(card for owner in state["players"] for card in owner["battlefield"] if card["instance_id"]==target_id);room=pending["room"];state["pending_dungeon"]=None
+        if room=="Forge":_add_counters(state,target,"+1/+1",2,player_id,"dungeon")
+        else:target["goaded_until_turn"]=state["turn"]+1;target["goaded_by"]=player_id;_log(state,f"{target['name']} was goaded by {player['name']}.")
+        state["priority_player_id"]=state["active_player_id"]
+    elif action_type in {"choose_dungeon_card","skip_dungeon_card"}:
+        pending=state.get("pending_dungeon") or {};card_id=action.get("card_id")
+        if pending.get("player_id")!=player_id or pending.get("kind")!="throne" or (action_type=="choose_dungeon_card" and card_id not in pending.get("card_ids",[])):raise RuleViolation("Choose a creature revealed by the Throne")
+        top_ids=pending["top_ids"];top=[card for card in player["library"] if card["instance_id"] in set(top_ids)];state["pending_dungeon"]=None
+        if action_type=="choose_dungeon_card":
+            chosen=next(card for card in top if card["instance_id"]==card_id);player["library"].remove(chosen);top.remove(chosen);chosen["controller_id"]=player_id;chosen["summoning_sick"]=True;chosen["hexproof_until_turn"]=state["turn"]+1;_add_counters(state,chosen,"+1/+1",3,player_id,"dungeon");_enter_battlefield(state,player,[chosen],"library")
+        for card in top:player["library"].remove(card)
+        random.SystemRandom().shuffle(top);player["library"][0:0]=top;state["priority_player_id"]=state["active_player_id"];_log(state,f"{player['name']} completed the Undercity.")
     elif action_type == "play_land":
         card = next((card for card in player["hand"] if card["instance_id"] == action.get("card_id") and "Land" in card.get("type_line", "")), None)
         if not card: raise RuleViolation("That land is not in your hand")
@@ -2504,6 +2594,8 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         requested = set(action.get("attacker_ids") or [])
         eligible = {card_id for entry in legal_actions(state, player_id) if entry["type"] == "declare_attackers" for card_id in entry.get("card_ids", [])}
         if not requested.issubset(eligible): raise RuleViolation("One or more attackers are not eligible")
+        goaded={card["instance_id"] for card in player["battlefield"] if card["instance_id"] in eligible and card.get("goaded_until_turn",0)>=state["turn"]}
+        if not goaded.issubset(requested):raise RuleViolation("Goaded creatures must attack if able")
         if len(requested)==1:
             lone=next(card for card in player["battlefield"] if card["instance_id"] in requested)
             if "can't attack or block alone" in _effective_rules_text(state,lone):raise RuleViolation(f"{lone['name']} can't attack alone")

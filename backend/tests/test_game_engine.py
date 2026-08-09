@@ -1,7 +1,7 @@
 import pytest
 
 from mtglogger.services.game_bot import _choose_blocks, choose_bot_action, run_bot
-from mtglogger.services.game_engine import RuleViolation, _add_counters, _add_saga_lore, _amass, _enter_battlefield, _has_keyword, _leave_graveyard, _put_into_exile, _queue_triggers, _set_tapped, _ward_details, legal_actions, new_game, perform_action, public_state
+from mtglogger.services.game_engine import RuleViolation, _add_counters, _add_saga_lore, _amass, _combat_damage, _enter_battlefield, _has_keyword, _leave_graveyard, _put_into_exile, _queue_triggers, _set_tapped, _venture_undercity, _ward_details, legal_actions, new_game, perform_action, public_state
 
 
 def card(index:int,name:str,type_line:str,mana_cost:str="",power:str|None=None,toughness:str|None=None,quantity:int=1):
@@ -2024,3 +2024,23 @@ def test_manifest_dread_requires_owner_choice_and_bot_prefers_the_creature():
     state=perform_action(state,"bot",{"type":"resolve"});action=legal_actions(state,"bot")[0];assert action["type"]=="choose_manifest_dread" and {card["instance_id"] for card in action["cards"]}=={"dread-creature","dread-land"}
     choice=choose_bot_action(state,"expert");assert choice=={"type":"choose_manifest_dread","card_id":"dread-creature"};state=perform_action(state,"bot",choice);bot=next(p for p in state["players"] if p["id"]=="bot")
     assert any(card["instance_id"]=="dread-creature" and card.get("face_down") for card in bot["battlefield"]) and any(card["instance_id"]=="dread-land" for card in bot["graveyard"])
+
+
+def test_monarch_draws_at_end_step_and_combat_damage_transfers_the_crown():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot");source={**card(1549,"Royal Arrival","Ability"),"oracle_text":"You become the monarch.","instance_id":"royal-arrival","owner_id":"player","controller_id":"player"};state["stack"].append({"id":"royal-stack","kind":"ability","card":source,"controller_id":"player","target_id":None,"source_id":"missing"});state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");before=len(player["library"]);state["phase"]="postcombat_main";state=perform_action(state,"player",{"type":"advance_phase"})
+    assert state["stack"][-1]["card"]["name"]=="The Monarch";state=perform_action(state,"player",{"type":"resolve"});assert len(next(p for p in state["players"] if p["id"]=="player")["library"])==before-1
+    player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot");attacker={**card(1550,"Crown Thief","Creature — Rogue","","2","2"),"instance_id":"crown-thief","owner_id":"bot","controller_id":"bot","tapped":True,"damage":0,"counters":{},"summoning_sick":False};bot["battlefield"].append(attacker);state["active_player_id"]="bot";state["combat"]={"attackers":["crown-thief"],"attackers_declared":True,"blocks":{},"attack_targets":{"crown-thief":"player"},"block_orders":{},"damage_pending":True,"damage_step":None,"first_strike_damage_ids":[]};_combat_damage(state)
+    assert state["monarch_id"]=="bot" and player["life"]==18
+
+
+def test_initiative_ventures_on_take_and_upkeep_with_enforced_room_choices():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player");basic={**card(1560,"Plains","Basic Land — Plains"),"instance_id":"undercity-plains","owner_id":"player","controller_id":"player"};creature={**card(1561,"Forge Bear","Creature — Bear","","2","2"),"instance_id":"forge-bear","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};source={**card(1562,"Initiative Arrival","Ability"),"oracle_text":"You take the initiative.","instance_id":"initiative-arrival","owner_id":"player","controller_id":"player"};player["library"].append(basic);player["battlefield"].append(creature);state["stack"].append({"id":"initiative-stack","kind":"ability","card":source,"controller_id":"player","target_id":None,"source_id":"missing"});state=perform_action(state,"player",{"type":"resolve"})
+    player=next(p for p in state["players"] if p["id"]=="player");assert state["initiative_id"]=="player" and player["undercity_rooms"]==["Secret Entrance"] and legal_actions(state,"player")[0]["type"]=="search_library"
+    state=perform_action(state,"player",{"type":"search_library","card_ids":["undercity-plains"]});_venture_undercity(state,next(p for p in state["players"] if p["id"]=="player"));actions=legal_actions(state,"player");assert {action.get("room") for action in actions} >= {"Forge","Lost Well"}
+    state=perform_action(state,"player",{"type":"choose_dungeon_room","room":"Forge"});target_action=legal_actions(state,"player")[0];assert target_action["type"]=="choose_dungeon_target";state=perform_action(state,"player",{"type":"choose_dungeon_target","target_id":"forge-bear"});player=next(p for p in state["players"] if p["id"]=="player");assert next(card for card in player["battlefield"] if card["instance_id"]=="forge-bear")["counters"]["+1/+1"]==2
+
+
+def test_bot_completes_throne_room_with_best_revealed_creature():
+    state=kept_game();state["active_player_id"]="bot";state["priority_player_id"]="bot";bot=next(p for p in state["players"] if p["id"]=="bot");bot["undercity_rooms"]=["Stash"];small={**card(1570,"Small Delver","Creature — Scout","","1","1"),"instance_id":"small-delver","owner_id":"bot","controller_id":"bot"};large={**card(1571,"Throne Dragon","Creature — Dragon","","6","6"),"instance_id":"throne-dragon","owner_id":"bot","controller_id":"bot"};bot["library"].extend([small,large]);_venture_undercity(state,bot)
+    choice=choose_bot_action(state,"expert");assert choice.get("room")=="Throne of the Dead Three";state=perform_action(state,"bot",choice);opponent_view=public_state(state,"player");assert "cards" not in opponent_view["pending_dungeon"] and opponent_view["pending_dungeon"]["card_ids"]==[] and "Throne Dragon" not in repr(opponent_view["pending_dungeon"])
+    choice=choose_bot_action(state,"expert");assert choice=={"type":"choose_dungeon_card","card_id":"throne-dragon"};state=perform_action(state,"bot",choice);bot=next(p for p in state["players"] if p["id"]=="bot");dragon=next(card for card in bot["battlefield"] if card["instance_id"]=="throne-dragon");assert dragon["counters"]["+1/+1"]==3 and dragon["hexproof_until_turn"]==state["turn"]+1
