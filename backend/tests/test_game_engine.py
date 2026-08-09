@@ -233,3 +233,12 @@ def test_board_wipes_global_stat_effects_and_life_loss_resolve():
     wipe={**card(631,"Wrath","Sorcery"),"oracle_text":"Destroy all creatures. Each opponent loses 3 life.","instance_id":"wipe","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"].append(wipe)
     state=perform_action(state,"player",{"type":"cast","card_id":"wipe"});state=perform_action(state,"player",{"type":"resolve"});bot=next(p for p in state["players"] if p["id"]=="bot")
     assert bot["life"]==17 and [item["instance_id"] for item in bot["battlefield"]]==["indestructible"] and any(item["instance_id"]=="normal" for item in bot["graveyard"])
+
+
+def test_first_strike_kills_before_retaliation_and_double_strike_hits_twice():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
+    striker={**card(640,"First Striker","Creature — Knight","","2","2"),"keywords":["First strike"],"instance_id":"striker","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};double={**card(641,"Double Striker","Creature — Knight","","2","2"),"keywords":["Double strike"],"instance_id":"double","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};blocker={**card(642,"Blocker","Creature — Bear","","2","2"),"instance_id":"blocker","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].extend([striker,double]);bot["battlefield"].append(blocker)
+    state=perform_action(state,"player",{"type":"declare_attackers","attacker_ids":["striker","double"]});state=perform_action(state,"bot",{"type":"declare_blockers","blocks":{"blocker":"striker"}});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
+    assert any(item["instance_id"]=="striker" and item["damage"]==0 for item in player["battlefield"])
+    assert any(item["instance_id"]=="blocker" for item in bot["graveyard"])
+    assert bot["life"]==16

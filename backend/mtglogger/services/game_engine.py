@@ -396,35 +396,50 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
 def _combat_damage(state: dict) -> None:
     attacker = _player(state, state["active_player_id"])
     defender = opponent(state, attacker["id"])
-    battlefield = {card["instance_id"]: card for player in state["players"] for card in player["battlefield"]}
-    blocked_attackers = set(state["combat"]["blocks"].values());deathtouch_hit:set[str]=set()
+    originally_blocked = set(state["combat"]["blocks"].values())
     def hit_player(creature:dict, amount:int)->None:
         defender["life"] -= amount
         if _has_keyword(creature,"Lifelink"): attacker["life"] += amount
         if creature.get("commander"):
             source = creature.get("owner_id", attacker["id"]); defender.setdefault("commander_damage", {})[source] = defender.setdefault("commander_damage", {}).get(source, 0) + amount
-    for attacker_id in state["combat"]["attackers"]:
-        creature = battlefield.get(attacker_id)
-        if not creature:
-            continue
-        power, _ = _parse_stats(creature)
-        if attacker_id not in blocked_attackers:
-            hit_player(creature, max(0,power)); continue
-        blockers=[battlefield[blocker_id] for blocker_id,target_id in state["combat"]["blocks"].items() if target_id==attacker_id and blocker_id in battlefield]
-        remaining=max(0,power)
-        for blocker in blockers:
-            _, toughness=_parse_stats(blocker);lethal=1 if _has_keyword(creature,"Deathtouch") else max(1,toughness-blocker.get("damage",0));assigned=min(remaining,lethal);blocker["damage"]+=assigned;remaining-=assigned
-            if assigned and _has_keyword(creature,"Deathtouch"):deathtouch_hit.add(blocker["instance_id"])
-            blocker_power,_=_parse_stats(blocker);creature["damage"]+=max(0,blocker_power)
-            if blocker_power>0 and _has_keyword(blocker,"Deathtouch"):deathtouch_hit.add(creature["instance_id"])
-            if _has_keyword(blocker,"Lifelink"): defender["life"]+=max(0,blocker_power)
-        if remaining and _has_keyword(creature,"Trample"):hit_player(creature,remaining)
-        if _has_keyword(creature,"Lifelink"):attacker["life"]+=max(0,power-remaining)
-    for owner in (attacker,defender):
-        for creature in list(owner["battlefield"]):
-            if "Creature" not in creature.get("type_line",""):continue
-            _,toughness=_parse_stats(creature)
-            if (creature.get("damage",0)>=toughness or creature["instance_id"] in deathtouch_hit) and not _has_keyword(creature,"Indestructible"):_leave_battlefield(state,owner,creature,"graveyard")
+
+    def damage_step(first: bool) -> None:
+        battlefield = {card["instance_id"]: card for player in state["players"] for card in player["battlefield"]}
+        deathtouch_hit:set[str]=set();damage:dict[str,int]={};life_gain={attacker["id"]:0,defender["id"]:0}
+        def strikes(card:dict)->bool:
+            has_first=_has_keyword(card,"First strike");double=_has_keyword(card,"Double strike")
+            return has_first or double if first else not has_first or double
+        for attacker_id in state["combat"]["attackers"]:
+            creature=battlefield.get(attacker_id)
+            if not creature or not strikes(creature):continue
+            power=max(0,_parse_stats(creature)[0]);blockers=[battlefield[blocker_id] for blocker_id,target_id in state["combat"]["blocks"].items() if target_id==attacker_id and blocker_id in battlefield]
+            if attacker_id not in originally_blocked:
+                hit_player(creature,power);continue
+            remaining=power
+            for blocker in blockers:
+                _,toughness=_parse_stats(blocker);lethal=1 if _has_keyword(creature,"Deathtouch") else max(1,toughness-blocker.get("damage",0));assigned=min(remaining,lethal);damage[blocker["instance_id"]]=damage.get(blocker["instance_id"],0)+assigned;remaining-=assigned
+                if assigned and _has_keyword(creature,"Deathtouch"):deathtouch_hit.add(blocker["instance_id"])
+            dealt=power-remaining
+            if dealt and _has_keyword(creature,"Lifelink"):life_gain[attacker["id"]]+=dealt
+            if remaining and _has_keyword(creature,"Trample"):hit_player(creature,remaining)
+        for blocker_id,attacker_id in state["combat"]["blocks"].items():
+            blocker,creature=battlefield.get(blocker_id),battlefield.get(attacker_id)
+            if not blocker or not creature or not strikes(blocker):continue
+            amount=max(0,_parse_stats(blocker)[0]);damage[creature["instance_id"]]=damage.get(creature["instance_id"],0)+amount
+            if amount and _has_keyword(blocker,"Deathtouch"):deathtouch_hit.add(creature["instance_id"])
+            if amount and _has_keyword(blocker,"Lifelink"):life_gain[defender["id"]]+=amount
+        for card_id,amount in damage.items():
+            if card_id in battlefield:battlefield[card_id]["damage"]+=amount
+        attacker["life"]+=life_gain[attacker["id"]];defender["life"]+=life_gain[defender["id"]]
+        for owner in (attacker,defender):
+            for creature in list(owner["battlefield"]):
+                if "Creature" not in creature.get("type_line",""):continue
+                _,toughness=_parse_stats(creature)
+                if (creature.get("damage",0)>=toughness or creature["instance_id"] in deathtouch_hit) and not _has_keyword(creature,"Indestructible"):_leave_battlefield(state,owner,creature,"graveyard")
+
+    participants=[card for owner in (attacker,defender) for card in owner["battlefield"] if card["instance_id"] in state["combat"]["attackers"] or card["instance_id"] in state["combat"]["blocks"]]
+    if any(_has_keyword(card,"First strike") or _has_keyword(card,"Double strike") for card in participants):damage_step(True)
+    damage_step(False)
     _log(state, "Combat damage resolved.")
     state["combat"] = {"attackers": [], "blocks": {}}
 
