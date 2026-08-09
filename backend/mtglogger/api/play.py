@@ -93,6 +93,17 @@ def _generated_deck_cards(db: Session, proposal: dict) -> list[dict]:
     return cards
 
 
+def _spectator_state(state:dict)->dict:
+    visible=public_state(state,"spectator")
+    for player in visible.get("players",[]):
+        for zone in ("hand","battlefield","graveyard","exile","command"):player[zone]=[]
+        player["commander_damage"]={};player["bent_this_turn"]=[]
+    visible["stack"]=[];visible["combat"]={"attackers":[],"blocks":{},"attack_targets":{},"block_orders":{},"damage_pending":False,"damage_step":None,"first_strike_damage_ids":[]};visible["log"]=[]
+    for key in ("pending_discard","pending_mulligan_bottom","pending_sacrifice","pending_legendary","pending_library_search","pending_scry","pending_damage_order","pending_ward","pending_blight","pending_proliferate","pending_transform"):visible[key]=None
+    visible["pending_commander_zone"]=[];visible["pending_trigger_targets"]=[]
+    return visible
+
+
 async def _build_random_bot_deck(db: Session, format_name: str) -> tuple[list[dict], str]:
     colors = list("WUBRG")
     strategies = ["balanced", "aggro", "control", "spells", "tokens", "creatures"]
@@ -112,8 +123,8 @@ async def _build_random_bot_deck(db: Session, format_name: str) -> tuple[list[di
 
 def _serialize(game: GameSession, viewer_id: str = "player", invite_token: str | None = None, host_token: str | None = None) -> GameRead:
     state = json.loads(game.state_json)
-    player_ids={player["id"] for player in state["players"]};actions=legal_actions(state,viewer_id,allow_direct_resolution=False) if viewer_id in player_ids else []
-    return GameRead(id=game.id, name=game.name, status=game.status, player_deck_id=game.player_deck_id, opponent_deck_id=game.opponent_deck_id, bot_difficulty=game.bot_difficulty, opponent_type=game.opponent_type or "bot", invite_code=game.invite_code, invite_token=invite_token, host_token=host_token, invite_expires_at=game.invite_expires_at, state=public_state(state, viewer_id), legal_actions=actions, created_at=game.created_at, updated_at=game.updated_at)
+    player_ids={player["id"] for player in state["players"]};spectator=viewer_id not in player_ids;actions=legal_actions(state,viewer_id,allow_direct_resolution=False) if not spectator else []
+    return GameRead(id=game.id, name=game.name, status=game.status, player_deck_id=game.player_deck_id, opponent_deck_id=game.opponent_deck_id, bot_difficulty=game.bot_difficulty, opponent_type=game.opponent_type or "bot", invite_code=None if spectator else game.invite_code, invite_token=invite_token, host_token=host_token, invite_expires_at=None if spectator else game.invite_expires_at, state=_spectator_state(state) if spectator else public_state(state, viewer_id), legal_actions=actions, created_at=game.created_at, updated_at=game.updated_at)
 
 
 @router.get("", response_model=list[GameRead])

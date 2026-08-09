@@ -54,6 +54,7 @@ def client():
         else:
             raise RuntimeError("Test API did not start")
         with httpx.Client(base_url=base_url, timeout=5) as test_client:
+            test_client.api_database_url = process_env["DATABASE_URL"]
             yield test_client
     finally:
         process.terminate()

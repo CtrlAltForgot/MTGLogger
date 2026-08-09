@@ -511,9 +511,12 @@ def test_private_game_tokens_redaction_rotation_and_version_conflicts(client):
     import json
     from datetime import UTC,datetime,timedelta
 
-    from mtglogger.database import SessionLocal
     from mtglogger.models import Deck,GameSession
     from mtglogger.services.game_engine import new_game
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    SessionLocal=sessionmaker(bind=create_engine(client.api_database_url))
 
     host_token="host-token-with-enough-entropy-123456"
     guest_token="guest-token-with-enough-entropy-12345"
@@ -524,16 +527,30 @@ def test_private_game_tokens_redaction_rotation_and_version_conflicts(client):
         game=GameSession(name="Secure game",player_deck_id=host_deck.id,opponent_deck_id=guest_deck.id,opponent_type="human",bot_difficulty="standard",invite_code="secure-invite-code",host_token_hash=hashlib.sha256(host_token.encode()).hexdigest(),guest_token_hash=hashlib.sha256(guest_token.encode()).hexdigest(),invite_expires_at=datetime.now(UTC)+timedelta(days=1),state_json=json.dumps(state),history_json="[]",status="mulligan");db.add(game);db.commit();game_id=game.id
 
     listing=client.get("/api/play").json()[0]
-    assert all(player["hand"]==[] for player in listing["state"]["players"])
+    assert listing["invite_code"] is None and listing["invite_expires_at"] is None and listing["legal_actions"]==[]
+    assert listing["state"]["stack"]==[] and listing["state"]["log"]==[] and listing["state"]["combat"]["attackers"]==[]
+    assert all(not any(player[zone] for zone in ("hand","battlefield","graveyard","exile","command")) for player in listing["state"]["players"])
     assert client.get(f"/api/play/{game_id}").status_code==404
+    assert client.get(f"/api/play/{game_id}",headers={"X-Game-Token":guest_token}).status_code==404
+    assert client.get("/api/play/invite/secure-invite-code/state",headers={"X-Game-Token":host_token}).status_code==404
     host=client.get(f"/api/play/{game_id}",headers={"X-Game-Token":host_token})
-    assert host.status_code==200 and len(next(player for player in host.json()["state"]["players"] if player["id"]=="player")["hand"])==7
+    assert host.status_code==200 and host.json()["invite_token"] is None and host.json()["host_token"] is None and len(next(player for player in host.json()["state"]["players"] if player["id"]=="player")["hand"])==7
     guest=client.get("/api/play/invite/secure-invite-code/state",headers={"X-Game-Token":guest_token})
-    assert guest.status_code==200 and len(next(player for player in guest.json()["state"]["players"] if player["id"]=="bot")["hand"])==7
+    assert guest.status_code==200 and guest.json()["invite_token"] is None and guest.json()["host_token"] is None and len(next(player for player in guest.json()["state"]["players"] if player["id"]=="bot")["hand"])==7
     accepted=client.post(f"/api/play/{game_id}/actions",headers={"X-Game-Token":host_token},json={"type":"keep","expected_version":state["version"]})
     assert accepted.status_code==200
+    guest_stale=client.post("/api/play/invite/secure-invite-code/actions",headers={"X-Game-Token":guest_token},json={"type":"keep","expected_version":state["version"]})
+    assert guest_stale.status_code==409
+    guest_version=client.get("/api/play/invite/secure-invite-code/state",headers={"X-Game-Token":guest_token}).json()["state"]["version"]
+    guest_accepted=client.post("/api/play/invite/secure-invite-code/actions",headers={"X-Game-Token":guest_token},json={"type":"keep","expected_version":guest_version})
+    assert guest_accepted.status_code==200
     stale=client.post(f"/api/play/{game_id}/actions",headers={"X-Game-Token":host_token},json={"type":"mulligan","expected_version":state["version"]})
     assert stale.status_code==409
+    with SessionLocal() as db:
+        stored=db.get(GameSession,game_id);stored.invite_expires_at=datetime.now(UTC)-timedelta(seconds=1);db.commit()
+    assert client.get("/api/play/invite/secure-invite-code/state",headers={"X-Game-Token":guest_token}).status_code==404
+    with SessionLocal() as db:
+        stored=db.get(GameSession,game_id);stored.invite_expires_at=datetime.now(UTC)+timedelta(days=1);db.commit()
     rotated=client.post(f"/api/play/{game_id}/invite/rotate",headers={"X-Game-Token":host_token})
     assert rotated.status_code==200 and rotated.json()["invite_token"]
     assert client.get("/api/play/invite/secure-invite-code/state",headers={"X-Game-Token":guest_token}).status_code==404
