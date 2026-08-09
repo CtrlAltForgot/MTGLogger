@@ -597,7 +597,7 @@ def _new_player(player_id: str, name: str, deck: list[dict], is_bot: bool, forma
 def new_game(player_deck: list[dict], opponent_deck: list[dict], play_first: bool = True, opponent_is_bot: bool = True, player_format: str = "", opponent_format: str = "") -> dict:
     human_id, bot_id = "player", "bot"
     players = [_new_player(human_id, "You", player_deck, False, player_format), _new_player(bot_id, "Bot" if opponent_is_bot else "Guest", opponent_deck, opponent_is_bot, opponent_format)]
-    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "beginning_draw_pending":True,"first_turn_draw_skipped":False,"active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id, "players": players, "stack": [], "combat": {"attackers": [], "blocks": {}, "attack_targets": {},"block_orders":{},"damage_pending":False,"damage_step":None,"first_strike_damage_ids":[]}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "pending_legendary": None,"pending_commander_zone":[],"pending_library_search":None,"pending_scry":None,"pending_damage_order":None,"pending_ward":None,"pending_blight":None,"pending_proliferate":None,"pending_transform":None,"pending_trigger_targets":[], "log": []}
+    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "beginning_draw_pending":True,"first_turn_draw_skipped":False,"active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id, "players": players, "stack": [], "combat": {"attackers": [], "blocks": {}, "attack_targets": {},"block_orders":{},"damage_pending":False,"damage_step":None,"first_strike_damage_ids":[],"block_triggers_pending":False}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "pending_legendary": None,"pending_commander_zone":[],"pending_library_search":None,"pending_scry":None,"pending_damage_order":None,"pending_ward":None,"pending_blight":None,"pending_proliferate":None,"pending_transform":None,"pending_trigger_targets":[], "log": []}
     for player in players:
         _draw(state, player, 7)
     _log(state, "Opening hands drawn. Choose whether to keep or mulligan.")
@@ -1300,11 +1300,13 @@ def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str) -
 def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owner: dict) -> None:
     if event in {"earthbend","waterbend","firebend","airbend"}:
         event_owner["bent_this_turn"]=sorted(set(event_owner.get("bent_this_turn",[]))|{event})
-    sources = [(owner, permanent) for owner in state["players"] for permanent in owner["battlefield"]]
+    ordered_owners=sorted(state["players"],key=lambda owner:owner["id"]!=state.get("active_player_id"))
+    sources = [(owner, permanent) for owner in ordered_owners for permanent in owner["battlefield"]]
     if event=="upkeep":
         for owner,permanent in sources:
             if permanent.pop("transform_next_upkeep",False):_transform(state,permanent)
-    if event in {"dies","cycling"} and event_card: sources.append((event_owner, event_card))
+    if event in {"dies","cycling"} and event_card:
+        insert_at=max((index+1 for index,(owner,_) in enumerate(sources) if owner["id"]==event_owner["id"]),default=len(sources));sources.insert(insert_at,(event_owner,event_card))
     for owner, source in sources:
         text = source.get("oracle_text") or ""
         raw_clauses = re.split(r"(?<=[.!])\s+|\n", text);clauses=[]
@@ -1339,12 +1341,19 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 controlled_attackers = [card for card in owner["battlefield"] if card.get("instance_id") in attacking_ids]
                 source_attacked = source.get("instance_id") in attacking_ids
                 source_name = re.escape(source.get("name", "").casefold())
-                if source_attacked and re.search(rf"whenever (?:~|this creature|{source_name}) attacks\b", lower):
+                if source_attacked and "attacks and isn't blocked" not in lower and "attacks and is not blocked" not in lower and re.search(rf"whenever (?:~|this creature|{source_name}) attacks\b", lower):
                     matches = True
                 elif controlled_attackers and "whenever one or more creatures you control attack" in lower:
                     matches = True
                 elif controlled_attackers and "whenever a creature you control attacks" in lower:
                     matches = True; trigger_count = len(controlled_attackers)
+            elif event == "blockers_declared":
+                combat=state.get("combat",{});blocks=combat.get("blocks",{});attacking_ids=set(combat.get("attackers",[]));blocked_ids=set(blocks.values());source_id=source.get("instance_id");source_name=re.escape(source.get("name","").casefold());source_blocking=source_id in blocks;source_blocked=source_id in blocked_ids;source_attacked=source_id in attacking_ids;controlled_blockers=[card for card in owner["battlefield"] if card.get("instance_id") in blocks]
+                if source_blocking and re.search(rf"whenever (?:~|this creature|{source_name}) (?:attacks or )?blocks\b",lower):matches=True
+                elif source_blocked and re.search(rf"whenever (?:~|this creature|{source_name}) becomes blocked\b",lower):matches=True
+                elif source_attacked and not source_blocked and re.search(rf"whenever (?:~|this creature|{source_name}) attacks and (?:isn't|is not) blocked\b",lower):matches=True
+                elif controlled_blockers and "whenever one or more creatures you control block" in lower:matches=True
+                elif controlled_blockers and "whenever a creature you control blocks" in lower:matches=True;trigger_count=len(controlled_blockers)
             elif event == "combat_damage_player" and event_card:
                 source_hit = source.get("instance_id") == event_card.get("instance_id")
                 source_name = re.escape(source.get("name", "").casefold())
@@ -1430,11 +1439,13 @@ def _combat_damage(state: dict) -> None:
     if state["combat"].get("damage_step") is None:
         first_strike_ids={card["instance_id"] for card in participants if _has_keyword(card,"First strike") or _has_keyword(card,"Double strike")}
         if first_strike_ids:
-            state["combat"]["first_strike_damage_ids"]=list(first_strike_ids);damage_step(True);state["combat"]["damage_step"]="regular";state["combat"]["damage_pending"]=True;state["priority_player_id"]=state["active_player_id"];state["consecutive_passes"]=0
+            state["combat"]["first_strike_damage_ids"]=list(first_strike_ids);damage_step(True);state["combat"]["damage_step"]="regular";state["combat"]["damage_pending"]=True
+            if not state.get("pending_trigger_targets"):state["priority_player_id"]=state["active_player_id"]
+            state["consecutive_passes"]=0
             _log(state,"First-strike combat damage resolved. Players may respond before regular combat damage.");return
     damage_step(False)
     _log(state, "Combat damage resolved.")
-    state["combat"] = {"attackers": [], "blocks": {},"attack_targets":{},"block_orders":{},"damage_pending":False,"damage_step":None,"first_strike_damage_ids":[]}
+    state["combat"] = {"attackers": [], "blocks": {},"attack_targets":{},"block_orders":{},"damage_pending":False,"damage_step":None,"first_strike_damage_ids":[],"block_triggers_pending":False}
 
 
 def _check_winner(state: dict) -> None:
@@ -1701,7 +1712,8 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
             state["consecutive_passes"] = 0
             if state["stack"]: _resolve_spell(state)
             elif state["combat"].get("damage_pending"):_combat_damage(state)
-            elif state["phase"]=="combat" and state["combat"]["attackers"]:state["combat"]["damage_pending"]=True;_log(state,"Blockers were finalized. Players may respond before combat damage.")
+            elif state["phase"]=="combat" and state["combat"]["attackers"]:
+                _queue_triggers(state,"blockers_declared",None,opponent(state,state["active_player_id"]));state["combat"]["damage_pending"]=True;_log(state,"No blockers were declared. Players may respond before combat damage.")
             elif state.get("pending_phase_advance"): _advance_turn_phase(state)
             if not _pending_decision(state):state["priority_player_id"] = state["active_player_id"]
         else:
@@ -1733,12 +1745,18 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         for attacker_id in state["combat"]["attackers"]:
             if _has_keyword(battlefield.get(attacker_id,{}),"Menace") and 0<list(blocks.values()).count(attacker_id)<2:raise RuleViolation("A creature with menace must be blocked by at least two creatures")
         state["combat"]["blocks"] = blocks;groups={attacker_id:[blocker_id for blocker_id,target_id in blocks.items() if target_id==attacker_id] for attacker_id in state["combat"]["attackers"]};groups={attacker_id:blocker_ids for attacker_id,blocker_ids in groups.items() if len(blocker_ids)>1}
-        if groups:state["pending_damage_order"]={"player_id":state["active_player_id"],"groups":groups};state["priority_player_id"]=state["active_player_id"]
-        else:state["combat"]["damage_pending"]=True;state["priority_player_id"] = state["active_player_id"];_log(state,"Blockers were finalized. Players may respond before combat damage.")
+        if groups:state["pending_damage_order"]={"player_id":state["active_player_id"],"groups":groups};state["combat"]["block_triggers_pending"]=True;state["priority_player_id"]=state["active_player_id"]
+        else:
+            _queue_triggers(state,"blockers_declared",None,player);state["combat"]["damage_pending"]=True
+            if not state.get("pending_trigger_targets"):state["priority_player_id"] = state["active_player_id"]
+            _log(state,"Blockers were finalized. Players may respond before combat damage.")
     elif action_type == "order_blockers":
         pending=state.get("pending_damage_order") or {};orders=action.get("block_orders") or {};expected=pending.get("groups",{})
         if pending.get("player_id")!=player_id or set(orders)!=set(expected) or any(len(order)!=len(expected[attacker_id]) or len(set(order))!=len(order) or set(order)!=set(expected[attacker_id]) for attacker_id,order in orders.items()):raise RuleViolation("Order every creature blocking each attacker exactly once")
-        state["combat"]["block_orders"]=orders;state["pending_damage_order"]=None;state["combat"]["damage_pending"]=True;state["priority_player_id"]=state["active_player_id"];_log(state,"Damage order was chosen. Players may respond before combat damage.")
+        state["combat"]["block_orders"]=orders;state["pending_damage_order"]=None;state["combat"]["damage_pending"]=True
+        if state["combat"].pop("block_triggers_pending",False):_queue_triggers(state,"blockers_declared",None,opponent(state,state["active_player_id"]))
+        if not state.get("pending_trigger_targets"):state["priority_player_id"]=state["active_player_id"]
+        _log(state,"Damage order was chosen. Players may respond before combat damage.")
     elif action_type == "resolve_combat_damage":
         if _multiplayer(state) or not state["combat"].get("damage_pending"):raise RuleViolation("Combat damage is not ready")
         _combat_damage(state)
@@ -1827,7 +1845,9 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if _multiplayer(state) or not allow_direct_resolution:
             state["pending_phase_advance"] = True; state["consecutive_passes"] = 1; state["priority_player_id"] = opponent(state, player_id)["id"]; _log(state, f"{player['name']} is ready to leave {state['phase'].replace('_', ' ')}.")
         elif state["phase"]=="combat" and state["combat"]["attackers"] and player_id!=state["active_player_id"]:
-            state["combat"]["damage_pending"]=True;state["priority_player_id"]=state["active_player_id"];_log(state,"No blockers were declared. Players may respond before combat damage.")
+            _queue_triggers(state,"blockers_declared",None,player);state["combat"]["damage_pending"]=True
+            if not state.get("pending_trigger_targets"):state["priority_player_id"]=state["active_player_id"]
+            _log(state,"No blockers were declared. Players may respond before combat damage.")
         else:
             _advance_turn_phase(state)
     elif action_type == "concede":

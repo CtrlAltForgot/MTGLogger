@@ -786,6 +786,30 @@ def test_multiplayer_priority_protocol_passes_separately_for_each_damage_step():
     assert next(card for card in player["battlefield"] if card["instance_id"]=="guest-striker")["damage"]==1 and not state["combat"]["damage_pending"]
 
 
+def test_block_and_becomes_blocked_triggers_wait_for_blockers_then_resolve_before_damage():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
+    attacker={**card(647,"Blocked Brawler","Creature — Warrior","","2","2"),"oracle_text":"Whenever Blocked Brawler becomes blocked, this creature gets +2/+2 until end of turn.","instance_id":"blocked-brawler","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};blocker={**card(648,"Studious Guard","Creature — Soldier","","1","4"),"oracle_text":"Whenever Studious Guard blocks, draw a card.","instance_id":"studious-guard","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].append(attacker);bot["battlefield"].append(blocker);before=len(bot["hand"])
+    state=perform_action(state,"player",{"type":"declare_attackers","attacker_ids":["blocked-brawler"]});assert not state["stack"]
+    state=perform_action(state,"bot",{"type":"declare_blockers","blocks":{"studious-guard":"blocked-brawler"}});assert [item["card"]["name"] for item in state["stack"]]==["Blocked Brawler trigger","Studious Guard trigger"] and state["combat"]["damage_pending"]
+    state=perform_action(state,"player",{"type":"resolve"});bot=next(p for p in state["players"] if p["id"]=="bot");assert len(bot["hand"])==before+1
+    state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");attacker=next(card for card in player["battlefield"] if card["instance_id"]=="blocked-brawler");assert (attacker["temporary_power"],attacker["temporary_toughness"])==(2,2)
+
+
+def test_attacks_and_isnt_blocked_trigger_waits_until_no_blocks_are_finalized():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player")
+    scout={**card(649,"Patient Scout","Creature — Scout","","1","1"),"oracle_text":"Whenever Patient Scout attacks and isn't blocked, draw a card.","instance_id":"patient-scout","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].append(scout);before=len(player["hand"])
+    state=perform_action(state,"player",{"type":"declare_attackers","attacker_ids":["patient-scout"]});assert not state["stack"]
+    state=perform_action(state,"bot",{"type":"advance_phase"});assert state["stack"][-1]["card"]["name"]=="Patient Scout trigger"
+    state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");assert len(player["hand"])==before+1 and state["combat"]["damage_pending"]
+
+
+def test_simultaneous_combat_triggers_use_active_player_then_nonactive_player_order():
+    state=kept_game();state["phase"]="combat";state["active_player_id"]="bot";state["priority_player_id"]="bot";player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
+    attacker={**card(650,"Bot Provocateur","Creature — Rogue","","2","2"),"oracle_text":"Whenever Bot Provocateur becomes blocked, you gain 1 life.","instance_id":"bot-provocateur","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};blocker={**card(651,"Human Sentinel","Creature — Soldier","","2","3"),"oracle_text":"Whenever Human Sentinel blocks, draw a card.","instance_id":"human-sentinel","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};bot["battlefield"].append(attacker);player["battlefield"].append(blocker)
+    state=perform_action(state,"bot",{"type":"declare_attackers","attacker_ids":["bot-provocateur"]});state=perform_action(state,"player",{"type":"declare_blockers","blocks":{"human-sentinel":"bot-provocateur"}})
+    assert [item["card"]["name"] for item in state["stack"]]==["Bot Provocateur trigger","Human Sentinel trigger"]
+
+
 def test_infect_wither_toxic_and_poison_loss_are_enforced():
     state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
     infect={**card(650,"Infecter","Creature — Horror","","3","3"),"keywords":["Infect"],"instance_id":"infect","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};toxic={**card(651,"Toxic","Creature — Phyrexian","","1","1"),"oracle_text":"Toxic 2","keywords":["Toxic"],"instance_id":"toxic","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};durable={**card(652,"Durable","Creature — Golem","","3","3"),"keywords":["Indestructible"],"instance_id":"durable","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].extend([infect,toxic]);bot["battlefield"].append(durable)
