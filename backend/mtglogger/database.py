@@ -39,7 +39,9 @@ def migrate_schema() -> None:
         additive_game_columns = {
             "opponent_type": "VARCHAR(16) DEFAULT 'bot'",
             "invite_code": "VARCHAR(32)",
+            "host_token_hash": "VARCHAR(64)",
             "guest_token_hash": "VARCHAR(64)",
+            "invite_expires_at": "TIMESTAMP WITH TIME ZONE",
             "history_json": "TEXT DEFAULT '[]'",
         }
         for column_name, column_type in additive_game_columns.items():

@@ -86,7 +86,7 @@ body { margin: 0; min-width: 320px; }
 img { border-radius: 7px; }
 button, a { -webkit-tap-highlight-color: transparent; }
 
-.play-table { position: relative; min-height: 780px; overflow: hidden; padding: 18px 120px; background: radial-gradient(ellipse at center,rgba(60,88,67,.92),rgba(24,43,34,.98) 58%,#101914),linear-gradient(120deg,#213a2c,#16231d) !important; border: 1px solid rgba(170,216,183,.16); }
+.play-table { position: relative; min-height:max(780px,calc(100vh - 145px)); overflow: hidden; padding: 18px 120px; background: radial-gradient(ellipse at center,rgba(60,88,67,.92),rgba(24,43,34,.98) 58%,#101914),linear-gradient(120deg,#213a2c,#16231d) !important; border: 1px solid rgba(170,216,183,.16); }
 .play-table::before { content:""; position:absolute; inset:0; pointer-events:none; opacity:.18; background-image:repeating-linear-gradient(35deg,transparent 0 28px,rgba(255,255,255,.025) 29px 30px); }
 .battlefield-zone { position:relative; height:245px; display:grid; grid-template-rows:1fr 1fr; align-items:center; z-index:1; }
 .permanent-row,.land-row,.player-hand { min-height:108px; align-items:center; overflow:visible; }

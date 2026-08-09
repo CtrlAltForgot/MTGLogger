@@ -301,6 +301,7 @@ class GameCreate(BaseModel):
     bot_difficulty: str = Field("standard", pattern="^(beginner|standard|expert)$")
     opponent_type: str = Field("bot", pattern="^(bot|human)$")
     play_first: bool = True
+    bot_deck_mode: str = Field("existing", pattern="^(existing|generated)$")
 
 
 class GameAction(BaseModel):
@@ -317,6 +318,7 @@ class GameAction(BaseModel):
     destination: str | None = Field(None, pattern="^(hand|battlefield|graveyard|exile)$")
     source: str | None = Field(None, pattern="^(hand|command)$")
     ability_index: int | None = Field(None, ge=0, le=20)
+    expected_version: int | None = Field(None, ge=1)
 
 
 class GameRead(BaseModel):
@@ -329,6 +331,8 @@ class GameRead(BaseModel):
     opponent_type: str
     invite_code: str | None = None
     invite_token: str | None = None
+    host_token: str | None = None
+    invite_expires_at: datetime | None = None
     state: dict
     legal_actions: list[dict]
     created_at: datetime

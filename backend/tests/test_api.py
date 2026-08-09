@@ -506,6 +506,39 @@ def test_auto_deck_preview_and_apply_use_only_unassigned_local_cards(monkeypatch
     assert sum(entry.quantity for entry in assigned)==60
 
 
+def test_private_game_tokens_redaction_rotation_and_version_conflicts(client):
+    import hashlib
+    import json
+    from datetime import UTC,datetime,timedelta
+
+    from mtglogger.database import SessionLocal
+    from mtglogger.models import Deck,GameSession
+    from mtglogger.services.game_engine import new_game
+
+    host_token="host-token-with-enough-entropy-123456"
+    guest_token="guest-token-with-enough-entropy-12345"
+    source={"scryfall_id":"test-card","name":"Test Card","image_url":None,"type_line":"Basic Land — Island","oracle_text":"{T}: Add {U}.","mana_cost":"","mana_value":0,"keywords":[],"power":None,"toughness":None,"quantity":60}
+    state=new_game([source],[source],opponent_is_bot=False)
+    with SessionLocal() as db:
+        host_deck=Deck(name="Private host");guest_deck=Deck(name="Private guest");db.add_all([host_deck,guest_deck]);db.flush()
+        game=GameSession(name="Secure game",player_deck_id=host_deck.id,opponent_deck_id=guest_deck.id,opponent_type="human",bot_difficulty="standard",invite_code="secure-invite-code",host_token_hash=hashlib.sha256(host_token.encode()).hexdigest(),guest_token_hash=hashlib.sha256(guest_token.encode()).hexdigest(),invite_expires_at=datetime.now(UTC)+timedelta(days=1),state_json=json.dumps(state),history_json="[]",status="mulligan");db.add(game);db.commit();game_id=game.id
+
+    listing=client.get("/api/play").json()[0]
+    assert all(player["hand"]==[] for player in listing["state"]["players"])
+    assert client.get(f"/api/play/{game_id}").status_code==404
+    host=client.get(f"/api/play/{game_id}",headers={"X-Game-Token":host_token})
+    assert host.status_code==200 and len(next(player for player in host.json()["state"]["players"] if player["id"]=="player")["hand"])==7
+    guest=client.get("/api/play/invite/secure-invite-code/state",headers={"X-Game-Token":guest_token})
+    assert guest.status_code==200 and len(next(player for player in guest.json()["state"]["players"] if player["id"]=="bot")["hand"])==7
+    accepted=client.post(f"/api/play/{game_id}/actions",headers={"X-Game-Token":host_token},json={"type":"keep","expected_version":state["version"]})
+    assert accepted.status_code==200
+    stale=client.post(f"/api/play/{game_id}/actions",headers={"X-Game-Token":host_token},json={"type":"mulligan","expected_version":state["version"]})
+    assert stale.status_code==409
+    rotated=client.post(f"/api/play/{game_id}/invite/rotate",headers={"X-Game-Token":host_token})
+    assert rotated.status_code==200 and rotated.json()["invite_token"]
+    assert client.get("/api/play/invite/secure-invite-code/state",headers={"X-Game-Token":guest_token}).status_code==404
+
+
 def test_deck_format_suggestions_require_legality_and_structure(monkeypatch):
     import asyncio
 
