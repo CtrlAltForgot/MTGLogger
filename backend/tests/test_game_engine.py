@@ -499,3 +499,52 @@ def test_surveil_orders_kept_cards_and_moves_selected_cards_to_graveyard():
     state=perform_action(state,"player",{"type":"cast","card_id":"surveil-spell"});state=perform_action(state,"player",{"type":"resolve"});action=legal_actions(state,"player")[0];assert action["type"]=="surveil" and action["card_ids"]==expected
     state=perform_action(state,"player",{"type":"surveil","top_ids":[expected[1]],"graveyard_ids":[expected[0]]});player=next(p for p in state["players"] if p["id"]=="player")
     assert player["library"][-1]["instance_id"]==expected[1] and player["graveyard"][-1]["instance_id"]==expected[0] and state.get("pending_scry") is None
+
+
+def test_landfall_cast_and_end_step_triggers_use_the_stack():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player")
+    landfall={**card(820,"Life Gardener","Creature — Druid","","1","1"),"oracle_text":"Landfall — Whenever a land enters the battlefield under your control, you gain 1 life.","instance_id":"life-gardener","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    scholar={**card(821,"Spell Scholar","Creature — Wizard","","1","1"),"oracle_text":"Whenever you cast a noncreature spell, draw a card.","instance_id":"spell-scholar","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    reveler={**card(822,"Dusk Reveler","Creature — Bard","","1","1"),"oracle_text":"At the beginning of your end step, you gain 2 life.","instance_id":"dusk-reveler","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    land={**card(823,"Forest","Basic Land — Forest"),"instance_id":"trigger-land","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    spell={**card(824,"Quiet Thought","Sorcery"),"instance_id":"quiet-thought","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    player["battlefield"].extend([landfall,scholar,reveler]);player["hand"].extend([land,spell]);starting_life=player["life"]
+    state=perform_action(state,"player",{"type":"play_land","card_id":"trigger-land"});assert state["stack"][-1]["card"]["name"]=="Life Gardener trigger"
+    state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");assert player["life"]==starting_life+1
+    before=len(player["hand"]);state=perform_action(state,"player",{"type":"cast","card_id":"quiet-thought"});assert [item["card"]["name"] for item in state["stack"][-2:]]==["Quiet Thought","Spell Scholar trigger"]
+    state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");assert len(player["hand"])==before
+    state=perform_action(state,"player",{"type":"resolve"});state["phase"]="postcombat_main";state=perform_action(state,"player",{"type":"advance_phase"});assert state["phase"]=="ending" and state["stack"][-1]["card"]["name"]=="Dusk Reveler trigger"
+    state=perform_action(state,"player",{"type":"resolve"});assert next(p for p in state["players"] if p["id"]=="player")["life"]==starting_life+3
+
+
+def test_attack_triggers_count_attackers_once_or_individually_and_choose_targets():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
+    banner={**card(830,"Battle Banner","Enchantment"),"oracle_text":"Whenever one or more creatures you control attack, you gain 1 life.","instance_id":"battle-banner","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    mentor={**card(831,"Attack Mentor","Creature — Soldier","","2","2"),"oracle_text":"Whenever a creature you control attacks, you gain 1 life.","instance_id":"attack-mentor","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    raider={**card(832,"Target Raider","Creature — Warrior","","2","2"),"oracle_text":"Whenever Target Raider attacks, tap target creature.","instance_id":"target-raider","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    ally={**card(833,"Ally Attacker","Creature — Soldier","","2","2"),"instance_id":"ally-attacker","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    blocker={**card(834,"Resting Blocker","Creature — Beast","","3","3"),"instance_id":"resting-blocker","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    player["battlefield"].extend([banner,mentor,raider,ally]);bot["battlefield"].append(blocker);starting_life=player["life"]
+    state=perform_action(state,"player",{"type":"declare_attackers","attacker_ids":["target-raider","ally-attacker"]});action=legal_actions(state,"player")[0]
+    assert action["type"]=="choose_trigger_target" and any(target["id"]=="resting-blocker" for target in action["targets"])
+    state=perform_action(state,"player",{"type":"choose_trigger_target","target_id":"resting-blocker"});assert len(state["stack"])==4
+    while state["stack"]:state=perform_action(state,"player",{"type":"resolve"})
+    player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
+    assert player["life"]==starting_life+3 and next(card for card in bot["battlefield"] if card["instance_id"]=="resting-blocker")["tapped"]
+
+
+def test_combat_damage_to_player_triggers_after_unblocked_damage():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player")
+    infiltrator={**card(840,"Lore Infiltrator","Creature — Rogue","","2","2"),"oracle_text":"Whenever Lore Infiltrator deals combat damage to a player, draw a card.","instance_id":"lore-infiltrator","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].append(infiltrator);before=len(player["hand"])
+    state=perform_action(state,"player",{"type":"declare_attackers","attacker_ids":["lore-infiltrator"]});state=perform_action(state,"bot",{"type":"advance_phase"});state=perform_action(state,"player",{"type":"resolve_combat_damage"})
+    assert state["stack"][-1]["card"]["name"]=="Lore Infiltrator trigger" and next(p for p in state["players"] if p["id"]=="bot")["life"]==18
+    state=perform_action(state,"player",{"type":"resolve"});assert len(next(p for p in state["players"] if p["id"]=="player")["hand"])==before+1
+
+
+def test_prowess_cast_trigger_applies_to_its_source_until_end_of_turn():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player")
+    mage={**card(850,"Prowess Mage","Creature — Wizard","","2","2"),"oracle_text":"Prowess (Whenever you cast a noncreature spell, this creature gets +1/+1 until end of turn.)","keywords":["Prowess"],"instance_id":"prowess-mage","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    spell={**card(851,"Practice Spell","Sorcery"),"instance_id":"practice-spell","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].append(mage);player["hand"].append(spell)
+    state=perform_action(state,"player",{"type":"cast","card_id":"practice-spell"});assert state["stack"][-1]["card"]["name"]=="Prowess Mage trigger"
+    state=perform_action(state,"player",{"type":"resolve"});mage=next(card for card in next(p for p in state["players"] if p["id"]=="player")["battlefield"] if card["instance_id"]=="prowess-mage")
+    assert (mage["temporary_power"],mage["temporary_toughness"])==(1,1) and (public_state(state)["players"][0]["battlefield"][-1]["effective_power"],public_state(state)["players"][0]["battlefield"][-1]["effective_toughness"])==(3,3)
