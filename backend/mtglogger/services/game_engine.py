@@ -78,6 +78,11 @@ def _has_keyword(card: dict, keyword: str) -> bool:
     return keyword.casefold() in {value.casefold() for value in card.get("keywords", [])} or re.search(rf"\b{re.escape(keyword.casefold())}\b", (card.get("oracle_text") or "").casefold()) is not None
 
 
+def _toxic_value(card: dict) -> int:
+    match=re.search(r"\btoxic (\d+)\b",card.get("oracle_text") or "",re.IGNORECASE)
+    return int(match.group(1)) if match else 0
+
+
 def _card_colors(card: dict) -> set[str]:
     return {part for symbol in _mana_symbols(card) for part in symbol.upper().split("/") if part in "WUBRG"}
 
@@ -154,7 +159,7 @@ def _new_player(player_id: str, name: str, deck: list[dict], is_bot: bool, forma
         if commander:
             library.remove(commander); commander["commander"] = True; command.append(commander)
     random.SystemRandom().shuffle(library)
-    return {"id": player_id, "name": name, "is_bot": is_bot, "format": format_name, "life": 40 if is_commander else 20, "library": library, "hand": [], "battlefield": [], "graveyard": [], "exile": [], "command": command, "commander_casts": 0, "commander_damage": {}, "land_plays_remaining": 1, "kept_hand": False, "lost": False}
+    return {"id": player_id, "name": name, "is_bot": is_bot, "format": format_name, "life": 40 if is_commander else 20, "poison": 0, "library": library, "hand": [], "battlefield": [], "graveyard": [], "exile": [], "command": command, "commander_casts": 0, "commander_damage": {}, "land_plays_remaining": 1, "kept_hand": False, "lost": False}
 
 
 def new_game(player_deck: list[dict], opponent_deck: list[dict], play_first: bool = True, opponent_is_bot: bool = True, player_format: str = "", opponent_format: str = "") -> dict:
@@ -300,8 +305,12 @@ def _resolve_spell(state: dict) -> None:
     targeted_damage = re.search(r"deals (\d+) damage to (?:any target|target creature)", effect_text)
     if targeted_damage and (target_player or target):
         amount = int(targeted_damage.group(1))
-        if target_player: target_player["life"] -= amount
-        elif target: target["damage"] += amount
+        if target_player:
+            if _has_keyword(card,"Infect"):target_player["poison"]=target_player.get("poison",0)+amount
+            else:target_player["life"] -= amount
+        elif target:
+            if _has_keyword(card,"Infect") or _has_keyword(card,"Wither"):target["counters"]["-1/-1"]=target["counters"].get("-1/-1",0)+amount
+            else:target["damage"] += amount
     if target and target_owner and re.search(r"destroy target (?:creature|permanent|nonland permanent)", effect_text):
         if not _has_keyword(target,"Indestructible"): _leave_battlefield(state, target_owner, target, "graveyard"); _log(state, f"{target['name']} was destroyed.")
     if target and target_owner and re.search(r"exile target (?:creature|permanent|nonland permanent)", effect_text):
@@ -398,14 +407,17 @@ def _combat_damage(state: dict) -> None:
     defender = opponent(state, attacker["id"])
     originally_blocked = set(state["combat"]["blocks"].values())
     def hit_player(creature:dict, amount:int)->None:
-        defender["life"] -= amount
+        if _has_keyword(creature,"Infect"):defender["poison"]=defender.get("poison",0)+amount
+        else:defender["life"] -= amount
+        toxic=_toxic_value(creature)
+        if amount>0 and toxic:defender["poison"]=defender.get("poison",0)+toxic
         if _has_keyword(creature,"Lifelink"): attacker["life"] += amount
         if creature.get("commander"):
             source = creature.get("owner_id", attacker["id"]); defender.setdefault("commander_damage", {})[source] = defender.setdefault("commander_damage", {}).get(source, 0) + amount
 
     def damage_step(first: bool) -> None:
         battlefield = {card["instance_id"]: card for player in state["players"] for card in player["battlefield"]}
-        deathtouch_hit:set[str]=set();damage:dict[str,int]={};life_gain={attacker["id"]:0,defender["id"]:0}
+        deathtouch_hit:set[str]=set();damage:dict[str,int]={};counter_damage:dict[str,int]={};life_gain={attacker["id"]:0,defender["id"]:0}
         def strikes(card:dict)->bool:
             has_first=_has_keyword(card,"First strike");double=_has_keyword(card,"Double strike")
             return has_first or double if first else not has_first or double
@@ -417,7 +429,7 @@ def _combat_damage(state: dict) -> None:
                 hit_player(creature,power);continue
             remaining=power
             for blocker in blockers:
-                _,toughness=_parse_stats(blocker);lethal=1 if _has_keyword(creature,"Deathtouch") else max(1,toughness-blocker.get("damage",0));assigned=min(remaining,lethal);damage[blocker["instance_id"]]=damage.get(blocker["instance_id"],0)+assigned;remaining-=assigned
+                _,toughness=_parse_stats(blocker);lethal=1 if _has_keyword(creature,"Deathtouch") else max(1,toughness-blocker.get("damage",0));assigned=min(remaining,lethal);bucket=counter_damage if _has_keyword(creature,"Infect") or _has_keyword(creature,"Wither") else damage;bucket[blocker["instance_id"]]=bucket.get(blocker["instance_id"],0)+assigned;remaining-=assigned
                 if assigned and _has_keyword(creature,"Deathtouch"):deathtouch_hit.add(blocker["instance_id"])
             dealt=power-remaining
             if dealt and _has_keyword(creature,"Lifelink"):life_gain[attacker["id"]]+=dealt
@@ -425,11 +437,13 @@ def _combat_damage(state: dict) -> None:
         for blocker_id,attacker_id in state["combat"]["blocks"].items():
             blocker,creature=battlefield.get(blocker_id),battlefield.get(attacker_id)
             if not blocker or not creature or not strikes(blocker):continue
-            amount=max(0,_parse_stats(blocker)[0]);damage[creature["instance_id"]]=damage.get(creature["instance_id"],0)+amount
+            amount=max(0,_parse_stats(blocker)[0]);bucket=counter_damage if _has_keyword(blocker,"Infect") or _has_keyword(blocker,"Wither") else damage;bucket[creature["instance_id"]]=bucket.get(creature["instance_id"],0)+amount
             if amount and _has_keyword(blocker,"Deathtouch"):deathtouch_hit.add(creature["instance_id"])
             if amount and _has_keyword(blocker,"Lifelink"):life_gain[defender["id"]]+=amount
         for card_id,amount in damage.items():
             if card_id in battlefield:battlefield[card_id]["damage"]+=amount
+        for card_id,amount in counter_damage.items():
+            if card_id in battlefield:battlefield[card_id]["counters"]["-1/-1"]=battlefield[card_id]["counters"].get("-1/-1",0)+amount
         attacker["life"]+=life_gain[attacker["id"]];defender["life"]+=life_gain[defender["id"]]
         for owner in (attacker,defender):
             for creature in list(owner["battlefield"]):
@@ -445,7 +459,7 @@ def _combat_damage(state: dict) -> None:
 
 
 def _check_winner(state: dict) -> None:
-    losers = [player for player in state["players"] if player["life"] <= 0 or player.get("lost") or any(amount >= 21 for amount in player.get("commander_damage", {}).values())]
+    losers = [player for player in state["players"] if player["life"] <= 0 or player.get("poison",0)>=10 or player.get("lost") or any(amount >= 21 for amount in player.get("commander_damage", {}).values())]
     if losers:
         state["status"] = "complete"
         state["winner_id"] = opponent(state, losers[0]["id"])["id"]

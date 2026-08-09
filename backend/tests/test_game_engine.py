@@ -242,3 +242,12 @@ def test_first_strike_kills_before_retaliation_and_double_strike_hits_twice():
     assert any(item["instance_id"]=="striker" and item["damage"]==0 for item in player["battlefield"])
     assert any(item["instance_id"]=="blocker" for item in bot["graveyard"])
     assert bot["life"]==16
+
+
+def test_infect_wither_toxic_and_poison_loss_are_enforced():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
+    infect={**card(650,"Infecter","Creature — Horror","","3","3"),"keywords":["Infect"],"instance_id":"infect","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};toxic={**card(651,"Toxic","Creature — Phyrexian","","1","1"),"oracle_text":"Toxic 2","keywords":["Toxic"],"instance_id":"toxic","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};durable={**card(652,"Durable","Creature — Golem","","3","3"),"keywords":["Indestructible"],"instance_id":"durable","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].extend([infect,toxic]);bot["battlefield"].append(durable)
+    state=perform_action(state,"player",{"type":"declare_attackers","attacker_ids":["infect","toxic"]});state=perform_action(state,"bot",{"type":"declare_blockers","blocks":{"durable":"infect"}});bot=next(p for p in state["players"] if p["id"]=="bot")
+    assert bot["life"]==19 and bot["poison"]==2 and any(item["instance_id"]=="durable" for item in bot["graveyard"])
+    bot["poison"]=10;state["status"]="active";state["winner_id"]=None
+    state=perform_action(state,"player",{"type":"adjust_life","amount":0});assert state["status"]=="complete" and state["winner_id"]=="player"
