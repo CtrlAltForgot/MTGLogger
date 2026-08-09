@@ -63,7 +63,7 @@ async def indexed_sets(db: Session = Depends(get_db)):
 
 @router.get("/cards")
 def indexed_cards(
-    set_code: str = Query(min_length=2, max_length=8),
+    set_code: str | None = Query(None, min_length=2, max_length=8),
     search: str = Query("", max_length=100),
     page: int = Query(1, ge=1),
     page_size: int = Query(40, ge=1, le=100),
@@ -75,14 +75,22 @@ def indexed_cards(
             CardVisualFingerprint,
             CardVisualFingerprint.scryfall_id == CardReference.scryfall_id,
         )
-        .where(CardReference.set_code == set_code.lower())
         .where(CardVisualFingerprint.descriptor_path.is_not(None))
     )
     term = search.strip()
+    if not set_code and not term:
+        raise HTTPException(422, "Choose a set or enter a database search")
+    if set_code:
+        statement = statement.where(CardReference.set_code == set_code.lower())
     if term:
         pattern = f"%{term}%"
         statement = statement.where(
-            or_(CardReference.name.ilike(pattern), CardReference.collector_number.ilike(pattern))
+            or_(
+                CardReference.name.ilike(pattern),
+                CardReference.collector_number.ilike(pattern),
+                CardReference.set_name.ilike(pattern),
+                CardReference.set_code.ilike(pattern),
+            )
         )
     total = db.scalar(select(func.count()).select_from(statement.subquery())) or 0
     rows = db.execute(

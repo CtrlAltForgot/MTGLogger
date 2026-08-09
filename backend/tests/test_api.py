@@ -499,6 +499,10 @@ def test_recognition_reference_status(client):
     assert client.get("/api/references/sets").json() == []
     cards = client.get("/api/references/cards", params={"set_code": "ori"}).json()
     assert cards == {"items": [], "total": 0, "page": 1, "page_size": 40}
+    global_search = client.get("/api/references/cards", params={"search": "Black Lotus"})
+    assert global_search.status_code == 200
+    assert global_search.json() == {"items": [], "total": 0, "page": 1, "page_size": 40}
+    assert client.get("/api/references/cards").status_code == 422
 
 
 def test_exact_printing_details_preserve_scryfall_identity():
