@@ -187,3 +187,28 @@ def test_mana_rocks_colorless_and_hybrid_costs_and_zero_toughness_state_action()
     state=perform_action(state,"player",{"type":"cast","card_id":"hybrid"});player=next(item for item in state["players"] if item["id"]=="player");assert all(item["tapped"] for item in player["battlefield"] if item["instance_id"] in {"rock","plains"})
     state=perform_action(state,"player",{"type":"resolve"});state=perform_action(state,"player",{"type":"add_counter","target_id":"hybrid","counter_name":"-1/-1","amount":1});player=next(item for item in state["players"] if item["id"]=="player")
     assert not any(item["instance_id"]=="hybrid" for item in player["battlefield"])
+
+
+def test_bounce_tap_combat_trick_mill_and_discard_effects_resolve():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(item for item in state["players"] if item["id"]=="player");bot=next(item for item in state["players"] if item["id"]=="bot")
+    creature={**card(600,"Target","Creature — Bear","","2","2"),"instance_id":"target","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};bot["battlefield"].append(creature)
+    def resolve(text,target="target"):
+        ability={**card(601,text,"Instant"),"oracle_text":text,"instance_id":text,"owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"].append(ability)
+        result=perform_action(state,"player",{"type":"cast","card_id":text,"target_id":target});return perform_action(result,"player",{"type":"resolve"})
+    state=resolve("Tap target creature.");creature=next(item for item in next(p for p in state["players"] if p["id"]=="bot")["battlefield"] if item["instance_id"]=="target");assert creature["tapped"]
+    player=next(item for item in state["players"] if item["id"]=="player");bot=next(item for item in state["players"] if item["id"]=="bot");state=resolve("Target creature an opponent controls gets -2/-2 until end of turn.")
+    assert not next(item for item in state["players"] if item["id"]=="bot")["battlefield"]
+    player=next(item for item in state["players"] if item["id"]=="player");bot=next(item for item in state["players"] if item["id"]=="bot");before_library=len(bot["library"]);before_hand=len(bot["hand"]);state=resolve("Target player mills three cards.","bot")
+    assert len(next(item for item in state["players"] if item["id"]=="bot")["library"])==before_library-3
+    player=next(item for item in state["players"] if item["id"]=="player");bot=next(item for item in state["players"] if item["id"]=="bot");state=resolve("Target opponent discards two cards.",None)
+    assert len(next(item for item in state["players"] if item["id"]=="bot")["hand"])==before_hand-2
+
+
+def test_counterspell_targets_and_counters_a_spell_on_the_stack():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(item for item in state["players"] if item["id"]=="player");bot=next(item for item in state["players"] if item["id"]=="bot")
+    bot["is_bot"]=False
+    threat={**card(610,"Threat","Creature — Beast","","3","3"),"instance_id":"threat","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};counter={**card(611,"Counterspell","Instant"),"oracle_text":"Counter target spell.","instance_id":"counter","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};bot["hand"].append(threat);player["hand"].append(counter)
+    state["active_player_id"]="bot";state["priority_player_id"]="bot";state=perform_action(state,"bot",{"type":"cast","card_id":"threat"});target=state["stack"][-1]["id"]
+    action=next(item for item in legal_actions(state,"player") if item.get("card_id")=="counter");assert action["targets"][0]["id"]==target
+    state=perform_action(state,"player",{"type":"cast","card_id":"counter","target_id":target});state=perform_action(state,"bot",{"type":"pass_priority"});state=perform_action(state,"player",{"type":"pass_priority"})
+    bot=next(item for item in state["players"] if item["id"]=="bot");assert any(item["name"]=="Threat" for item in bot["graveyard"]) and not state["stack"]

@@ -43,7 +43,7 @@ def _draw(state: dict, player: dict, amount: int = 1) -> None:
 def _parse_stats(card: dict) -> tuple[int, int]:
     try:
         plus = card.get("counters", {}).get("+1/+1", 0); minus = card.get("counters", {}).get("-1/-1", 0)
-        return int(card.get("power") or 0) + plus - minus, int(card.get("toughness") or 0) + plus - minus
+        return int(card.get("power") or 0) + plus - minus + card.get("temporary_power", 0), int(card.get("toughness") or 0) + plus - minus + card.get("temporary_toughness", 0)
     except ValueError:
         return 0, 0
 
@@ -167,8 +167,11 @@ def public_state(state: dict, viewer_id: str = "player") -> dict:
 
 def _target_kind(card: dict) -> str | None:
     text = (card.get("oracle_text") or "").casefold()
+    if "counter target spell" in text: return "spell"
+    if re.search(r"target player mills?", text): return "player"
     if re.search(r"(?:destroy|exile) target (?:artifact, creature, enchantment, planeswalker|nonland permanent|permanent)", text): return "permanent"
-    if re.search(r"(?:destroy|exile) target creature", text) or re.search(r"deals \d+ damage to target creature", text): return "creature"
+    if re.search(r"(?:destroy|exile|tap|untap|return) target creature", text) or re.search(r"target creature .*gets [+-]\d+/[+-]\d+", text) or re.search(r"deals \d+ damage to target creature", text): return "creature"
+    if re.search(r"return target (?:nonland )?permanent", text): return "permanent"
     if re.search(r"deals \d+ damage to any target", text): return "any"
     return None
 
@@ -176,11 +179,17 @@ def _target_kind(card: dict) -> str | None:
 def _targets(state: dict, caster_id: str, card: dict) -> list[dict]:
     kind = _target_kind(card)
     if not kind: return []
+    text = (card.get("oracle_text") or "").casefold()
     targets = []
+    if kind == "spell":
+        return [{"id": item["id"], "name": item["card"]["name"], "kind": "spell", "controller_id": item["controller_id"]} for item in state["stack"]]
     for player in state["players"]:
-        if kind == "any": targets.append({"id": player["id"], "name": player["name"], "kind": "player", "controller_id": player["id"]})
+        if kind in {"any", "player"}: targets.append({"id": player["id"], "name": player["name"], "kind": "player", "controller_id": player["id"]})
         for permanent in player["battlefield"]:
             if kind in {"any", "permanent"} or (kind == "creature" and "Creature" in permanent.get("type_line", "")):
+                if "you control" in text and player["id"] != caster_id: continue
+                if "an opponent controls" in text and player["id"] == caster_id: continue
+                if "nonland permanent" in text and "Land" in permanent.get("type_line", ""): continue
                 targets.append({"id": permanent["instance_id"], "name": permanent["name"], "kind": "permanent", "controller_id": player["id"]})
     return targets
 
@@ -259,6 +268,7 @@ def _resolve_spell(state: dict) -> None:
     target_player = next((player for player in state["players"] if player["id"] == target_id), None)
     target_owner = next((player for player in state["players"] if any(permanent["instance_id"] == target_id for permanent in player["battlefield"])), None)
     target = next((permanent for player in state["players"] for permanent in player["battlefield"] if permanent["instance_id"] == target_id), None)
+    target_stack_item = next((entry for entry in state["stack"] if entry["id"] == target_id), None)
     draw_match = re.search(r"draw (?:a|one|two|three|four) cards?", effect_text)
     if draw_match:
         word = draw_match.group(0).split()[1]
@@ -278,6 +288,28 @@ def _resolve_spell(state: dict) -> None:
         _leave_battlefield(state, target_owner, target, "graveyard"); _log(state, f"{target['name']} was destroyed.")
     if target and target_owner and re.search(r"exile target (?:creature|permanent|nonland permanent)", effect_text):
         _leave_battlefield(state, target_owner, target, "exile"); _log(state, f"{target['name']} was exiled.")
+    if target and target_owner and re.search(r"return target (?:creature|permanent|nonland permanent).* to (?:its|their) owner'?s hand", effect_text):
+        _leave_battlefield(state, target_owner, target, "hand"); _log(state, f"{target['name']} returned to its owner's hand.")
+    if target and re.search(r"\btap target creature", effect_text): target["tapped"] = True
+    if target and re.search(r"\buntap target creature", effect_text): target["tapped"] = False
+    stats_match = re.search(r"target creature[^.]* gets ([+-]\d+)/([+-]\d+) until end of turn", effect_text)
+    if target and stats_match:
+        target["temporary_power"] = target.get("temporary_power", 0) + int(stats_match.group(1))
+        target["temporary_toughness"] = target.get("temporary_toughness", 0) + int(stats_match.group(2))
+    mill_match = re.search(r"target player mills? (\d+|one|two|three|four|five|six|seven|eight|nine|ten) cards?", effect_text)
+    if mill_match and target_player:
+        words={"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10}; amount=words.get(mill_match.group(1),int(mill_match.group(1)) if mill_match.group(1).isdigit() else 0)
+        for _ in range(min(amount,len(target_player["library"]))): target_player["graveyard"].append(target_player["library"].pop())
+        _log(state, f"{target_player['name']} milled {amount} card(s).")
+    discard_match = re.search(r"target opponent discards? (?:a|one|two|three|four|five|six|seven|eight|nine|ten|\d+) cards?", effect_text)
+    if discard_match:
+        amount_word=re.search(r"discards? (a|one|two|three|four|five|six|seven|eight|nine|ten|\d+)",discard_match.group(0)).group(1);words={"a":1,"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10};amount=words.get(amount_word,int(amount_word) if amount_word.isdigit() else 0)
+        for _ in range(min(amount,len(other["hand"]))): other["graveyard"].append(other["hand"].pop())
+        _log(state, f"{other['name']} discarded {amount} card(s).")
+    if target_stack_item and "counter target spell" in effect_text:
+        state["stack"].remove(target_stack_item); countered=target_stack_item["card"]
+        if target_stack_item.get("kind", "spell") == "spell": _player(state,target_stack_item["controller_id"])["graveyard"].append(countered)
+        _log(state, f"{countered['name']} was countered.")
     token_match = re.search(r"create (a|one|two|three|four) (\d+)/(\d+) ([^.]*?) creature tokens?", effect_text)
     if token_match:
         amount = {"a":1,"one":1,"two":2,"three":3,"four":4}[token_match.group(1)]
@@ -387,7 +419,9 @@ def _advance_turn_phase(state: dict) -> None:
     if index == len(PHASES) - 1:
         state["turn"] += 1; state["phase"] = PHASES[0]; state["active_player_id"] = opponent(state, state["active_player_id"])["id"]
         active = _player(state, state["active_player_id"]); active["land_plays_remaining"] = 1
-        for permanent in active["battlefield"]: permanent["tapped"] = False; permanent["damage"] = 0; permanent["summoning_sick"] = False
+        for owner in state["players"]:
+            for permanent in owner["battlefield"]: permanent.pop("temporary_power",None); permanent.pop("temporary_toughness",None); permanent["damage"] = 0
+        for permanent in active["battlefield"]: permanent["tapped"] = False; permanent["summoning_sick"] = False
         _draw(state, active); _log(state, f"Turn {state['turn']} began for {active['name']}."); _queue_triggers(state,"upkeep",None,active)
     else:
         state["phase"] = PHASES[index + 1]
