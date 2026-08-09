@@ -1159,3 +1159,23 @@ def test_airbend_can_exile_a_spell_and_tokens_cease_to_exist():
     token={**card(1132,"Air Token","Creature — Bird","","1","1"),"instance_id":"air-token","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False,"token":True};player["battlefield"].append(token);player["hand"].append({**airbend,"instance_id":"airbend-token"})
     state=perform_action(state,"player",{"type":"cast","card_id":"airbend-token","target_id":"air-token"});state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player")
     assert not any(card["instance_id"]=="air-token" for zone in (player["battlefield"],player["exile"]) for card in zone)
+
+
+def test_optional_blight_cost_places_counters_and_annihilates_plus_counters():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player")
+    creature={**card(1140,"Blight Bearer","Creature — Goblin","","3","3"),"instance_id":"blight-bearer","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{"+1/+1":1},"summoning_sick":False}
+    spell={**card(1141,"Blighted Insight","Sorcery","{1}"),"oracle_text":"As an additional cost to cast this spell, you may blight 2.\nDraw a card.","instance_id":"blighted-insight","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    land={**card(1142,"Swamp","Basic Land — Swamp"),"instance_id":"blight-land","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"]=[creature,land];player["hand"].append(spell)
+    choices=[action for action in legal_actions(state,"player") if action.get("card_id")=="blighted-insight"];assert {bool(action.get("blighted")) for action in choices}=={False,True}
+    blighted=next(action for action in choices if action.get("blighted"));assert blighted["cost_kind"]=="blight" and blighted["blight_amount"]==2 and blighted["cost_options"]==["blight-bearer"]
+    state=perform_action(state,"player",{"type":"cast","card_id":"blighted-insight","blighted":True,"cost_card_ids":["blight-bearer"]});player=next(p for p in state["players"] if p["id"]=="player");bearer=next(card for card in player["battlefield"] if card["instance_id"]=="blight-bearer")
+    assert bearer["counters"].get("+1/+1")==0 and bearer["counters"]["-1/-1"]==1 and state["stack"][-1]["blighted"]
+
+
+def test_blight_may_kill_its_creature_and_paid_modal_cost_requires_both_modes():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
+    victim={**card(1150,"Tiny Blight Victim","Creature — Goblin","","1","1"),"instance_id":"tiny-blight-victim","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};artifact={**card(1151,"Target Relic","Artifact"),"instance_id":"target-relic","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};enemy={**card(1152,"Target Giant","Creature — Giant","","4","4"),"mana_value":4,"instance_id":"target-giant","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    spell={**card(1153,"Test Pyrrhic Strike","Instant"),"oracle_text":"As an additional cost to cast this spell, you may blight 2.\nChoose one. If this spell's additional cost was paid, choose both instead.\n• Destroy target artifact or enchantment.\n• Destroy target creature.","instance_id":"test-pyrrhic","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"]=[victim];bot["battlefield"]=[artifact,enemy];player["hand"].append(spell)
+    action=next(action for action in legal_actions(state,"player") if action.get("card_id")=="test-pyrrhic" and action.get("blighted"));assert action["mode_min"]==action["mode_max"]==2
+    state=perform_action(state,"player",{"type":"cast","card_id":"test-pyrrhic","blighted":True,"cost_card_ids":["tiny-blight-victim"],"chosen_modes":[0,1],"mode_targets":["target-relic","target-giant"]});player=next(p for p in state["players"] if p["id"]=="player")
+    assert any(card["instance_id"]=="tiny-blight-victim" for card in player["graveyard"])

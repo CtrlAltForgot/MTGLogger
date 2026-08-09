@@ -307,6 +307,18 @@ def _ward_cost(card:dict)->str:
     return details["label"] if details else ""
 
 
+def _optional_blight_cost(card:dict)->int|None:
+    match=re.search(r"as an additional cost to cast this spell, you may blight (\d+)",card.get("oracle_text") or "",re.IGNORECASE)
+    return int(match.group(1)) if match else None
+
+
+def _apply_blight(state:dict,player:dict,creature:dict,amount:int)->None:
+    original=amount;plus=creature.setdefault("counters",{}).get("+1/+1",0);cancel=min(plus,amount)
+    if cancel:creature["counters"]["+1/+1"]-=cancel;amount-=cancel
+    if amount:creature["counters"]["-1/-1"]=creature["counters"].get("-1/-1",0)+amount
+    _log(state,f"{player['name']} blighted {creature['name']} for {original}.")
+
+
 def _activated_abilities(card: dict) -> list[dict]:
     abilities = []
     text=card.get("oracle_text") or "";quoted=re.findall(r'"([^"]+:[^"]+)"',text);lines=[*(line for line in text.splitlines() if '"' not in line),*quoted]
@@ -787,6 +799,7 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
     castable.extend((card,"flashback") for card in player["graveyard"] if _flashback_ability(card))
     castable.extend((card,"airbend") for card in player["exile"] if card.get("airbent"))
     for card, source in castable:
+        card_action_start=len(actions)
         flashback=_flashback_ability(card) if source=="flashback" else None;cost_card={**card,"mana_cost":"{2}"} if source=="airbend" else {**card,"mana_cost":flashback["mana_cost"]} if flashback else card;kicker_cost=_kicker_cost(card)
         instant_speed = "Instant" in card.get("type_line", "") or _has_keyword(card, "Flash")
         total_tax=_commander_tax(player,card) if source=="command" else 0
@@ -849,6 +862,13 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
                 if kicked_convoke_min is not None:
                     convoke_options=[candidate for candidate in player["battlefield"] if "Creature" in candidate.get("type_line","") and not candidate.get("tapped")];colored,generic=_mana_requirements(kicked_cost_card,total_tax)
                     actions.append({**kicked,"convoke":True,"cost_kind":"convoke","cost_min_amount":kicked_convoke_min,"cost_max_amount":len(colored)+generic,"cost_options":[candidate["instance_id"] for candidate in convoke_options],"cost_combinations":kicked_convoke_combinations,"label":f"{kicked['label']} · Convoke"})
+        blight_amount=_optional_blight_cost(card);blight_options=[creature["instance_id"] for creature in player["battlefield"] if "Creature" in creature.get("type_line","")]
+        if blight_amount and blight_options:
+            for base_action in list(actions[card_action_start:]):
+                if base_action.get("cost_kind"):continue
+                blighted={**base_action,"blighted":True,"blight_amount":blight_amount,"cost_kind":"blight","cost_amount":1,"cost_options":blight_options,"label":f"{base_action['label']} · Blight {blight_amount}"}
+                if "if this spell's additional cost was paid, choose both instead" in (card.get("oracle_text") or "").casefold() and len(blighted.get("modes",[]))>=2:blighted["mode_min"]=blighted["mode_max"]=blighted["mode_count"]=2
+                actions.append(blighted)
     for card in player["hand"]:
         cycling=_cycling_ability(card)
         if cycling and _can_pay(player,{"mana_cost":cycling["mana_cost"]}):
@@ -1388,7 +1408,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
     elif action_type == "cast":
         requested_source=action.get("source");zone_name="graveyard" if requested_source=="flashback" else "exile" if requested_source=="airbend" else requested_source if requested_source in {"hand","command"} else next((zone for zone in ("hand","command") if any(card["instance_id"]==action.get("card_id") for card in player.get(zone,[]))),None)
         source="flashback" if zone_name=="graveyard" else "airbend" if zone_name=="exile" and requested_source=="airbend" else zone_name;card=next((card for card in player.get(zone_name or "hand",[]) if card["instance_id"]==action.get("card_id")),None);flashback=_flashback_ability(card or {}) if source=="flashback" else None
-        requested_kicked=bool(action.get("kicked"));requested_convoke=bool(action.get("convoke"));requested_waterbend=bool(action.get("waterbend"));available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="cast" and entry["card_id"]==action.get("card_id") and entry.get("source")==source and bool(entry.get("kicked"))==requested_kicked and bool(entry.get("convoke"))==requested_convoke and bool(entry.get("waterbend"))==requested_waterbend),None)
+        requested_kicked=bool(action.get("kicked"));requested_convoke=bool(action.get("convoke"));requested_waterbend=bool(action.get("waterbend"));requested_blight=bool(action.get("blighted") or (action.get("cost_card_ids") and _optional_blight_cost(card or {})));available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="cast" and entry["card_id"]==action.get("card_id") and entry.get("source")==source and bool(entry.get("kicked"))==requested_kicked and bool(entry.get("convoke"))==requested_convoke and bool(entry.get("waterbend"))==requested_waterbend and bool(entry.get("blighted"))==requested_blight),None)
         tax = _commander_tax(player, card) if card and source=="command" else 0
         if not card:raise RuleViolation("That spell cannot be cast")
         if not available:raise RuleViolation("That spell cannot be cast from that zone")
@@ -1411,6 +1431,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         convoke_residual=_convoke_residual(player,cost_card,selected_cost_ids,tax,x_value) if requested_convoke else None;waterbend_amount=x_value if waterbend_symbol=="X" else int(waterbend_symbol or 0);waterbend_base={**cost_card,"mana_cost":f"{cost_card.get('mana_cost') or ''}{f'{{{tax}}}' if tax else ''}"};waterbend_residual=_waterbend_residual(player,waterbend_base,waterbend_amount,selected_cost_ids,x_value=x_value if _has_x_cost(cost_card) else 0) if requested_waterbend else None
         if (requested_waterbend and waterbend_residual is None) or (requested_convoke and convoke_residual is None) or (not requested_waterbend and not requested_convoke and not _can_pay(player,cost_card,tax,x_value=x_value)):raise RuleViolation("That spell cannot be cast with the chosen payment")
         modal_spec=_modal_spec(card);modal_options=(modal_spec or {}).get("options",[]);chosen_modes=action.get("chosen_modes") or [];mode_targets=action.get("mode_targets") or []
+        if requested_blight and modal_spec and "if this spell's additional cost was paid, choose both instead" in (card.get("oracle_text") or "").casefold():modal_spec={**modal_spec,"min_modes":2,"max_modes":2}
         if modal_spec and len(chosen_modes)==1 and not mode_targets:mode_targets=[action.get("target_id")]
         if modal_spec:
             legal_modes={mode["index"] for mode in (available or {}).get("modes",[])}
@@ -1435,10 +1456,14 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
             for creature in player["battlefield"]:
                 if creature["instance_id"] in selected_cost_ids:creature["tapped"]=True
         else:_pay_mana(state,player,cost_card,tax,x_value=x_value)
+        if requested_blight:
+            blight_target=next((creature for creature in player["battlefield"] if creature["instance_id"] in set(selected_cost_ids) and "Creature" in creature.get("type_line","")),None)
+            if not blight_target:raise RuleViolation("Choose one creature you control to blight")
+            _apply_blight(state,player,blight_target,int(available.get("blight_amount",0)))
         player[zone_name].remove(card)
         card.pop("airbent",None)
         if card.get("commander"): player["commander_casts"] = player.get("commander_casts", 0) + 1
-        effective_target=target_id or (mode_targets[0] if len(mode_targets)==1 else None);stack_item={"id": _id(), "card": card, "controller_id": player_id, "target_id": effective_target,"target_ids":target_ids,"mode_indices":chosen_modes,"mode_targets":mode_targets,"x_value":x_value,"flashback":bool(flashback),"kicked":requested_kicked};state["stack"].append(stack_item); state["consecutive_passes"] = 0; state["pending_phase_advance"] = False
+        effective_target=target_id or (mode_targets[0] if len(mode_targets)==1 else None);stack_item={"id": _id(), "card": card, "controller_id": player_id, "target_id": effective_target,"target_ids":target_ids,"mode_indices":chosen_modes,"mode_targets":mode_targets,"x_value":x_value,"flashback":bool(flashback),"kicked":requested_kicked,"blighted":requested_blight};state["stack"].append(stack_item); state["consecutive_passes"] = 0; state["pending_phase_advance"] = False
         if requested_waterbend:_queue_triggers(state,"waterbend",card,player)
         _queue_triggers(state,"cast",card,player)
         ward_targets=[effective_target] if effective_target else []
@@ -1448,7 +1473,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if (_multiplayer(state) or not allow_direct_resolution) and not state.get("pending_ward") and not state.get("pending_trigger_targets"): state["priority_player_id"] = opponent(state, player_id)["id"]
         mode_label="; ".join(next(mode["label"] for mode in modal_options if mode["index"]==index) for index in chosen_modes)
         behold_names=[next(candidate["name"] for zone in (player["hand"],player["battlefield"]) for candidate in zone if candidate["instance_id"]==card_id) for card_id in selected_cost_ids] if available.get("cost_kind")=="behold" else []
-        _log(state, f"{player['name']} cast {card['name']}{' using flashback' if flashback else ' using airbend' if source=='airbend' else ''}{' with kicker' if requested_kicked else ''}{' using waterbend' if requested_waterbend else ''}{' using convoke' if requested_convoke else ''}{f' with X={x_value}' if has_x else ''}{f' choosing {mode_label}' if mode_label else ''}{f' with {tax} commander tax' if tax else ''}{f' by beholding {', '.join(behold_names)}' if behold_names else ''}{' targeting '+next((target['name'] for target in targets if target['id']==target_id),'') if target_id else ''}.")
+        _log(state, f"{player['name']} cast {card['name']}{' using flashback' if flashback else ' using airbend' if source=='airbend' else ''}{' with kicker' if requested_kicked else ''}{' using waterbend' if requested_waterbend else ''}{' using convoke' if requested_convoke else ''}{' after blighting' if requested_blight else ''}{f' with X={x_value}' if has_x else ''}{f' choosing {mode_label}' if mode_label else ''}{f' with {tax} commander tax' if tax else ''}{f' by beholding {', '.join(behold_names)}' if behold_names else ''}{' targeting '+next((target['name'] for target in targets if target['id']==target_id),'') if target_id else ''}.")
     elif action_type == "cycle":
         card=next((card for card in player["hand"] if card["instance_id"]==action.get("card_id")),None);cycling=_cycling_ability(card or {})
         available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="cycle" and entry["card_id"]==action.get("card_id")),None)
