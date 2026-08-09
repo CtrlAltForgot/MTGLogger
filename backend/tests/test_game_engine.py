@@ -77,10 +77,40 @@ def test_attacker_orders_multiple_blockers_before_combat_damage():
     assert action["type"]=="order_blockers" and {card["instance_id"] for card in action["groups"][0]["blockers"]}=={"first","second"}
     state=perform_action(state,"player",{"type":"order_blockers","block_orders":{"attacker":["second","first"]}});state=deal_combat_damage(state);player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
     assert any(card["instance_id"]=="attacker" for card in player["graveyard"]) and any(card["instance_id"]=="second" for card in bot["graveyard"]);survivor=next(card for card in bot["battlefield"] if card["instance_id"]=="first");assert survivor["damage"]==2
-
     state=kept_game();player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot");state["active_player_id"]="bot";state["priority_player_id"]="bot";bot["battlefield"].append(attacker);player["battlefield"].extend([first,second]);state["pending_damage_order"]={"player_id":"bot","groups":{"attacker":["first","second"]}}
     choice=choose_bot_action(state,"expert");assert choice["type"]=="order_blockers" and set(choice["block_orders"]["attacker"])=={"first","second"}
 
+
+def test_ninjutsu_returns_only_an_unblocked_attacker_and_enters_attacking_after_resolution():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
+    state["phase"]="combat";state["active_player_id"]="player";state["priority_player_id"]="player"
+    open_attacker={**card(93,"Open Scout","Creature — Scout","","1","1"),"instance_id":"open-scout","owner_id":"player","controller_id":"player","tapped":True,"damage":0,"counters":{},"summoning_sick":False}
+    blocked_attacker={**card(94,"Blocked Scout","Creature — Scout","","2","2"),"instance_id":"blocked-scout","owner_id":"player","controller_id":"player","tapped":True,"damage":0,"counters":{},"summoning_sick":False}
+    blocker={**card(95,"Guard","Creature — Soldier","","2","3"),"instance_id":"guard","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    ninja={**card(96,"Moonblade Ninja","Creature — Human Ninja","{3}{B}","4","3"),"oracle_text":"Ninjutsu {1}{B}\nWhen Moonblade Ninja enters, draw a card.","instance_id":"moonblade","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    lands=[]
+    for index in range(2):lands.append({**card(97+index,"Swamp","Basic Land — Swamp"),"instance_id":f"ninja-land-{index}","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False})
+    player["battlefield"].extend([open_attacker,blocked_attacker,*lands]);player["hand"].append(ninja);bot["battlefield"].append(blocker)
+    state["combat"]={"attackers":["open-scout","blocked-scout"],"attackers_declared":True,"blocks":{"guard":"blocked-scout"},"attack_targets":{"open-scout":"bot","blocked-scout":"bot"},"block_orders":{},"damage_pending":True,"damage_step":None,"first_strike_damage_ids":[],"block_triggers_pending":False}
+    action=next(entry for entry in legal_actions(state,"player") if entry["type"]=="ninjutsu")
+    assert [target["id"] for target in action["targets"]]==["open-scout"]
+    state=perform_action(state,"player",{"type":"ninjutsu","card_id":"moonblade","source":"hand","target_id":"open-scout"})
+    player=next(p for p in state["players"] if p["id"]=="player");assert any(card["instance_id"]=="open-scout" for card in player["hand"]);assert any(card["instance_id"]=="moonblade" for card in player["hand"]);assert state["stack"][-1]["kind"]=="ninjutsu_ability"
+    state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");entered=next(card for card in player["battlefield"] if card["instance_id"]=="moonblade")
+    assert entered["tapped"] and "moonblade" in state["combat"]["attackers"] and state["combat"]["attack_targets"]["moonblade"]=="bot"
+    assert any(item["card"]["name"]=="Moonblade Ninja trigger" for item in state["stack"])
+
+
+def test_commander_ninjutsu_uses_command_zone_without_commander_tax_or_cast_count():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player")
+    state["phase"]="combat";state["active_player_id"]="player";state["priority_player_id"]="player";player["commander_casts"]=4
+    attacker={**card(100,"Sneaky Scout","Creature — Scout","","1","1"),"instance_id":"sneaky-scout","owner_id":"player","controller_id":"player","tapped":True,"damage":0,"counters":{},"summoning_sick":False}
+    yuriko={**card(101,"Yuriko","Legendary Creature — Human Ninja","{1}{U}{B}","1","3"),"oracle_text":"Commander ninjutsu {U}{B}","instance_id":"yuriko","owner_id":"player","controller_id":"player","commander":True,"tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    lands=[{**card(102+index,"Island" if index==0 else "Swamp","Basic Land — Island" if index==0 else "Basic Land — Swamp"),"instance_id":f"commander-land-{index}","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False} for index in range(2)]
+    player["battlefield"].extend([attacker,*lands]);player["command"].append(yuriko);state["combat"]={"attackers":["sneaky-scout"],"attackers_declared":True,"blocks":{},"attack_targets":{"sneaky-scout":"bot"},"block_orders":{},"damage_pending":True,"damage_step":None,"first_strike_damage_ids":[],"block_triggers_pending":False}
+    action=next(entry for entry in legal_actions(state,"player") if entry["type"]=="ninjutsu");assert action["source"]=="command" and action["mana_cost"]=="{U}{B}"
+    state=perform_action(state,"player",{"type":"ninjutsu","card_id":"yuriko","source":"command","target_id":"sneaky-scout"});state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player")
+    assert player["commander_casts"]==4 and any(card["instance_id"]=="yuriko" for card in player["battlefield"])
 
 def test_players_receive_a_post_block_combat_trick_window_before_damage():
     state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")

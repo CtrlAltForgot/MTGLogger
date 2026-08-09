@@ -365,6 +365,12 @@ def _crew_value(card:dict)->int|None:
     return int(match.group(1)) if match else None
 
 
+def _ninjutsu_ability(card:dict)->dict|None:
+    match=re.search(r"(?:^|\n)(Commander\s+)?ninjutsu\s+((?:\{[^}]+\})+)",card.get("oracle_text") or "",re.IGNORECASE)
+    if not match:return None
+    return {"commander":bool(match.group(1)),"mana_cost":match.group(2).upper()}
+
+
 def _cycling_ability(card:dict)->dict|None:
     for line in (card.get("oracle_text") or "").splitlines():
         match=re.match(r"^((?:[A-Za-z][A-Za-z ]*)?cycling)\s+((?:\{[^}]+\})+)",line.strip(),re.IGNORECASE)
@@ -1517,6 +1523,16 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
             actions.append(action)
         foretell_cost=_foretell_cost(card)
         if active and foretell_cost and _can_pay(player,{"mana_cost":"{2}"}):actions.append({"type":"foretell","card_id":card["instance_id"],"label":f"Foretell {card['name']} face down · {{2}} · cast on a later turn for {foretell_cost}","mana_cost":"{2}","foretell_cost":foretell_cost})
+    if active and state["phase"]=="combat" and state["combat"].get("damage_pending"):
+        blocked=set(state["combat"].get("blocks",{}).values());battlefield={card["instance_id"]:card for card in player["battlefield"]}
+        unblocked=[attacker_id for attacker_id in state["combat"].get("attackers",[]) if attacker_id not in blocked and attacker_id in battlefield]
+        if unblocked:
+            candidates=[(card,"hand") for card in player["hand"] if _ninjutsu_ability(card) and not _ninjutsu_ability(card)["commander"]]
+            candidates.extend((card,"command") for card in player.get("command",[]) if (_ninjutsu_ability(card) or {}).get("commander"))
+            targets=[{"id":attacker_id,"name":battlefield[attacker_id]["name"],"kind":"permanent","controller_id":player_id} for attacker_id in unblocked]
+            for ninja,source in candidates:
+                ability=_ninjutsu_ability(ninja)
+                if ability and _can_pay(player,{"mana_cost":ability["mana_cost"]}):actions.append({"type":"ninjutsu","card_id":ninja["instance_id"],"source":source,"mana_cost":ability["mana_cost"],"targets":targets,"label":f"{'Commander ' if ability['commander'] else ''}Ninjutsu {ninja['name']} · {ability['mana_cost']} · return an unblocked attacker"})
     for permanent in player["battlefield"]:
         for index, ability in enumerate(_permanent_abilities(state,permanent)):
             if not _activation_timing_legal(state,player_id,permanent,index,ability):continue
@@ -1608,6 +1624,13 @@ def _resolve_spell(state: dict) -> None:
     card, caster = item["card"], _player(state, item["controller_id"])
     if item.get("kind")=="cascade":
         _start_discovery(state,caster,int(item.get("cascade_value") or 0),"cascade",card["name"]);return
+    if item.get("kind")=="ninjutsu_ability":
+        source=item.get("source_zone","hand");ninja=next((candidate for candidate in caster.get(source,[]) if candidate["instance_id"]==item.get("source_id")),None)
+        if not ninja:_log(state,f"{card['name']} did not resolve because the Ninja was no longer in {source}.");return
+        caster[source].remove(ninja);ninja["tapped"]=True;ninja["summoning_sick"]=True
+        _enter_battlefield(state,caster,[ninja],source)
+        state["combat"]["attackers"].append(ninja["instance_id"]);state["combat"]["attack_targets"][ninja["instance_id"]]=item["defender_id"]
+        _log(state,f"{ninja['name']} entered tapped and attacking using {'commander ' if source=='command' else ''}ninjutsu.");return
     if item.get("kind")=="equip_ability":
         equipment=next((permanent for permanent in caster["battlefield"] if permanent["instance_id"]==item.get("source_id") and "Equipment" in permanent.get("type_line","")),None);target=next((permanent for permanent in caster["battlefield"] if permanent["instance_id"]==item.get("target_id") and "Creature" in permanent.get("type_line","")),None)
         if not equipment or not target or _has_keyword(target,"Shroud") or _protected_from(target,equipment):_log(state,f"{card['name']} did not resolve because its source or target was no longer legal.");return
@@ -2746,6 +2769,16 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         card=next((card for card in player["hand"] if card["instance_id"]==action.get("card_id")),None);available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="foretell" and entry["card_id"]==action.get("card_id")),None)
         if not card or not _foretell_cost(card) or not available:raise RuleViolation("That card cannot be foretold now")
         _pay_mana(state,player,{"mana_cost":"{2}"});player["hand"].remove(card);card["foretold"]=True;card["foretold_turn"]=state["turn"];_put_into_exile(state,player,[card],"hand",player_id);state["consecutive_passes"]=0;state["pending_phase_advance"]=False;_log(state,f"{player['name']} foretold a card face down.")
+    elif action_type == "ninjutsu":
+        available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="ninjutsu" and entry["card_id"]==action.get("card_id") and entry["source"]==action.get("source")),None);attacker_id=action.get("target_id")
+        if not available or attacker_id not in {target["id"] for target in available["targets"]}:raise RuleViolation("Choose an unblocked attacker to return for ninjutsu")
+        ninja=next((card for card in player[available["source"]] if card["instance_id"]==available["card_id"]),None);attacker=next((card for card in player["battlefield"] if card["instance_id"]==attacker_id),None)
+        if not ninja or not attacker:raise RuleViolation("The Ninja or returning attacker is no longer available")
+        defender_id=state["combat"]["attack_targets"].get(attacker_id,opponent(state,player_id)["id"]);_pay_mana(state,player,{"mana_cost":available["mana_cost"]});_leave_battlefield(state,player,attacker,"hand")
+        ability_card={**ninja,"name":f"{ninja['name']} — {'Commander ' if available['source']=='command' else ''}Ninjutsu","type_line":"Ability","mana_cost":""}
+        state["stack"].append({"id":_id(),"kind":"ninjutsu_ability","card":ability_card,"controller_id":player_id,"source_id":ninja["instance_id"],"source_zone":available["source"],"defender_id":defender_id});state["consecutive_passes"]=0;state["pending_phase_advance"]=False
+        if _multiplayer(state) or not allow_direct_resolution:state["priority_player_id"]=opponent(state,player_id)["id"]
+        _log(state,f"{player['name']} returned {attacker['name']} and activated {ninja['name']}'s ninjutsu ability.")
     elif action_type == "cycle":
         card=next((card for card in player["hand"] if card["instance_id"]==action.get("card_id")),None);cycling=_cycling_ability(card or {})
         available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="cycle" and entry["card_id"]==action.get("card_id")),None)

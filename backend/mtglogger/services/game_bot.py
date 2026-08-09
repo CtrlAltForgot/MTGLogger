@@ -405,6 +405,16 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
     if "declare_blockers" in by_type:
         action = by_type["declare_blockers"][0]
         return {"type": "declare_blockers", "blocks": _choose_blocks(state,action,difficulty)}
+    if "ninjutsu" in by_type:
+        swaps=[]
+        for action in by_type["ninjutsu"]:
+            ninja=_card(state,"bot",action["card_id"])
+            for target in action["targets"]:
+                attacker=_card(state,"bot",target["id"]);gain=_threat_score(state,ninja)-_threat_score(state,attacker)
+                swaps.append((gain,action,target["id"]))
+        if swaps:
+            gain,action,target_id=max(swaps,key=lambda entry:entry[0])
+            if gain>0 or difficulty=="beginner" and random.random()<.35:return {**action,"target_id":target_id,"targets":None}
     return by_type.get("advance_phase",by_type.get("pass_priority",[None]))[0]
 
 
