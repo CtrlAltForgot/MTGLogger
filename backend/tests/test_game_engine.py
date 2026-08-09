@@ -224,6 +224,21 @@ def test_tap_ability_uses_stack_draws_and_cannot_be_reused_while_tapped():
     assert len(player["hand"])==before+1 and not any(card["name"].endswith(" ability") for card in player["graveyard"])
 
 
+def test_activated_abilities_enforce_mana_tap_and_summoning_sickness_costs():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player")
+    source={**card(669,"Arcane Device","Artifact"),"oracle_text":"{2}, {T}: Draw a card.","instance_id":"device","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    repeatable={**card(670,"Study Stone","Artifact"),"oracle_text":"{1}: Draw a card.","instance_id":"stone","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    lands=[{**card(671+i,f"Island {i}","Basic Land — Island"),"instance_id":f"land-{i}","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False} for i in range(3)]
+    player["battlefield"].extend([source,repeatable,*lands]);ability=next(a for a in legal_actions(state,"player") if a.get("card_id")=="device");before=len(player["hand"])
+    state=perform_action(state,"player",{"type":"activate","card_id":"device","ability_index":ability["ability_index"]});player=next(p for p in state["players"] if p["id"]=="player")
+    assert next(card for card in player["battlefield"] if card["instance_id"]=="device")["tapped"] and sum(card["tapped"] for card in player["battlefield"] if "Land" in card["type_line"])==2
+    state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");assert len(player["hand"])==before+1 and not any(a.get("card_id")=="device" for a in legal_actions(state,"player"))
+    repeat_action=next(a for a in legal_actions(state,"player") if a.get("card_id")=="stone");state=perform_action(state,"player",{"type":"activate","card_id":"stone","ability_index":repeat_action["ability_index"]});player=next(p for p in state["players"] if p["id"]=="player")
+    assert not next(card for card in player["battlefield"] if card["instance_id"]=="stone")["tapped"] and all(card["tapped"] for card in player["battlefield"] if "Land" in card["type_line"])
+    sick={**card(675,"New Apprentice","Creature — Wizard","","1","1"),"oracle_text":"{T}: Draw a card.","instance_id":"sick","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":True};player["battlefield"].append(sick)
+    assert not any(a.get("card_id")=="sick" for a in legal_actions(state,"player"))
+
+
 def test_creature_enter_trigger_is_queued_and_resolved_once():
     state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(item for item in state["players"] if item["id"]=="player")
     watcher={**card(510,"Soul Watcher","Creature — Cleric","","1","1"),"oracle_text":"Whenever another creature enters the battlefield under your control, you gain 1 life.","instance_id":"watcher","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].append(watcher)

@@ -99,11 +99,14 @@ def _activated_abilities(card: dict) -> list[dict]:
     abilities = []
     for line in (card.get("oracle_text") or "").splitlines():
         match = re.match(r"^([^:]+):\s*(.+)$", line.strip())
-        if not match or "{T}" not in match.group(1).upper(): continue
-        effect = match.group(2).strip()
+        if not match: continue
+        cost,effect = match.group(1).strip(),match.group(2).strip()
+        mana_cost="".join(re.findall(r"\{[^}]+\}",cost,re.IGNORECASE)).upper().replace("{T}","").replace("{Q}","")
+        taps="{T}" in cost.upper()
+        if re.search(r"\b(?:sacrifice|discard|pay \d+ life|remove .+ counter)\b",cost,re.IGNORECASE) or (not taps and not mana_cost):continue
         if re.match(r"add (?:\{|one mana)", effect, re.IGNORECASE): continue
         ability_card = {**card, "name": f"{card['name']} ability", "oracle_text": effect, "type_line": "Ability", "mana_cost": ""}
-        abilities.append({"cost": match.group(1), "effect": effect, "card": ability_card})
+        abilities.append({"cost":cost,"mana_cost":mana_cost,"taps":taps,"effect":effect,"card":ability_card})
     return abilities
 
 
@@ -116,10 +119,10 @@ def _loyalty_abilities(card:dict)->list[dict]:
     return abilities
 
 
-def _can_pay(player: dict, card: dict, extra_generic: int = 0) -> bool:
+def _can_pay(player: dict, card: dict, extra_generic: int = 0, excluded_id: str | None = None) -> bool:
     available = []
     for permanent in player["battlefield"]:
-        if not permanent.get("tapped") and _mana_source(permanent) and not ("Creature" in permanent.get("type_line", "") and permanent.get("summoning_sick") and not _has_keyword(permanent,"Haste")):
+        if permanent.get("instance_id")!=excluded_id and not permanent.get("tapped") and _mana_source(permanent) and not ("Creature" in permanent.get("type_line", "") and permanent.get("summoning_sick") and not _has_keyword(permanent,"Haste")):
             available.append(_land_colors(permanent) or {"C"})
     colored,generic=_mana_requirements(card,extra_generic)
     for choices in colored:
@@ -130,9 +133,9 @@ def _can_pay(player: dict, card: dict, extra_generic: int = 0) -> bool:
     return len(available) >= generic
 
 
-def _pay_mana(player: dict, card: dict, extra_generic: int = 0) -> None:
+def _pay_mana(player: dict, card: dict, extra_generic: int = 0, excluded_id: str | None = None) -> None:
     colored,generic=_mana_requirements(card,extra_generic)
-    lands = [permanent for permanent in player["battlefield"] if not permanent.get("tapped") and _mana_source(permanent) and not ("Creature" in permanent.get("type_line", "") and permanent.get("summoning_sick") and not _has_keyword(permanent,"Haste"))]
+    lands = [permanent for permanent in player["battlefield"] if permanent.get("instance_id")!=excluded_id and not permanent.get("tapped") and _mana_source(permanent) and not ("Creature" in permanent.get("type_line", "") and permanent.get("summoning_sick") and not _has_keyword(permanent,"Haste"))]
     chosen = []
     for choices in colored:
         land = next((item for item in lands if (_land_colors(item) or {"C"}) & choices), None)
@@ -291,11 +294,12 @@ def legal_actions(state: dict, player_id: str) -> list[dict]:
         if targets: action["targets"] = targets
         actions.append(action)
     for permanent in player["battlefield"]:
-        if permanent.get("tapped") or ("Creature" in permanent.get("type_line", "") and permanent.get("summoning_sick") and not _has_keyword(permanent, "Haste")): continue
         for index, ability in enumerate(_activated_abilities(permanent)):
+            if ability["taps"] and (permanent.get("tapped") or ("Creature" in permanent.get("type_line", "") and permanent.get("summoning_sick") and not _has_keyword(permanent,"Haste"))):continue
+            if ability["mana_cost"] and not _can_pay(player,{"mana_cost":ability["mana_cost"]},excluded_id=permanent["instance_id"] if ability["taps"] else None):continue
             targets = _targets(state, player_id, ability["card"])
             if _target_kind(ability["card"]) and not targets: continue
-            action = {"type": "activate", "card_id": permanent["instance_id"], "ability_index": index, "label": ability["effect"]}
+            action = {"type": "activate", "card_id": permanent["instance_id"], "ability_index": index, "label": f"{ability['cost']}: {ability['effect']}"}
             if targets: action["targets"] = targets
             actions.append(action)
     if active and main and not state["stack"]:
@@ -635,7 +639,9 @@ def perform_action(state: dict, player_id: str, action: dict) -> dict:
         if not permanent or not available:raise RuleViolation("That ability cannot be activated")
         ability=_activated_abilities(permanent)[index];target_id=action.get("target_id");targets=available.get("targets",[])
         if targets and target_id not in {target["id"] for target in targets}:raise RuleViolation("Choose a legal target")
-        permanent["tapped"]=True;state["stack"].append({"id":_id(),"kind":"ability","card":ability["card"],"controller_id":player_id,"target_id":target_id,"source_id":permanent["instance_id"]});state["consecutive_passes"]=0;state["pending_phase_advance"]=False
+        if ability["mana_cost"]:_pay_mana(player,{"mana_cost":ability["mana_cost"]},excluded_id=permanent["instance_id"] if ability["taps"] else None)
+        if ability["taps"]:permanent["tapped"]=True
+        state["stack"].append({"id":_id(),"kind":"ability","card":ability["card"],"controller_id":player_id,"target_id":target_id,"source_id":permanent["instance_id"]});state["consecutive_passes"]=0;state["pending_phase_advance"]=False
         if _multiplayer(state):state["priority_player_id"]=opponent(state,player_id)["id"]
         _log(state,f"{player['name']} activated {permanent['name']}: {ability['effect']}")
     elif action_type == "activate_loyalty":
