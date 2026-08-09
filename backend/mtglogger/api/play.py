@@ -39,6 +39,7 @@ def _deck_cards(db: Session, deck: Deck) -> list[dict]:
             "oracle_text": (reference.oracle_text if reference else "") or "",
             "mana_cost": (reference.mana_cost if reference else "") or "",
             "mana_value": float((reference.mana_value if reference else 0) or 0),
+            "keywords": json.loads(reference.keywords or "[]") if reference and reference.keywords else [],
             "power": getattr(reference, "power", None),
             "toughness": getattr(reference, "toughness", None),
             "quantity": entry.quantity,

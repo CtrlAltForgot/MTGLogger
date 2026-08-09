@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
-import { AutoAwesome, Bolt, ContentCopy, Delete, Favorite, History, People, PlayArrow, Refresh, Replay, Shield, SmartToy, SportsEsports } from '@mui/icons-material'
+import { AutoAwesome, Bolt, Build, ContentCopy, Delete, Favorite, History, People, PlayArrow, Refresh, Replay, Shield, SmartToy, SportsEsports } from '@mui/icons-material'
 import { Alert, Box, Button, Card, CardContent, Chip, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle, Divider, FormControlLabel, Grid, IconButton, MenuItem, Paper, Stack, Switch, TextField, Tooltip, Typography } from '@mui/material'
 import { request } from '../api'
-import type { Deck, Game, GameCard, GamePlayer, GameTarget } from '../types'
+import type { Deck, Game, GameCard, GamePlayer, GameTarget, LegalGameAction } from '../types'
 
 const phases=[['beginning','Untap & draw'],['precombat_main','Main 1'],['combat','Combat'],['postcombat_main','Main 2'],['ending','End turn']]
 
@@ -10,26 +10,27 @@ function ZoneCard({card,legal,onClick,attacking=false,blocked=false}:{card:GameC
   return <Tooltip title={<><b>{card.name}</b><br/>{card.type_line}<br/>{card.oracle_text}</>} placement="top" arrow>
     <Box className={`play-card ${card.tapped?'is-tapped':''} ${legal?'is-legal':''} ${attacking?'is-attacking':''}`} onClick={onClick} role={legal?'button':undefined} aria-label={card.name}>
       <Box component="img" src={card.image_url||''} alt={card.name}/>
-      {card.damage>0&&<Chip className="play-counter" size="small" color="error" label={`${card.damage} dmg`}/>} {blocked&&<Chip className="play-blocked" size="small" label="Blocked"/>}
+      {(card.damage>0||Object.values(card.counters||{}).some(Boolean))&&<Chip className="play-counter" size="small" color={card.damage?'error':'success'} label={card.damage?`${card.damage} dmg`:Object.entries(card.counters).filter(([,amount])=>amount).map(([name,amount])=>`${amount} ${name}`).join(', ')}/>} {blocked&&<Chip className="play-blocked" size="small" label="Blocked"/>}
     </Box>
   </Tooltip>
 }
 
 function HiddenHand({count=0}:{count?:number}){return <Stack direction="row" justifyContent="center" className="hidden-hand">{Array.from({length:Math.min(count,12)},(_,index)=><Box key={index} className="card-back" sx={{ml:index?-4:0}}/>)}</Stack>}
 
-function Battlefield({player,game}:{player:GamePlayer;game:Game}){
+function Battlefield({player,game,onCard}:{player:GamePlayer;game:Game;onCard:(card:GameCard)=>void}){
   const attackers=new Set(game.state.combat.attackers),blocked=new Set(Object.values(game.state.combat.blocks))
   const creatures=player.battlefield.filter(card=>!card.type_line.includes('Land')),lands=player.battlefield.filter(card=>card.type_line.includes('Land'))
   return <Box className="battlefield-zone">
-    <Stack direction="row" className="permanent-row" justifyContent="center">{creatures.map(card=><ZoneCard key={card.instance_id} card={card} attacking={attackers.has(card.instance_id)} blocked={blocked.has(card.instance_id)}/>)}</Stack>
-    <Stack direction="row" className="land-row" justifyContent="center">{lands.map(card=><ZoneCard key={card.instance_id} card={card}/>)}</Stack>
+    <Stack direction="row" className="permanent-row" justifyContent="center">{creatures.map(card=>{const legal=game.legal_actions.some(action=>action.card_id===card.instance_id);return <ZoneCard key={card.instance_id} card={card} legal={legal} onClick={()=>onCard(card)} attacking={attackers.has(card.instance_id)} blocked={blocked.has(card.instance_id)}/>})}</Stack>
+    <Stack direction="row" className="land-row" justifyContent="center">{lands.map(card=>{const legal=game.legal_actions.some(action=>action.card_id===card.instance_id);return <ZoneCard key={card.instance_id} card={card} legal={legal} onClick={()=>onCard(card)}/>})}</Stack>
   </Box>
 }
 
 export default function Play(){
   const [decks,setDecks]=useState<Deck[]>([]),[games,setGames]=useState<Game[]>([]),[game,setGame]=useState<Game>(),[busy,setBusy]=useState(false),[error,setError]=useState<string>()
   const [setup,setSetup]=useState({name:'Game vs Bot',player_deck_id:'',opponent_deck_id:'',bot_difficulty:'standard',opponent_type:'bot',play_first:true})
-  const [inviteUrl,setInviteUrl]=useState(''),[targetChoice,setTargetChoice]=useState<{cardId:string;targets:GameTarget[]}>()
+  const [inviteUrl,setInviteUrl]=useState(''),[targetChoice,setTargetChoice]=useState<{action:LegalGameAction;targets:GameTarget[]}>()
+  const [toolsOpen,setToolsOpen]=useState(false),[toolForm,setToolForm]=useState({target_id:'',counter_name:'+1/+1',amount:1,token_name:'Creature Token',power:1,toughness:1,destination:'graveyard'})
   const query=new URLSearchParams(location.search),inviteCode=query.get('invite'),inviteToken=query.get('token'),isGuest=!!inviteCode&&!!inviteToken,viewerId=isGuest?'bot':'player',opponentId=isGuest?'player':'bot'
   const load=async()=>{const [deckData,gameData]=await Promise.all([request<Deck[]>('/decks'),request<Game[]>('/play')]);setDecks(deckData.filter(deck=>deck.total_cards>0));setGames(gameData);setSetup(current=>({...current,player_deck_id:current.player_deck_id||deckData[0]?.id||'',opponent_deck_id:current.opponent_deck_id||deckData[1]?.id||deckData[0]?.id||''}))}
   const gamePath=isGuest?`/play/invite/${inviteCode}/state?token=${encodeURIComponent(inviteToken||'')}`:game?`/play/${game.id}`:''
@@ -46,7 +47,9 @@ export default function Play(){
   const humanActive=game?.state.active_player_id===viewerId
   const winner=game?.state.players.find(item=>item.id===game.state.winner_id)
   const gameTitle=useMemo(()=>decks.find(deck=>deck.id===game?.player_deck_id)?.name,[decks,game])
-  const playCard=(card:GameCard)=>{const action=game?.legal_actions.find(item=>item.card_id===card.instance_id);if(!action)return;if(action.targets?.length)setTargetChoice({cardId:card.instance_id,targets:action.targets});else void act({type:action.type,card_id:card.instance_id,source:player?.command.some(item=>item.instance_id===card.instance_id)?'command':'hand'})}
+  const playCard=(card:GameCard)=>{const action=game?.legal_actions.find(item=>item.card_id===card.instance_id);if(!action)return;if(action.targets?.length)setTargetChoice({action,targets:action.targets});else void act({type:action.type,card_id:card.instance_id,ability_index:action.ability_index,source:player?.command.some(item=>item.instance_id===card.instance_id)?'command':action.source||'hand'})}
+  const automaticBlocks=()=>{const result:Record<string,string>={},remaining=[...(blockAction?.card_ids||[])];for(const attacker of game?.state.combat.attackers||[]){const eligible=remaining.filter(blocker=>blockAction?.legal_blocks?.[blocker]?.includes(attacker));const attackingCard=bot?.battlefield.find(card=>card.instance_id===attacker),needed=(attackingCard?.keywords||[]).some(keyword=>keyword.toLowerCase()==='menace')?2:1;for(const blocker of eligible.slice(0,needed)){result[blocker]=attacker;remaining.splice(remaining.indexOf(blocker),1)}}return result}
+  const visibleCards=game?.state.players.flatMap(owner=>['hand','battlefield','graveyard','exile'].flatMap(zone=>(owner[zone as keyof GamePlayer] as GameCard[]).map(card=>({card,owner:owner.name,zone}))))||[]
 
   if(!game)return <Box>
     <Stack direction={{xs:'column',sm:'row'}} justifyContent="space-between" gap={2} mb={3}><Box><Typography variant="h3">Play</Typography><Typography color="text.secondary">Play your physical collection virtually with database artwork and automatic rules assistance.</Typography></Box><Chip icon={<AutoAwesome/>} color="primary" label="Rules engine · Bots · Private invites" sx={{alignSelf:'flex-start'}}/></Stack>
@@ -71,9 +74,9 @@ export default function Play(){
     <Paper className="play-table" elevation={8}>
       <Box className="player-hud opponent-hud"><Favorite color="error"/><Typography variant="h4">{bot?.life}</Typography><Box><Typography fontWeight={900}>{bot?.name}{game.opponent_type==='bot'?` · ${game.bot_difficulty}`:''}</Typography><Typography variant="caption">{bot?.library_count} library · {bot?.graveyard.length} graveyard{Object.values(bot?.commander_damage||{}).some(Boolean)?` · ${Math.max(...Object.values(bot?.commander_damage||{}))} commander`:''}</Typography></Box></Box>
       {!!bot?.command.length&&<Box className="command-zone opponent-command"><Typography variant="caption">COMMANDER</Typography>{bot.command.map(card=><ZoneCard key={card.instance_id} card={card}/>)}</Box>}
-      <HiddenHand count={bot?.hand_count}/><Battlefield player={bot!} game={game}/>
+      <HiddenHand count={bot?.hand_count}/><Battlefield player={bot!} game={game} onCard={playCard}/>
       <Divider className="table-divider"><Chip icon={<Bolt/>} label={game.state.stack.length?`Stack · ${game.state.stack.at(-1)?.card.name}`:phase}/></Divider>
-      <Battlefield player={player!} game={game}/>
+      <Battlefield player={player!} game={game} onCard={playCard}/>
       <Stack direction="row" className="player-hand" justifyContent="center">{player?.hand.map(card=><ZoneCard key={card.instance_id} card={card} legal={!!game.legal_actions.find(item=>item.card_id===card.instance_id)&&!busy} onClick={()=>playCard(card)}/>)}</Stack>
       {!!player?.command.length&&<Box className="command-zone"><Typography variant="caption">COMMANDER · tax {player.commander_casts*2}</Typography>{player.command.map(card=><ZoneCard key={card.instance_id} card={card} legal={!!game.legal_actions.find(item=>item.card_id===card.instance_id)&&!busy} onClick={()=>playCard(card)}/>)}</Box>}
       <Box className="player-hud"><Favorite color="error"/><Typography variant="h4">{player?.life}</Typography><Box><Typography fontWeight={900}>You</Typography><Typography variant="caption">{player?.library_count} library · {player?.graveyard.length} graveyard{Object.values(player?.commander_damage||{}).some(Boolean)?` · ${Math.max(...Object.values(player?.commander_damage||{}))} commander`:''}</Typography></Box></Box>
@@ -82,13 +85,14 @@ export default function Play(){
         {legal('resolve')&&<Button variant="contained" disabled={busy} onClick={()=>void act({type:'resolve'})}>Resolve {game.state.stack.at(-1)?.card.name}</Button>}
         {legal('pass_priority')&&<Button variant={game.state.stack.length?'contained':'outlined'} color="secondary" disabled={busy} onClick={()=>void act({type:'pass_priority'})}>{game.state.stack.length?'Pass priority':'Pass'}</Button>}
         {attackAction&&<Button variant="contained" color="error" startIcon={<Bolt/>} disabled={busy} onClick={()=>void act({type:'declare_attackers',attacker_ids:attackAction.card_ids})}>Attack with all</Button>}
-        {blockAction&&<Button variant="contained" color="info" startIcon={<Shield/>} disabled={busy} onClick={()=>void act({type:'declare_blockers',blocks:Object.fromEntries((blockAction.card_ids||[]).slice(0,game.state.combat.attackers.length).map((id,index)=>[id,game.state.combat.attackers[index]]))})}>Block automatically</Button>}
+        {blockAction&&<Button variant="contained" color="info" startIcon={<Shield/>} disabled={busy} onClick={()=>void act({type:'declare_blockers',blocks:automaticBlocks()})}>Block automatically</Button>}
         {legal('advance_phase')&&<Button variant="contained" disabled={busy} onClick={()=>void act({type:'advance_phase'})}>Next · {phases[(phases.findIndex(([key])=>key===game.state.phase)+1)%phases.length][1]}</Button>}
-        <Button size="small" onClick={()=>void act({type:'adjust_life',target_id:viewerId,amount:-1})}>−1 life</Button><Button size="small" onClick={()=>void act({type:'adjust_life',target_id:viewerId,amount:1})}>+1 life</Button><Button size="small" onClick={()=>void act({type:'create_token',token_name:'1/1 Creature Token',power:1,toughness:1})}>Create 1/1</Button>{legal('concede')&&<Button color="error" disabled={busy} onClick={()=>void act({type:'concede'})}>Concede</Button>}
+        <Button size="small" onClick={()=>void act({type:'adjust_life',target_id:viewerId,amount:-1})}>−1 life</Button><Button size="small" onClick={()=>void act({type:'adjust_life',target_id:viewerId,amount:1})}>+1 life</Button><Button size="small" startIcon={<Build/>} onClick={()=>setToolsOpen(true)}>Table tools</Button>{legal('concede')&&<Button color="error" disabled={busy} onClick={()=>void act({type:'concede'})}>Concede</Button>}
       </Stack>
       <Paper className="game-log" variant="outlined"><Typography variant="overline">Game log</Typography>{game.state.log.slice(-8).reverse().map(entry=><Typography key={entry.id} variant="caption" display="block"><b>T{entry.turn}</b> · {entry.message}</Typography>)}</Paper>
     </Paper>
-    <Dialog open={!!targetChoice} onClose={()=>setTargetChoice(undefined)}><DialogTitle>Choose a target</DialogTitle><DialogContent><Stack spacing={1} minWidth={320}>{targetChoice?.targets.map(target=><Button key={target.id} variant="outlined" onClick={()=>{void act({type:'cast',card_id:targetChoice.cardId,target_id:target.id});setTargetChoice(undefined)}}>{target.name} · {target.controller_id===viewerId?'yours':'opponent'}</Button>)}</Stack></DialogContent><DialogActions><Button onClick={()=>setTargetChoice(undefined)}>Cancel</Button></DialogActions></Dialog>
+    <Dialog open={!!targetChoice} onClose={()=>setTargetChoice(undefined)}><DialogTitle>Choose a target</DialogTitle><DialogContent><Stack spacing={1} minWidth={320}>{targetChoice?.targets.map(target=><Button key={target.id} variant="outlined" onClick={()=>{void act({type:targetChoice.action.type,card_id:targetChoice.action.card_id,ability_index:targetChoice.action.ability_index,target_id:target.id,source:targetChoice.action.source});setTargetChoice(undefined)}}>{target.name} · {target.controller_id===viewerId?'yours':'opponent'}</Button>)}</Stack></DialogContent><DialogActions><Button onClick={()=>setTargetChoice(undefined)}>Cancel</Button></DialogActions></Dialog>
+    <Dialog open={toolsOpen} onClose={()=>setToolsOpen(false)} fullWidth maxWidth="sm"><DialogTitle>Manual table tools</DialogTitle><DialogContent><Alert severity="info" sx={{mb:2}}>Use these controls when a card interaction is not automated yet. Every correction is recorded in the game log and can be undone.</Alert><Typography variant="overline">Create token</Typography><Stack direction={{xs:'column',sm:'row'}} gap={1} mb={2}><TextField label="Token name" value={toolForm.token_name} onChange={e=>setToolForm({...toolForm,token_name:e.target.value})}/><TextField label="Power" type="number" value={toolForm.power} onChange={e=>setToolForm({...toolForm,power:Number(e.target.value)})}/><TextField label="Toughness" type="number" value={toolForm.toughness} onChange={e=>setToolForm({...toolForm,toughness:Number(e.target.value)})}/><Button variant="contained" onClick={()=>void act({type:'create_token',token_name:toolForm.token_name,power:toolForm.power,toughness:toolForm.toughness})}>Create</Button></Stack><Divider sx={{my:2}}/><Typography variant="overline">Counter or move a visible card</Typography><TextField select fullWidth label="Card" value={toolForm.target_id} onChange={e=>setToolForm({...toolForm,target_id:e.target.value})} sx={{mb:1}}>{visibleCards.map(({card,owner,zone})=><MenuItem key={`${zone}-${card.instance_id}`} value={card.instance_id}>{card.name} · {owner} · {zone}</MenuItem>)}</TextField><Stack direction={{xs:'column',sm:'row'}} gap={1}><TextField label="Counter" value={toolForm.counter_name} onChange={e=>setToolForm({...toolForm,counter_name:e.target.value})}/><TextField label="Amount" type="number" value={toolForm.amount} onChange={e=>setToolForm({...toolForm,amount:Number(e.target.value)})}/><Button disabled={!toolForm.target_id} onClick={()=>void act({type:'add_counter',target_id:toolForm.target_id,counter_name:toolForm.counter_name,amount:toolForm.amount})}>Apply counter</Button></Stack><Stack direction={{xs:'column',sm:'row'}} gap={1} mt={1}><TextField select label="Destination" value={toolForm.destination} onChange={e=>setToolForm({...toolForm,destination:e.target.value})}><MenuItem value="hand">Hand</MenuItem><MenuItem value="battlefield">Battlefield</MenuItem><MenuItem value="graveyard">Graveyard</MenuItem><MenuItem value="exile">Exile</MenuItem></TextField><Button disabled={!toolForm.target_id} onClick={()=>void act({type:'move_zone',target_id:toolForm.target_id,destination:toolForm.destination})}>Move card</Button></Stack></DialogContent><DialogActions><Button onClick={()=>setToolsOpen(false)}>Done</Button></DialogActions></Dialog>
     <Dialog open={game.state.status==='complete'}><DialogTitle>{winner?.id===viewerId?'Victory!':'Game over'}</DialogTitle><DialogContent><Typography>{winner?.name} won on turn {game.state.turn}.</Typography></DialogContent><DialogActions><Button onClick={()=>{location.href='?page=play'}}>Return to games</Button></DialogActions></Dialog>
   </Box>
 }

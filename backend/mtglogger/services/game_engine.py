@@ -42,7 +42,8 @@ def _draw(state: dict, player: dict, amount: int = 1) -> None:
 
 def _parse_stats(card: dict) -> tuple[int, int]:
     try:
-        return int(card.get("power") or 0), int(card.get("toughness") or 0)
+        plus = card.get("counters", {}).get("+1/+1", 0); minus = card.get("counters", {}).get("-1/-1", 0)
+        return int(card.get("power") or 0) + plus - minus, int(card.get("toughness") or 0) + plus - minus
     except ValueError:
         return 0, 0
 
@@ -54,22 +55,49 @@ def _mana_symbols(card: dict) -> list[str]:
 def _land_colors(card: dict) -> set[str]:
     text = f"{card.get('name', '')} {card.get('type_line', '')} {card.get('oracle_text', '')}"
     colors = {color for land, color in BASIC_COLORS.items() if land.casefold() in text.casefold()}
-    colors.update(re.findall(r"Add \{([WUBRG])\}", text, re.IGNORECASE))
+    colors.update(re.findall(r"Add \{([WUBRGC])\}", text, re.IGNORECASE))
     if "mana of any color" in text.casefold():
         colors.update("WUBRG")
     return {color.upper() for color in colors}
 
 
+def _mana_source(card: dict) -> bool:
+    return "Land" in card.get("type_line", "") or re.search(r"\{T\}:\s*Add ", card.get("oracle_text") or "", re.IGNORECASE) is not None
+
+
+def _mana_requirements(card: dict, extra_generic: int = 0) -> tuple[list[set[str]], int]:
+    colored=[];generic=extra_generic
+    for symbol in _mana_symbols(card):
+        if symbol.isdigit():generic+=int(symbol);continue
+        choices={part for part in symbol.upper().split("/") if part in "WUBRGC"}
+        if choices:colored.append(choices)
+    return colored,generic
+
+
+def _has_keyword(card: dict, keyword: str) -> bool:
+    return keyword.casefold() in {value.casefold() for value in card.get("keywords", [])} or re.search(rf"\b{re.escape(keyword.casefold())}\b", (card.get("oracle_text") or "").casefold()) is not None
+
+
+def _activated_abilities(card: dict) -> list[dict]:
+    abilities = []
+    for line in (card.get("oracle_text") or "").splitlines():
+        match = re.match(r"^([^:]+):\s*(.+)$", line.strip())
+        if not match or "{T}" not in match.group(1).upper(): continue
+        effect = match.group(2).strip()
+        if re.match(r"add (?:\{|one mana)", effect, re.IGNORECASE): continue
+        ability_card = {**card, "name": f"{card['name']} ability", "oracle_text": effect, "type_line": "Ability", "mana_cost": ""}
+        abilities.append({"cost": match.group(1), "effect": effect, "card": ability_card})
+    return abilities
+
+
 def _can_pay(player: dict, card: dict, extra_generic: int = 0) -> bool:
     available = []
     for permanent in player["battlefield"]:
-        if not permanent.get("tapped") and "Land" in permanent.get("type_line", ""):
+        if not permanent.get("tapped") and _mana_source(permanent) and not ("Creature" in permanent.get("type_line", "") and permanent.get("summoning_sick") and not _has_keyword(permanent,"Haste")):
             available.append(_land_colors(permanent) or {"C"})
-    symbols = _mana_symbols(card)
-    colored = [symbol for symbol in symbols if symbol in "WUBRG"]
-    generic = sum(int(symbol) for symbol in symbols if symbol.isdigit()) + extra_generic
-    for symbol in colored:
-        match = next((colors for colors in available if symbol in colors), None)
+    colored,generic=_mana_requirements(card,extra_generic)
+    for choices in colored:
+        match = next((colors for colors in available if colors & choices), None)
         if not match:
             return False
         available.remove(match)
@@ -77,13 +105,11 @@ def _can_pay(player: dict, card: dict, extra_generic: int = 0) -> bool:
 
 
 def _pay_mana(player: dict, card: dict, extra_generic: int = 0) -> None:
-    symbols = _mana_symbols(card)
-    colored = [symbol for symbol in symbols if symbol in "WUBRG"]
-    generic = sum(int(symbol) for symbol in symbols if symbol.isdigit()) + extra_generic
-    lands = [permanent for permanent in player["battlefield"] if not permanent.get("tapped") and "Land" in permanent.get("type_line", "")]
+    colored,generic=_mana_requirements(card,extra_generic)
+    lands = [permanent for permanent in player["battlefield"] if not permanent.get("tapped") and _mana_source(permanent) and not ("Creature" in permanent.get("type_line", "") and permanent.get("summoning_sick") and not _has_keyword(permanent,"Haste"))]
     chosen = []
-    for symbol in colored:
-        land = next((item for item in lands if symbol in _land_colors(item)), None)
+    for choices in colored:
+        land = next((item for item in lands if (_land_colors(item) or {"C"}) & choices), None)
         if not land:
             raise RuleViolation("Not enough colored mana")
         lands.remove(land)
@@ -186,11 +212,19 @@ def legal_actions(state: dict, player_id: str) -> list[dict]:
     castable = [(card, "hand") for card in player["hand"]]
     castable.extend((card, "command") for card in player.get("command", []))
     for card, source in castable:
-            instant_speed = "Instant" in card.get("type_line", "") or "Flash" in (card.get("oracle_text") or "")
-            if "Land" in card.get("type_line", "") or not ((active and main and not state["stack"]) or instant_speed) or not _can_pay(player, card, _commander_tax(player, card)): continue
-            targets = _targets(state, player_id, card)
-            if _target_kind(card) and not targets: continue
-            action = {"type": "cast", "card_id": card["instance_id"], "source": source, "commander_tax": _commander_tax(player, card)}
+        instant_speed = "Instant" in card.get("type_line", "") or _has_keyword(card, "Flash")
+        if "Land" in card.get("type_line", "") or not ((active and main and not state["stack"]) or instant_speed) or not _can_pay(player, card, _commander_tax(player, card)): continue
+        targets = _targets(state, player_id, card)
+        if _target_kind(card) and not targets: continue
+        action = {"type": "cast", "card_id": card["instance_id"], "source": source, "commander_tax": _commander_tax(player, card)}
+        if targets: action["targets"] = targets
+        actions.append(action)
+    for permanent in player["battlefield"]:
+        if permanent.get("tapped") or ("Creature" in permanent.get("type_line", "") and permanent.get("summoning_sick") and not _has_keyword(permanent, "Haste")): continue
+        for index, ability in enumerate(_activated_abilities(permanent)):
+            targets = _targets(state, player_id, ability["card"])
+            if _target_kind(ability["card"]) and not targets: continue
+            action = {"type": "activate", "card_id": permanent["instance_id"], "ability_index": index, "label": ability["effect"]}
             if targets: action["targets"] = targets
             actions.append(action)
     if _multiplayer(state):
@@ -202,13 +236,15 @@ def legal_actions(state: dict, player_id: str) -> list[dict]:
     else:
         actions.append({"type": "advance_phase"})
     if active and state["phase"] == "combat" and not state["combat"]["attackers"]:
-        eligible = [card["instance_id"] for card in player["battlefield"] if "Creature" in card.get("type_line", "") and not card.get("tapped") and not card.get("summoning_sick")]
+        eligible = [card["instance_id"] for card in player["battlefield"] if "Creature" in card.get("type_line", "") and not card.get("tapped") and (not card.get("summoning_sick") or _has_keyword(card, "Haste"))]
         if eligible:
             actions.append({"type": "declare_attackers", "card_ids": eligible})
     elif not active and state["phase"] == "combat" and state["combat"]["attackers"]:
+        attackers = [card for card in opponent(state, player_id)["battlefield"] if card["instance_id"] in state["combat"]["attackers"]]
         blockers = [card["instance_id"] for card in player["battlefield"] if "Creature" in card.get("type_line", "") and not card.get("tapped")]
         if blockers:
-            actions.append({"type": "declare_blockers", "card_ids": blockers})
+            legal_blocks = {blocker["instance_id"]:[attacker["instance_id"] for attacker in attackers if not _has_keyword(attacker,"Flying") or _has_keyword(blocker,"Flying") or _has_keyword(blocker,"Reach")] for blocker in player["battlefield"] if blocker["instance_id"] in blockers}
+            if any(legal_blocks.values()): actions.append({"type": "declare_blockers", "card_ids": blockers, "legal_blocks": legal_blocks})
     return actions
 
 
@@ -216,53 +252,52 @@ def _resolve_spell(state: dict) -> None:
     item = state["stack"].pop()
     card, caster = item["card"], _player(state, item["controller_id"])
     text = (card.get("oracle_text") or "").casefold()
+    is_permanent_spell = item.get("kind", "spell") == "spell" and any(kind in card.get("type_line", "") for kind in ("Creature", "Artifact", "Enchantment", "Planeswalker", "Battle"))
+    effect_text = "" if is_permanent_spell and re.search(r"\b(?:when|whenever|at the beginning)\b", text) else text
     other = opponent(state, caster["id"])
     target_id = item.get("target_id")
     target_player = next((player for player in state["players"] if player["id"] == target_id), None)
     target_owner = next((player for player in state["players"] if any(permanent["instance_id"] == target_id for permanent in player["battlefield"])), None)
     target = next((permanent for player in state["players"] for permanent in player["battlefield"] if permanent["instance_id"] == target_id), None)
-    draw_match = re.search(r"draw (?:a|one|two|three|four) cards?", text)
+    draw_match = re.search(r"draw (?:a|one|two|three|four) cards?", effect_text)
     if draw_match:
         word = draw_match.group(0).split()[1]
         _draw(state, caster, {"a": 1, "one": 1, "two": 2, "three": 3, "four": 4}[word])
-    life_match = re.search(r"you gain (\d+) life", text)
+    life_match = re.search(r"you gain (\d+) life", effect_text)
     if life_match:
         caster["life"] += int(life_match.group(1))
-    damage_match = re.search(r"deals (\d+) damage to (?:target opponent|each opponent)", text)
+    damage_match = re.search(r"deals (\d+) damage to (?:target opponent|each opponent)", effect_text)
     if damage_match:
         other["life"] -= int(damage_match.group(1))
-    targeted_damage = re.search(r"deals (\d+) damage to (?:any target|target creature)", text)
+    targeted_damage = re.search(r"deals (\d+) damage to (?:any target|target creature)", effect_text)
     if targeted_damage and (target_player or target):
         amount = int(targeted_damage.group(1))
         if target_player: target_player["life"] -= amount
         elif target: target["damage"] += amount
-    if target and target_owner and re.search(r"destroy target (?:creature|permanent|nonland permanent)", text):
-        _leave_battlefield(target_owner, target, "graveyard"); _log(state, f"{target['name']} was destroyed.")
-    if target and target_owner and re.search(r"exile target (?:creature|permanent|nonland permanent)", text):
-        _leave_battlefield(target_owner, target, "exile"); _log(state, f"{target['name']} was exiled.")
-    token_match = re.search(r"create (a|one|two|three|four) (\d+)/(\d+) ([^.]*?) creature tokens?", text)
+    if target and target_owner and re.search(r"destroy target (?:creature|permanent|nonland permanent)", effect_text):
+        _leave_battlefield(state, target_owner, target, "graveyard"); _log(state, f"{target['name']} was destroyed.")
+    if target and target_owner and re.search(r"exile target (?:creature|permanent|nonland permanent)", effect_text):
+        _leave_battlefield(state, target_owner, target, "exile"); _log(state, f"{target['name']} was exiled.")
+    token_match = re.search(r"create (a|one|two|three|four) (\d+)/(\d+) ([^.]*?) creature tokens?", effect_text)
     if token_match:
         amount = {"a":1,"one":1,"two":2,"three":3,"four":4}[token_match.group(1)]
         for _ in range(amount):
             caster["battlefield"].append({"instance_id":_id(),"scryfall_id":"token","name":f"{token_match.group(4).title()} Token","image_url":None,"type_line":f"Token Creature — {token_match.group(4).title()}","oracle_text":"","mana_cost":"","mana_value":0,"power":token_match.group(2),"toughness":token_match.group(3),"owner_id":caster["id"],"controller_id":caster["id"],"tapped":False,"damage":0,"counters":{},"summoning_sick":True,"token":True})
         _log(state, f"{caster['name']} created {amount} token(s).")
-    if any(kind in card.get("type_line", "") for kind in ("Creature", "Artifact", "Enchantment", "Planeswalker", "Battle")):
+    entered = False
+    if is_permanent_spell:
         card["summoning_sick"] = "Creature" in card.get("type_line", "")
-        caster["battlefield"].append(card)
-    else:
+        caster["battlefield"].append(card); entered = True
+    elif item.get("kind", "spell") == "spell":
         caster["graveyard"].append(card)
-    for owner in state["players"]:
-        for permanent in list(owner["battlefield"]):
-            _, toughness = _parse_stats(permanent)
-            plus = permanent.get("counters", {}).get("+1/+1", 0); minus = permanent.get("counters", {}).get("-1/-1", 0)
-            if toughness + plus - minus > 0 and permanent.get("damage", 0) >= toughness + plus - minus:
-                _leave_battlefield(owner, permanent, "graveyard")
     _log(state, f"{card['name']} resolved.")
+    if entered: _queue_triggers(state, "enters", card, caster)
 
 
-def _leave_battlefield(owner: dict, card: dict, destination: str) -> None:
+def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str) -> None:
     if card in owner["battlefield"]: owner["battlefield"].remove(card)
     card["damage"] = 0; card["tapped"] = False
+    _queue_triggers(state, "dies" if destination == "graveyard" else "leaves", card, owner)
     if card.get("token"): return
     if card.get("commander"):
         owner["command"].append(card)
@@ -270,32 +305,59 @@ def _leave_battlefield(owner: dict, card: dict, destination: str) -> None:
         owner[destination].append(card)
 
 
+def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owner: dict) -> None:
+    sources = [(owner, permanent) for owner in state["players"] for permanent in owner["battlefield"]]
+    if event == "dies" and event_card: sources.append((event_owner, event_card))
+    for owner, source in sources:
+        text = source.get("oracle_text") or ""
+        clauses = re.split(r"(?<=[.!])\s+|\n", text)
+        for clause in clauses:
+            lower = clause.casefold(); matches = False
+            if event == "enters" and event_card and "creature" in event_card.get("type_line", "").casefold():
+                under_control = event_card.get("controller_id") == owner["id"]
+                matches = under_control and (("whenever another creature enters" in lower and source is not event_card) or "whenever a creature enters the battlefield under your control" in lower or (source is event_card and re.search(r"when (?:~|this creature|[^,]+) enters", lower) is not None))
+            elif event == "dies" and event_card:
+                matches = (source is event_card and re.search(r"when (?:~|this creature|[^,]+) dies", lower) is not None) or (source is not event_card and "whenever another creature dies" in lower)
+            elif event == "upkeep":
+                matches = owner["id"] == event_owner["id"] and "at the beginning of your upkeep" in lower
+            if not matches or "," not in clause: continue
+            effect = clause.split(",", 1)[1].strip(); ability_card = {**source, "name": f"{source['name']} trigger", "oracle_text": effect, "type_line": "Ability", "mana_cost": ""}
+            targets = _targets(state, owner["id"], ability_card); preferred = [target for target in targets if target["controller_id"] != owner["id"]]
+            state["stack"].append({"id":_id(),"kind":"trigger","card":ability_card,"controller_id":owner["id"],"target_id":(preferred or targets)[0]["id"] if targets else None,"source_id":source["instance_id"]}); _log(state, f"{source['name']} triggered: {effect}")
+
+
 def _combat_damage(state: dict) -> None:
     attacker = _player(state, state["active_player_id"])
     defender = opponent(state, attacker["id"])
     battlefield = {card["instance_id"]: card for player in state["players"] for card in player["battlefield"]}
-    blocked_attackers = set(state["combat"]["blocks"].values())
+    blocked_attackers = set(state["combat"]["blocks"].values());deathtouch_hit:set[str]=set()
+    def hit_player(creature:dict, amount:int)->None:
+        defender["life"] -= amount
+        if _has_keyword(creature,"Lifelink"): attacker["life"] += amount
+        if creature.get("commander"):
+            source = creature.get("owner_id", attacker["id"]); defender.setdefault("commander_damage", {})[source] = defender.setdefault("commander_damage", {}).get(source, 0) + amount
     for attacker_id in state["combat"]["attackers"]:
         creature = battlefield.get(attacker_id)
         if not creature:
             continue
         power, _ = _parse_stats(creature)
         if attacker_id not in blocked_attackers:
-            defender["life"] -= power
-            if creature.get("commander"):
-                source = creature.get("owner_id", attacker["id"]); defender.setdefault("commander_damage", {})[source] = defender.setdefault("commander_damage", {}).get(source, 0) + power
-    for blocker_id, attacker_id in state["combat"]["blocks"].items():
-        blocker, attacking = battlefield.get(blocker_id), battlefield.get(attacker_id)
-        if not blocker or not attacking:
-            continue
-        attacking_power, attacking_toughness = _parse_stats(attacking)
-        blocker_power, blocker_toughness = _parse_stats(blocker)
-        attacking["damage"] += blocker_power
-        blocker["damage"] += attacking_power
-        if attacking["damage"] >= attacking_toughness:
-            _leave_battlefield(attacker, attacking, "graveyard")
-        if blocker["damage"] >= blocker_toughness:
-            _leave_battlefield(defender, blocker, "graveyard")
+            hit_player(creature, max(0,power)); continue
+        blockers=[battlefield[blocker_id] for blocker_id,target_id in state["combat"]["blocks"].items() if target_id==attacker_id and blocker_id in battlefield]
+        remaining=max(0,power)
+        for blocker in blockers:
+            _, toughness=_parse_stats(blocker);lethal=1 if _has_keyword(creature,"Deathtouch") else max(1,toughness-blocker.get("damage",0));assigned=min(remaining,lethal);blocker["damage"]+=assigned;remaining-=assigned
+            if assigned and _has_keyword(creature,"Deathtouch"):deathtouch_hit.add(blocker["instance_id"])
+            blocker_power,_=_parse_stats(blocker);creature["damage"]+=max(0,blocker_power)
+            if blocker_power>0 and _has_keyword(blocker,"Deathtouch"):deathtouch_hit.add(creature["instance_id"])
+            if _has_keyword(blocker,"Lifelink"): defender["life"]+=max(0,blocker_power)
+        if remaining and _has_keyword(creature,"Trample"):hit_player(creature,remaining)
+        if _has_keyword(creature,"Lifelink"):attacker["life"]+=max(0,power-remaining)
+    for owner in (attacker,defender):
+        for creature in list(owner["battlefield"]):
+            if "Creature" not in creature.get("type_line",""):continue
+            _,toughness=_parse_stats(creature)
+            if creature.get("damage",0)>=toughness or creature["instance_id"] in deathtouch_hit:_leave_battlefield(state,owner,creature,"graveyard")
     _log(state, "Combat damage resolved.")
     state["combat"] = {"attackers": [], "blocks": {}}
 
@@ -308,6 +370,17 @@ def _check_winner(state: dict) -> None:
         _log(state, f"{opponent(state, losers[0]['id'])['name']} wins the game.")
 
 
+def _state_based_actions(state: dict) -> None:
+    changed=True
+    while changed:
+        changed=False
+        for owner in state["players"]:
+            for permanent in list(owner["battlefield"]):
+                _,toughness=_parse_stats(permanent)
+                if "Creature" in permanent.get("type_line","") and (toughness<=0 or permanent.get("damage",0)>=toughness):
+                    _leave_battlefield(state,owner,permanent,"graveyard");changed=True
+
+
 def _advance_turn_phase(state: dict) -> None:
     if state["phase"] == "combat" and state["combat"]["attackers"]: _combat_damage(state)
     index = PHASES.index(state["phase"])
@@ -315,7 +388,7 @@ def _advance_turn_phase(state: dict) -> None:
         state["turn"] += 1; state["phase"] = PHASES[0]; state["active_player_id"] = opponent(state, state["active_player_id"])["id"]
         active = _player(state, state["active_player_id"]); active["land_plays_remaining"] = 1
         for permanent in active["battlefield"]: permanent["tapped"] = False; permanent["damage"] = 0; permanent["summoning_sick"] = False
-        _draw(state, active); _log(state, f"Turn {state['turn']} began for {active['name']}.")
+        _draw(state, active); _log(state, f"Turn {state['turn']} began for {active['name']}."); _queue_triggers(state,"upkeep",None,active)
     else:
         state["phase"] = PHASES[index + 1]
     state["priority_player_id"] = state["active_player_id"]
@@ -353,6 +426,15 @@ def perform_action(state: dict, player_id: str, action: dict) -> dict:
         state["stack"].append({"id": _id(), "card": card, "controller_id": player_id, "target_id": target_id}); state["consecutive_passes"] = 0; state["pending_phase_advance"] = False
         if _multiplayer(state): state["priority_player_id"] = opponent(state, player_id)["id"]
         _log(state, f"{player['name']} cast {card['name']}{f' with {tax} commander tax' if tax else ''}{' targeting '+next((target['name'] for target in targets if target['id']==target_id),'') if target_id else ''}.")
+    elif action_type == "activate":
+        permanent=next((card for card in player["battlefield"] if card["instance_id"]==action.get("card_id")),None);index=action.get("ability_index")
+        available=next((entry for entry in legal_actions(state,player_id) if entry["type"]=="activate" and entry["card_id"]==action.get("card_id") and entry["ability_index"]==index),None)
+        if not permanent or not available:raise RuleViolation("That ability cannot be activated")
+        ability=_activated_abilities(permanent)[index];target_id=action.get("target_id");targets=available.get("targets",[])
+        if targets and target_id not in {target["id"] for target in targets}:raise RuleViolation("Choose a legal target")
+        permanent["tapped"]=True;state["stack"].append({"id":_id(),"kind":"ability","card":ability["card"],"controller_id":player_id,"target_id":target_id,"source_id":permanent["instance_id"]});state["consecutive_passes"]=0;state["pending_phase_advance"]=False
+        if _multiplayer(state):state["priority_player_id"]=opponent(state,player_id)["id"]
+        _log(state,f"{player['name']} activated {permanent['name']}: {ability['effect']}")
     elif action_type == "resolve":
         _resolve_spell(state)
     elif action_type == "pass_priority":
@@ -370,12 +452,15 @@ def perform_action(state: dict, player_id: str, action: dict) -> dict:
         if not requested.issubset(eligible): raise RuleViolation("One or more attackers are not eligible")
         state["combat"]["attackers"] = list(requested)
         for card in player["battlefield"]:
-            if card["instance_id"] in requested: card["tapped"] = True
+            if card["instance_id"] in requested and not _has_keyword(card,"Vigilance"): card["tapped"] = True
         state["priority_player_id"] = opponent(state, player_id)["id"]; _log(state, f"{player['name']} attacked with {len(requested)} creature(s).")
     elif action_type == "declare_blockers":
-        available = {entry_id for entry in legal_actions(state, player_id) if entry["type"] == "declare_blockers" for entry_id in entry.get("card_ids", [])}
+        block_action=next((entry for entry in legal_actions(state,player_id) if entry["type"]=="declare_blockers"),None);available=set(block_action.get("card_ids",[])) if block_action else set();legal_blocks=block_action.get("legal_blocks",{}) if block_action else {}
         blocks = action.get("blocks") or {}
-        if not set(blocks).issubset(available) or not set(blocks.values()).issubset(set(state["combat"]["attackers"])): raise RuleViolation("One or more blocks are illegal")
+        if not set(blocks).issubset(available) or any(attacker_id not in legal_blocks.get(blocker_id,[]) for blocker_id,attacker_id in blocks.items()): raise RuleViolation("One or more blocks are illegal")
+        attacking_owner=opponent(state,player_id);battlefield={card["instance_id"]:card for card in attacking_owner["battlefield"]}
+        for attacker_id in state["combat"]["attackers"]:
+            if _has_keyword(battlefield.get(attacker_id,{}),"Menace") and 0<list(blocks.values()).count(attacker_id)<2:raise RuleViolation("A creature with menace must be blocked by at least two creatures")
         state["combat"]["blocks"] = blocks; _combat_damage(state); state["priority_player_id"] = state["active_player_id"]
     elif action_type == "advance_phase":
         if _multiplayer(state):
@@ -398,6 +483,6 @@ def perform_action(state: dict, player_id: str, action: dict) -> dict:
         if not source_owner or destination not in {"hand","battlefield","graveyard","exile"}: raise RuleViolation("Choose a card and destination zone")
         source = next(zone for zone in ("hand","battlefield","graveyard","exile") if any(card["instance_id"] == action.get("target_id") for card in source_owner[zone])); card = next(card for card in source_owner[source] if card["instance_id"] == action.get("target_id"))
         source_owner[source].remove(card); source_owner[destination].append(card); _log(state, f"{card['name']} moved from {source} to {destination}.")
-    _check_winner(state)
+    _state_based_actions(state);_check_winner(state)
     state["version"] += 1
     return state

@@ -148,3 +148,42 @@ def test_twenty_one_unblocked_commander_damage_ends_game():
     defender=next(item for item in state["players"] if item["id"]=="bot")
     assert defender["commander_damage"]["player"]==21
     assert state["status"]=="complete" and state["winner_id"]=="player"
+
+
+def test_tap_ability_uses_stack_draws_and_cannot_be_reused_while_tapped():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(item for item in state["players"] if item["id"]=="player")
+    source={**card(500,"Book of Answers","Artifact"),"oracle_text":"{T}: Draw a card.","instance_id":"book","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].append(source);before=len(player["hand"])
+    action=next(action for action in legal_actions(state,"player") if action["type"]=="activate")
+    state=perform_action(state,"player",{"type":"activate","card_id":"book","ability_index":action["ability_index"]})
+    assert state["stack"][-1]["kind"]=="ability" and not any(action["type"]=="activate" for action in legal_actions(state,"player"))
+    state=perform_action(state,"player",{"type":"resolve"});player=next(item for item in state["players"] if item["id"]=="player")
+    assert len(player["hand"])==before+1 and not any(card["name"].endswith(" ability") for card in player["graveyard"])
+
+
+def test_creature_enter_trigger_is_queued_and_resolved_once():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(item for item in state["players"] if item["id"]=="player")
+    watcher={**card(510,"Soul Watcher","Creature — Cleric","","1","1"),"oracle_text":"Whenever another creature enters the battlefield under your control, you gain 1 life.","instance_id":"watcher","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].append(watcher)
+    entrant={**card(511,"New Friend","Creature — Citizen","","1","1"),"instance_id":"entrant","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"].append(entrant)
+    state=perform_action(state,"player",{"type":"cast","card_id":"entrant"});state=perform_action(state,"player",{"type":"resolve"})
+    assert state["stack"] and state["stack"][-1]["kind"]=="trigger"
+    state=perform_action(state,"player",{"type":"resolve"});player=next(item for item in state["players"] if item["id"]=="player")
+    assert player["life"]==21
+
+
+def test_flying_reach_vigilance_lifelink_and_trample_are_enforced():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});state=perform_action(state,"player",{"type":"advance_phase"});attacker=next(item for item in state["players"] if item["id"]=="player");defender=next(item for item in state["players"] if item["id"]=="bot")
+    flyer={**card(520,"Sky Knight","Creature — Knight","","4","4"),"keywords":["Flying","Vigilance","Lifelink","Trample"],"instance_id":"flyer","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};ground={**card(521,"Groundling","Creature — Beast","","2","2"),"instance_id":"ground","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};reach={**card(522,"Archer","Creature — Archer","","1","1"),"keywords":["Reach"],"instance_id":"reach","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};attacker["battlefield"].append(flyer);defender["battlefield"].extend([ground,reach])
+    state=perform_action(state,"player",{"type":"declare_attackers","attacker_ids":["flyer"]});assert not next(item for item in state["players"] if item["id"]=="player")["battlefield"][-1]["tapped"]
+    block=next(action for action in legal_actions(state,"bot") if action["type"]=="declare_blockers")
+    assert "flyer" not in block["legal_blocks"]["ground"] and "flyer" in block["legal_blocks"]["reach"]
+    state=perform_action(state,"bot",{"type":"declare_blockers","blocks":{"reach":"flyer"}});attacker=next(item for item in state["players"] if item["id"]=="player");defender=next(item for item in state["players"] if item["id"]=="bot")
+    assert attacker["life"]==24 and defender["life"]==17 and any(item["instance_id"]=="reach" for item in defender["graveyard"])
+
+
+def test_mana_rocks_colorless_and_hybrid_costs_and_zero_toughness_state_action():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(item for item in state["players"] if item["id"]=="player")
+    rock={**card(530,"Mana Rock","Artifact"),"oracle_text":"{T}: Add {C}.","instance_id":"rock","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};plains={**card(531,"Plains","Basic Land — Plains"),"instance_id":"plains","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};spell={**card(532,"Hybrid Construct","Artifact Creature — Construct","{W/U}{C}","1","1"),"instance_id":"hybrid","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].extend([rock,plains]);player["hand"].append(spell)
+    assert any(action.get("card_id")=="hybrid" for action in legal_actions(state,"player"))
+    state=perform_action(state,"player",{"type":"cast","card_id":"hybrid"});player=next(item for item in state["players"] if item["id"]=="player");assert all(item["tapped"] for item in player["battlefield"] if item["instance_id"] in {"rock","plains"})
+    state=perform_action(state,"player",{"type":"resolve"});state=perform_action(state,"player",{"type":"add_counter","target_id":"hybrid","counter_name":"-1/-1","amount":1});player=next(item for item in state["players"] if item["id"]=="player")
+    assert not any(item["instance_id"]=="hybrid" for item in player["battlefield"])
