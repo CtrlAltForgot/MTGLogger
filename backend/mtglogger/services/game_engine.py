@@ -393,6 +393,18 @@ def _foretell_cost(card:dict)->str|None:
     return match.group(1).upper() if match else None
 
 
+def _madness_ability(card:dict)->dict|None:
+    line=next((line.strip() for line in (card.get("oracle_text") or "").splitlines() if re.match(r"^Madness\b",line.strip(),re.IGNORECASE)),None)
+    if not line:return None
+    if re.search(r"pay six \{C\}",line,re.IGNORECASE):mana_cost="{C}"*6
+    else:
+        match=re.search(r"Madness\s*[—-]*\s*((?:\{[^}]+\})+)",line,re.IGNORECASE)
+        if not match:return None
+        mana_cost=match.group(1).upper()
+    life=re.search(r"Pay (\d+) life",line,re.IGNORECASE)
+    return {"mana_cost":mana_cost,"life_cost":int(life.group(1)) if life else 0}
+
+
 def _flashback_ability(card:dict)->dict|None:
     match=re.search(r"(?:^|\n)Flashback[ —-]*((?:\{[^}]+\})+)(?:,\s*Behold\s+(a|one|two|three|four|five|\d+)\s+([A-Za-z]+))?",card.get("oracle_text") or "",re.IGNORECASE)
     if not match:return None
@@ -1099,7 +1111,7 @@ def _new_player(player_id: str, name: str, deck: list[dict], is_bot: bool, forma
 def new_game(player_deck: list[dict], opponent_deck: list[dict], play_first: bool = True, opponent_is_bot: bool = True, player_format: str = "", opponent_format: str = "") -> dict:
     human_id, bot_id = "player", "bot"
     players = [_new_player(human_id, "You", player_deck, False, player_format), _new_player(bot_id, "Bot" if opponent_is_bot else "Guest", opponent_deck, opponent_is_bot, opponent_format)]
-    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "beginning_draw_pending":True,"first_turn_draw_skipped":False,"active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id,"monarch_id":None,"initiative_id":None, "players": players, "stack": [], "combat": {"attackers": [], "attackers_declared":False,"blocks": {}, "attack_targets": {},"block_orders":{},"damage_pending":False,"damage_step":None,"first_strike_damage_ids":[],"block_triggers_pending":False}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "pending_legendary": None,"pending_commander_zone":[],"pending_library_search":None,"pending_scry":None,"pending_damage_order":None,"pending_ward":None,"pending_blight":None,"pending_proliferate":None,"pending_amass":None,"pending_discovery":None,"pending_manifest":None,"pending_transform":None,"pending_dungeon":None,"pending_trigger_targets":[], "log": []}
+    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "beginning_draw_pending":True,"first_turn_draw_skipped":False,"active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id,"monarch_id":None,"initiative_id":None, "players": players, "stack": [], "combat": {"attackers": [], "attackers_declared":False,"blocks": {}, "attack_targets": {},"block_orders":{},"damage_pending":False,"damage_step":None,"first_strike_damage_ids":[],"block_triggers_pending":False}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "pending_legendary": None,"pending_commander_zone":[],"pending_library_search":None,"pending_scry":None,"pending_damage_order":None,"pending_ward":None,"pending_blight":None,"pending_proliferate":None,"pending_amass":None,"pending_discovery":None,"pending_madness":None,"pending_manifest":None,"pending_transform":None,"pending_dungeon":None,"pending_trigger_targets":[], "log": []}
     state["pending_explore"]=None;state["pending_explore_queue"]=[]
     state["pending_connive"]=None;state["pending_connive_queue"]=[]
     state["day_night"]=None
@@ -1297,7 +1309,7 @@ def _multiplayer(state: dict) -> bool:
 def _pending_decision(state:dict)->bool:
     if state.get("pending_explore"):return True
     if state.get("pending_connive"):return True
-    return bool(state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_discovery") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
+    return bool(state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_discovery") or state.get("pending_madness") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
 
 
 def _queue_commander_zone_choice(state:dict,owner:dict,card:dict,zone:str)->None:
@@ -1416,6 +1428,22 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
         if pending_discovery["mode"]=="discover":actions.append({"type":"hand_discovered",**common})
         else:actions.append({"type":"decline_discovery",**common})
         actions.append({"type":"concede"});return actions
+    pending_madness=state.get("pending_madness")
+    if pending_madness:
+        if pending_madness["player_id"]!=player_id:return []
+        candidate=next((card for card in player["exile"] if card["instance_id"]==pending_madness["card_id"]),None);ability=_madness_ability(candidate or {})
+        if not candidate or not ability:return [{"type":"decline_madness","card_id":pending_madness["card_id"]},{"type":"concede"}]
+        cost_card={**candidate,"mana_cost":ability["mana_cost"]};targets=_targets(state,player_id,_spell_targeting_card(candidate));required=bool(_target_kind(_spell_targeting_card(candidate)));actions=[]
+        if player["life"]>=ability["life_cost"] and (not required or targets):
+            life_label=f" and pay {ability['life_cost']} life" if ability["life_cost"] else "";action={"type":"cast_madness","card_id":candidate["instance_id"],"card":candidate,"mana_cost":ability["mana_cost"],"life_cost":ability["life_cost"],"label":f"Cast {candidate['name']} for its madness cost {ability['mana_cost']}{life_label}"}
+            if _has_x_cost(cost_card):
+                maximum=_maximum_x(player,cost_card)
+                if _can_pay(player,cost_card,x_value=0):action.update({"x_min":0,"x_max":maximum})
+                else:action=None
+            elif not _can_pay(player,cost_card):action=None
+            if action and targets:action["targets"]=targets
+            if action:actions.append(action)
+        actions.extend([{"type":"decline_madness","card_id":candidate["instance_id"],"card":candidate,"label":f"Put {candidate['name']} into your graveyard"},{"type":"concede"}]);return actions
     pending_manifest=state.get("pending_manifest")
     if pending_manifest:
         if pending_manifest["player_id"]!=player_id:return []
@@ -1649,6 +1677,10 @@ def _resolve_spell(state: dict) -> None:
     card, caster = item["card"], _player(state, item["controller_id"])
     if item.get("kind")=="cascade":
         _start_discovery(state,caster,int(item.get("cascade_value") or 0),"cascade",card["name"]);return
+    if item.get("kind")=="madness_trigger":
+        candidate=next((candidate for candidate in caster["exile"] if candidate["instance_id"]==item.get("source_id")),None)
+        if not candidate:_log(state,f"{card['name']} resolved, but the discarded card was no longer in exile.");return
+        state["pending_madness"]={"player_id":caster["id"],"card_id":candidate["instance_id"],"card_name":candidate["name"]};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} may cast {candidate['name']} for its madness cost.");return
     if item.get("kind")=="ninjutsu_ability":
         source=item.get("source_zone","hand");ninja=next((candidate for candidate in caster.get(source,[]) if candidate["instance_id"]==item.get("source_id")),None)
         if not ninja:_log(state,f"{card['name']} did not resolve because the Ninja was no longer in {source}.");return
@@ -2011,7 +2043,10 @@ def _discard_cards(state:dict,player:dict,cards:list[dict])->None:
     if not cards:return
     sources=[(source_owner,source) for source_owner in state["players"] for source in source_owner["battlefield"]];dedupe=set()
     for card in cards:
-        player["hand"].remove(card);player["graveyard"].append(card)
+        player["hand"].remove(card);madness=_madness_ability(card)
+        if madness:
+            _put_into_exile(state,player,[card],"discard",player["id"]);ability_card={**card,"name":f"{card['name']} — Madness","type_line":"Ability","mana_cost":"","oracle_text":f"You may cast {card['name']} for {madness['mana_cost']}. If you don't, put it into your graveyard."};state["stack"].append({"id":_id(),"kind":"madness_trigger","card":ability_card,"controller_id":player["id"],"source_id":card["instance_id"]})
+        else:player["graveyard"].append(card)
         if player.get("discard_event_turn")!=state["turn"]:player["discard_event_turn"]=state["turn"];player["discards_this_turn"]=0
         player["discards_this_turn"]=player.get("discards_this_turn",0)+1
         _queue_triggers(state,"discard",card,player,dedupe,sources)
@@ -2627,6 +2662,21 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         state["pending_mulligan_bottom"]=None;player["kept_hand"]=True;_log(state,f"{player['name']} put {required} card(s) on the bottom and kept {len(player['hand'])}.")
         if all(item["kept_hand"] for item in state["players"]):
             state["status"]="active";state["priority_player_id"]=state["active_player_id"];active=_player(state,state["active_player_id"]);_log(state,f"Turn 1 began for {active['name']}. Untap and upkeep started.");_queue_triggers(state,"upkeep",None,active)
+    elif action_type in {"cast_madness","decline_madness"}:
+        pending=state.get("pending_madness") or {};candidate=next((card for card in player["exile"] if card["instance_id"]==pending.get("card_id")),None);ability=_madness_ability(candidate or {})
+        if pending.get("player_id")!=player_id or not candidate or not ability:raise RuleViolation("That madness choice is no longer available")
+        state["pending_madness"]=None
+        if action_type=="decline_madness":
+            _leave_exile(state,player,[candidate]);player["graveyard"].append(candidate);state["priority_player_id"]=state["active_player_id"];_log(state,f"{player['name']} declined madness and put {candidate['name']} into their graveyard.")
+        else:
+            cost_card={**candidate,"mana_cost":ability["mana_cost"]};x_value=int(action.get("x_value") or 0);has_x=_has_x_cost(cost_card);maximum=_maximum_x(player,cost_card)
+            if (has_x and not 0<=x_value<=maximum) or (not has_x and action.get("x_value") is not None):raise RuleViolation("Choose a legal value for X")
+            target_id=action.get("target_id");targeting_card=_spell_targeting_card(candidate);targets=_targets(state,player_id,targeting_card)
+            if _target_kind(targeting_card) and target_id not in {target["id"] for target in targets}:raise RuleViolation("Choose a legal target for the madness spell")
+            if player["life"]<ability["life_cost"] or not _can_pay(player,cost_card,x_value=x_value):raise RuleViolation("That madness cost can no longer be paid")
+            _pay_mana(state,player,cost_card,x_value=x_value);player["life"]-=ability["life_cost"];_leave_exile(state,player,[candidate]);stack_item={"id":_id(),"kind":"spell","card":candidate,"controller_id":player_id,"target_id":target_id,"target_ids":[],"mode_indices":[],"mode_targets":[],"x_value":x_value,"cast_source_zone":"exile","madness_cast":True};state["stack"].append(stack_item);_record_spell_cast(state,player);candidate["cast_source_zone"]="exile";_queue_triggers(state,"cast",candidate,player);_queue_cascade_triggers(state,player,candidate);candidate.pop("cast_source_zone",None);_queue_ward(state,player,target_id,stack_item);state["consecutive_passes"]=0;state["pending_phase_advance"]=False
+            if (_multiplayer(state) or not allow_direct_resolution) and not state.get("pending_ward") and not state.get("pending_trigger_targets"):state["priority_player_id"]=opponent(state,player_id)["id"]
+            x_label=f" with X={x_value}" if has_x else "";life_label=f" and paid {ability['life_cost']} life" if ability["life_cost"] else "";_log(state,f"{player['name']} cast {candidate['name']} for its madness cost {ability['mana_cost']}{x_label}{life_label}.")
     elif action_type in {"cast_discovered","hand_discovered","decline_discovery"}:
         pending=state.get("pending_discovery") or {};candidate=next((card for card in player["exile"] if card["instance_id"]==pending.get("candidate_id")),None)
         if pending.get("player_id")!=player_id or not candidate:raise RuleViolation("That discovered card is no longer available")

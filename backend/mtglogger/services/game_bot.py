@@ -229,6 +229,13 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
         action=by_type["keep_explored"][0];revealed=action.get("card") or {};bot=next(player for player in state["players"] if player["id"]=="bot");lands=sum("Land" in card.get("type_line","") for card in bot["battlefield"]);value=float(revealed.get("mana_value") or 0)
         keep=difficulty=="beginner" or value<=lands+2 or (_threat_score(state,revealed)>=8 and value<=lands+4)
         return by_type["keep_explored"][0] if keep else by_type["graveyard_explored"][0]
+    if "cast_madness" in by_type or "decline_madness" in by_type:
+        cast=by_type.get("cast_madness",[None])[0]
+        if cast and (difficulty!="beginner" or random.random()<.5):
+            if cast.get("x_max") is not None:cast={**cast,"x_value":_choose_x(state,cast)}
+            if cast.get("targets"):cast={**cast,"target_id":_choose_target(state,cast)}
+            return cast
+        return by_type.get("decline_madness",[None])[0]
     if "cast_discovered" in by_type or "hand_discovered" in by_type or "decline_discovery" in by_type:
         cast=by_type.get("cast_discovered",[None])[0]
         if cast:

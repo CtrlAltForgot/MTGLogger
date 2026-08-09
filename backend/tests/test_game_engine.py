@@ -2222,3 +2222,29 @@ def test_specialized_affinity_counts_matching_subtypes_and_bot_uses_reduced_cost
     bot["battlefield"]=[*forests,*relics];bot["hand"]=[enforcer,treefolk]
     actions=legal_actions(state,"bot");forest_action=next(entry for entry in actions if entry.get("card_id")=="forest-friend");assert forest_action["affinity_reduction"]==2
     choice=choose_bot_action(state,"expert");assert choice and choice["type"]=="cast" and choice["card_id"]=="myr-enforcer"
+
+
+def test_madness_replaces_discard_with_exile_and_casts_from_a_respondable_trigger():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot");state["phase"]="precombat_main";state["priority_player_id"]="player"
+    mountain={**card(1810,"Mountain","Basic Land — Mountain"),"instance_id":"madness-mountain","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    temper={**card(1811,"Fiery Temper","Instant","{1}{R}{R}"),"oracle_text":"Fiery Temper deals 3 damage to any target.\nMadness {R}","instance_id":"fiery-temper","owner_id":"player","controller_id":"player"};player["battlefield"]=[mountain];player["hand"]=[temper];state["pending_discard"]={"player_id":"player","amount":1,"reason":"effect"}
+    state=perform_action(state,"player",{"type":"discard_cards","card_ids":["fiery-temper"]});player=next(p for p in state["players"] if p["id"]=="player")
+    assert any(card["instance_id"]=="fiery-temper" for card in player["exile"]) and not player["graveyard"] and state["stack"][-1]["kind"]=="madness_trigger"
+    assert "Fiery Temper" in repr(public_state(state,"bot"))
+    state=perform_action(state,"player",{"type":"resolve"});action=next(entry for entry in legal_actions(state,"player") if entry["type"]=="cast_madness");assert action["mana_cost"]=="{R}" and any(target["id"]=="bot" for target in action["targets"])
+    state=perform_action(state,"player",{"type":"cast_madness","card_id":"fiery-temper","target_id":"bot"});assert state["stack"][-1]["card"]["name"]=="Fiery Temper"
+    state=perform_action(state,"player",{"type":"resolve"});bot=next(p for p in state["players"] if p["id"]=="bot");player=next(p for p in state["players"] if p["id"]=="player");assert bot["life"]==17 and any(card["instance_id"]=="fiery-temper" for card in player["graveyard"])
+
+
+def test_declining_madness_moves_the_revealed_card_to_graveyard_and_life_cost_is_enforced():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player");state["phase"]="precombat_main";state["priority_player_id"]="player"
+    archfiend={**card(1820,"Shadowgrange Archfiend","Creature — Demon","{6}{B}","8","4"),"oracle_text":"Madness—{2}{B}, Pay 8 life.","instance_id":"shadowgrange","owner_id":"player","controller_id":"player"};lands=[{**card(1821+index,"Swamp","Basic Land — Swamp"),"instance_id":f"madness-life-land-{index}","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False} for index in range(3)];player["life"]=7;player["battlefield"]=lands;player["hand"]=[archfiend];state["pending_discard"]={"player_id":"player","amount":1,"reason":"effect"};state=perform_action(state,"player",{"type":"discard_cards","card_ids":["shadowgrange"]});state=perform_action(state,"player",{"type":"resolve"});actions=legal_actions(state,"player")
+    assert not any(action["type"]=="cast_madness" for action in actions) and any(action["type"]=="decline_madness" for action in actions)
+    state=perform_action(state,"player",{"type":"decline_madness","card_id":"shadowgrange"});player=next(p for p in state["players"] if p["id"]=="player");assert any(card["instance_id"]=="shadowgrange" for card in player["graveyard"]) and not player["exile"]
+
+
+def test_bot_casts_an_affordable_madness_card_and_selects_its_target():
+    state=kept_game();state["active_player_id"]="bot";state["priority_player_id"]="bot";state["phase"]="precombat_main";bot=next(p for p in state["players"] if p["id"]=="bot")
+    mountain={**card(1830,"Mountain","Basic Land — Mountain"),"instance_id":"bot-madness-mountain","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};temper={**card(1831,"Bot Temper","Instant","{2}{R}"),"oracle_text":"Bot Temper deals 3 damage to any target.\nMadness {R}","instance_id":"bot-temper","owner_id":"bot","controller_id":"bot"};bot["battlefield"]=[mountain];bot["hand"]=[temper];state["pending_discard"]={"player_id":"bot","amount":1,"reason":"effect"}
+    state=perform_action(state,"bot",{"type":"discard_cards","card_ids":["bot-temper"]});state=perform_action(state,"bot",{"type":"resolve"});choice=choose_bot_action(state,"expert")
+    assert choice["type"]=="cast_madness" and choice["card_id"]=="bot-temper" and choice["target_id"]=="player"
