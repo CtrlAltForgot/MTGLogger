@@ -29,7 +29,7 @@ def _target_card(state:dict,target_id:str)->dict|None:
 
 
 def _choose_target(state:dict,action:dict)->str:
-    text=(action.get("label") or _card(state,"bot",action.get("card_id","" )).get("oracle_text","") if action.get("card_id") else action.get("label") or "").casefold()
+    text=" ".join(filter(None,(action.get("label") or "",_card(state,"bot",action["card_id"]).get("oracle_text","") if action.get("card_id") else ""))).casefold()
     harmful=any(word in text for word in ("damage","destroy","exile","tap target","gets -","loses","counter target"));targets=action["targets"]
     preferred=[target for target in targets if (target["controller_id"]!="bot")==harmful] or targets
     damage=re.search(r"deals (\d+) damage",text)
@@ -147,7 +147,7 @@ def _mode_score(state:dict,mode:dict)->float:
 
 
 def _choose_x(state:dict,action:dict)->int:
-    maximum=int(action.get("x_max") or 0);text=(action.get("label") or (_card(state,"bot",action["card_id"]).get("oracle_text","") if action.get("card_id") else "")).casefold();enemy=next(player for player in state["players"] if player["id"]!="bot")
+    maximum=int(action.get("x_max") or 0);text=" ".join(filter(None,(action.get("label") or "",_card(state,"bot",action["card_id"]).get("oracle_text","") if action.get("card_id") else ""))).casefold();enemy=next(player for player in state["players"] if player["id"]!="bot")
     if re.search(r"deals? x damage",text):return min(maximum,max(0,enemy["life"]))
     if re.search(r"draw x cards?",text):
         bot=next(player for player in state["players"] if player["id"]=="bot");return min(maximum,max(0,len(bot["library"])-1))
@@ -224,6 +224,11 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
         return {"type":"order_blockers","block_orders":orders}
     if "play_land" in by_type:
         return by_type["play_land"][0]
+    if "cycle" in by_type:
+        bot=next(player for player in state["players"] if player["id"]=="bot");lands_in_hand=sum("Land" in card.get("type_line","") for card in bot["hand"]);lands_in_play=sum("Land" in card.get("type_line","") for card in bot["battlefield"])
+        choice=min(by_type["cycle"],key=lambda action:(_card(state,"bot",action["card_id"]).get("mana_value") or 0))
+        stranded=(_card(state,"bot",choice["card_id"]).get("mana_value") or 0)>lands_in_play+2
+        if "cast" not in by_type or lands_in_hand<2 or (difficulty=="expert" and stranded):return choice
     if "cast" in by_type:
         spells = by_type["cast"]
         if state["stack"]:

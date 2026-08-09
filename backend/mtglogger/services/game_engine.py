@@ -129,6 +129,16 @@ def _equip_cost(card:dict)->str|None:
     return match.group(1).upper() if match else None
 
 
+def _cycling_ability(card:dict)->dict|None:
+    for line in (card.get("oracle_text") or "").splitlines():
+        match=re.match(r"^((?:[A-Za-z][A-Za-z ]*)?cycling)\s+((?:\{[^}]+\})+)",line.strip(),re.IGNORECASE)
+        if not match:continue
+        keyword,cost=match.group(1),match.group(2).upper();descriptor=keyword[:-7].strip()
+        effect="Draw a card." if not descriptor else f"Search your library for a {descriptor} card, reveal it, put it into your hand, then shuffle."
+        return {"keyword":keyword,"mana_cost":cost,"effect":effect,"card":{**card,"name":f"{card['name']} — {keyword}","oracle_text":effect,"type_line":"Ability","mana_cost":""}}
+    return None
+
+
 def _aura_allowed_types(card:dict)->set[str]:
     match=re.search(r"(?:^|\n)Enchant ([^\n.]+)",card.get("oracle_text") or "",re.IGNORECASE)
     if not match or "permanent" in match.group(1).casefold():return set()
@@ -629,7 +639,7 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
     for card, source in castable:
         instant_speed = "Instant" in card.get("type_line", "") or _has_keyword(card, "Flash")
         if "Land" in card.get("type_line", "") or not ((active and main and not state["stack"]) or instant_speed) or not _can_pay(player, card, _commander_tax(player, card)): continue
-        action = {"type": "cast", "card_id": card["instance_id"], "source": source, "commander_tax": _commander_tax(player, card)}
+        total_tax=_commander_tax(player,card);action = {"type": "cast", "card_id": card["instance_id"], "source": source, "commander_tax": total_tax,"label":f"Cast {card['name']} · {card.get('mana_cost') or '{0}'}{f' + {{2}}×{player.get("commander_casts",0)} commander tax' if total_tax else ''}"}
         if _has_x_cost(card):action.update({"x_min":0,"x_max":_maximum_x(player,card,_commander_tax(player,card))})
         modal_spec=_modal_spec(card);modal_options=(modal_spec or {}).get("options",[])
         if modal_spec:
@@ -645,6 +655,10 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
             if _target_kind(targeting_card) and not targets: continue
             if targets: action["targets"] = targets
         actions.append(action)
+    for card in player["hand"]:
+        cycling=_cycling_ability(card)
+        if cycling and _can_pay(player,{"mana_cost":cycling["mana_cost"]}):
+            actions.append({"type":"cycle","card_id":card["instance_id"],"label":f"{cycling['keyword']} · {cycling['mana_cost']}","mana_cost":cycling["mana_cost"]})
     for permanent in player["battlefield"]:
         for index, ability in enumerate(_permanent_abilities(state,permanent)):
             if ability["taps"] and (permanent.get("tapped") or ("Creature" in permanent.get("type_line", "") and permanent.get("summoning_sick") and not _has_keyword(permanent,"Haste"))):continue
@@ -895,7 +909,7 @@ def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str) -
 
 def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owner: dict) -> None:
     sources = [(owner, permanent) for owner in state["players"] for permanent in owner["battlefield"]]
-    if event == "dies" and event_card: sources.append((event_owner, event_card))
+    if event in {"dies","cycling"} and event_card: sources.append((event_owner, event_card))
     for owner, source in sources:
         text = source.get("oracle_text") or ""
         clauses = re.split(r"(?<=[.!])\s+|\n", text)
@@ -932,6 +946,9 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 source_hit = source.get("instance_id") == event_card.get("instance_id")
                 source_name = re.escape(source.get("name", "").casefold())
                 matches = source_hit and re.search(rf"whenever (?:~|this creature|{source_name}) deals combat damage to (?:a player|an opponent)", lower) is not None
+            elif event == "cycling" and event_card:
+                cycled_name=re.escape(event_card.get("name","").casefold());same_card=source is event_card and re.search(rf"when you cycle (?:~|this card|{cycled_name})\b",lower) is not None
+                matches=same_card or (source is not event_card and owner["id"]==event_owner["id"] and "whenever you cycle a card" in lower)
             if not matches or "," not in clause: continue
             effect = clause.split(",", 1)[1].strip(); ability_card = {**source, "name": f"{source['name']} trigger", "oracle_text": effect, "type_line": "Ability", "mana_cost": ""}
             targets = _targets(state, owner["id"], ability_card)
@@ -1136,6 +1153,15 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if (_multiplayer(state) or not allow_direct_resolution) and not state.get("pending_ward") and not state.get("pending_trigger_targets"): state["priority_player_id"] = opponent(state, player_id)["id"]
         mode_label="; ".join(next(mode["label"] for mode in modal_options if mode["index"]==index) for index in chosen_modes)
         _log(state, f"{player['name']} cast {card['name']}{f' with X={x_value}' if _has_x_cost(card) else ''}{f' choosing {mode_label}' if mode_label else ''}{f' with {tax} commander tax' if tax else ''}{' targeting '+next((target['name'] for target in targets if target['id']==target_id),'') if target_id else ''}.")
+    elif action_type == "cycle":
+        card=next((card for card in player["hand"] if card["instance_id"]==action.get("card_id")),None);cycling=_cycling_ability(card or {})
+        available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="cycle" and entry["card_id"]==action.get("card_id")),None)
+        if not card or not cycling or not available:raise RuleViolation("That card cannot be cycled")
+        _pay_mana(state,player,{"mana_cost":cycling["mana_cost"]});player["hand"].remove(card);player["graveyard"].append(card)
+        state["stack"].append({"id":_id(),"kind":"ability","card":cycling["card"],"controller_id":player_id,"target_id":None,"source_id":card["instance_id"]});state["consecutive_passes"]=0;state["pending_phase_advance"]=False
+        _queue_triggers(state,"cycling",card,player)
+        if (_multiplayer(state) or not allow_direct_resolution) and not state.get("pending_trigger_targets"):state["priority_player_id"]=opponent(state,player_id)["id"]
+        _log(state,f"{player['name']} discarded {card['name']} to activate {cycling['keyword']}.")
     elif action_type == "equip":
         available=next((entry for entry in legal_actions(state,player_id) if entry["type"]=="equip" and entry["card_id"]==action.get("card_id")),None);target_id=action.get("target_id")
         if not available or target_id not in {target["id"] for target in available["targets"]}:raise RuleViolation("That Equipment cannot be attached to that creature now")
