@@ -86,22 +86,12 @@ def _land_colors(card: dict) -> set[str]:
     return {color.upper() for color in colors}
 
 
-def _mana_source(card: dict) -> bool:
-    return "Land" in card.get("type_line", "") or any(kind in card.get("type_line","") for kind in ("Treasure","Gold")) or re.search(r"\{T\}:\s*Add ", card.get("oracle_text") or "", re.IGNORECASE) is not None
-
-
 _MANA_COLORS = "WUBRGC"
 
 
-def _mana_output_options(card: dict) -> list[tuple[int, ...]]:
-    """Return the distinct mana pools produced by one activation of a source."""
-    type_line = card.get("type_line", "")
-    text = card.get("oracle_text") or ""
-    if any(kind in type_line for kind in ("Treasure", "Gold")):
-        return [tuple(1 if color == choice else 0 for color in _MANA_COLORS) for choice in "WUBRG"]
-
+def _mana_pools(effect: str) -> list[tuple[int, ...]]:
     options: set[tuple[int, ...]] = set()
-    for clause in re.findall(r"Add ([^.\n]+)", text, re.IGNORECASE):
+    for clause in re.findall(r"Add ([^.\n]+)", effect, re.IGNORECASE):
         symbols = [symbol.upper() for symbol in re.findall(r"\{([WUBRGC])\}", clause, re.IGNORECASE)]
         if symbols:
             if " or " in clause.casefold():
@@ -112,7 +102,7 @@ def _mana_output_options(card: dict) -> list[tuple[int, ...]]:
             continue
         amount_match = re.search(r"\b(one|two|three|four|five) mana\b", clause, re.IGNORECASE)
         amount = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5}.get((amount_match.group(1).casefold() if amount_match else ""), 1)
-        if "any color" in clause.casefold():
+        if re.search(r"any (?:one )?color",clause,re.IGNORECASE):
             if "any combination" in clause.casefold():
                 pools = {(0, 0, 0, 0, 0, 0)}
                 for _ in range(amount):
@@ -120,13 +110,37 @@ def _mana_output_options(card: dict) -> list[tuple[int, ...]]:
                 options.update(pools)
             else:
                 options.update(tuple(amount if color == choice else 0 for color in _MANA_COLORS) for choice in "WUBRG")
+    return sorted(options)
+
+
+def _mana_source_options(card: dict) -> list[dict]:
+    """Pair every usable mana output with the costs of that exact ability."""
+    type_line=card.get("type_line","");text=card.get("oracle_text") or "";options=[]
+    for line in text.splitlines():
+        match=re.match(r"^([^:]+):\s*(Add [^.\n]+)",line.strip(),re.IGNORECASE)
+        if not match:continue
+        cost,effect=match.group(1).strip(),match.group(2).strip();lower=cost.casefold();taps="{t}" in lower
+        self_sacrifice=re.search(r"\bsacrifice (?:this (?:artifact|creature|permanent)|%s)\b"%re.escape(card.get("name","")),cost,re.IGNORECASE) is not None
+        life_match=re.search(r"\bpay (\d+) life\b",cost,re.IGNORECASE);life_cost=int(life_match.group(1)) if life_match else 0
+        residual=re.sub(r"\{t\}|pay \d+ life|sacrifice (?:this (?:artifact|creature|permanent)|%s)|[,. ]"%re.escape(card.get("name","")),"",cost,flags=re.IGNORECASE)
+        if residual:continue
+        options.extend({"pool":pool,"taps":taps,"life_cost":life_cost,"self_sacrifice":self_sacrifice} for pool in _mana_pools(effect))
+
+    if any(kind in type_line for kind in ("Treasure","Gold")) and not options:
+        taps="Treasure" in type_line
+        options=[{"pool":tuple(1 if color==choice else 0 for color in _MANA_COLORS),"taps":taps,"life_cost":0,"self_sacrifice":True} for choice in "WUBRG"]
 
     if not options and "Land" in type_line:
-        colors = _land_colors(card)
+        colors={color for land,color in BASIC_COLORS.items() if land.casefold() in type_line.casefold()}
         if not colors and "Basic Land" in type_line:
             colors = {"C"}
-        options.update(tuple(1 if color == choice else 0 for color in _MANA_COLORS) for choice in colors)
-    return sorted(options)
+        options=[{"pool":tuple(1 if color==choice else 0 for color in _MANA_COLORS),"taps":True,"life_cost":0,"self_sacrifice":False} for choice in colors]
+    return options
+
+
+def _mana_output_options(card: dict) -> list[tuple[int, ...]]:
+    """Compatibility view used by diagnostics and tests."""
+    return sorted({option["pool"] for option in _mana_source_options(card)})
 
 
 def _pool_pays(pool: tuple[int, ...], colored: list[set[str]], generic: int) -> bool:
@@ -152,7 +166,7 @@ def _mana_payment_plan(player: dict, card: dict, extra_generic: int = 0, exclude
     excluded = set(excluded_ids or ())
     if excluded_id:
         excluded.add(excluded_id)
-    sources = [permanent for permanent in player["battlefield"] if permanent.get("instance_id") not in excluded and not permanent.get("tapped") and _mana_source(permanent) and not ("Creature" in permanent.get("type_line", "") and permanent.get("summoning_sick") and not _has_keyword(permanent, "Haste"))]
+    sources = [permanent for permanent in player["battlefield"] if permanent.get("instance_id") not in excluded and _mana_source_options(permanent)]
     sources.extend({"instance_id": f"firebending-mana-{index}", "name": "Firebending mana", "type_line": "", "oracle_text": "Add {R}.", "firebending_mana": True} for index in range(player.get("firebending_mana", 0)))
     colored, generic = _mana_requirements(card, extra_generic, x_value)
     needed = len(colored) + generic
@@ -165,15 +179,17 @@ def _mana_payment_plan(player: dict, card: dict, extra_generic: int = 0, exclude
     empty = (0, 0, 0, 0, 0, 0)
     states: dict[tuple[int, ...], tuple[int, list[dict]]] = {empty: (0, [])}
     for source in sources:
-        outputs = [(0, 0, 0, 1, 0, 0)] if source.get("firebending_mana") else _mana_output_options(source)
-        if not outputs:
+        options = [{"pool":(0,0,0,1,0,0),"taps":False,"life_cost":0,"self_sacrifice":False}] if source.get("firebending_mana") else _mana_source_options(source)
+        options=[option for option in options if player.get("life",0)>=option["life_cost"] and (not option["taps"] or (not source.get("tapped") and not ("Creature" in source.get("type_line","") and source.get("summoning_sick") and not _has_keyword(source,"Haste"))))]
+        if not options:
             continue
-        source_cost = 1 if source.get("firebending_mana") else 10000 if any(kind in source.get("type_line", "") for kind in ("Treasure", "Gold")) else 100
         updated = dict(states)
         for pool, (cost, chosen) in states.items():
-            for output in outputs:
+            for option in options:
+                output=option["pool"]
                 combined = tuple(min(needed, pool[index] + output[index]) for index in range(6))
-                candidate = (cost + source_cost, chosen + [source])
+                source_cost=1 if source.get("firebending_mana") else 10000 if option["self_sacrifice"] else 100+option["life_cost"]*1000
+                candidate = (cost + source_cost, chosen + [{"source":source,"option":option}])
                 current = updated.get(combined)
                 if current is None or (candidate[0], len(candidate[1])) < (current[0], len(current[1])):
                     updated[combined] = candidate
@@ -578,11 +594,15 @@ def _pay_mana(state:dict,player: dict, card: dict, extra_generic: int = 0, exclu
     chosen = _mana_payment_plan(player,card,extra_generic,excluded_id,x_value,excluded_ids)
     if chosen is None:
         raise RuleViolation("Not enough mana")
-    for land in chosen:
+    for payment in chosen:
+        land=payment["source"];option=payment["option"]
         if land.get("firebending_mana"):player["firebending_mana"]=max(0,player.get("firebending_mana",0)-1)
-        elif any(kind in land.get("type_line","") for kind in ("Treasure","Gold")):
+        elif option["self_sacrifice"]:
+            player["life"]-=option["life_cost"]
             _leave_battlefield(state,player,land,"graveyard");_log(state,f"{player['name']} sacrificed {land['name']} for mana.")
-        else:land["tapped"] = True
+        else:
+            player["life"]-=option["life_cost"]
+            if option["taps"]:land["tapped"] = True
 
 
 def _convoke_residual(player:dict,card:dict,selected_ids:list[str],extra_generic:int=0,x_value:int=0)->dict|None:

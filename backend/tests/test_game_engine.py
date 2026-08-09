@@ -563,6 +563,31 @@ def test_utility_land_without_a_mana_ability_cannot_pay_for_a_spell():
     assert not any(action.get("card_id")==spell["instance_id"] for action in legal_actions(state,"player"))
 
 
+def test_pain_land_colored_output_pays_life_but_its_colorless_output_does_not():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");player["battlefield"]=[]
+    pain={**card(776,"Test Forge","Land"),"oracle_text":"{T}: Add {C}.\n{T}, Pay 1 life: Add {R}.","instance_id":"test-forge","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};red={**card(777,"Red Test","Sorcery","{R}"),"instance_id":"red-test","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].append(pain);player["hand"].append(red);before=player["life"]
+    state=perform_action(state,"player",{"type":"cast","card_id":"red-test"});player=next(p for p in state["players"] if p["id"]=="player");assert player["life"]==before-1 and next(card for card in player["battlefield"] if card["instance_id"]=="test-forge")["tapped"]
+    state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");pain=next(card for card in player["battlefield"] if card["instance_id"]=="test-forge");pain["tapped"]=False;generic={**card(778,"Generic Test","Sorcery","{1}"),"instance_id":"generic-test","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"].append(generic);before=player["life"];state=perform_action(state,"player",{"type":"cast","card_id":"generic-test"});assert next(p for p in state["players"] if p["id"]=="player")["life"]==before
+
+
+def test_life_mana_cost_requires_enough_life_and_self_sacrificing_sources_leave_play():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");player["battlefield"]=[];player["life"]=1
+    pain={**card(779,"Pain Crystal","Artifact"),"oracle_text":"Pay 2 life, {T}: Add {U}.","instance_id":"pain-crystal","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};lotus={**card(780,"Test Lotus","Artifact"),"oracle_text":"Sacrifice this artifact: Add three mana of any one color.","instance_id":"test-lotus","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};blue={**card(781,"Blue Test","Sorcery","{U}"),"instance_id":"blue-test","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};triple={**card(782,"Triple Blue Test","Sorcery","{U}{U}{U}"),"instance_id":"triple-blue-test","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].append(pain);player["hand"].append(blue)
+    assert not any(action.get("card_id")=="blue-test" for action in legal_actions(state,"player"));player["battlefield"].append(lotus);player["hand"].append(triple);assert any(action.get("card_id")=="triple-blue-test" for action in legal_actions(state,"player"));state=perform_action(state,"player",{"type":"cast","card_id":"triple-blue-test"});player=next(p for p in state["players"] if p["id"]=="player");assert not any(card["instance_id"]=="test-lotus" for card in player["battlefield"]) and any(card["instance_id"]=="test-lotus" for card in player["graveyard"])
+
+
+def test_unsupported_conditional_land_mana_is_never_treated_as_free():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");player["battlefield"]=[]
+    altar_land={**card(783,"Sacrifice Fields","Land"),"oracle_text":"Sacrifice a creature: Add {B}{B}.","instance_id":"sacrifice-fields","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};spell={**card(784,"Black Test","Sorcery","{B}"),"instance_id":"black-test","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].append(altar_land);player["hand"].append(spell)
+    assert not any(action.get("card_id")=="black-test" for action in legal_actions(state,"player"))
+
+
+def test_nontap_sacrifice_mana_works_while_tapped_and_through_summoning_sickness():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");player["battlefield"]=[]
+    pet={**card(785,"Test Blood Pet","Creature — Thrull","","1","1"),"oracle_text":"Sacrifice Test Blood Pet: Add {B}.","instance_id":"test-blood-pet","owner_id":"player","controller_id":"player","tapped":True,"damage":0,"counters":{},"summoning_sick":True};spell={**card(786,"Pet Spell","Sorcery","{B}"),"instance_id":"pet-spell","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].append(pet);player["hand"].append(spell)
+    assert any(action.get("card_id")=="pet-spell" for action in legal_actions(state,"player"));state=perform_action(state,"player",{"type":"cast","card_id":"pet-spell"});player=next(p for p in state["players"] if p["id"]=="player");assert not any(card["instance_id"]=="test-blood-pet" for card in player["battlefield"])
+
+
 def test_bot_uses_a_clue_when_it_has_mana_and_no_better_spell():
     state=kept_game();state["active_player_id"]="bot";state["priority_player_id"]="bot";state["phase"]="combat";bot=next(p for p in state["players"] if p["id"]=="bot");bot["hand"]=[];bot["battlefield"]=[]
     for index in range(2):bot["battlefield"].append({**card(766+index,"Island","Basic Land — Island"),"instance_id":f"bot-clue-island-{index}","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False})
