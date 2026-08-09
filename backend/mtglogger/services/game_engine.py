@@ -40,10 +40,31 @@ def _draw(state: dict, player: dict, amount: int = 1) -> None:
         player["hand"].append(player["library"].pop())
 
 
-def _parse_stats(card: dict) -> tuple[int, int]:
+def _continuous_stats(state:dict|None,card:dict)->tuple[int,int]:
+    if not state or "Creature" not in card.get("type_line",""):return 0,0
+    power=toughness=0;controller=card.get("controller_id");type_line=card.get("type_line","").casefold()
+    for owner in state["players"]:
+        for source in owner["battlefield"]:
+            clauses=re.split(r"(?<=[.!])\s+|\n",source.get("oracle_text") or "")
+            for clause in clauses:
+                lower=clause.casefold()
+                if ":" in clause or "until end of turn" in lower or "as long as" in lower or re.match(r"\s*(?:when|whenever|if)\b",lower):continue
+                for match in re.finditer(r"\b(other )?((?:[a-z]+ )?creatures|creature tokens) (you|your opponents) control get ([+-]\d+)/([+-]\d+)",clause,re.IGNORECASE):
+                    other,group,scope=bool(match.group(1)),match.group(2).casefold(),match.group(3).casefold();source_controller=source.get("controller_id",owner["id"])
+                    if other and source["instance_id"]==card.get("instance_id"):continue
+                    if (scope=="you" and controller!=source_controller) or (scope=="your opponents" and controller==source_controller):continue
+                    if group=="creature tokens" and not card.get("token"):continue
+                    qualifier=group.removesuffix(" creatures")
+                    if qualifier not in {"creature","creatures"} and group!="creature tokens" and qualifier not in type_line:continue
+                    power+=int(match.group(4));toughness+=int(match.group(5))
+    return power,toughness
+
+
+def _parse_stats(card: dict,state:dict|None=None) -> tuple[int, int]:
     try:
         plus = card.get("counters", {}).get("+1/+1", 0); minus = card.get("counters", {}).get("-1/-1", 0)
-        return int(card.get("power") or 0) + plus - minus + card.get("temporary_power", 0), int(card.get("toughness") or 0) + plus - minus + card.get("temporary_toughness", 0)
+        static_power,static_toughness=_continuous_stats(state,card)
+        return int(card.get("power") or 0) + plus - minus + card.get("temporary_power", 0)+static_power, int(card.get("toughness") or 0) + plus - minus + card.get("temporary_toughness", 0)+static_toughness
     except ValueError:
         return 0, 0
 
@@ -207,6 +228,10 @@ def new_game(player_deck: list[dict], opponent_deck: list[dict], play_first: boo
 
 def public_state(state: dict, viewer_id: str = "player") -> dict:
     visible = deepcopy(state)
+    originals={card["instance_id"]:card for owner in state["players"] for card in owner["battlefield"]}
+    for owner in visible["players"]:
+        for card in owner["battlefield"]:
+            card["effective_power"],card["effective_toughness"]=_parse_stats(originals[card["instance_id"]],state)
     for player in visible["players"]:
         player["library_count"] = len(player.pop("library"))
         if player["id"] != viewer_id:
@@ -592,13 +617,13 @@ def _combat_damage(state: dict) -> None:
         for attacker_id in state["combat"]["attackers"]:
             creature=battlefield.get(attacker_id)
             if not creature or not strikes(creature):continue
-            power=max(0,_parse_stats(creature)[0]);assigned_ids=state["combat"].get("block_orders",{}).get(attacker_id) or [blocker_id for blocker_id,target_id in state["combat"]["blocks"].items() if target_id==attacker_id];blockers=[battlefield[blocker_id] for blocker_id in assigned_ids if blocker_id in battlefield]
+            power=max(0,_parse_stats(creature,state)[0]);assigned_ids=state["combat"].get("block_orders",{}).get(attacker_id) or [blocker_id for blocker_id,target_id in state["combat"]["blocks"].items() if target_id==attacker_id];blockers=[battlefield[blocker_id] for blocker_id in assigned_ids if blocker_id in battlefield]
             attack_target=state["combat"].get("attack_targets",{}).get(attacker_id,defender["id"])
             if attacker_id not in originally_blocked:
                 hit_defender(creature,power,attack_target);continue
             remaining=power
             for blocker in blockers:
-                _,toughness=_parse_stats(blocker);lethal=1 if _has_keyword(creature,"Deathtouch") else max(1,toughness-blocker.get("damage",0));assigned=min(remaining,lethal);bucket=counter_damage if _has_keyword(creature,"Infect") or _has_keyword(creature,"Wither") else damage;bucket[blocker["instance_id"]]=bucket.get(blocker["instance_id"],0)+assigned;remaining-=assigned
+                _,toughness=_parse_stats(blocker,state);lethal=1 if _has_keyword(creature,"Deathtouch") else max(1,toughness-blocker.get("damage",0));assigned=min(remaining,lethal);bucket=counter_damage if _has_keyword(creature,"Infect") or _has_keyword(creature,"Wither") else damage;bucket[blocker["instance_id"]]=bucket.get(blocker["instance_id"],0)+assigned;remaining-=assigned
                 if assigned and _has_keyword(creature,"Deathtouch"):deathtouch_hit.add(blocker["instance_id"])
             dealt=power-remaining
             if dealt and _has_keyword(creature,"Lifelink"):life_gain[attacker["id"]]+=dealt
@@ -606,7 +631,7 @@ def _combat_damage(state: dict) -> None:
         for blocker_id,attacker_id in state["combat"]["blocks"].items():
             blocker,creature=battlefield.get(blocker_id),battlefield.get(attacker_id)
             if not blocker or not creature or not strikes(blocker):continue
-            amount=max(0,_parse_stats(blocker)[0]);bucket=counter_damage if _has_keyword(blocker,"Infect") or _has_keyword(blocker,"Wither") else damage;bucket[creature["instance_id"]]=bucket.get(creature["instance_id"],0)+amount
+            amount=max(0,_parse_stats(blocker,state)[0]);bucket=counter_damage if _has_keyword(blocker,"Infect") or _has_keyword(blocker,"Wither") else damage;bucket[creature["instance_id"]]=bucket.get(creature["instance_id"],0)+amount
             if amount and _has_keyword(blocker,"Deathtouch"):deathtouch_hit.add(creature["instance_id"])
             if amount and _has_keyword(blocker,"Lifelink"):life_gain[defender["id"]]+=amount
         for card_id,amount in damage.items():
@@ -617,7 +642,7 @@ def _combat_damage(state: dict) -> None:
         for owner in (attacker,defender):
             for creature in list(owner["battlefield"]):
                 if "Creature" not in creature.get("type_line",""):continue
-                _,toughness=_parse_stats(creature)
+                _,toughness=_parse_stats(creature,state)
                 if (creature.get("damage",0)>=toughness or creature["instance_id"] in deathtouch_hit) and not _has_keyword(creature,"Indestructible"):_leave_battlefield(state,owner,creature,"graveyard")
 
     participants=[card for owner in (attacker,defender) for card in owner["battlefield"] if card["instance_id"] in state["combat"]["attackers"] or card["instance_id"] in state["combat"]["blocks"]]
@@ -641,7 +666,7 @@ def _state_based_actions(state: dict) -> None:
         changed=False
         for owner in state["players"]:
             for permanent in list(owner["battlefield"]):
-                _,toughness=_parse_stats(permanent)
+                _,toughness=_parse_stats(permanent,state)
                 if "Creature" in permanent.get("type_line","") and (toughness<=0 or (permanent.get("damage",0)>=toughness and not _has_keyword(permanent,"Indestructible"))):
                     _leave_battlefield(state,owner,permanent,"graveyard");changed=True
                 elif "Planeswalker" in permanent.get("type_line","") and permanent.get("counters",{}).get("loyalty",0)<=0:

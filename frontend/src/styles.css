@@ -101,6 +101,7 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .play-card.is-selected { transform:translateY(-22px) scale(1.08); box-shadow:0 0 0 4px #ffd45f,0 0 30px rgba(255,212,95,.9); animation:none; z-index:12; }
 .play-card.is-attacking { transform:translateY(20px); box-shadow:0 0 0 3px #ff687c; border-radius:7px; }
 .play-counter,.play-blocked { position:absolute !important; right:-8px; bottom:-8px; z-index:5; }
+.play-stats { position:absolute !important; left:-7px; bottom:-8px; z-index:5; background:#f4eee8 !important; color:#17110f !important; font-weight:900; }
 .play-blocked { top:-8px; bottom:auto; }
 .player-hand { position:relative; height:155px; z-index:3; }
 .player-hand .play-card { width:108px; margin-left:-34px; transform-origin:bottom center; }

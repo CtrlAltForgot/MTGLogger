@@ -12,10 +12,10 @@ const isMeaningfulChoice=(action:LegalGameAction)=>{
 }
 
 function ZoneCard({card,legal,onClick,attacking=false,blocked=false,selected=false}:{card:GameCard;legal?:boolean;onClick?:()=>void;attacking?:boolean;blocked?:boolean;selected?:boolean}){
-  return <Tooltip title={<><b>{card.name}</b><br/>{card.type_line}<br/>{card.oracle_text}</>} placement="top" arrow>
+  return <Tooltip title={<><b>{card.name}</b><br/>{card.type_line}{card.effective_power!==undefined&&<><br/><b>{card.effective_power}/{card.effective_toughness}</b></>}<br/>{card.oracle_text}</>} placement="top" arrow>
     <Box className={`play-card ${card.tapped?'is-tapped':''} ${legal?'is-legal':''} ${attacking?'is-attacking':''} ${selected?'is-selected':''}`} onClick={onClick} role={legal?'button':undefined} aria-label={card.name}>
       <Box component="img" src={card.image_url||''} alt={card.name}/>
-      {(card.damage>0||Object.values(card.counters||{}).some(Boolean))&&<Chip className="play-counter" size="small" color={card.damage?'error':'success'} label={card.damage?`${card.damage} dmg`:Object.entries(card.counters).filter(([,amount])=>amount).map(([name,amount])=>`${amount} ${name}`).join(', ')}/>} {blocked&&<Chip className="play-blocked" size="small" label="Blocked"/>}
+      {(card.damage>0||Object.values(card.counters||{}).some(Boolean))&&<Chip className="play-counter" size="small" color={card.damage?'error':'success'} label={card.damage?`${card.damage} dmg`:Object.entries(card.counters).filter(([,amount])=>amount).map(([name,amount])=>`${amount} ${name}`).join(', ')}/>} {card.effective_power!==undefined&&<Chip className="play-stats" size="small" label={`${card.effective_power}/${card.effective_toughness}`}/>} {blocked&&<Chip className="play-blocked" size="small" label="Blocked"/>}
     </Box>
   </Tooltip>
 }
