@@ -181,7 +181,7 @@ def _new_player(player_id: str, name: str, deck: list[dict], is_bot: bool, forma
 def new_game(player_deck: list[dict], opponent_deck: list[dict], play_first: bool = True, opponent_is_bot: bool = True, player_format: str = "", opponent_format: str = "") -> dict:
     human_id, bot_id = "player", "bot"
     players = [_new_player(human_id, "You", player_deck, False, player_format), _new_player(bot_id, "Bot" if opponent_is_bot else "Guest", opponent_deck, opponent_is_bot, opponent_format)]
-    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id, "players": players, "stack": [], "combat": {"attackers": [], "blocks": {}, "attack_targets": {}}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "pending_legendary": None,"pending_scry":None, "log": []}
+    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id, "players": players, "stack": [], "combat": {"attackers": [], "blocks": {}, "attack_targets": {},"block_orders":{}}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "pending_legendary": None,"pending_scry":None,"pending_damage_order":None, "log": []}
     for player in players:
         _draw(state, player, 7)
     _log(state, "Opening hands drawn. Choose whether to keep or mulligan.")
@@ -240,7 +240,7 @@ def _multiplayer(state: dict) -> bool:
 
 
 def _pending_decision(state:dict)->bool:
-    return bool(state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_scry"))
+    return bool(state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_scry") or state.get("pending_damage_order"))
 
 
 def _commander_tax(player: dict, card: dict) -> int:
@@ -275,6 +275,12 @@ def legal_actions(state: dict, player_id: str) -> list[dict]:
         if pending_scry["player_id"]!=player_id:return []
         cards_by_id={card["instance_id"]:card for card in player["library"]};cards=[cards_by_id[card_id] for card_id in pending_scry["card_ids"] if card_id in cards_by_id]
         return [{"type":pending_scry.get("mode","scry"),"card_ids":pending_scry["card_ids"],"cards":cards,"amount":pending_scry["amount"]},{"type":"concede"}]
+    pending_damage=state.get("pending_damage_order")
+    if pending_damage:
+        if pending_damage["player_id"]!=player_id:return []
+        battlefield={card["instance_id"]:card for owner in state["players"] for card in owner["battlefield"]}
+        groups=[{"attacker":battlefield[attacker_id],"blockers":[battlefield[blocker_id] for blocker_id in blocker_ids if blocker_id in battlefield]} for attacker_id,blocker_ids in pending_damage["groups"].items() if attacker_id in battlefield]
+        return [{"type":"order_blockers","groups":groups},{"type":"concede"}]
     if state["status"] == "mulligan":
         if player["kept_hand"]:
             return []
@@ -527,7 +533,7 @@ def _combat_damage(state: dict) -> None:
         for attacker_id in state["combat"]["attackers"]:
             creature=battlefield.get(attacker_id)
             if not creature or not strikes(creature):continue
-            power=max(0,_parse_stats(creature)[0]);blockers=[battlefield[blocker_id] for blocker_id,target_id in state["combat"]["blocks"].items() if target_id==attacker_id and blocker_id in battlefield]
+            power=max(0,_parse_stats(creature)[0]);assigned_ids=state["combat"].get("block_orders",{}).get(attacker_id) or [blocker_id for blocker_id,target_id in state["combat"]["blocks"].items() if target_id==attacker_id];blockers=[battlefield[blocker_id] for blocker_id in assigned_ids if blocker_id in battlefield]
             attack_target=state["combat"].get("attack_targets",{}).get(attacker_id,defender["id"])
             if attacker_id not in originally_blocked:
                 hit_defender(creature,power,attack_target);continue
@@ -559,7 +565,7 @@ def _combat_damage(state: dict) -> None:
     if any(_has_keyword(card,"First strike") or _has_keyword(card,"Double strike") for card in participants):damage_step(True)
     damage_step(False)
     _log(state, "Combat damage resolved.")
-    state["combat"] = {"attackers": [], "blocks": {},"attack_targets":{}}
+    state["combat"] = {"attackers": [], "blocks": {},"attack_targets":{},"block_orders":{}}
 
 
 def _check_winner(state: dict) -> None:
@@ -704,7 +710,13 @@ def perform_action(state: dict, player_id: str, action: dict) -> dict:
         attacking_owner=opponent(state,player_id);battlefield={card["instance_id"]:card for card in attacking_owner["battlefield"]}
         for attacker_id in state["combat"]["attackers"]:
             if _has_keyword(battlefield.get(attacker_id,{}),"Menace") and 0<list(blocks.values()).count(attacker_id)<2:raise RuleViolation("A creature with menace must be blocked by at least two creatures")
-        state["combat"]["blocks"] = blocks; _combat_damage(state); state["priority_player_id"] = state["active_player_id"]
+        state["combat"]["blocks"] = blocks;groups={attacker_id:[blocker_id for blocker_id,target_id in blocks.items() if target_id==attacker_id] for attacker_id in state["combat"]["attackers"]};groups={attacker_id:blocker_ids for attacker_id,blocker_ids in groups.items() if len(blocker_ids)>1}
+        if groups:state["pending_damage_order"]={"player_id":state["active_player_id"],"groups":groups};state["priority_player_id"]=state["active_player_id"]
+        else:_combat_damage(state);state["priority_player_id"] = state["active_player_id"]
+    elif action_type == "order_blockers":
+        pending=state.get("pending_damage_order") or {};orders=action.get("block_orders") or {};expected=pending.get("groups",{})
+        if pending.get("player_id")!=player_id or set(orders)!=set(expected) or any(len(order)!=len(expected[attacker_id]) or len(set(order))!=len(order) or set(order)!=set(expected[attacker_id]) for attacker_id,order in orders.items()):raise RuleViolation("Order every creature blocking each attacker exactly once")
+        state["combat"]["block_orders"]=orders;state["pending_damage_order"]=None;_combat_damage(state);state["priority_player_id"]=state["active_player_id"]
     elif action_type == "advance_phase":
         if _multiplayer(state):
             state["pending_phase_advance"] = True; state["consecutive_passes"] = 1; state["priority_player_id"] = opponent(state, player_id)["id"]; _log(state, f"{player['name']} is ready to leave {state['phase'].replace('_', ' ')}.")

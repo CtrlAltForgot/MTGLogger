@@ -70,6 +70,12 @@ def choose_bot_action(state: dict, difficulty: str = "standard") -> dict | None:
         else:bottom=[card_id for card_id in action["card_ids"] if ("Land" in cards[card_id].get("type_line","") and lands_in_hand>=4) or ("Land" not in cards[card_id].get("type_line","") and lands_in_hand<2) or (difficulty=="expert" and (cards[card_id].get("mana_value") or 0)>max(3,len([card for card in bot["battlefield"] if "Land" in card.get("type_line","")])+2))]
         top=[card_id for card_id in action["card_ids"] if card_id not in bottom]
         return {"type":kind,"top_ids":top,"graveyard_ids" if kind=="surveil" else "bottom_ids":bottom}
+    if "order_blockers" in by_type:
+        action=by_type["order_blockers"][0];orders={}
+        for group in action["groups"]:
+            blockers=sorted(group["blockers"],key=lambda card:(_stats(card)[1],_stats(card)[0],card.get("mana_value") or 0))
+            orders[group["attacker"]["instance_id"]]=[card["instance_id"] for card in blockers]
+        return {"type":"order_blockers","block_orders":orders}
     if "play_land" in by_type:
         return by_type["play_land"][0]
     if "cast" in by_type:

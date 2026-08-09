@@ -62,6 +62,18 @@ def test_combat_enforces_summoning_sickness_and_deals_damage():
     assert bot["life"]==18
 
 
+def test_attacker_orders_multiple_blockers_before_combat_damage():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
+    attacker={**card(90,"Heavy Hitter","Creature — Giant","","5","5"),"instance_id":"attacker","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};first={**card(91,"First Blocker","Creature — Beast","","3","3"),"instance_id":"first","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};second={**card(92,"Second Blocker","Creature — Beast","","3","3"),"instance_id":"second","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].append(attacker);bot["battlefield"].extend([first,second])
+    state=perform_action(state,"player",{"type":"declare_attackers","attacker_ids":["attacker"]});state=perform_action(state,"bot",{"type":"declare_blockers","blocks":{"first":"attacker","second":"attacker"}});action=legal_actions(state,"player")[0]
+    assert action["type"]=="order_blockers" and {card["instance_id"] for card in action["groups"][0]["blockers"]}=={"first","second"}
+    state=perform_action(state,"player",{"type":"order_blockers","block_orders":{"attacker":["second","first"]}});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
+    assert any(card["instance_id"]=="attacker" for card in player["graveyard"]) and any(card["instance_id"]=="second" for card in bot["graveyard"]);survivor=next(card for card in bot["battlefield"] if card["instance_id"]=="first");assert survivor["damage"]==2
+
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot");state["active_player_id"]="bot";state["priority_player_id"]="bot";bot["battlefield"].append(attacker);player["battlefield"].extend([first,second]);state["pending_damage_order"]={"player_id":"bot","groups":{"attacker":["first","second"]}}
+    choice=choose_bot_action(state,"expert");assert choice["type"]=="order_blockers" and set(choice["block_orders"]["attacker"])=={"first","second"}
+
+
 def test_bot_prioritizes_playing_land_then_casting_spells():
     state=kept_game();state["active_player_id"]="bot";state["priority_player_id"]="bot";state["phase"]="precombat_main"
     bot=next(player for player in state["players"] if player["id"]=="bot")
