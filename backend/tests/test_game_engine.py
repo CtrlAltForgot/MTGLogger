@@ -1343,3 +1343,37 @@ def test_saga_gains_lore_after_draw_and_sacrifices_after_final_chapter():
     saga={**card(1260,"Short History","Enchantment — Saga"),"oracle_text":"I — You gain 1 life.\nII — You gain 2 life.","instance_id":"short-saga","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{"lore":1},"summoning_sick":False};player["battlefield"].append(saga);before=len(player["library"])
     state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");saga=next(card for card in player["battlefield"] if card["instance_id"]=="short-saga");assert len(player["library"])==before-1 and saga["counters"]["lore"]==2 and state["stack"][-1]["saga_final"]
     state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");assert not any(card["instance_id"]=="short-saga" for card in player["battlefield"]) and any(card["instance_id"]=="short-saga" for card in player["graveyard"])
+
+
+def test_temporary_control_moves_a_creature_removes_it_from_combat_and_returns_it_at_cleanup():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
+    victim={**card(1270,"Borrowed Brute","Creature — Ogre","","4","4"),"instance_id":"borrowed-brute","owner_id":"bot","controller_id":"bot","tapped":True,"damage":0,"counters":{},"summoning_sick":False};theft={**card(1271,"Act of Testing","Instant"),"oracle_text":"Gain control of target creature an opponent controls until end of turn. Untap that creature. It gains haste until end of turn.","instance_id":"act-of-testing","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};bot["battlefield"].append(victim);player["hand"].append(theft)
+    state["active_player_id"]="bot";state["priority_player_id"]="player";state["phase"]="combat";state["combat"]["attackers"]=["borrowed-brute"];state["combat"]["attack_targets"]={"borrowed-brute":"player"}
+    action=next(action for action in legal_actions(state,"player") if action.get("card_id")=="act-of-testing");assert [target["id"] for target in action["targets"]]==["borrowed-brute"]
+    state=perform_action(state,"player",{"type":"cast","card_id":"act-of-testing","target_id":"borrowed-brute"});state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");controlled=next(card for card in player["battlefield"] if card["instance_id"]=="borrowed-brute")
+    assert controlled["controller_id"]=="player" and not controlled["tapped"] and _has_keyword(controlled,"Haste") and state["combat"]["attackers"]==[]
+    state["phase"]="ending";state["priority_player_id"]="bot";state=perform_action(state,"bot",{"type":"advance_phase"});bot=next(p for p in state["players"] if p["id"]=="bot");returned=next(card for card in bot["battlefield"] if card["instance_id"]=="borrowed-brute")
+    assert returned["controller_id"]=="bot" and not _has_keyword(returned,"Haste") and "temporary_control_return_to" not in returned
+
+
+def test_indefinite_control_persists_but_the_creature_still_goes_to_its_owners_graveyard():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
+    victim={**card(1280,"Permanent Prize","Creature — Beast","","3","3"),"instance_id":"permanent-prize","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};theft={**card(1281,"Mind Control Test","Sorcery"),"oracle_text":"Gain control of target creature.","instance_id":"mind-control-test","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};bot["battlefield"].append(victim);player["hand"].append(theft)
+    state=perform_action(state,"player",{"type":"cast","card_id":"mind-control-test","target_id":"permanent-prize"});state=perform_action(state,"player",{"type":"resolve"});state["phase"]="ending";state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player")
+    assert any(card["instance_id"]=="permanent-prize" for card in player["battlefield"])
+    state=perform_action(state,"player",{"type":"move_zone","target_id":"permanent-prize","destination":"graveyard"});bot=next(p for p in state["players"] if p["id"]=="bot")
+    assert any(card["instance_id"]=="permanent-prize" for card in bot["graveyard"])
+
+
+def test_gain_control_of_target_permanent_supports_noncreature_permanents():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
+    relic={**card(1290,"Stolen Relic","Artifact"),"instance_id":"stolen-relic","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};theft={**card(1291,"Acquire Test","Sorcery"),"oracle_text":"Gain control of target permanent an opponent controls.","instance_id":"acquire-test","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};bot["battlefield"].append(relic);player["hand"].append(theft)
+    action=next(action for action in legal_actions(state,"player") if action.get("card_id")=="acquire-test");assert [target["id"] for target in action["targets"]]==["stolen-relic"]
+    state=perform_action(state,"player",{"type":"cast","card_id":"acquire-test","target_id":"stolen-relic"});state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player")
+    assert any(card["instance_id"]=="stolen-relic" and card["controller_id"]=="player" for card in player["battlefield"])
+
+
+def test_expert_bot_steals_the_opponents_most_threatening_target():
+    state=kept_game();state["active_player_id"]="bot";state["priority_player_id"]="bot";state["phase"]="precombat_main";bot=next(p for p in state["players"] if p["id"]=="bot");player=next(p for p in state["players"] if p["id"]=="player");bot["hand"]=[];bot["land_plays_remaining"]=0
+    small={**card(1300,"Small Target","Creature — Citizen","","1","1"),"instance_id":"small-theft-target","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};large={**card(1301,"Large Target","Creature — Dragon","","8","8"),"instance_id":"large-theft-target","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};own={**card(1302,"Bot Creature","Creature — Goblin","","2","2"),"instance_id":"bot-theft-target","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};theft={**card(1303,"Bot Threaten","Sorcery"),"oracle_text":"Gain control of target creature until end of turn. Untap it. It gains haste until end of turn.","instance_id":"bot-threaten","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"]=[small,large];bot["battlefield"]=[own];bot["hand"].append(theft)
+    choice=choose_bot_action(state,"expert");assert choice["type"]=="cast" and choice["target_id"]=="large-theft-target"

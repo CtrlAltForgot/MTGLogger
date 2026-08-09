@@ -639,8 +639,8 @@ def _target_kind(card: dict) -> str | None:
     if re.search(r"target (?:nonland )?card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_card"
     if re.search(r"target player mills?", text): return "player"
     if re.search(r"target player sacrifices?",text):return "player"
-    if re.search(r"(?:destroy|exile) target (?:artifact, creature, enchantment, planeswalker|nonland permanent|permanent)", text): return "permanent"
-    if re.search(r"(?:destroy|exile|tap|untap|return|regenerate) target creature", text) or re.search(r"target creature .*(?:gets [+-](?:\d+|x)/[+-](?:\d+|x)|gains? [^.]+ until end of turn|can(?:not|'t) (?:attack|block))", text) or re.search(r"(?:deals (?:\d+|x) damage|put .+ counters?) (?:to|on) target creature", text): return "creature"
+    if re.search(r"(?:destroy|exile|gain control of) target (?:artifact, creature, enchantment, planeswalker|nonland permanent|permanent)", text): return "permanent"
+    if re.search(r"(?:destroy|exile|tap|untap|return|regenerate|gain control of) target creature", text) or re.search(r"target creature .*(?:gets [+-](?:\d+|x)/[+-](?:\d+|x)|gains? [^.]+ until end of turn|can(?:not|'t) (?:attack|block))", text) or re.search(r"(?:deals (?:\d+|x) damage|put .+ counters?) (?:to|on) target creature", text): return "creature"
     for kind in ("artifact","enchantment","land","planeswalker"):
         if re.search(rf"(?:destroy|exile|tap|untap|return) target {kind}\b",text):return kind
     if re.search(r"return target (?:nonland )?permanent", text): return "permanent"
@@ -750,6 +750,23 @@ def _finish_saga_final_chapter(state:dict,item:dict)->None:
 def _counter_stack_item(state:dict,item:dict)->None:
     if item.get("kind","spell")=="spell":_countered_spell_destination(state,_player(state,item["controller_id"]),item["card"],item.get("flashback",False))
     _finish_saga_final_chapter(state,item)
+
+
+def _remove_from_combat(state:dict,card_id:str)->None:
+    combat=state["combat"]
+    combat["attackers"]=[attacker_id for attacker_id in combat.get("attackers",[]) if attacker_id!=card_id]
+    combat["attack_targets"].pop(card_id,None);combat["block_orders"].pop(card_id,None)
+    combat["blocks"]={blocker_id:attacker_id for blocker_id,attacker_id in combat.get("blocks",{}).items() if blocker_id!=card_id and attacker_id!=card_id}
+    combat["first_strike_damage_ids"]=[permanent_id for permanent_id in combat.get("first_strike_damage_ids",[]) if permanent_id!=card_id]
+
+
+def _change_control(state:dict,card:dict,new_controller:dict,until_end_of_turn:bool=False)->None:
+    current=next((owner for owner in state["players"] if card in owner["battlefield"]),None)
+    if not current or current["id"]==new_controller["id"]:return
+    if until_end_of_turn and not card.get("temporary_control_return_to"):
+        card["temporary_control_return_to"]=current["id"]
+    current["battlefield"].remove(card);new_controller["battlefield"].append(card);card["controller_id"]=new_controller["id"];card["summoning_sick"]=True
+    _remove_from_combat(state,card["instance_id"])
 
 
 def _multiplayer(state: dict) -> bool:
@@ -1066,6 +1083,15 @@ def _resolve_spell(state: dict) -> None:
     target_stack_item = next((entry for entry in state["stack"] if entry["id"] == target_id), None)
     graveyard_owner=next((player for player in state["players"] if any(graveyard_card["instance_id"]==target_id for graveyard_card in player["graveyard"])),None)
     graveyard_target=next((graveyard_card for player in state["players"] for graveyard_card in player["graveyard"] if graveyard_card["instance_id"]==target_id),None)
+    control_change=bool(target and target_owner and re.search(r"\bgain control of target (?:creature|permanent|artifact|enchantment|land|planeswalker)\b",effect_text))
+    if control_change:
+        temporary="until end of turn" in effect_text;previous_controller=target_owner
+        _change_control(state,target,caster,temporary)
+        target_owner=caster
+        if re.search(r"\buntap (?:it|that creature|target creature)\b",effect_text):target["tapped"]=False
+        if re.search(r"\b(?:it|that creature|target creature) gains? haste\b",effect_text):target["temporary_keywords"]=sorted(set(target.get("temporary_keywords",[]))|{"haste"})
+        duration=" until end of turn" if temporary else ""
+        _log(state,f"{caster['name']} gained control of {target['name']} from {previous_controller['name']}{duration}.")
     optional_blight=re.search(r"\byou may blight (\d+)\b",effect_text)
     if optional_blight:
         original_text=(source_permanent or card).get("oracle_text") or "";continuation_match=re.search(r"when you do,\s*(.+?)(?:\n|$)",original_text,re.IGNORECASE)
@@ -1287,7 +1313,7 @@ def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str) -
     earthbend_controller=card.get("earthbend_controller") if destination in {"graveyard","exile"} else None
     _queue_triggers(state,"leaves",card,owner)
     if destination=="graveyard":_queue_triggers(state,"dies",card,owner)
-    card["damage"] = 0; card["tapped"] = False;card.pop("crewed_turn",None)
+    card["damage"] = 0; card["tapped"] = False;card.pop("crewed_turn",None);card.pop("temporary_control_return_to",None)
     if card.get("base_type_line") is not None:card["type_line"]=card.pop("base_type_line")
     if card.get("earthbend_base_type_line") is not None:
         card["type_line"]=card.pop("earthbend_base_type_line");card["power"]=card.pop("earthbend_base_power",None);card["toughness"]=card.pop("earthbend_base_toughness",None)
@@ -1498,6 +1524,12 @@ def _state_based_actions(state: dict) -> None:
 def _begin_next_turn(state:dict)->None:
     state["pending_discard"]=None;state["turn"] += 1; state["phase"] = PHASES[0];state["beginning_draw_pending"]=True; state["active_player_id"] = opponent(state, state["active_player_id"])["id"]
     active = _player(state, state["active_player_id"]); active["land_plays_remaining"] = 1
+    temporary_controlled=[card for owner in state["players"] for card in owner["battlefield"] if card.get("temporary_control_return_to")]
+    for permanent in temporary_controlled:
+        return_to=_player(state,permanent.pop("temporary_control_return_to"));current=next(owner for owner in state["players"] if permanent in owner["battlefield"])
+        if current["id"]!=return_to["id"]:
+            current["battlefield"].remove(permanent);return_to["battlefield"].append(permanent);permanent["controller_id"]=return_to["id"];permanent["summoning_sick"]=True
+            _log(state,f"{permanent['name']} returned to {return_to['name']}'s control.")
     for owner in state["players"]:
         owner["firebending_mana"]=0;owner["bent_this_turn"]=[]
         for permanent in owner["battlefield"]:

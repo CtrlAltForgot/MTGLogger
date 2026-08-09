@@ -31,7 +31,7 @@ def _target_card(state:dict,target_id:str)->dict|None:
 
 def _choose_target(state:dict,action:dict)->str:
     text=" ".join(filter(None,(action.get("label") or "",_card(state,"bot",action["card_id"]).get("oracle_text","") if action.get("card_id") else ""))).casefold()
-    harmful=any(word in text for word in ("damage","destroy","exile","tap target","gets -","loses","counter target"));targets=action["targets"]
+    harmful=any(word in text for word in ("damage","destroy","exile","tap target","gets -","loses","counter target","gain control of target"));targets=action["targets"]
     preferred=[target for target in targets if (target["controller_id"]!="bot")==harmful] or targets
     damage=re.search(r"deals (\d+) damage",text)
     if harmful and damage:
@@ -133,7 +133,7 @@ def _ability_score(state:dict,action:dict)->float:
     draw=re.search(r"draw (?:a|one|two|three|four|five|\d+) cards?",text)
     if draw:
         word=draw.group(0).split()[1];score+={"a":2,"one":2,"two":4,"three":6,"four":8,"five":10}.get(word,int(word)*2 if word.isdigit() else 2)
-    if any(term in text for term in ("destroy target","exile target","counter target")):score+=7
+    if any(term in text for term in ("destroy target","exile target","counter target","gain control of target")):score+=7
     if "create " in text and " token" in text:score+=4
     if "deals " in text and " damage" in text:score+=4
     if "you gain " in text and " life" in text:score+=2
@@ -171,7 +171,7 @@ def _mode_score(state:dict,mode:dict)->float:
     if draw:
         word=draw.group(0).split()[1];score+={"a":2,"one":2,"two":4,"three":6,"four":8,"five":10}.get(word,int(word)*2 if word.isdigit() else 2)
     targets=mode.get("targets",[])
-    if any(term in text for term in ("destroy target","exile target","return target")) and targets:
+    if any(term in text for term in ("destroy target","exile target","return target","gain control of target")) and targets:
         score+=max((_threat_score(state,_target_card(state,target["id"]) or {}) for target in targets if target.get("controller_id")!="bot"),default=1)
     damage=re.search(r"deals (\d+) damage",text)
     if damage:
