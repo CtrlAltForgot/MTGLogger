@@ -1077,6 +1077,38 @@ def test_expert_bot_selects_a_complete_low_cost_compound_payment():
     assert set(choice["cost_card_ids"])=={"bot-spare","bot-disposable"}
 
 
+def test_variable_discard_cost_shares_x_with_mana_payment_and_effect():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player")
+    archive={**card(937,"Variable Archive","Artifact"),"oracle_text":"{X}, Discard X cards: Draw X cards.","instance_id":"variable-archive","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};lands=[]
+    for index in range(2):lands.append({**card(938+index,f"Archive Island {index+1}","Basic Land — Island"),"instance_id":f"archive-island-{index}","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False})
+    player["battlefield"].extend([archive,*lands]);action=next(action for action in legal_actions(state,"player") if action.get("card_id")=="variable-archive");chosen=[card["instance_id"] for card in player["hand"][:2]]
+    assert action["selection_x"] is True and action["x_max"]==2 and len(action["cost_combinations_by_x"][2][0])==2
+    try:perform_action(state,"player",{"type":"activate","card_id":"variable-archive","ability_index":action["ability_index"],"x_value":2,"cost_card_ids":chosen[:1]})
+    except RuleViolation:pass
+    else:raise AssertionError("variable activation accepted fewer cards than X")
+    before=len(player["hand"]);state=perform_action(state,"player",{"type":"activate","card_id":"variable-archive","ability_index":action["ability_index"],"x_value":2,"cost_card_ids":chosen});player=next(p for p in state["players"] if p["id"]=="player")
+    assert all(next(card for card in player["battlefield"] if card["instance_id"]==land["instance_id"])["tapped"] for land in lands) and all(any(card["instance_id"]==card_id for card in player["graveyard"]) for card_id in chosen)
+    state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");assert len(player["hand"])==before
+
+
+def test_variable_sacrifice_cost_caps_x_and_pays_exactly_x_permanents():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player")
+    altar={**card(940,"Variable Altar","Artifact"),"oracle_text":"Sacrifice X creatures: You gain X life.","instance_id":"variable-altar","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};token={**card(941,"Variable Token","Token Creature — Spirit","","1","1"),"instance_id":"variable-token","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False,"token":True};creature={**card(942,"Variable Creature","Creature — Bear","","2","2"),"instance_id":"variable-creature","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].extend([altar,token,creature]);life=player["life"]
+    action=next(action for action in legal_actions(state,"player") if action.get("card_id")=="variable-altar");assert action["x_max"]==2
+    state=perform_action(state,"player",{"type":"activate","card_id":"variable-altar","ability_index":action["ability_index"],"x_value":2,"cost_card_ids":["variable-token","variable-creature"]});player=next(p for p in state["players"] if p["id"]=="player")
+    assert not any(card["instance_id"]=="variable-token" for card in player["battlefield"]+player["graveyard"])
+    assert any(card["instance_id"]=="variable-creature" for card in player["graveyard"])
+    state=perform_action(state,"player",{"type":"resolve"});assert next(p for p in state["players"] if p["id"]=="player")["life"]==life+2
+
+
+def test_expert_bot_chooses_x_and_the_matching_variable_payment():
+    state=kept_game();state["active_player_id"]="bot";state["priority_player_id"]="bot";state["phase"]="precombat_main";bot=next(p for p in state["players"] if p["id"]=="bot")
+    archive={**card(943,"Bot Variable Archive","Artifact"),"oracle_text":"Discard X cards: Draw X cards.","instance_id":"bot-variable-archive","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};first={**card(944,"Bot Spare Land One","Basic Land — Swamp"),"instance_id":"bot-spare-one","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};second={**card(945,"Bot Spare Land Two","Basic Land — Swamp"),"instance_id":"bot-spare-two","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};bot["battlefield"]=[archive];bot["hand"]=[first,second];bot["land_plays_remaining"]=0
+    choice=choose_bot_action(state,"expert")
+    assert choice["type"]=="activate" and choice["x_value"]==2
+    assert set(choice["cost_card_ids"])=={"bot-spare-one","bot-spare-two"}
+
+
 def test_expert_bot_uses_profitable_costly_abilities_but_never_pays_lethal_life():
     state=kept_game();state["active_player_id"]="bot";state["priority_player_id"]="bot";state["phase"]="precombat_main";bot=next(p for p in state["players"] if p["id"]=="bot");bot["hand"]=[];bot["land_plays_remaining"]=0;bot["life"]=2
     fatal={**card(930,"Fatal Bargain","Artifact"),"oracle_text":"Pay 2 life: Draw a card.","instance_id":"fatal-bargain","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};relic={**card(931,"Scholar Relic","Artifact"),"oracle_text":"Sacrifice Scholar Relic: Draw three cards.","instance_id":"scholar-relic","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};bot["battlefield"].append(fatal)
