@@ -3308,7 +3308,6 @@ def test_reference_metadata_enrichment_reuses_finished_visual_profile(tmp_path, 
             )
         )
         enriched = db.get(CardReference, "printing")
-
     assert downloaded is False
     assert enriched is not None
     assert enriched.oracle_id == "oracle-family"
@@ -3319,8 +3318,9 @@ def test_reference_metadata_enrichment_reuses_finished_visual_profile(tmp_path, 
 
 def test_reference_metadata_refresh_does_not_download_images():
     """A precompiled visual catalog can receive searchable metadata in bulk."""
+    from mtglogger.api.references import indexed_cards
     from mtglogger.database import Base, SessionLocal, engine
-    from mtglogger.models import CardReference
+    from mtglogger.models import CardReference, CardVisualFingerprint
     from mtglogger.services import references
 
     class Provider:
@@ -3346,6 +3346,17 @@ def test_reference_metadata_refresh_does_not_download_images():
                 art_hash="0" * 16,
             )
         )
+        db.add(
+            CardVisualFingerprint(
+                scryfall_id="printing",
+                full_hash="0" * 16,
+                art_hash="0" * 16,
+                title_hash="0" * 16,
+                footer_hash="0" * 16,
+                frame_hash="0" * 16,
+                descriptor_path="/descriptors/v3/printing.npz",
+            )
+        )
         db.commit()
         refreshed = references._refresh_reference_metadata(
             db,
@@ -3354,6 +3365,7 @@ def test_reference_metadata_refresh_does_not_download_images():
                 {
                     "id": "printing",
                     "name": "Swamp",
+                    "printed_name": "Pantano",
                     "set": "m21",
                     "set_name": "Core Set 2021",
                     "collector_number": "266",
@@ -3363,10 +3375,21 @@ def test_reference_metadata_refresh_does_not_download_images():
             ],
         )
         enriched = db.get(CardReference, "printing")
+        alias_results = indexed_cards(
+            set_code=None,
+            search="pantano",
+            page=1,
+            page_size=40,
+            db=db,
+        )
 
     assert refreshed == 1
     assert enriched.artist == "Christine Choi"
+    assert enriched.printed_name == "Pantano"
     assert enriched.released_at == date(2020, 7, 3)
+    assert alias_results["total"] == 1
+    assert alias_results["items"][0]["name"] == "Pantano"
+    assert alias_results["items"][0]["oracle_name"] == "Swamp"
 
 
 def test_confirmed_descriptor_examples_improve_matching_without_leaking_into_holdout(

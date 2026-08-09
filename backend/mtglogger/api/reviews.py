@@ -5,7 +5,7 @@ from pathlib import Path
 import cv2
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
@@ -88,11 +88,23 @@ def local_card_search(db: Session, query: str, language: str) -> list[Candidate]
     rows = db.scalars(
         select(CardReference)
         .where(
-            func.lower(CardReference.name).contains(normalized, autoescape=True),
+            or_(
+                func.lower(CardReference.name).contains(normalized, autoescape=True),
+                func.lower(CardReference.printed_name).contains(normalized, autoescape=True),
+            ),
             CardReference.language == language,
         )
         .order_by(
-            case((func.lower(CardReference.name) == normalized, 0), else_=1),
+            case(
+                (
+                    or_(
+                        func.lower(CardReference.name) == normalized,
+                        func.lower(CardReference.printed_name) == normalized,
+                    ),
+                    0,
+                ),
+                else_=1,
+            ),
             func.length(CardReference.name),
             CardReference.name,
             CardReference.released_at.desc(),
@@ -104,7 +116,7 @@ def local_card_search(db: Session, query: str, language: str) -> list[Candidate]
     return [
         Candidate(
             scryfall_id=card.scryfall_id,
-            name=card.name,
+            name=card.printed_name or card.name,
             set_code=card.set_code,
             set_name=card.set_name,
             collector_number=card.collector_number,

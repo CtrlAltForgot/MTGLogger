@@ -614,6 +614,7 @@ def _reference_metadata(provider, card: dict, image_url: str | None = None) -> d
     )
     return {
         "name": card["name"],
+        "printed_name": card.get("printed_name"),
         "set_code": card["set"],
         "set_name": card["set_name"],
         "collector_number": card["collector_number"],
