@@ -331,6 +331,19 @@ class GameAction(BaseModel):
     expected_version: int | None = Field(None, ge=1)
 
 
+class GameUndo(BaseModel):
+    expected_version: int = Field(ge=1)
+
+
+class GameHistoryEntry(BaseModel):
+    version: int
+    turn: int
+    actor_id: str
+    action_type: str
+    message: str
+    created_at: datetime | None = None
+
+
 class GameRead(BaseModel):
     id: str
     name: str
@@ -345,5 +358,6 @@ class GameRead(BaseModel):
     invite_expires_at: datetime | None = None
     state: dict
     legal_actions: list[dict]
+    action_history: list[GameHistoryEntry] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime

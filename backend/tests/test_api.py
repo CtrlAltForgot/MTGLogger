@@ -527,7 +527,7 @@ def test_private_game_tokens_redaction_rotation_and_version_conflicts(client):
         game=GameSession(name="Secure game",player_deck_id=host_deck.id,opponent_deck_id=guest_deck.id,opponent_type="human",bot_difficulty="standard",invite_code="secure-invite-code",host_token_hash=hashlib.sha256(host_token.encode()).hexdigest(),guest_token_hash=hashlib.sha256(guest_token.encode()).hexdigest(),invite_expires_at=datetime.now(UTC)+timedelta(days=1),state_json=json.dumps(state),history_json="[]",status="mulligan");db.add(game);db.commit();game_id=game.id
 
     listing=client.get("/api/play").json()[0]
-    assert listing["invite_code"] is None and listing["invite_expires_at"] is None and listing["legal_actions"]==[]
+    assert listing["invite_code"] is None and listing["invite_expires_at"] is None and listing["legal_actions"]==[] and listing["action_history"]==[]
     assert listing["state"]["stack"]==[] and listing["state"]["log"]==[] and listing["state"]["combat"]["attackers"]==[]
     assert all(not any(player[zone] for zone in ("hand","battlefield","graveyard","exile","command")) for player in listing["state"]["players"])
     assert client.get(f"/api/play/{game_id}").status_code==404
@@ -539,6 +539,10 @@ def test_private_game_tokens_redaction_rotation_and_version_conflicts(client):
     assert guest.status_code==200 and guest.json()["invite_token"] is None and guest.json()["host_token"] is None and len(next(player for player in guest.json()["state"]["players"] if player["id"]=="bot")["hand"])==7
     accepted=client.post(f"/api/play/{game_id}/actions",headers={"X-Game-Token":host_token},json={"type":"keep","expected_version":state["version"]})
     assert accepted.status_code==200
+    assert accepted.json()["action_history"][-1]["actor_id"]=="player"
+    assert accepted.json()["action_history"][-1]["action_type"]=="keep"
+    assert "state" not in accepted.json()["action_history"][-1]
+    assert client.post(f"/api/play/{game_id}/undo",headers={"X-Game-Token":host_token},json={"expected_version":accepted.json()["state"]["version"]}).status_code==422
     guest_stale=client.post("/api/play/invite/secure-invite-code/actions",headers={"X-Game-Token":guest_token},json={"type":"keep","expected_version":state["version"]})
     assert guest_stale.status_code==409
     guest_version=client.get("/api/play/invite/secure-invite-code/state",headers={"X-Game-Token":guest_token}).json()["state"]["version"]
@@ -554,6 +558,32 @@ def test_private_game_tokens_redaction_rotation_and_version_conflicts(client):
     rotated=client.post(f"/api/play/{game_id}/invite/rotate",headers={"X-Game-Token":host_token})
     assert rotated.status_code==200 and rotated.json()["invite_token"]
     assert client.get("/api/play/invite/secure-invite-code/state",headers={"X-Game-Token":guest_token}).status_code==404
+
+
+def test_bot_game_history_and_version_safe_undo(client):
+    import json
+
+    from mtglogger.models import Deck,GameSession
+    from mtglogger.services.game_engine import new_game
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    SessionLocal=sessionmaker(bind=create_engine(client.api_database_url))
+    source={"scryfall_id":"bot-history-card","name":"History Island","image_url":None,"type_line":"Basic Land — Island","oracle_text":"{T}: Add {U}.","mana_cost":"","mana_value":0,"keywords":[],"power":None,"toughness":None,"quantity":60}
+    state=new_game([source],[source],opponent_is_bot=True)
+    with SessionLocal() as db:
+        player_deck=Deck(name="History player");bot_deck=Deck(name="History bot");db.add_all([player_deck,bot_deck]);db.flush()
+        game=GameSession(name="Undoable bot game",player_deck_id=player_deck.id,opponent_deck_id=bot_deck.id,opponent_type="bot",bot_difficulty="standard",state_json=json.dumps(state),history_json="[]",status="mulligan");db.add(game);db.commit();game_id=game.id
+
+    acted=client.post(f"/api/play/{game_id}/actions",json={"type":"keep"})
+    assert acted.status_code==200
+    assert acted.json()["action_history"][-1]["message"]
+    current_version=acted.json()["state"]["version"]
+    assert client.post(f"/api/play/{game_id}/undo",json={"expected_version":current_version-1}).status_code==409
+    undone=client.post(f"/api/play/{game_id}/undo",json={"expected_version":current_version})
+    assert undone.status_code==200
+    assert undone.json()["state"]["version"]==state["version"]
+    assert undone.json()["action_history"]==[]
 
 
 def test_deck_format_suggestions_require_legality_and_structure(monkeypatch):

@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session, selectinload
 from ..database import get_db
 from ..models import CardReference, Deck, DeckEntry, GameSession, InventoryItem
 from ..providers import ScryfallProvider
-from ..schemas import AutoDeckBuildRequest, GameAction, GameCreate, GameRead
+from ..schemas import AutoDeckBuildRequest, GameAction, GameCreate, GameRead, GameUndo
 from .decks import _auto_deck_proposal
 from ..services.game_bot import run_bot
 from ..services.game_engine import RuleViolation, legal_actions, new_game, perform_action, public_state
@@ -121,10 +121,26 @@ async def _build_random_bot_deck(db: Session, format_name: str) -> tuple[list[di
     return _generated_deck_cards(db, proposal), f"Auto-built {proposal['theme']} · {'/'.join(proposal['colors'])} · quality {proposal['quality_score']:.0f}"
 
 
+def _history_state(entry:dict)->dict:
+    return entry.get("state",entry) if isinstance(entry,dict) else {}
+
+
+def _public_history(game:GameSession)->list[dict]:
+    history=[]
+    for entry in json.loads(game.history_json or "[]"):
+        state=_history_state(entry)
+        if "state" in entry:
+            history.append({key:entry.get(key) for key in ("version","turn","actor_id","action_type","message","created_at")})
+        else:
+            latest=(state.get("log") or [{}])[-1]
+            history.append({"version":state.get("version",1),"turn":state.get("turn",1),"actor_id":"unknown","action_type":"legacy","message":latest.get("message","Saved game action"),"created_at":None})
+    return history
+
+
 def _serialize(game: GameSession, viewer_id: str = "player", invite_token: str | None = None, host_token: str | None = None) -> GameRead:
     state = json.loads(game.state_json)
     player_ids={player["id"] for player in state["players"]};spectator=viewer_id not in player_ids;actions=legal_actions(state,viewer_id,allow_direct_resolution=False) if not spectator else []
-    return GameRead(id=game.id, name=game.name, status=game.status, player_deck_id=game.player_deck_id, opponent_deck_id=game.opponent_deck_id, bot_difficulty=game.bot_difficulty, opponent_type=game.opponent_type or "bot", invite_code=None if spectator else game.invite_code, invite_token=invite_token, host_token=host_token, invite_expires_at=None if spectator else game.invite_expires_at, state=_spectator_state(state) if spectator else public_state(state, viewer_id), legal_actions=actions, created_at=game.created_at, updated_at=game.updated_at)
+    return GameRead(id=game.id, name=game.name, status=game.status, player_deck_id=game.player_deck_id, opponent_deck_id=game.opponent_deck_id, bot_difficulty=game.bot_difficulty, opponent_type=game.opponent_type or "bot", invite_code=None if spectator else game.invite_code, invite_token=invite_token, host_token=host_token, invite_expires_at=None if spectator else game.invite_expires_at, state=_spectator_state(state) if spectator else public_state(state, viewer_id), legal_actions=actions, action_history=[] if spectator else _public_history(game), created_at=game.created_at, updated_at=game.updated_at)
 
 
 @router.get("", response_model=list[GameRead])
@@ -209,11 +225,14 @@ def get_invited_game(invite_code: str, game_token: str|None=Header(None,alias="X
 def _save_action(game: GameSession, state: dict, player_id: str, action: dict) -> dict:
     expected=action.pop("expected_version",None)
     if game.opponent_type=="human" and expected!=state.get("version"):raise HTTPException(409,"Game changed in the other browser. Refresh and try again.")
-    history = json.loads(game.history_json or "[]"); history.append(state); game.history_json = json.dumps(history[-20:])
+    previous_state=state;action_type=action.get("type","action");previous_log_size=len(state.get("log",[]))
     state = perform_action(state, player_id, action,allow_direct_resolution=False)
     if game.opponent_type == "bot":
         if state["status"] == "mulligan": state = run_bot(state, game.bot_difficulty, 20)
         elif state["status"] == "active" and (state["active_player_id"] == "bot" or state["priority_player_id"] == "bot"): state = run_bot(state, game.bot_difficulty)
+    new_messages=state.get("log",[])[previous_log_size:]
+    message=new_messages[0]["message"] if new_messages else action_type.replace("_"," ").capitalize()
+    history=json.loads(game.history_json or "[]");history.append({"state":previous_state,"version":previous_state.get("version",1),"turn":previous_state.get("turn",1),"actor_id":player_id,"action_type":action_type,"message":message,"created_at":datetime.now(UTC).isoformat()});game.history_json=json.dumps(history[-50:])
     game.state_json = json.dumps(state); game.status = state["status"]
     return state
 
@@ -239,10 +258,13 @@ def invited_act(invite_code: str, payload: GameAction, game_token:str|None=Heade
 
 
 @router.post("/{game_id}/undo", response_model=GameRead)
-def undo(game_id: str, game_token:str|None=Header(None,alias="X-Game-Token"), db: Session = Depends(get_db)):
+def undo(game_id: str, payload:GameUndo, game_token:str|None=Header(None,alias="X-Game-Token"), db: Session = Depends(get_db)):
     game = _host_game(db,game_id,game_token,True); history = json.loads(game.history_json or "[]")
+    if game.opponent_type=="human":raise HTTPException(422,"Undo is disabled in private multiplayer games")
+    current=json.loads(game.state_json)
+    if payload.expected_version!=current.get("version"):raise HTTPException(409,"Game changed. Refresh and try again.")
     if not history: raise HTTPException(422, "Nothing to undo")
-    state = history.pop(); game.state_json = json.dumps(state); game.history_json = json.dumps(history); game.status = state["status"]; db.commit(); db.refresh(game)
+    state = _history_state(history.pop()); game.state_json = json.dumps(state); game.history_json = json.dumps(history); game.status = state["status"]; db.commit(); db.refresh(game)
     return _serialize(game)
 
 
