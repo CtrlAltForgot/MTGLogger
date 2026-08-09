@@ -166,6 +166,16 @@ def _earthbend_value(card:dict)->int|None:
     return int(match.group(1)) if match else None
 
 
+def _waterbend_symbol(text:str)->str|None:
+    match=re.search(r"\bwaterbend\s+\{(\d+|X)\}",text or "",re.IGNORECASE)
+    return match.group(1).upper() if match else None
+
+
+def _spell_waterbend_symbol(card:dict)->str|None:
+    text=card.get("oracle_text") or ""
+    return _waterbend_symbol(text) if re.search(r"additional cost to cast this spell[^.]*waterbend",text,re.IGNORECASE) else None
+
+
 def _kicked_rules_card(card:dict,kicked:bool)->dict:
     clauses=re.split(r"(?<=[.!])\s+|\n",card.get("oracle_text") or "");resolved=[]
     for clause in clauses:
@@ -304,7 +314,8 @@ def _activated_abilities(card: dict) -> list[dict]:
         match = re.match(r"^([^:]+):\s*(.+)$", line.strip())
         if not match: continue
         cost,effect = match.group(1).strip(),match.group(2).strip()
-        mana_cost="".join(re.findall(r"\{[^}]+\}",cost,re.IGNORECASE)).upper().replace("{T}","").replace("{Q}","")
+        waterbend_symbol=_waterbend_symbol(cost);regular_cost=re.sub(r"\bwaterbend\s+\{(?:\d+|X)\}","",cost,flags=re.IGNORECASE)
+        mana_cost="".join(re.findall(r"\{[^}]+\}",regular_cost,re.IGNORECASE)).upper().replace("{T}","").replace("{Q}","")
         taps="{T}" in cost.upper()
         source_name=re.escape(card.get("name", ""));self_reference=rf"(?:~|this (?:artifact|creature|permanent)|{source_name})"
         self_sacrifice=re.search(rf"\bsacrifice {self_reference}\b",cost,re.IGNORECASE) is not None
@@ -321,10 +332,10 @@ def _activated_abilities(card: dict) -> list[dict]:
         if sacrifice_match:
             count_word=(sacrifice_match.group(1) or "a").strip().casefold();selection_cost={"kind":"sacrifice","filter":sacrifice_match.group(2).casefold(),"amount":2 if count_word=="two other" else 3 if count_word=="three other" else words.get(count_word,1),"exclude_source":"other" in count_word or count_word=="another"}
         unsupported=("discard" in cost.casefold() and not selection_cost) or ("sacrifice" in cost.casefold() and not self_sacrifice and not selection_cost) or ("remove" in cost.casefold() and "counter" in cost.casefold() and not counter_cost)
-        if unsupported or (not taps and not mana_cost and not self_sacrifice and not life_cost and not counter_cost and not selection_cost):continue
+        if unsupported or (not taps and not mana_cost and not waterbend_symbol and not self_sacrifice and not life_cost and not counter_cost and not selection_cost):continue
         if re.match(r"add (?:\{|one mana)", effect, re.IGNORECASE): continue
         ability_card = {**card, "name": f"{card['name']} ability", "oracle_text": effect, "type_line": "Ability", "mana_cost": ""}
-        abilities.append({"cost":cost,"mana_cost":mana_cost,"taps":taps,"self_sacrifice":self_sacrifice,"life_cost":life_cost,"counter_cost":counter_cost,"selection_cost":selection_cost,"effect":effect,"card":ability_card})
+        abilities.append({"cost":cost,"mana_cost":mana_cost,"waterbend_symbol":waterbend_symbol,"taps":taps,"self_sacrifice":self_sacrifice,"life_cost":life_cost,"counter_cost":counter_cost,"selection_cost":selection_cost,"effect":effect,"card":ability_card})
     return abilities
 
 
@@ -418,6 +429,34 @@ def _convoke_combinations(player:dict,card:dict,extra_generic:int=0,x_value:int=
         valid=[list(group) for group in combinations(options,amount) if _convoke_residual(player,card,list(group),extra_generic,x_value) is not None]
         if valid:return valid[:128]
     return []
+
+
+def _waterbend_residual(player:dict,base_card:dict,waterbend_amount:int,selected_ids:list[str],excluded_ids:set[str]|None=None,x_value:int=0)->dict|None:
+    if len(selected_ids)!=len(set(selected_ids)) or len(selected_ids)>waterbend_amount:return None
+    excluded=set(excluded_ids or ());eligible=[]
+    for card_id in selected_ids:
+        permanent=next((item for item in player["battlefield"] if item["instance_id"]==card_id and not item.get("tapped") and any(kind in item.get("type_line","") for kind in ("Artifact","Creature"))),None)
+        if not permanent or card_id in excluded:return None
+        eligible.append(permanent)
+    excluded.update(selected_ids);remaining=waterbend_amount-len(eligible);mana_cost=(base_card.get("mana_cost") or "")+(f"{{{remaining}}}" if remaining else "");residual={"mana_cost":mana_cost}
+    return residual if _can_pay(player,residual,x_value=x_value,excluded_ids=excluded) else None
+
+
+def _waterbend_combinations(player:dict,base_card:dict,waterbend_amount:int,excluded_ids:set[str]|None=None,x_value:int=0)->list[list[str]]:
+    excluded=set(excluded_ids or ());options=[item["instance_id"] for item in player["battlefield"] if item["instance_id"] not in excluded and not item.get("tapped") and any(kind in item.get("type_line","") for kind in ("Artifact","Creature"))]
+    valid=[]
+    for amount in range(0,min(waterbend_amount,len(options))+1):
+        found_at_amount=0
+        for group in combinations(options,amount):
+            if _waterbend_residual(player,base_card,waterbend_amount,list(group),excluded,x_value) is not None:valid.append(list(group));found_at_amount+=1
+            if found_at_amount>=64:break
+    return valid
+
+
+def _maximum_waterbend_x(player:dict,base_card:dict,excluded_ids:set[str]|None=None)->int:
+    value=0
+    while value<99 and _waterbend_combinations(player,base_card,value+1,excluded_ids):value+=1
+    return value
 
 
 def _predefined_token(owner:dict,kind:str,tapped:bool=False)->dict:
@@ -743,12 +782,19 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
         instant_speed = "Instant" in card.get("type_line", "") or _has_keyword(card, "Flash")
         total_tax=_commander_tax(player,card) if source=="command" else 0
         behold_options=[candidate for zone in (player["hand"],player["battlefield"]) for candidate in zone if flashback and flashback["behold_type"] in candidate.get("type_line","").casefold()]
-        normal_payable=_can_pay(player,cost_card,total_tax)
-        convoke_combinations=[] if _has_x_cost(cost_card) or (flashback and flashback["behold_amount"]) or not _has_convoke(card) else _convoke_combinations(player,cost_card,total_tax);convoke_min=len(convoke_combinations[0]) if convoke_combinations else None
+        waterbend_symbol=_spell_waterbend_symbol(card);waterbend_base_card={**cost_card,"mana_cost":f"{cost_card.get('mana_cost') or ''}{f'{{{total_tax}}}' if total_tax else ''}"};waterbend_x_max=_maximum_waterbend_x(player,waterbend_base_card) if waterbend_symbol=="X" else None;waterbend_amount=int(waterbend_symbol) if waterbend_symbol and waterbend_symbol.isdigit() else waterbend_x_max or 0
+        waterbend_combinations=_waterbend_combinations(player,waterbend_base_card,waterbend_amount) if waterbend_symbol else []
+        normal_payable=bool(waterbend_combinations) if waterbend_symbol else _can_pay(player,cost_card,total_tax)
+        convoke_combinations=[] if waterbend_symbol or _has_x_cost(cost_card) or (flashback and flashback["behold_amount"]) or not _has_convoke(card) else _convoke_combinations(player,cost_card,total_tax);convoke_min=len(convoke_combinations[0]) if convoke_combinations else None
         if "Land" in card.get("type_line", "") or not ((active and main and not state["stack"]) or instant_speed) or (not normal_payable and convoke_min is None) or (flashback and len(behold_options)<flashback["behold_amount"]): continue
         cost_label=cost_card.get("mana_cost") or "{0}";action = {"type": "cast", "card_id": card["instance_id"], "source": source, "commander_tax": total_tax,"label":f"{'Flashback' if flashback else 'Cast'} {card['name']} · {cost_label}{f' + {{2}}×{player.get("commander_casts",0)} commander tax' if total_tax else ''}"}
         if flashback:action.update({"flashback":True,"cost_kind":"behold" if flashback["behold_amount"] else None,"cost_amount":flashback["behold_amount"],"cost_options":[candidate["instance_id"] for candidate in behold_options]})
+        if waterbend_symbol:
+            options=[candidate["instance_id"] for candidate in player["battlefield"] if not candidate.get("tapped") and any(kind in candidate.get("type_line","") for kind in ("Artifact","Creature"))]
+            action.update({"waterbend":True,"waterbend_amount":waterbend_amount,"cost_kind":"waterbend","cost_min_amount":min(map(len,waterbend_combinations)),"cost_max_amount":max(map(len,waterbend_combinations)),"cost_options":options,"cost_combinations":waterbend_combinations,"label":f"{action['label']} + waterbend {{{waterbend_symbol}}}"})
         if _has_x_cost(cost_card):action.update({"x_min":0,"x_max":_maximum_x(player,cost_card,total_tax)})
+        elif waterbend_symbol=="X":
+            by_x={value:_waterbend_combinations(player,waterbend_base_card,value) for value in range(0,(waterbend_x_max or 0)+1)};action.update({"x_min":1 if "x can't be 0" in (card.get("oracle_text") or "").casefold() else 0,"x_max":waterbend_x_max,"cost_combinations_by_x":by_x})
         modal_spec=_modal_spec(card);modal_options=(modal_spec or {}).get("options",[])
         if modal_spec:
             modes=[]
@@ -774,9 +820,12 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
             actions.append({**action,"convoke":True,"cost_kind":"convoke","cost_min_amount":convoke_min,"cost_max_amount":len(colored)+generic,"cost_options":[candidate["instance_id"] for candidate in convoke_options],"cost_combinations":convoke_combinations,"label":f"{action['label']} · Convoke"})
         if kicker_cost:
             kicked_cost_card={**cost_card,"mana_cost":f"{cost_card.get('mana_cost') or ''}{kicker_cost}"}
-            kicked_normal_payable=_can_pay(player,kicked_cost_card,total_tax);kicked_convoke_combinations=[] if _has_x_cost(kicked_cost_card) or not _has_convoke(card) else _convoke_combinations(player,kicked_cost_card,total_tax);kicked_convoke_min=len(kicked_convoke_combinations[0]) if kicked_convoke_combinations else None
+            kicked_waterbend_base={**kicked_cost_card,"mana_cost":f"{kicked_cost_card.get('mana_cost') or ''}{f'{{{total_tax}}}' if total_tax else ''}"};kicked_waterbend_x_max=_maximum_waterbend_x(player,kicked_waterbend_base) if waterbend_symbol=="X" else None;kicked_waterbend_amount=kicked_waterbend_x_max if waterbend_symbol=="X" else waterbend_amount;kicked_waterbend_combinations=_waterbend_combinations(player,kicked_waterbend_base,kicked_waterbend_amount or 0) if waterbend_symbol else [];kicked_normal_payable=bool(kicked_waterbend_combinations) if waterbend_symbol else _can_pay(player,kicked_cost_card,total_tax);kicked_convoke_combinations=[] if waterbend_symbol or _has_x_cost(kicked_cost_card) or not _has_convoke(card) else _convoke_combinations(player,kicked_cost_card,total_tax);kicked_convoke_min=len(kicked_convoke_combinations[0]) if kicked_convoke_combinations else None
             if kicked_normal_payable or kicked_convoke_min is not None:
                 kicked={**action,"kicked":True,"kicker_cost":kicker_cost,"label":f"{action['label']} + kicker {kicker_cost}"}
+                if waterbend_symbol:
+                    kicked.update({"cost_min_amount":min(map(len,kicked_waterbend_combinations)),"cost_max_amount":max(map(len,kicked_waterbend_combinations)),"cost_combinations":kicked_waterbend_combinations})
+                    if waterbend_symbol=="X":kicked.update({"x_max":kicked_waterbend_x_max,"waterbend_amount":kicked_waterbend_x_max,"cost_combinations_by_x":{value:_waterbend_combinations(player,kicked_waterbend_base,value) for value in range(0,(kicked_waterbend_x_max or 0)+1)}})
                 if not modal_spec:
                     kicked.pop("targets",None);kicked.pop("target_steps",None);kicked_rules=_kicked_rules_card(card,True);kicked_fight=_fight_target_steps(state,player_id,kicked_rules)
                     if kicked_fight:
@@ -798,7 +847,8 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
     for permanent in player["battlefield"]:
         for index, ability in enumerate(_permanent_abilities(state,permanent)):
             if ability["taps"] and (permanent.get("tapped") or ("Creature" in permanent.get("type_line", "") and permanent.get("summoning_sick") and not _has_keyword(permanent,"Haste"))):continue
-            if ability["mana_cost"] and not _can_pay(player,{"mana_cost":ability["mana_cost"]},excluded_id=permanent["instance_id"] if ability["taps"] else None):continue
+            waterbend_symbol=ability.get("waterbend_symbol");excluded={permanent["instance_id"]} if ability["taps"] else set();waterbend_x_max=_maximum_waterbend_x(player,{"mana_cost":ability["mana_cost"]},excluded) if waterbend_symbol=="X" else None;waterbend_amount=int(waterbend_symbol) if waterbend_symbol and waterbend_symbol.isdigit() else waterbend_x_max or 0;waterbend_combinations=_waterbend_combinations(player,{"mana_cost":ability["mana_cost"]},waterbend_amount,excluded) if waterbend_symbol else []
+            if (waterbend_symbol and not waterbend_combinations) or (not waterbend_symbol and ability["mana_cost"] and not _can_pay(player,{"mana_cost":ability["mana_cost"]},excluded_id=permanent["instance_id"] if ability["taps"] else None)):continue
             if ability["life_cost"] and player["life"]<ability["life_cost"]:continue
             if ability["counter_cost"] and permanent.get("counters",{}).get(ability["counter_cost"]["name"],0)<ability["counter_cost"]["amount"]:continue
             cost_options=_activated_cost_options(player,permanent,ability["selection_cost"])
@@ -806,7 +856,11 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
             fight_steps=_fight_target_steps(state,player_id,ability["card"],permanent);targets=[] if fight_steps else _targets(state, player_id, ability["card"])
             if (fight_steps and any(not step["targets"] for step in fight_steps)) or (not fight_steps and _target_kind(ability["card"]) and not targets): continue
             action = {"type": "activate", "card_id": permanent["instance_id"], "ability_index": index, "label": f"{ability['cost']}: {ability['effect']}","life_cost":ability["life_cost"],"self_sacrifice":ability["self_sacrifice"],"counter_cost":ability["counter_cost"],"cost_kind":ability["selection_cost"]["kind"] if ability["selection_cost"] else None,"cost_amount":ability["selection_cost"]["amount"] if ability["selection_cost"] else 0,"cost_options":[card["instance_id"] for card in cost_options]}
+            if waterbend_symbol:
+                options=[candidate["instance_id"] for candidate in player["battlefield"] if candidate["instance_id"] not in excluded and not candidate.get("tapped") and any(kind in candidate.get("type_line","") for kind in ("Artifact","Creature"))];action.update({"waterbend":True,"waterbend_amount":waterbend_amount,"cost_kind":"waterbend","cost_min_amount":min(map(len,waterbend_combinations)),"cost_max_amount":max(map(len,waterbend_combinations)),"cost_options":options,"cost_combinations":waterbend_combinations})
             if _has_x_cost({"mana_cost":ability["mana_cost"]}):action.update({"x_min":0,"x_max":_maximum_x(player,{"mana_cost":ability["mana_cost"]},excluded_id=permanent["instance_id"] if ability["taps"] else None)})
+            elif waterbend_symbol=="X":
+                by_x={value:_waterbend_combinations(player,{"mana_cost":ability["mana_cost"]},value,excluded) for value in range(0,(waterbend_x_max or 0)+1)};action.update({"x_min":1 if "x can't be 0" in ability["effect"].casefold() else 0,"x_max":waterbend_x_max,"cost_combinations_by_x":by_x})
             if fight_steps:action["target_steps"]=fight_steps
             elif targets: action["targets"] = targets
             actions.append(action)
@@ -1306,16 +1360,19 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
     elif action_type == "cast":
         requested_source=action.get("source");zone_name="graveyard" if requested_source=="flashback" else requested_source if requested_source in {"hand","command"} else next((zone for zone in ("hand","command") if any(card["instance_id"]==action.get("card_id") for card in player.get(zone,[]))),None)
         source="flashback" if zone_name=="graveyard" else zone_name;card=next((card for card in player.get(zone_name or "hand",[]) if card["instance_id"]==action.get("card_id")),None);flashback=_flashback_ability(card or {}) if source=="flashback" else None
-        requested_kicked=bool(action.get("kicked"));requested_convoke=bool(action.get("convoke"));available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="cast" and entry["card_id"]==action.get("card_id") and entry.get("source")==source and bool(entry.get("kicked"))==requested_kicked and bool(entry.get("convoke"))==requested_convoke),None)
+        requested_kicked=bool(action.get("kicked"));requested_convoke=bool(action.get("convoke"));requested_waterbend=bool(action.get("waterbend"));available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="cast" and entry["card_id"]==action.get("card_id") and entry.get("source")==source and bool(entry.get("kicked"))==requested_kicked and bool(entry.get("convoke"))==requested_convoke and bool(entry.get("waterbend"))==requested_waterbend),None)
         tax = _commander_tax(player, card) if card and source=="command" else 0
         if not card:raise RuleViolation("That spell cannot be cast")
         if not available:raise RuleViolation("That spell cannot be cast from that zone")
         cost_card={**card,"mana_cost":flashback["mana_cost"]} if flashback else card
         if requested_kicked:cost_card={**cost_card,"mana_cost":f"{cost_card.get('mana_cost') or ''}{_kicker_cost(card) or ''}"}
-        x_value=int(action.get("x_value") or 0);x_max=_maximum_x(player,cost_card,tax)
-        if (_has_x_cost(cost_card) and not 0<=x_value<=x_max) or (not _has_x_cost(cost_card) and action.get("x_value") is not None): raise RuleViolation("That spell cannot be cast with the chosen X value")
+        waterbend_symbol=_spell_waterbend_symbol(card);x_value=int(action.get("x_value") or 0);has_x=_has_x_cost(cost_card) or waterbend_symbol=="X";x_max=available.get("x_max",_maximum_x(player,cost_card,tax))
+        if (has_x and not available.get("x_min",0)<=x_value<=x_max) or (not has_x and action.get("x_value") is not None): raise RuleViolation("That spell cannot be cast with the chosen X value")
         selected_cost_ids=action.get("cost_card_ids") or [];required_cost=available.get("cost_amount",0);cost_options=set(available.get("cost_options",[]))
-        if requested_convoke:
+        if requested_waterbend:
+            combinations_for_x=(available.get("cost_combinations_by_x") or {}).get(x_value,available.get("cost_combinations",[]));valid_groups={tuple(sorted(group)) for group in combinations_for_x}
+            if tuple(sorted(selected_cost_ids)) not in valid_groups:raise RuleViolation("Choose artifacts and creatures that produce a legal waterbend payment")
+        elif requested_convoke:
             minimum=available.get("cost_min_amount",1);maximum=available.get("cost_max_amount",len(cost_options))
             if not minimum<=len(selected_cost_ids)<=maximum or len(selected_cost_ids)!=len(set(selected_cost_ids)) or not set(selected_cost_ids).issubset(cost_options):raise RuleViolation(f"Choose between {minimum} and {maximum} untapped creatures for convoke")
         elif len(selected_cost_ids)!=required_cost or len(set(selected_cost_ids))!=required_cost or not set(selected_cost_ids).issubset(cost_options):raise RuleViolation(f"Choose exactly {required_cost} cards or permanents for the additional cost")
@@ -1323,8 +1380,8 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if target_steps:
             if len(target_ids)!=len(target_steps) or any(target_id not in {target["id"] for target in target_steps[index]["targets"]} for index,target_id in enumerate(target_ids)) or any(step.get("distinct") and target_ids[index] in target_ids[:index] for index,step in enumerate(target_steps)):raise RuleViolation("Choose each legal fight target exactly once")
         elif target_ids:raise RuleViolation("That spell does not use multiple targets")
-        convoke_residual=_convoke_residual(player,cost_card,selected_cost_ids,tax,x_value) if requested_convoke else None
-        if (requested_convoke and convoke_residual is None) or (not requested_convoke and not _can_pay(player,cost_card,tax,x_value=x_value)):raise RuleViolation("That spell cannot be cast with the chosen payment")
+        convoke_residual=_convoke_residual(player,cost_card,selected_cost_ids,tax,x_value) if requested_convoke else None;waterbend_amount=x_value if waterbend_symbol=="X" else int(waterbend_symbol or 0);waterbend_base={**cost_card,"mana_cost":f"{cost_card.get('mana_cost') or ''}{f'{{{tax}}}' if tax else ''}"};waterbend_residual=_waterbend_residual(player,waterbend_base,waterbend_amount,selected_cost_ids,x_value=x_value if _has_x_cost(cost_card) else 0) if requested_waterbend else None
+        if (requested_waterbend and waterbend_residual is None) or (requested_convoke and convoke_residual is None) or (not requested_waterbend and not requested_convoke and not _can_pay(player,cost_card,tax,x_value=x_value)):raise RuleViolation("That spell cannot be cast with the chosen payment")
         modal_spec=_modal_spec(card);modal_options=(modal_spec or {}).get("options",[]);chosen_modes=action.get("chosen_modes") or [];mode_targets=action.get("mode_targets") or []
         if modal_spec and len(chosen_modes)==1 and not mode_targets:mode_targets=[action.get("target_id")]
         if modal_spec:
@@ -1341,7 +1398,11 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         elif chosen_modes or mode_targets:raise RuleViolation("That spell has no modal choice")
         rules_card=_kicked_rules_card(_selected_mode_card(card,chosen_modes),requested_kicked);targeting_card=_spell_targeting_card(rules_card);targets = _targets(state, player_id, targeting_card); target_id = action.get("target_id")
         if not modal_spec and _target_kind(targeting_card) and target_id not in {target["id"] for target in targets}: raise RuleViolation("Choose a legal target")
-        if requested_convoke:
+        if requested_waterbend:
+            _pay_mana(state,player,waterbend_residual or {"mana_cost":""},excluded_ids=set(selected_cost_ids),x_value=x_value if _has_x_cost(cost_card) else 0)
+            for permanent in player["battlefield"]:
+                if permanent["instance_id"] in selected_cost_ids:permanent["tapped"]=True
+        elif requested_convoke:
             _pay_mana(state,player,convoke_residual or {"mana_cost":""},excluded_ids=set(selected_cost_ids))
             for creature in player["battlefield"]:
                 if creature["instance_id"] in selected_cost_ids:creature["tapped"]=True
@@ -1349,6 +1410,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         player[zone_name].remove(card)
         if card.get("commander"): player["commander_casts"] = player.get("commander_casts", 0) + 1
         effective_target=target_id or (mode_targets[0] if len(mode_targets)==1 else None);stack_item={"id": _id(), "card": card, "controller_id": player_id, "target_id": effective_target,"target_ids":target_ids,"mode_indices":chosen_modes,"mode_targets":mode_targets,"x_value":x_value,"flashback":bool(flashback),"kicked":requested_kicked};state["stack"].append(stack_item); state["consecutive_passes"] = 0; state["pending_phase_advance"] = False
+        if requested_waterbend:_queue_triggers(state,"waterbend",card,player)
         _queue_triggers(state,"cast",card,player)
         ward_targets=[effective_target] if effective_target else []
         ward_targets.extend(target for target in mode_targets if target and target not in ward_targets)
@@ -1357,7 +1419,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if (_multiplayer(state) or not allow_direct_resolution) and not state.get("pending_ward") and not state.get("pending_trigger_targets"): state["priority_player_id"] = opponent(state, player_id)["id"]
         mode_label="; ".join(next(mode["label"] for mode in modal_options if mode["index"]==index) for index in chosen_modes)
         behold_names=[next(candidate["name"] for zone in (player["hand"],player["battlefield"]) for candidate in zone if candidate["instance_id"]==card_id) for card_id in selected_cost_ids] if available.get("cost_kind")=="behold" else []
-        _log(state, f"{player['name']} cast {card['name']}{' using flashback' if flashback else ''}{' with kicker' if requested_kicked else ''}{' using convoke' if requested_convoke else ''}{f' with X={x_value}' if _has_x_cost(cost_card) else ''}{f' choosing {mode_label}' if mode_label else ''}{f' with {tax} commander tax' if tax else ''}{f' by beholding {', '.join(behold_names)}' if behold_names else ''}{' targeting '+next((target['name'] for target in targets if target['id']==target_id),'') if target_id else ''}.")
+        _log(state, f"{player['name']} cast {card['name']}{' using flashback' if flashback else ''}{' with kicker' if requested_kicked else ''}{' using waterbend' if requested_waterbend else ''}{' using convoke' if requested_convoke else ''}{f' with X={x_value}' if has_x else ''}{f' choosing {mode_label}' if mode_label else ''}{f' with {tax} commander tax' if tax else ''}{f' by beholding {', '.join(behold_names)}' if behold_names else ''}{' targeting '+next((target['name'] for target in targets if target['id']==target_id),'') if target_id else ''}.")
     elif action_type == "cycle":
         card=next((card for card in player["hand"] if card["instance_id"]==action.get("card_id")),None);cycling=_cycling_ability(card or {})
         available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="cycle" and entry["card_id"]==action.get("card_id")),None)
@@ -1389,23 +1451,33 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         available=next((entry for entry in legal_actions(state,player_id) if entry["type"]=="activate" and entry["card_id"]==action.get("card_id") and entry["ability_index"]==index),None)
         if not permanent or not available:raise RuleViolation("That ability cannot be activated")
         ability=_permanent_abilities(state,permanent)[index];target_id=action.get("target_id");targets=available.get("targets",[])
-        x_value=int(action.get("x_value") or 0);x_card={"mana_cost":ability["mana_cost"]};x_max=_maximum_x(player,x_card,excluded_id=permanent["instance_id"] if ability["taps"] else None)
-        if (_has_x_cost(x_card) and not 0<=x_value<=x_max) or (not _has_x_cost(x_card) and action.get("x_value") is not None):raise RuleViolation("That ability cannot be activated with the chosen X value")
+        waterbend_symbol=ability.get("waterbend_symbol");x_value=int(action.get("x_value") or 0);x_card={"mana_cost":ability["mana_cost"]};has_x=_has_x_cost(x_card) or waterbend_symbol=="X";x_max=available.get("x_max",_maximum_x(player,x_card,excluded_id=permanent["instance_id"] if ability["taps"] else None))
+        if (has_x and not available.get("x_min",0)<=x_value<=x_max) or (not has_x and action.get("x_value") is not None):raise RuleViolation("That ability cannot be activated with the chosen X value")
         if targets and target_id not in {target["id"] for target in targets}:raise RuleViolation("Choose a legal target")
         target_ids=action.get("target_ids") or [];target_steps=available.get("target_steps") or []
         if target_steps:
             if len(target_ids)!=len(target_steps) or any(target_value not in {target["id"] for target in target_steps[position]["targets"]} for position,target_value in enumerate(target_ids)) or any(step.get("distinct") and target_ids[position] in target_ids[:position] for position,step in enumerate(target_steps)):raise RuleViolation("Choose each legal fight target exactly once")
         elif target_ids:raise RuleViolation("That ability does not use multiple targets")
         selected_cost_ids=action.get("cost_card_ids") or [];required_cost=available.get("cost_amount",0);cost_options=set(available.get("cost_options",[]))
-        if len(selected_cost_ids)!=required_cost or len(set(selected_cost_ids))!=required_cost or not set(selected_cost_ids).issubset(cost_options):raise RuleViolation(f"Choose exactly {required_cost} legal card(s) for the activation cost")
+        if waterbend_symbol:
+            combinations_for_x=(available.get("cost_combinations_by_x") or {}).get(x_value,available.get("cost_combinations",[]));valid_groups={tuple(sorted(group)) for group in combinations_for_x}
+            if tuple(sorted(selected_cost_ids)) not in valid_groups:raise RuleViolation("Choose artifacts and creatures that produce a legal waterbend payment")
+        elif len(selected_cost_ids)!=required_cost or len(set(selected_cost_ids))!=required_cost or not set(selected_cost_ids).issubset(cost_options):raise RuleViolation(f"Choose exactly {required_cost} legal card(s) for the activation cost")
         selected_cost_cards=[card for zone in (player["hand"],player["battlefield"]) for card in zone if card["instance_id"] in set(selected_cost_ids)]
-        if len(selected_cost_cards)!=required_cost:raise RuleViolation("One or more activation cost cards are no longer available")
-        if ability["mana_cost"]:_pay_mana(state,player,{"mana_cost":ability["mana_cost"]},excluded_id=permanent["instance_id"] if ability["taps"] else None,x_value=x_value)
+        if len(selected_cost_cards)!=(len(selected_cost_ids) if waterbend_symbol else required_cost):raise RuleViolation("One or more activation cost cards are no longer available")
+        if waterbend_symbol:
+            excluded={permanent["instance_id"]} if ability["taps"] else set();waterbend_amount=x_value if waterbend_symbol=="X" else int(waterbend_symbol);residual=_waterbend_residual(player,x_card,waterbend_amount,selected_cost_ids,excluded,x_value=x_value if _has_x_cost(x_card) else 0)
+            if residual is None:raise RuleViolation("That waterbend payment is no longer available")
+            _pay_mana(state,player,residual,excluded_ids=excluded|set(selected_cost_ids),x_value=x_value if _has_x_cost(x_card) else 0)
+            for selected in player["battlefield"]:
+                if selected["instance_id"] in selected_cost_ids:selected["tapped"]=True
+        elif ability["mana_cost"]:_pay_mana(state,player,{"mana_cost":ability["mana_cost"]},excluded_id=permanent["instance_id"] if ability["taps"] else None,x_value=x_value)
         if ability["life_cost"]:player["life"]-=ability["life_cost"]
         if ability["counter_cost"]:
             name,amount=ability["counter_cost"]["name"],ability["counter_cost"]["amount"];permanent["counters"][name]-=amount
         if ability["taps"]:permanent["tapped"]=True
         stack_item={"id":_id(),"kind":"ability","card":ability["card"],"controller_id":player_id,"target_id":target_id,"target_ids":target_ids,"source_id":permanent["instance_id"],"x_value":x_value};state["stack"].append(stack_item);state["consecutive_passes"]=0;state["pending_phase_advance"]=False
+        if waterbend_symbol:_queue_triggers(state,"waterbend",permanent,player)
         for ward_target in ([target_id] if target_id else [])+target_ids:_queue_ward(state,player,ward_target,stack_item)
         if ability["self_sacrifice"]:_leave_battlefield(state,player,permanent,"graveyard")
         if available.get("cost_kind")=="discard":
