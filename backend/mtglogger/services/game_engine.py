@@ -1427,20 +1427,26 @@ def _resolve_spell(state: dict) -> None:
             if own_only and owner["id"]!=caster["id"] or opponents_only and owner["id"]==caster["id"]:continue
             for permanent in owner["battlefield"]:
                 if "Creature" in permanent.get("type_line",""):permanent["temporary_power"]=permanent.get("temporary_power",0)+int(global_stats.group(1));permanent["temporary_toughness"]=permanent.get("temporary_toughness",0)+int(global_stats.group(2))
-    token_match = re.search(r"create (a|one|two|three|four|\d+) (\d+)/(\d+) ([^.]*?) creature tokens?", effect_text)
+    token_match = re.search(r"create (a|one|two|three|four|five|\d+) (tapped )?(\d+)/(\d+) ([^.]*?) creature tokens?", effect_text)
     if token_match:
-        amount = {"a":1,"one":1,"two":2,"three":3,"four":4}.get(token_match.group(1),int(token_match.group(1)) if token_match.group(1).isdigit() else 0)
-        attacking="tapped and attacking" in effect_text;created=[]
+        amount = {"a":1,"one":1,"two":2,"three":3,"four":4,"five":5}.get(token_match.group(1),int(token_match.group(1)) if token_match.group(1).isdigit() else 0)
+        attacking="tapped and attacking" in effect_text;tapped=bool(token_match.group(2)) or attacking or "tokens enter tapped" in effect_text;created=[]
+        descriptor=token_match.group(5).strip();color_names={"white":"W","blue":"U","black":"B","red":"R","green":"G"};colors=[symbol for name,symbol in color_names.items() if re.search(rf"\b{name}\b",descriptor)]
+        subtype=re.sub(r"\b(?:white|blue|black|red|green|colorless|and)\b"," ",descriptor).strip();subtype=re.sub(r"\s+"," ",subtype) or "Creature"
+        keywords=[keyword.title() for keyword in ("flying","first strike","double strike","deathtouch","haste","lifelink","menace","reach","trample","vigilance") if re.search(rf"\b{keyword}\b",effect_text)]
         for _ in range(amount):
-            descriptor=token_match.group(4).strip();keywords=[keyword.title() for keyword in ("flying","first strike","double strike","deathtouch","haste","lifelink","menace","reach","trample","vigilance") if re.search(rf"\b{keyword}\b",effect_text)];token={"instance_id":_id(),"scryfall_id":"token","name":f"{descriptor.title()} Token","image_url":None,"type_line":f"Token Creature — {descriptor.title()}","oracle_text":"","mana_cost":"","mana_value":0,"power":token_match.group(2),"toughness":token_match.group(3),"owner_id":caster["id"],"controller_id":caster["id"],"tapped":attacking,"damage":0,"counters":{},"summoning_sick":True,"token":True,"keywords":keywords};caster["battlefield"].append(token);created.append(token)
+            token={"instance_id":_id(),"scryfall_id":"token","name":f"{subtype.title()} Token","image_url":None,"type_line":f"Token Creature — {subtype.title()}","oracle_text":"","mana_cost":"","mana_value":0,"colors":colors,"power":token_match.group(3),"toughness":token_match.group(4),"owner_id":caster["id"],"controller_id":caster["id"],"tapped":tapped,"damage":0,"counters":{},"summoning_sick":True,"token":True,"keywords":keywords};caster["battlefield"].append(token);created.append(token)
         if attacking and state.get("phase")=="combat":
             source_target=state["combat"].get("attack_targets",{}).get(item.get("source_id"),other["id"])
             for token in created:state["combat"]["attackers"].append(token["instance_id"]);state["combat"]["attack_targets"][token["instance_id"]]=source_target
+        for token in created:_queue_triggers(state,"enters",token,caster)
         _log(state, f"{caster['name']} created {amount} token(s){' tapped and attacking' if attacking else ''}.")
     predefined_matches=list(re.finditer(r"create (a|one|two|three|four|five|\d+) (tapped )?(clue|food|treasure|blood|gold) tokens?",effect_text,re.IGNORECASE))
     for predefined in predefined_matches:
         word=predefined.group(1).casefold();amount={"a":1,"one":1,"two":2,"three":3,"four":4,"five":5}.get(word,int(word) if word.isdigit() else 1);kind=predefined.group(3).title()
-        for _ in range(amount):caster["battlefield"].append(_predefined_token(caster,kind,bool(predefined.group(2))))
+        created=[]
+        for _ in range(amount):token=_predefined_token(caster,kind,bool(predefined.group(2)));caster["battlefield"].append(token);created.append(token)
+        for token in created:_queue_triggers(state,"enters",token,caster)
         _log(state,f"{caster['name']} created {amount} {kind} token(s).")
     saga_transformed=False
     if source_permanent and "exile this saga, then return it to the battlefield transformed under your control" in effect_text:
@@ -1515,7 +1521,8 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 under_control = event_card.get("controller_id") == owner["id"]
                 is_creature = "creature" in event_card.get("type_line", "").casefold()
                 is_land = "land" in event_card.get("type_line", "").casefold()
-                matches = under_control and ((is_creature and (("whenever another creature enters" in lower and source is not event_card) or "whenever a creature enters the battlefield under your control" in lower)) or (is_land and re.search(r"whenever (?:a|another) land enters(?: the battlefield)? under your control", lower) is not None) or (source is event_card and re.search(r"when (?:~|this (?:creature|permanent)|[^,]+) enters", lower) is not None))
+                is_artifact = "artifact" in event_card.get("type_line", "").casefold()
+                matches = under_control and ((is_creature and (("whenever another creature enters" in lower and source is not event_card) or "whenever a creature enters the battlefield under your control" in lower)) or (is_artifact and re.search(r"whenever (?:an|another) artifact enters(?: the battlefield)? under your control",lower) is not None and ("another artifact" not in lower or source is not event_card)) or (is_land and re.search(r"whenever (?:a|another) land enters(?: the battlefield)? under your control", lower) is not None) or (source is event_card and re.search(r"when (?:~|this (?:creature|permanent)|[^,]+) enters", lower) is not None))
                 if "if it was kicked" in lower:matches=matches and bool(event_card.get("was_kicked"))
             elif event == "dies" and event_card:
                 matches = (source is event_card and re.search(r"when (?:~|this creature|[^,]+) dies", lower) is not None) or (source is not event_card and "whenever another creature dies" in lower)
