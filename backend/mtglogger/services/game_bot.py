@@ -334,6 +334,9 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
         candidate=_card(state,"bot",choice["card_id"]);best_cast=max((_threat_score(state,_card(state,"bot",action["card_id"])) for action in by_type.get("cast",[])),default=-1)
         discount=float(candidate.get("mana_value") or 0)-2
         if "cast" not in by_type or discount>=2 or _threat_score(state,candidate)>best_cast+3:return choice
+    if "plot" in by_type:
+        choice=max(by_type["plot"],key=lambda action:_threat_score(state,_card(state,"bot",action["card_id"])));candidate=_card(state,"bot",choice["card_id"]);symbols=re.findall(r"\{([^}]+)\}",choice.get("mana_cost") or "");plot_value=sum(int(symbol) if symbol.isdigit() else 1 for symbol in symbols)-int(choice.get("plot_reduction") or 0);discount=float(candidate.get("mana_value") or 0)-max(0,plot_value)
+        if "cast" not in by_type or discount>=2 or difficulty=="beginner" and random.random()<.35:return choice
     if "turn_face_up" in by_type:
         return max(by_type["turn_face_up"],key=lambda action:_threat_score(state,{**_card(state,"bot",action["card_id"]),**(_card(state,"bot",action["card_id"]).get("face_down_values") or {})}))
     if "crew" in by_type:

@@ -415,6 +415,15 @@ def _unearth_ability(card:dict)->dict|None:
     return {"mana_cost":match.group(1).upper(),"energy_cost":0} if match else None
 
 
+def _plot_cost(card:dict)->str|None:
+    match=re.search(r"(?:^|\n)Plot\s+((?:\{[^}]+\})+)",card.get("oracle_text") or "",re.IGNORECASE)
+    return match.group(1).upper() if match else None
+
+
+def _plot_reduction(player:dict)->int:
+    return sum(int(match.group(1)) for permanent in player["battlefield"] for match in re.finditer(r"Plotting cards from your hand costs \{(\d+)\} less",permanent.get("oracle_text") or "",re.IGNORECASE))
+
+
 def _flashback_ability(card:dict)->dict|None:
     match=re.search(r"(?:^|\n)Flashback[ —-]*((?:\{[^}]+\})+)(?:,\s*Behold\s+(a|one|two|three|four|five|\d+)\s+([A-Za-z]+))?",card.get("oracle_text") or "",re.IGNORECASE)
     if not match:return None
@@ -1501,16 +1510,22 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
             unearth=_unearth_ability(grave_card)
             if unearth and player.get("energy",0)>=unearth["energy_cost"] and _can_pay(player,{"mana_cost":unearth["mana_cost"]}):
                 cost_label=unearth["mana_cost"] or f"{unearth['energy_cost']} energy";actions.append({"type":"unearth","card_id":grave_card["instance_id"],"source":"graveyard","mana_cost":unearth["mana_cost"],"energy_cost":unearth["energy_cost"],"label":f"Unearth {grave_card['name']} · {cost_label}"})
+        plot_reduction=_plot_reduction(player)
+        for hand_card in player["hand"]:
+            plot_cost=_plot_cost(hand_card)
+            if plot_cost and _can_pay(player,{"mana_cost":plot_cost},-plot_reduction):
+                reduction_label=f" · reduced by {plot_reduction}" if plot_reduction else "";actions.append({"type":"plot","card_id":hand_card["instance_id"],"source":"hand","mana_cost":plot_cost,"plot_reduction":plot_reduction,"label":f"Plot {hand_card['name']} · {plot_cost}{reduction_label}"})
     castable = [(card, "hand") for card in player["hand"]]
     castable.extend((card, "command") for card in player.get("command", []))
     castable.extend((card,"flashback") for card in player["graveyard"] if _flashback_ability(card))
     castable.extend((card,"airbend") for card in player["exile"] if card.get("airbent"))
     castable.extend((card,"suspend") for card in player["exile"] if card.get("suspended_ready"))
     castable.extend((card,"foretell") for card in player["exile"] if card.get("foretold") and state["turn"]>card.get("foretold_turn",state["turn"]))
+    castable.extend((card,"plot") for card in player["exile"] if card.get("plotted") and state["turn"]>card.get("plotted_turn",state["turn"]))
     for card, source in castable:
         card_action_start=len(actions)
-        flashback=_flashback_ability(card) if source=="flashback" else None;foretell_cost=_foretell_cost(card) if source=="foretell" else None;cost_card={**card,"mana_cost":foretell_cost} if foretell_cost else {**card,"mana_cost":"{0}"} if source=="suspend" else {**card,"mana_cost":"{2}"} if source=="airbend" else {**card,"mana_cost":flashback["mana_cost"]} if flashback else card;kicker_cost=_kicker_cost(card)
-        instant_speed = "Instant" in card.get("type_line", "") or _has_keyword(card, "Flash")
+        flashback=_flashback_ability(card) if source=="flashback" else None;foretell_cost=_foretell_cost(card) if source=="foretell" else None;cost_card={**card,"mana_cost":foretell_cost} if foretell_cost else {**card,"mana_cost":"{0}"} if source in {"suspend","plot"} else {**card,"mana_cost":"{2}"} if source=="airbend" else {**card,"mana_cost":flashback["mana_cost"]} if flashback else card;kicker_cost=_kicker_cost(card)
+        instant_speed = source!="plot" and ("Instant" in card.get("type_line", "") or _has_keyword(card, "Flash"))
         total_tax=_commander_tax(player,card) if source=="command" else 0;affinity_reduction=_affinity_reduction(player,card);generic_adjustment=total_tax-affinity_reduction
         behold_options=[candidate for zone in (player["hand"],player["battlefield"]) for candidate in zone if flashback and flashback["behold_type"] in candidate.get("type_line","").casefold()]
         waterbend_symbol=_spell_waterbend_symbol(card);waterbend_base_card={**cost_card,"mana_cost":f"{cost_card.get('mana_cost') or ''}{f'{{{generic_adjustment}}}' if generic_adjustment>0 else ''}"};waterbend_x_max=_maximum_waterbend_x(player,waterbend_base_card) if waterbend_symbol=="X" else None;waterbend_amount=int(waterbend_symbol) if waterbend_symbol and waterbend_symbol.isdigit() else waterbend_x_max or 0
@@ -1518,7 +1533,7 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
         normal_payable=bool(waterbend_combinations) if waterbend_symbol else _can_pay(player,cost_card,generic_adjustment)
         convoke_combinations=[] if waterbend_symbol or _has_x_cost(cost_card) or (flashback and flashback["behold_amount"]) or not _has_convoke(card) else _convoke_combinations(player,cost_card,generic_adjustment);convoke_min=len(convoke_combinations[0]) if convoke_combinations else None
         if "Land" in card.get("type_line", "") or (source!="suspend" and not ((active and main and not state["stack"]) or instant_speed)) or (not normal_payable and convoke_min is None) or (flashback and len(behold_options)<flashback["behold_amount"]): continue
-        cost_label=cost_card.get("mana_cost") or "{0}";action = {"type": "cast", "card_id": card["instance_id"], "source": source, "commander_tax": total_tax,"affinity_reduction":affinity_reduction,"label":f"{'Foretell cast' if source=='foretell' else 'Suspend cast' if source=='suspend' else 'Flashback' if flashback else 'Airbend cast' if source=='airbend' else 'Cast'} {card['name']} · {'without paying its mana cost' if source=='suspend' else cost_label}{f' + {{2}}×{player.get("commander_casts",0)} commander tax' if total_tax else ''}{f' · Affinity reduces {{1}}×{affinity_reduction}' if affinity_reduction else ''}"}
+        cost_label=cost_card.get("mana_cost") or "{0}";action = {"type": "cast", "card_id": card["instance_id"], "source": source, "commander_tax": total_tax,"affinity_reduction":affinity_reduction,"label":f"{'Plot cast' if source=='plot' else 'Foretell cast' if source=='foretell' else 'Suspend cast' if source=='suspend' else 'Flashback' if flashback else 'Airbend cast' if source=='airbend' else 'Cast'} {card['name']} · {'without paying its mana cost' if source in {'suspend','plot'} else cost_label}{f' + {{2}}×{player.get("commander_casts",0)} commander tax' if total_tax else ''}{f' · Affinity reduces {{1}}×{affinity_reduction}' if affinity_reduction else ''}"}
         if flashback:action.update({"flashback":True,"cost_kind":"behold" if flashback["behold_amount"] else None,"cost_amount":flashback["behold_amount"],"cost_options":[candidate["instance_id"] for candidate in behold_options]})
         if waterbend_symbol:
             options=[candidate["instance_id"] for candidate in player["battlefield"] if not candidate.get("tapped") and any(kind in candidate.get("type_line","") for kind in ("Artifact","Creature"))]
@@ -2789,13 +2804,13 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if not card: raise RuleViolation("That land is not in your hand")
         player["hand"].remove(card);card["summoning_sick"]=True;_enter_battlefield(state,player,[card],"hand",played=True);player["land_plays_remaining"]-=1;_log(state,f"{player['name']} played {card['name']}.")
     elif action_type == "cast":
-        requested_source=action.get("source");zone_name="graveyard" if requested_source=="flashback" else "exile" if requested_source in {"airbend","suspend","foretell"} else requested_source if requested_source in {"hand","command"} else next((zone for zone in ("hand","command") if any(card["instance_id"]==action.get("card_id") for card in player.get(zone,[]))),None)
-        source="flashback" if zone_name=="graveyard" else requested_source if zone_name=="exile" and requested_source in {"airbend","suspend","foretell"} else zone_name;card=next((card for card in player.get(zone_name or "hand",[]) if card["instance_id"]==action.get("card_id")),None);flashback=_flashback_ability(card or {}) if source=="flashback" else None
+        requested_source=action.get("source");zone_name="graveyard" if requested_source=="flashback" else "exile" if requested_source in {"airbend","suspend","foretell","plot"} else requested_source if requested_source in {"hand","command"} else next((zone for zone in ("hand","command") if any(card["instance_id"]==action.get("card_id") for card in player.get(zone,[]))),None)
+        source="flashback" if zone_name=="graveyard" else requested_source if zone_name=="exile" and requested_source in {"airbend","suspend","foretell","plot"} else zone_name;card=next((card for card in player.get(zone_name or "hand",[]) if card["instance_id"]==action.get("card_id")),None);flashback=_flashback_ability(card or {}) if source=="flashback" else None
         requested_kicked=bool(action.get("kicked"));requested_convoke=bool(action.get("convoke"));requested_waterbend=bool(action.get("waterbend"));requested_blight=bool(action.get("blighted") or (action.get("cost_card_ids") and _optional_blight_cost(card or {})));available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="cast" and entry["card_id"]==action.get("card_id") and entry.get("source")==source and bool(entry.get("kicked"))==requested_kicked and bool(entry.get("convoke"))==requested_convoke and bool(entry.get("waterbend"))==requested_waterbend and bool(entry.get("blighted"))==requested_blight),None)
         tax = _commander_tax(player, card) if card and source=="command" else 0;affinity_reduction=_affinity_reduction(player,card or {});generic_adjustment=tax-affinity_reduction
         if not card:raise RuleViolation("That spell cannot be cast")
         if not available:raise RuleViolation("That spell cannot be cast from that zone")
-        cost_card={**card,"mana_cost":_foretell_cost(card) or ""} if source=="foretell" else {**card,"mana_cost":"{0}"} if source=="suspend" else {**card,"mana_cost":"{2}"} if source=="airbend" else {**card,"mana_cost":flashback["mana_cost"]} if flashback else card
+        cost_card={**card,"mana_cost":_foretell_cost(card) or ""} if source=="foretell" else {**card,"mana_cost":"{0}"} if source in {"suspend","plot"} else {**card,"mana_cost":"{2}"} if source=="airbend" else {**card,"mana_cost":flashback["mana_cost"]} if flashback else card
         if requested_kicked:cost_card={**cost_card,"mana_cost":f"{cost_card.get('mana_cost') or ''}{_kicker_cost(card) or ''}"}
         waterbend_symbol=_spell_waterbend_symbol(card);x_value=int(action.get("x_value") or 0);has_x=_has_x_cost(cost_card) or waterbend_symbol=="X";x_max=available.get("x_max",_maximum_x(player,cost_card,generic_adjustment))
         if (has_x and not available.get("x_min",0)<=x_value<=x_max) or (not has_x and action.get("x_value") is not None): raise RuleViolation("That spell cannot be cast with the chosen X value")
@@ -2846,11 +2861,11 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         elif zone_name=="exile":_leave_exile(state,player,[card])
         else:player[zone_name].remove(card)
         cost_triggers=state["stack"][stack_before_cost:];del state["stack"][stack_before_cost:]
-        card.pop("airbent",None);card.pop("suspended_ready",None);card.pop("suspended",None);card.pop("foretold",None);card.pop("foretold_turn",None)
+        card.pop("airbent",None);card.pop("suspended_ready",None);card.pop("suspended",None);card.pop("foretold",None);card.pop("foretold_turn",None);card.pop("plotted",None);card.pop("plotted_turn",None)
         if card.get("commander"): player["commander_casts"] = player.get("commander_casts", 0) + 1
-        effective_target=target_id or (mode_targets[0] if len(mode_targets)==1 else None);stack_item={"id": _id(), "card": card, "controller_id": player_id, "target_id": effective_target,"target_ids":target_ids,"mode_indices":chosen_modes,"mode_targets":mode_targets,"x_value":x_value,"flashback":bool(flashback),"suspended_cast":source=="suspend","kicked":requested_kicked,"blighted":requested_blight,"cast_source_zone":"graveyard" if source=="flashback" else "exile" if source in {"airbend","suspend","foretell"} else source};state["stack"].append(stack_item);state["stack"].extend(cost_triggers); state["consecutive_passes"] = 0; state["pending_phase_advance"] = False
+        effective_target=target_id or (mode_targets[0] if len(mode_targets)==1 else None);stack_item={"id": _id(), "card": card, "controller_id": player_id, "target_id": effective_target,"target_ids":target_ids,"mode_indices":chosen_modes,"mode_targets":mode_targets,"x_value":x_value,"flashback":bool(flashback),"suspended_cast":source=="suspend","kicked":requested_kicked,"blighted":requested_blight,"cast_source_zone":"graveyard" if source=="flashback" else "exile" if source in {"airbend","suspend","foretell","plot"} else source};state["stack"].append(stack_item);state["stack"].extend(cost_triggers); state["consecutive_passes"] = 0; state["pending_phase_advance"] = False
         if requested_waterbend:_queue_triggers(state,"waterbend",card,player)
-        _record_spell_cast(state,player);card["cast_source_zone"]="graveyard" if source=="flashback" else "exile" if source in {"airbend","suspend","foretell"} else source
+        _record_spell_cast(state,player);card["cast_source_zone"]="graveyard" if source=="flashback" else "exile" if source in {"airbend","suspend","foretell","plot"} else source
         _queue_triggers(state,"cast",card,player);_queue_cascade_triggers(state,player,card);card.pop("cast_source_zone",None)
         ward_targets=[effective_target] if effective_target else []
         ward_targets.extend(target for target in mode_targets if target and target not in ward_targets)
@@ -2878,6 +2893,10 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         card=next((card for card in player["hand"] if card["instance_id"]==action.get("card_id")),None);available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="foretell" and entry["card_id"]==action.get("card_id")),None)
         if not card or not _foretell_cost(card) or not available:raise RuleViolation("That card cannot be foretold now")
         _pay_mana(state,player,{"mana_cost":"{2}"});player["hand"].remove(card);card["foretold"]=True;card["foretold_turn"]=state["turn"];_put_into_exile(state,player,[card],"hand",player_id);state["consecutive_passes"]=0;state["pending_phase_advance"]=False;_log(state,f"{player['name']} foretold a card face down.")
+    elif action_type == "plot":
+        card=next((card for card in player["hand"] if card["instance_id"]==action.get("card_id")),None);cost=_plot_cost(card or {});available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="plot" and entry["card_id"]==action.get("card_id")),None)
+        if not card or not cost or not available:raise RuleViolation("That card cannot be plotted now")
+        reduction=_plot_reduction(player);_pay_mana(state,player,{"mana_cost":cost},-reduction);player["hand"].remove(card);card["plotted"]=True;card["plotted_turn"]=state["turn"];_put_into_exile(state,player,[card],"hand",player_id);state["consecutive_passes"]=0;state["pending_phase_advance"]=False;reduction_label=f" with {reduction} cost reduction" if reduction else "";_log(state,f"{player['name']} plotted {card['name']} face up for {cost}{reduction_label}.")
     elif action_type == "ninjutsu":
         available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="ninjutsu" and entry["card_id"]==action.get("card_id") and entry["source"]==action.get("source")),None);attacker_id=action.get("target_id")
         if not available or attacker_id not in {target["id"] for target in available["targets"]}:raise RuleViolation("Choose an unblocked attacker to return for ninjutsu")
