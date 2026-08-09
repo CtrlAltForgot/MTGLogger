@@ -465,7 +465,7 @@ def _destroy_permanent(state:dict,owner:dict,card:dict,cant_regenerate:bool=Fals
     if _consume_shield(state,card,"destruction"):return False
     regenerations=card.get("regeneration_shields",0)
     if regenerations and not cant_regenerate:
-        card["regeneration_shields"]=regenerations-1;card["tapped"]=True;card["damage"]=0;card.pop("deathtouch_damage",None);_remove_from_combat(state,card["instance_id"]);_log(state,f"{card['name']} regenerated instead of being destroyed.");return False
+        card["regeneration_shields"]=regenerations-1;_set_tapped(state,[card],True,card.get("controller_id"),"regenerate");card["damage"]=0;card.pop("deathtouch_damage",None);_remove_from_combat(state,card["instance_id"]);_log(state,f"{card['name']} regenerated instead of being destroyed.");return False
     _leave_battlefield(state,owner,card,"graveyard",trigger_sources,trigger_dedupe);return True
 
 
@@ -651,7 +651,7 @@ def _pay_mana(state:dict,player: dict, card: dict, extra_generic: int = 0, exclu
             _sacrifice_permanents(state,player,[land]);_log(state,f"{player['name']} sacrificed {land['name']} for mana.")
         else:
             player["life"]-=option["life_cost"]
-            if option["taps"]:land["tapped"] = True
+            if option["taps"]:_set_tapped(state,[land],True,player["id"],"mana")
 
 
 def _convoke_residual(player:dict,card:dict,selected_ids:list[str],extra_generic:int=0,x_value:int=0)->dict|None:
@@ -1289,6 +1289,7 @@ def _resolve_spell(state: dict) -> None:
     target_player = next((player for player in state["players"] if player["id"] == target_id), None)
     target_owner = next((player for player in state["players"] if any(permanent["instance_id"] == target_id for permanent in player["battlefield"])), None)
     target = next((permanent for player in state["players"] for permanent in player["battlefield"] if permanent["instance_id"] == target_id), None)
+    event_permanent=next((permanent for player in state["players"] for permanent in player["battlefield"] if permanent["instance_id"]==item.get("event_card_id")),None);event_controller=_player(state,event_permanent.get("controller_id")) if event_permanent else None
     target_stack_item = next((entry for entry in state["stack"] if entry["id"] == target_id), None)
     graveyard_owner=next((player for player in state["players"] if any(graveyard_card["instance_id"]==target_id for graveyard_card in player["graveyard"])),None)
     graveyard_target=next((graveyard_card for player in state["players"] for graveyard_card in player["graveyard"] if graveyard_card["instance_id"]==target_id),None)
@@ -1297,10 +1298,17 @@ def _resolve_spell(state: dict) -> None:
         temporary="until end of turn" in effect_text;previous_controller=target_owner
         _change_control(state,target,caster,temporary)
         target_owner=caster
-        if re.search(r"\buntap (?:it|that creature|target creature)\b",effect_text):target["tapped"]=False
+        if re.search(r"\buntap (?:it|that creature|target creature)\b",effect_text):_set_tapped(state,[target],False,caster["id"],"effect")
         if re.search(r"\b(?:it|that creature|target creature) gains? haste\b",effect_text):target["temporary_keywords"]=sorted(set(target.get("temporary_keywords",[]))|{"haste"})
         duration=" until end of turn" if temporary else ""
         _log(state,f"{caster['name']} gained control of {target['name']} from {previous_controller['name']}{duration}.")
+    if event_permanent and re.search(r"\buntap (?:it|that (?:creature|permanent|artifact|land))\b",effect_text):_set_tapped(state,[event_permanent],False,caster["id"],"trigger")
+    event_life_loss=re.search(r"(?:its|that (?:creature|permanent|artifact|land)'?s) controller loses (\d+) life",effect_text)
+    if event_controller and event_life_loss:event_controller["life"]-=int(event_life_loss.group(1))
+    event_mill=re.search(r"(?:its|that (?:creature|permanent|artifact|land)'?s) controller mills? (a|one|two|three|four|\d+) cards?",effect_text)
+    if event_controller and event_mill:
+        words={"a":1,"one":1,"two":2,"three":3,"four":4};amount=words.get(event_mill.group(1),int(event_mill.group(1)) if event_mill.group(1).isdigit() else 1)
+        for _ in range(min(amount,len(event_controller["library"]))):event_controller["graveyard"].append(event_controller["library"].pop())
     optional_blight=re.search(r"\byou may blight (\d+)\b",effect_text)
     if optional_blight:
         original_text=(source_permanent or card).get("oracle_text") or "";continuation_match=re.search(r"when you do,\s*(.+?)(?:\n|$)",original_text,re.IGNORECASE)
@@ -1375,8 +1383,8 @@ def _resolve_spell(state: dict) -> None:
         _leave_battlefield(state,target_owner,target,"exile",exile_actor_id=caster["id"]);_log(state,f"{target['name']} was exiled.")
     if target and target_owner and re.search(r"return target (?:creature|permanent|nonland permanent).* to (?:its|their) owner'?s hand", effect_text):
         _leave_battlefield(state, target_owner, target, "hand"); _log(state, f"{target['name']} returned to its owner's hand.")
-    if target and re.search(r"\btap target creature", effect_text): target["tapped"] = True
-    if target and re.search(r"\buntap target creature", effect_text): target["tapped"] = False
+    if target and re.search(r"\btap target creature",effect_text):_set_tapped(state,[target],True,caster["id"],"effect")
+    if target and re.search(r"\buntap target creature",effect_text):_set_tapped(state,[target],False,caster["id"],"effect")
     regeneration_target=target if target and ("regenerate target creature" in effect_text or "regenerate it" in effect_text) else source_permanent if source_permanent and "regenerate this creature" in effect_text else None
     if regeneration_target:regeneration_target["regeneration_shields"]=regeneration_target.get("regeneration_shields",0)+1;_log(state,f"{regeneration_target['name']} gained a regeneration shield until end of turn.")
     if "regenerate each other creature you control" in effect_text and sum(any(kind in graveyard_card.get("type_line","") for kind in ("Instant","Sorcery")) for graveyard_card in caster["graveyard"])>=2:
@@ -1407,7 +1415,7 @@ def _resolve_spell(state: dict) -> None:
     if target and counter_match:
         words={"a":1,"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10};amount=words.get(counter_match.group(1),int(counter_match.group(1)) if counter_match.group(1).isdigit() else 1);name=counter_match.group(2).replace("−","-")
         target["counters"][name]=target["counters"].get(name,0)+amount;_log(state,f"{target['name']} received {amount} {name} counter(s).")
-    source_counter_name=re.escape((source_permanent or {}).get("name","").casefold());self_counter=re.search(rf"put (a|one|two|three|four|five|\d+) ([+−-]\d+/[+−-]\d+|[a-z][a-z-]*) counters? on (?:him|her|it|this (?:creature|permanent)|{source_counter_name})",effect_text)
+    source_counter_name=re.escape((source_permanent or {}).get("name","").casefold());self_counter=re.search(rf"put (a|one|two|three|four|five|\d+) ([+−-]\d+/[+−-]\d+|[a-z][a-z-]*) counters? on (?:him|her|them|it|this (?:creature|permanent)|{source_counter_name})",effect_text)
     if source_permanent and self_counter:
         words={"a":1,"one":1,"two":2,"three":3,"four":4,"five":5};amount=words.get(self_counter.group(1),int(self_counter.group(1)) if self_counter.group(1).isdigit() else 1);name=self_counter.group(2).replace("−","-");source_permanent["counters"][name]=source_permanent["counters"].get(name,0)+amount
     keyword_match=re.search(r"target creature gains? ([^.]+?) until end of turn",effect_text)
@@ -1615,6 +1623,22 @@ def _enter_battlefield(state:dict,controller:dict,cards:list[dict],origin:str="e
     return entering
 
 
+def _set_tapped(state:dict,cards:list[dict],tapped:bool,actor_id:str|None=None,cause:str="effect")->list[dict]:
+    changing=[card for card in cards if bool(card.get("tapped"))!=tapped and any(card in owner["battlefield"] for owner in state["players"])]
+    if not changing:return []
+    event="tapped" if tapped else "untapped";dedupe:set[str]=set()
+    for card in changing:
+        card["tapped"]=tapped;card["tap_event_actor_id"]=actor_id;card["tap_event_cause"]=cause;card["tap_event_batch_size"]=len(changing)
+        if tapped:
+            if card.get("tap_event_turn")!=state.get("turn"):card["tap_event_turn"]=state.get("turn");card["times_tapped_this_turn"]=0
+            card["times_tapped_this_turn"]=card.get("times_tapped_this_turn",0)+1
+    ordered_owners=sorted(state["players"],key=lambda owner:owner["id"]!=state.get("active_player_id"));sources=[(owner,permanent) for owner in ordered_owners for permanent in owner["battlefield"]]
+    for card in changing:_queue_triggers(state,event,card,_player(state,card.get("controller_id",card.get("owner_id"))),dedupe,sources)
+    for card in changing:
+        for key in ("tap_event_actor_id","tap_event_cause","tap_event_batch_size"):card.pop(key,None)
+    return changing
+
+
 def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owner: dict, dedupe:set[str]|None=None, sources_override:list[tuple[dict,dict]]|None=None) -> None:
     if event in {"earthbend","waterbend","firebend","airbend"}:
         event_owner["bent_this_turn"]=sorted(set(event_owner.get("bent_this_turn",[]))|{event})
@@ -1733,6 +1757,22 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 matches=kind_ok and origin_ok and ownership_ok and actor_ok and during_turn and coin_ok and another_ok and (self_event or controlled_event or generic) and (not one_or_more or dedupe is None or dedupe_key not in dedupe) and (not once_each_turn or not already_triggered)
                 if matches and one_or_more and dedupe is not None:dedupe.add(dedupe_key)
                 if matches and once_each_turn:source["exile_trigger_turn"]=state.get("turn")
+            elif event in {"tapped","untapped"} and event_card:
+                tap_boundary=re.search(r",\s*(?=(?:you\b|put\b|create\b|draw\b|each\b|target\b|this\b|that\b|it\b|its\b|gain\b|tap\b|untap\b|exile\b|investigate\b|proliferate\b|scry\b|mill\b|remove\b|destroy\b|return\b|[a-z0-9' -]+ deals?\b))",lower);condition=lower[:tap_boundary.start()] if tap_boundary else lower.split(",",1)[0];type_line=event_card.get("type_line","").casefold();same_controller=event_card.get("controller_id")==owner["id"];one_or_more="one or more" in condition;dedupe_key=f"{event}:{source.get('instance_id')}:{condition}"
+                verb="becomes tapped" if event=="tapped" else "becomes untapped";plural_verb="become tapped" if event=="tapped" else "become untapped";event_phrase=verb in condition or plural_verb in condition
+                is_creature="creature" in type_line;is_land="land" in type_line;is_artifact="artifact" in type_line;is_token=bool(event_card.get("token"));kind_ok=not (("creature" in condition and not is_creature) or ("land" in condition and not is_land) or ("artifact" in condition and not is_artifact) or ("nontoken" in condition and is_token))
+                source_name=(source.get("name") or "").casefold();self_reference="this creature" in condition or "this permanent" in condition or "this artifact" in condition or "this land" in condition or bool(source_name and source_name in condition);self_event=source is event_card and self_reference
+                attached_reference=any(phrase in condition for phrase in ("enchanted creature","enchanted land","enchanted artifact","equipped creature","fortified land"));attached_event=attached_reference and source.get("attached_to")==event_card.get("instance_id")
+                controlled_scope="you control" in condition and same_controller;opponent_scope=("opponent controls" in condition or "opponents control" in condition) and not same_controller;global_scope=not self_reference and not attached_reference and "you control" not in condition and "opponent controls" not in condition and "opponents control" not in condition
+                relationship_ok=self_event or attached_event or controlled_scope or opponent_scope or global_scope
+                subtype_match=re.search(r"(?:a|one or more) (?:other )?([a-z'-]+)s? you control become",condition);subtype=subtype_match.group(1).rstrip("s") if subtype_match and subtype_match.group(1) not in {"creature","artifact","land","permanent"} else "";subtype_ok=not subtype or re.search(rf"\b{re.escape(subtype)}s?\b",type_line) is not None
+                counter_match=re.search(r"with (?:a|an) ([a-z+/-]+) counter",condition);counter_ok=not counter_match or bool(event_card.get("counters",{}).get(counter_match.group(1)))
+                cause=event_card.get("tap_event_cause");attacker_ok="isn't being declared as an attacker" not in lower or cause!="attack";during_turn="during your turn" not in condition or state.get("active_player_id")==owner["id"]
+                first_tap_required="becomes tapped for the first time" in lower or "first time that creature has become tapped" in lower;first_time=not first_tap_required or event_card.get("times_tapped_this_turn",0)==1
+                once_each_turn="triggers only once each turn" in text.casefold();usage=source.get("tap_trigger_turns",{});already_triggered=usage.get(condition)==state.get("turn")
+                matches=event_phrase and kind_ok and relationship_ok and subtype_ok and counter_ok and attacker_ok and during_turn and first_time and (not one_or_more or dedupe is None or dedupe_key not in dedupe) and (not once_each_turn or not already_triggered)
+                if matches and one_or_more and dedupe is not None:dedupe.add(dedupe_key)
+                if matches and once_each_turn:source.setdefault("tap_trigger_turns",{})[condition]=state.get("turn")
             elif event == "leaves" and event_card:
                 matches=source is not event_card and owner["id"]==event_owner["id"] and "Creature" in event_card.get("type_line","") and "when another creature you control leaves the battlefield" in lower
             elif event == "upkeep":
@@ -1800,6 +1840,9 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
             if event=="enters":
                 etb_effect_boundary=re.search(r",\s*(?=(?:you\b|put\b|create\b|draw\b|each\b|target\b|this\b|that\b|it\b|its\b|gain\b|tap\b|untap\b|exile\b|investigate\b|proliferate\b|scry\b|mill\b|add\b|amass\b|venture\b|return\b|search\b|[a-z0-9' -]+ deals?\b))",clause,re.IGNORECASE)
                 if etb_effect_boundary:effect=clause[etb_effect_boundary.end():].strip()
+            if event in {"tapped","untapped"}:
+                tap_effect_boundary=re.search(r",\s*(?=(?:you\b|put\b|create\b|draw\b|each\b|target\b|this\b|that\b|it\b|its\b|gain\b|tap\b|untap\b|exile\b|investigate\b|proliferate\b|scry\b|mill\b|remove\b|destroy\b|return\b|[a-z0-9' -]+ deals?\b))",clause,re.IGNORECASE)
+                if tap_effect_boundary:effect=clause[tap_effect_boundary.end():].strip()
             if event=="exile":
                 exile_effect=re.search(r",\s*((?:you (?:may|draw)|put|create|return|target|it deals|destroy)\b.*)$",clause,re.IGNORECASE)
                 if exile_effect:effect=exile_effect.group(1).strip()
@@ -1814,6 +1857,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
             fight_steps=_fight_target_steps(state,owner["id"],ability_card,source);targets=[] if fight_steps else _targets(state, owner["id"], ability_card)
             for _ in range(trigger_count):
                 trigger={"id":_id(),"kind":"trigger","card":ability_card,"controller_id":owner["id"],"target_id":None,"source_id":source["instance_id"]}
+                if event_card and event in {"enters","exile","tapped","untapped","dies","discard","graveyard_leave","damage","combat_damage_player"}:trigger["event_card_id"]=event_card.get("instance_id");trigger["event_owner_id"]=event_owner.get("id")
                 if fight_steps:
                     if all(step["targets"] for step in fight_steps):state.setdefault("pending_trigger_targets",[]).append({"controller_id":owner["id"],"source_name":source["name"],"trigger":trigger,"card":ability_card,"target_steps":fight_steps});state["priority_player_id"]=state["pending_trigger_targets"][0]["controller_id"]
                     else:_log(state,f"{source['name']}'s fight trigger had no legal targets and was removed.")
@@ -1950,7 +1994,8 @@ def _begin_next_turn(state:dict)->None:
         for permanent in owner["battlefield"]:
             permanent.pop("temporary_power",None);permanent.pop("temporary_toughness",None);permanent.pop("temporary_keywords",None);permanent.pop("cant_attack_until_turn",None);permanent.pop("cant_block_until_turn",None);permanent.pop("regeneration_shields",None);permanent.pop("deathtouch_damage",None);permanent.pop("crewed_turn",None);permanent["damage"]=0
             if permanent.get("base_type_line") is not None:permanent["type_line"]=permanent.pop("base_type_line")
-    for permanent in active["battlefield"]: permanent["tapped"] = False; permanent["summoning_sick"] = False
+    _set_tapped(state,list(active["battlefield"]),False,active["id"],"untap_step")
+    for permanent in active["battlefield"]:permanent["summoning_sick"]=False
     _log(state, f"Turn {state['turn']} began for {active['name']}. Untap and upkeep started."); _queue_triggers(state,"upkeep",None,active)
 
 
@@ -2062,12 +2107,10 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if not modal_spec and _target_kind(targeting_card) and target_id not in {target["id"] for target in targets}: raise RuleViolation("Choose a legal target")
         if requested_waterbend:
             _pay_mana(state,player,waterbend_residual or {"mana_cost":""},excluded_ids=set(selected_cost_ids),x_value=x_value if _has_x_cost(cost_card) else 0)
-            for permanent in player["battlefield"]:
-                if permanent["instance_id"] in selected_cost_ids:permanent["tapped"]=True
+            _set_tapped(state,[permanent for permanent in player["battlefield"] if permanent["instance_id"] in selected_cost_ids],True,player_id,"waterbend")
         elif requested_convoke:
             _pay_mana(state,player,convoke_residual or {"mana_cost":""},excluded_ids=set(selected_cost_ids))
-            for creature in player["battlefield"]:
-                if creature["instance_id"] in selected_cost_ids:creature["tapped"]=True
+            _set_tapped(state,[creature for creature in player["battlefield"] if creature["instance_id"] in selected_cost_ids],True,player_id,"convoke")
         else:_pay_mana(state,player,cost_card,tax,x_value=x_value)
         if requested_blight:
             blight_target=next((creature for creature in player["battlefield"] if creature["instance_id"] in set(selected_cost_ids) and "Creature" in creature.get("type_line","")),None)
@@ -2114,7 +2157,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         selected=[creature for creature in player["battlefield"] if creature["instance_id"] in set(selected_ids)]
         if sum(max(0,_parse_stats(creature,state)[0]) for creature in selected)<available["cost_required_power"]:raise RuleViolation(f"Choose creatures with at least {available['cost_required_power']} total power")
         vehicle=next(card for card in player["battlefield"] if card["instance_id"]==action["card_id"])
-        for creature in selected:creature["tapped"]=True
+        _set_tapped(state,selected,True,player_id,"crew")
         state["stack"].append({"id":_id(),"kind":"crew_ability","card":{**vehicle,"name":f"{vehicle['name']} crew ability","type_line":"Ability"},"controller_id":player_id,"target_id":None,"source_id":vehicle["instance_id"]});state["consecutive_passes"]=0;state["pending_phase_advance"]=False
         if _multiplayer(state) or not allow_direct_resolution:state["priority_player_id"]=opponent(state,player_id)["id"]
         _log(state,f"{player['name']} tapped {len(selected)} creature(s) with {sum(max(0,_parse_stats(creature,state)[0]) for creature in selected)} total power to crew {vehicle['name']}.")
@@ -2148,8 +2191,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
             excluded={permanent["instance_id"]} if ability["taps"] else set();waterbend_amount=x_value if waterbend_symbol=="X" else int(waterbend_symbol);residual=_waterbend_residual(player,x_card,waterbend_amount,selected_cost_ids,excluded,x_value=x_value if _has_x_cost(x_card) else 0)
             if residual is None:raise RuleViolation("That waterbend payment is no longer available")
             _pay_mana(state,player,residual,excluded_ids=excluded|set(selected_cost_ids),x_value=x_value if _has_x_cost(x_card) else 0)
-            for selected in player["battlefield"]:
-                if selected["instance_id"] in selected_cost_ids:selected["tapped"]=True
+            _set_tapped(state,[selected for selected in player["battlefield"] if selected["instance_id"] in selected_cost_ids],True,player_id,"waterbend")
         elif ability["mana_cost"]:_pay_mana(state,player,{"mana_cost":ability["mana_cost"]},excluded_id=permanent["instance_id"] if ability["taps"] else None,x_value=x_value)
         if ability["life_cost"]:player["life"]-=ability["life_cost"]
         if ability["counter_cost"]:
@@ -2157,7 +2199,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         blight_cost=next((cost for cost in ability.get("selection_costs",[]) if cost["kind"]=="blight"),None)
         if blight_cost:
             blight_options={card["instance_id"] for card in _activated_cost_options(player,permanent,blight_cost)};blight_target=next(card for card in selected_cost_cards if card["instance_id"] in blight_options);_apply_blight(state,player,blight_target,blight_cost["blight_amount"])
-        if ability["taps"]:permanent["tapped"]=True
+        if ability["taps"]:_set_tapped(state,[permanent],True,player_id,"activation")
         if ability.get("restrictions",{}).get("once_each_turn") or ability.get("restrictions",{}).get("once"):
             permanent.setdefault("activated_ability_usage",{})[str(index)]={"turn":state["turn"],"ever":True}
         cost_triggers=state["stack"][stack_before_cost:];del state["stack"][stack_before_cost:]
@@ -2209,8 +2251,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if any(requested_targets.get(attacker_id,default_target) not in defender_ids for attacker_id in requested):raise RuleViolation("Choose a legal defender for every attacker")
         state["combat"]["attackers"] = list(requested);state["combat"]["attackers_declared"]=True
         state["combat"]["attack_targets"]={attacker_id:requested_targets.get(attacker_id,default_target) for attacker_id in requested}
-        for card in player["battlefield"]:
-            if card["instance_id"] in requested and not _has_keyword(card,"Vigilance"): card["tapped"] = True
+        _set_tapped(state,[card for card in player["battlefield"] if card["instance_id"] in requested and not _has_keyword(card,"Vigilance")],True,player_id,"attack")
         _queue_triggers(state,"attackers_declared",None,player)
         if not state.get("pending_trigger_targets"):state["priority_player_id"] = opponent(state, player_id)["id"]
         _log(state, f"{player['name']} attacked with {len(requested)} creature(s).")

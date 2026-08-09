@@ -1,7 +1,7 @@
 import pytest
 
 from mtglogger.services.game_bot import _choose_blocks, choose_bot_action, run_bot
-from mtglogger.services.game_engine import RuleViolation, _add_saga_lore, _enter_battlefield, _has_keyword, _leave_graveyard, _put_into_exile, _queue_triggers, legal_actions, new_game, perform_action, public_state
+from mtglogger.services.game_engine import RuleViolation, _add_saga_lore, _enter_battlefield, _has_keyword, _leave_graveyard, _put_into_exile, _queue_triggers, _set_tapped, legal_actions, new_game, perform_action, public_state
 
 
 def card(index:int,name:str,type_line:str,mana_cost:str="",power:str|None=None,toughness:str|None=None,quantity:int=1):
@@ -221,6 +221,35 @@ def test_etb_filters_cover_subtypes_power_and_graveyard_origin():
     state=kept_game();player=next(p for p in state["players"] if p["id"]=="player");player["battlefield"]=[]
     dragon={**card(721,"Dragon Greeter","Creature — Human","","1","1"),"oracle_text":"Whenever another Dragon you control enters, you gain 1 life.","instance_id":"dragon-greeter","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};small={**card(722,"Small Greeter","Creature — Vampire","","2","3"),"oracle_text":"Whenever one or more other creatures you control with power 2 or less enter, draw a card.","instance_id":"small-greeter","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};kotis={**card(723,"Kotis Test","Creature — Snake Warlock","","3","3"),"oracle_text":"Whenever one or more creatures you control enter, if one or more of them entered from a graveyard or was cast from a graveyard, put two +1/+1 counters on Kotis Test.","instance_id":"kotis-test","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].extend([dragon,small,kotis]);bear={**card(724,"Plain Bear","Creature — Bear","","3","3"),"instance_id":"plain-bear","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":True};_enter_battlefield(state,player,[bear],"hand",was_cast=True);assert not state["stack"]
     drake={**card(725,"Grave Dragon","Creature — Dragon","","2","2"),"instance_id":"grave-dragon","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":True};_enter_battlefield(state,player,[drake],"graveyard");assert {item["card"]["name"] for item in state["stack"]}=={"Dragon Greeter trigger","Small Greeter trigger","Kotis Test trigger"}
+
+
+def test_self_tap_and_untap_events_require_real_state_changes():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player");tui={**card(726,"Tui and La, Moon Test","Legendary Creature — Spirit","","2","2"),"oracle_text":"Whenever Tui and La, Moon Test becomes tapped, draw a card.\nWhenever Tui and La, Moon Test becomes untapped, put a +1/+1 counter on them.","instance_id":"tui-la-test","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].append(tui);hand=len(player["hand"])
+    _set_tapped(state,[tui],True,"player","effect");assert [item["card"]["name"] for item in state["stack"]]==["Tui and La, Moon Test trigger"]
+    _set_tapped(state,[tui],True,"player","effect");assert len(state["stack"])==1
+    state=perform_action(state,"player",{"type":"resolve"});assert len(next(p for p in state["players"] if p["id"]=="player")["hand"])==hand+1
+    tui=next(card for card in next(p for p in state["players"] if p["id"]=="player")["battlefield"] if card["instance_id"]=="tui-la-test");_set_tapped(state,[tui],False,"player","effect");state=perform_action(state,"player",{"type":"resolve"});tui=next(card for card in next(p for p in state["players"] if p["id"]=="player")["battlefield"] if card["instance_id"]=="tui-la-test");assert tui["counters"].get("+1/+1")==1
+
+
+def test_mana_tap_trigger_stacks_above_the_spell_it_paid_for():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");player["battlefield"]=[]
+    land={**card(727,"Living Spring","Basic Land — Mountain"),"oracle_text":"{T}: Add {R}.\nWhenever Living Spring becomes tapped, you gain 1 life.","instance_id":"living-spring","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};spell={**card(728,"Paid Flame","Sorcery","{R}"),"oracle_text":"You gain 1 life.","instance_id":"paid-flame","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].append(land);player["hand"].append(spell);life=player["life"]
+    state=perform_action(state,"player",{"type":"cast","card_id":"paid-flame"});assert [item["card"]["name"] for item in state["stack"]]==["Paid Flame","Living Spring trigger"]
+    state=perform_action(state,"player",{"type":"resolve"});assert next(p for p in state["players"] if p["id"]=="player")["life"]==life+1 and state["stack"][-1]["card"]["name"]=="Paid Flame"
+
+
+def test_batch_and_opponent_tap_triggers_respect_cause_and_controller():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot");player["battlefield"]=[];bot["battlefield"]=[]
+    pilgrimage={**card(729,"Deeproot Test","Enchantment"),"oracle_text":"Whenever one or more nontoken Merfolk you control become tapped, create a 1/1 blue Merfolk creature token with hexproof.","instance_id":"deeproot-test","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};circle={**card(730,"Verity Test","Enchantment"),"oracle_text":"Whenever a creature an opponent controls becomes tapped, if it isn't being declared as an attacker, you may draw a card.","instance_id":"verity-test","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].extend([pilgrimage,circle]);merfolk=[{**card(731+index,f"Merfolk {index}","Creature — Merfolk","","2","2"),"instance_id":f"merfolk-{index}","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False} for index in range(2)];player["battlefield"].extend(merfolk);enemy={**card(733,"Enemy Tapper","Creature — Orc","","3","3"),"instance_id":"enemy-tapper","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};bot["battlefield"].append(enemy)
+    _set_tapped(state,merfolk,True,"player","crew");assert [item["card"]["name"] for item in state["stack"]]==["Deeproot Test trigger"]
+    _set_tapped(state,[enemy],True,"bot","attack");assert "Verity Test trigger" not in [item["card"]["name"] for item in state["stack"]]
+    _set_tapped(state,[enemy],False,"bot","effect");_set_tapped(state,[enemy],True,"player","effect");assert "Verity Test trigger" in [item["card"]["name"] for item in state["stack"]]
+
+
+def test_first_tap_each_turn_trigger_can_untap_the_event_permanent():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player");captain={**card(734,"Captain Test","Creature — Soldier","","3","3"),"oracle_text":"Whenever a creature you control becomes tapped during your turn, if it's the first time that creature has become tapped this turn, untap it.","instance_id":"captain-test","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};ally={**card(735,"Repeat Tap Ally","Creature — Soldier","","2","2"),"instance_id":"repeat-tap-ally","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].extend([captain,ally]);_set_tapped(state,[ally],True,"player","effect");assert state["stack"][-1]["card"]["name"]=="Captain Test trigger"
+    state=perform_action(state,"player",{"type":"resolve"});ally=next(card for card in next(p for p in state["players"] if p["id"]=="player")["battlefield"] if card["instance_id"]=="repeat-tap-ally");assert not ally["tapped"]
+    _set_tapped(state,[ally],True,"player","effect");assert not state["stack"]
 
 
 def test_opponent_chooses_forced_sacrifice_and_bot_picks_lowest_value():
