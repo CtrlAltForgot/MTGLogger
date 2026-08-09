@@ -15,6 +15,8 @@ from ..providers import ScryfallProvider
 from ..schemas import (
     AvailableCard,
     AvailablePage,
+    AutoDeckBuildRequest,
+    AutoDeckProposal,
     DeckAllocations,
     DeckCreate,
     DeckEntryRead,
@@ -24,6 +26,8 @@ from ..schemas import (
     DeckUpdate,
     InventoryRead,
 )
+from ..services.deck_builder import build_deck, candidate_from_models
+from ..services.references import _reference_metadata
 
 router = APIRouter(prefix="/decks", tags=["decks"])
 
@@ -92,6 +96,97 @@ def list_decks(db: Session = Depends(get_db)):
 def create_deck(payload: DeckCreate, db: Session = Depends(get_db)):
     deck = Deck(**payload.model_dump())
     db.add(deck)
+    db.commit()
+    return serialize(get_deck(db, deck.id))
+
+
+async def _auto_deck_proposal(payload: AutoDeckBuildRequest, db: Session) -> dict:
+    assigned = (
+        select(DeckEntry.inventory_id, func.sum(DeckEntry.quantity).label("assigned"))
+        .group_by(DeckEntry.inventory_id)
+        .subquery()
+    )
+    rows = list(
+        db.execute(
+            select(
+                InventoryItem,
+                InventoryItem.quantity - func.coalesce(assigned.c.assigned, 0),
+                CardReference,
+            )
+            .outerjoin(assigned, assigned.c.inventory_id == InventoryItem.id)
+            .outerjoin(CardReference, CardReference.scryfall_id == InventoryItem.scryfall_id)
+            .where(
+                InventoryItem.status == InventoryStatus.owned,
+                InventoryItem.quantity > func.coalesce(assigned.c.assigned, 0),
+            )
+        )
+    )
+    references = {
+        reference.scryfall_id: reference for _, _, reference in rows if reference is not None
+    }
+    missing_metadata = [
+        card_id
+        for card_id, reference in references.items()
+        if reference.mana_value is None or not reference.legalities or not reference.oracle_text
+    ]
+    if missing_metadata:
+        try:
+            provider = ScryfallProvider()
+            for card in await provider.get_cards(missing_metadata):
+                reference = references.get(card.get("id"))
+                if reference:
+                    for field, value in _reference_metadata(provider, card).items():
+                        setattr(reference, field, value)
+            db.commit()
+        except Exception:
+            # A fully synced local catalog needs no network. If enrichment is
+            # temporarily unavailable, still produce an explainable proposal
+            # from the metadata already stored with the physical collection.
+            db.rollback()
+    candidates = [
+        candidate_from_models(inventory, available, reference)
+        for inventory, available, reference in rows
+    ]
+    try:
+        return build_deck(
+            candidates,
+            payload.format,
+            payload.colors,
+            payload.strategy,
+            payload.name,
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.post("/auto-build/preview", response_model=AutoDeckProposal)
+async def preview_auto_deck(payload: AutoDeckBuildRequest, db: Session = Depends(get_db)):
+    return await _auto_deck_proposal(payload, db)
+
+
+@router.post("/auto-build/apply", response_model=DeckRead, status_code=201)
+async def apply_auto_deck(payload: AutoDeckBuildRequest, db: Session = Depends(get_db)):
+    proposal = await _auto_deck_proposal(payload, db)
+    if not proposal["cards"]:
+        raise HTTPException(422, "No legal unassigned cards match these build settings")
+    deck = Deck(
+        name=payload.name.strip(),
+        format=proposal["format"],
+        description=(
+            f"Auto-built {proposal['strategy']} {proposal['theme']} deck in "
+            f"{'/'.join(proposal['colors'])}. " + " ".join(proposal["explanation"])
+        ),
+    )
+    db.add(deck)
+    db.flush()
+    for card in proposal["cards"]:
+        db.add(
+            DeckEntry(
+                deck_id=deck.id,
+                inventory_id=card["inventory_id"],
+                quantity=card["quantity"],
+            )
+        )
     db.commit()
     return serialize(get_deck(db, deck.id))
 

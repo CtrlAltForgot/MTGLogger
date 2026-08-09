@@ -26,7 +26,7 @@ import {
 import { API, request } from "../api";
 import { CardName } from "../components/CardDetails";
 import { recommendedDeckFormat } from "../decks/formatRecommendation";
-import type { AvailableCard, AvailablePage, Deck, DeckFormatSuggestions } from "../types";
+import type { AutoDeckProposal, AvailableCard, AvailablePage, Deck, DeckFormatSuggestions } from "../types";
 
 export default function Decks() {
   const [decks, setDecks] = useState<Deck[]>([]),
@@ -37,6 +37,7 @@ export default function Decks() {
     [open, setOpen] = useState(false),
     [editing, setEditing] = useState(false),
     [deleting, setDeleting] = useState(false),
+    [autoOpen,setAutoOpen]=useState(false),
     [error, setError] = useState<string>(),
     [busy, setBusy] = useState(false);
   const [coverFile,setCoverFile]=useState<File>();
@@ -47,6 +48,8 @@ export default function Decks() {
     [availablePage, setAvailablePage] = useState(0),
     [availablePageSize, setAvailablePageSize] = useState(50);
   const [form, setForm] = useState({ name: "", format: "", description: "", image_url: "" });
+  const [autoForm,setAutoForm]=useState({name:"My optimized deck",format:"Commander",colors:["U"] as string[],strategy:"balanced"});
+  const [autoProposal,setAutoProposal]=useState<AutoDeckProposal>();
   const selected = useMemo(
     () => decks.find((deck) => deck.id === selectedId),
     [decks, selectedId],
@@ -125,6 +128,8 @@ export default function Decks() {
       setBusy(false);
     }
   };
+  const previewAutoDeck=async()=>{setBusy(true);setError(undefined);try{setAutoProposal(await request<AutoDeckProposal>('/decks/auto-build/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(autoForm)}))}catch(e){setError(e instanceof Error?e.message:'Could not build a deck proposal')}finally{setBusy(false)}};
+  const applyAutoDeck=async()=>{setBusy(true);setError(undefined);try{const deck=await request<Deck>('/decks/auto-build/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(autoForm)});setDecks(current=>[deck,...current]);setSelectedId(deck.id);setAutoOpen(false);setAutoProposal(undefined)}catch(e){setError(e instanceof Error?e.message:'Could not create the proposed deck')}finally{setBusy(false)}};
   const openEditor = () => {
     if (!selected) return;
     setForm({name:selected.name,format:selected.format||"",description:selected.description||"",image_url:selected.image_url||""});
@@ -250,14 +255,9 @@ export default function Decks() {
               Build decks from physical copies in your collection.
             </Typography>
           </Box>
-          <Button
-            variant="contained"
-            startIcon={<Add />}
-            onClick={() => setOpen(true)}
-          >
-            New deck
-          </Button>
+          <Stack direction="row" spacing={1}><Button variant="outlined" startIcon={<AutoAwesome/>} onClick={()=>{setError(undefined);setAutoProposal(undefined);setAutoOpen(true)}}>Auto-build deck</Button><Button variant="contained" startIcon={<Add />} onClick={() => setOpen(true)}>New deck</Button></Stack>
         </Stack>
+        {error&&<Alert severity="error" onClose={()=>setError(undefined)} sx={{mt:2}}>{error}</Alert>}
         <Grid container spacing={2} mt={1}>
           {decks.map((deck) => (
             <Grid size={{ xs: 12, sm: 6, lg: 4 }} key={deck.id}>
@@ -314,6 +314,7 @@ export default function Decks() {
           close={() => setOpen(false)}
           create={create}
         />
+        <AutoBuildDialog open={autoOpen} form={autoForm} setForm={value=>{setAutoForm(value);setAutoProposal(undefined)}} proposal={autoProposal} error={error} busy={busy} close={()=>setAutoOpen(false)} preview={previewAutoDeck} apply={applyAutoDeck}/>
       </>
     );
 
@@ -685,4 +686,55 @@ function DeckDialog({open,title,form,setForm,busy,close,submit,submitLabel,cover
       </DialogActions>
     </Dialog>
   );
+}
+
+type AutoBuildForm={name:string;format:string;colors:string[];strategy:string}
+const manaColors=[
+  {key:'W',label:'White',background:'#f5f0d8',color:'#29251b'},
+  {key:'U',label:'Blue',background:'#4aa3df',color:'#071c2d'},
+  {key:'B',label:'Black',background:'#39323f',color:'#fff'},
+  {key:'R',label:'Red',background:'#df5b4e',color:'#2b0907'},
+  {key:'G',label:'Green',background:'#4ea66b',color:'#071f10'},
+  {key:'C',label:'Colorless',background:'#aaa8a2',color:'#1d1c19'},
+]
+const autoStrategies=[['balanced','Best available'],['aggro','Aggro'],['midrange','Midrange'],['control','Control'],['tokens','Tokens'],['artifacts','Artifacts'],['enchantments','Enchantments'],['graveyard','Graveyard'],['counters','Counters'],['lifegain','Lifegain'],['sacrifice','Sacrifice'],['spells','Spellslinger'],['creatures','Creature synergy']]
+
+function AutoBuildDialog({open,form,setForm,proposal,error,busy,close,preview,apply}:{open:boolean;form:AutoBuildForm;setForm:(value:AutoBuildForm)=>void;proposal?:AutoDeckProposal;error?:string;busy:boolean;close:()=>void;preview:()=>void;apply:()=>void}){
+  const toggleColor=(color:string)=>{
+    if(color==='C'){setForm({...form,colors:['C']});return}
+    const current=form.colors.filter(value=>value!=='C'),next=current.includes(color)?current.filter(value=>value!==color):[...current,color]
+    setForm({...form,colors:next.length?next:['C']})
+  }
+  return (<Dialog open={open} onClose={close} fullWidth maxWidth="md">
+    <DialogTitle><Stack direction="row" spacing={1} alignItems="center"><AutoAwesome color="primary"/><span>Auto-build a deck</span></Stack></DialogTitle>
+    <DialogContent>
+      <Typography color="text.secondary" mb={2}>Build from owned physical copies that are not assigned to any deck. Nothing moves until you approve the proposal.</Typography>
+      {error&&<Alert severity="error" sx={{mb:2}}>{error}</Alert>}
+      <Grid container spacing={2}>
+        <Grid size={{xs:12,sm:7}}><TextField fullWidth label="Deck name" value={form.name} onChange={event=>setForm({...form,name:event.target.value})}/></Grid>
+        <Grid size={{xs:12,sm:5}}><TextField select fullWidth label="Format" value={form.format} onChange={event=>setForm({...form,format:event.target.value})}>{deckFormats.map(format=><MenuItem key={format} value={format}>{format}</MenuItem>)}</TextField></Grid>
+        <Grid size={{xs:12,sm:7}}><Typography variant="overline" color="text.secondary">Color identity</Typography><Stack direction="row" spacing={1} mt={.5}>{manaColors.map(mana=><Tooltip title={mana.label} key={mana.key}><IconButton aria-label={mana.label} aria-pressed={form.colors.includes(mana.key)} onClick={()=>toggleColor(mana.key)} sx={{width:44,height:44,fontWeight:950,fontFamily:'serif',fontSize:20,color:mana.color,bgcolor:mana.background,border:'3px solid',borderColor:form.colors.includes(mana.key)?'primary.main':'transparent',boxShadow:form.colors.includes(mana.key)?'0 0 0 2px rgba(255,99,119,.28)':'none','&:hover':{bgcolor:mana.background,filter:'brightness(1.08)'}}}>{mana.key}</IconButton></Tooltip>)}</Stack></Grid>
+        <Grid size={{xs:12,sm:5}}><TextField select fullWidth label="Strategy" value={form.strategy} onChange={event=>setForm({...form,strategy:event.target.value})}>{autoStrategies.map(([value,label])=><MenuItem key={value} value={value}>{label}</MenuItem>)}</TextField></Grid>
+      </Grid>
+      {proposal&&<Box mt={3}>
+        <Alert severity={proposal.complete?'success':'warning'}><Typography fontWeight={900}>{proposal.complete?`Complete ${proposal.total_cards}-card deck ready`:`${proposal.total_cards} of ${proposal.target_size} cards available`}</Typography><Typography variant="body2">{proposal.explanation.join(' ')}</Typography></Alert>
+        {proposal.warnings.map(warning=><Alert severity="warning" variant="outlined" sx={{mt:1}} key={warning}>{warning}</Alert>)}
+        <Stack direction="row" gap={1} flexWrap="wrap" useFlexGap my={2}><Chip color="primary" label={`Theme · ${proposal.theme.replaceAll('-',' ')}`}/><Chip label={`${proposal.land_count} lands`}/><Chip label={`Average MV ${proposal.average_mana_value.toFixed(2)}`}/>{Object.entries(proposal.role_counts).filter(([role])=>!['land','leader'].includes(role)).map(([role,count])=><Chip size="small" variant="outlined" key={role} label={`${count} ${role}`}/>)}</Stack>
+        <Card variant="outlined" sx={{maxHeight:390,overflowY:'auto'}}>
+          <CardContent>
+            {proposal.cards.map(card=><Stack key={card.inventory_id} direction="row" spacing={1.25} alignItems="center" py={.75}>
+              <Box component="img" src={card.image_url||''} alt="" sx={{width:38,height:53,objectFit:'cover',objectPosition:'top',borderRadius:.75,flexShrink:0}}/>
+              <Typography fontWeight={900} minWidth={28}>×{card.quantity}</Typography>
+              <Box flex={1} minWidth={0}>
+                <Typography fontWeight={800} noWrap><CardName scryfallId={card.scryfall_id}>{card.name}</CardName></Typography>
+                <Typography variant="caption" color="text.secondary">{card.set_code.toUpperCase()} #{card.collector_number} · MV {card.mana_value.toFixed(1)} · {card.reasons.join(' · ')}</Typography>
+              </Box>
+              <Chip size="small" color={card.role==='leader'?'primary':card.role==='land'?'success':'default'} label={card.role}/>
+            </Stack>)}
+          </CardContent>
+        </Card>
+      </Box>}
+    </DialogContent>
+    <DialogActions><Button onClick={close}>Cancel</Button>{proposal&&<Button disabled={busy||!proposal.cards.length} variant="contained" color={proposal.complete?'primary':'warning'} onClick={apply}>Create this deck</Button>}<Button disabled={busy||!form.name.trim()||!form.colors.length} variant={proposal?'outlined':'contained'} startIcon={<AutoAwesome/>} onClick={preview}>{busy?'Optimizing…':proposal?'Build again':'Build proposal'}</Button></DialogActions>
+  </Dialog>)
 }

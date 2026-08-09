@@ -244,3 +244,41 @@ class AvailablePage(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+class AutoDeckBuildRequest(BaseModel):
+    name: str = Field("Auto-built deck", min_length=1, max_length=255)
+    format: str = Field(min_length=1, max_length=64)
+    colors: list[str] = Field(min_length=1, max_length=5)
+    strategy: str = Field("balanced", max_length=32)
+
+
+class AutoDeckCard(BaseModel):
+    inventory_id: str
+    scryfall_id: str
+    name: str
+    set_code: str
+    collector_number: str
+    image_url: str | None
+    quantity: int
+    role: str
+    mana_value: float
+    score: float
+    reasons: list[str]
+
+
+class AutoDeckProposal(BaseModel):
+    name: str
+    format: str
+    colors: list[str]
+    strategy: str
+    theme: str
+    target_size: int
+    total_cards: int
+    complete: bool
+    land_count: int
+    average_mana_value: float
+    role_counts: dict[str, int]
+    warnings: list[str]
+    explanation: list[str]
+    cards: list[AutoDeckCard]

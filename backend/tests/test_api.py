@@ -408,6 +408,104 @@ def test_deck_builder_pages_through_all_unassigned_entries(client):
     assert [item["inventory"]["card_name"] for item in second["items"]] == ["Gamma"]
 
 
+def test_auto_deck_preview_and_apply_use_only_unassigned_local_cards(monkeypatch):
+    import asyncio
+    import json
+
+    from mtglogger.api import decks
+    from mtglogger.database import Base, SessionLocal, engine
+    from mtglogger.models import CardReference, DeckEntry, InventoryItem
+    from mtglogger.schemas import AutoDeckBuildRequest
+
+    Base.metadata.drop_all(engine)
+    Base.metadata.create_all(engine)
+    with SessionLocal() as db:
+        for index in range(10):
+            scryfall_id=f"00000000-0000-0000-0000-{index+500:012d}"
+            db.add(
+                InventoryItem(
+                    **{
+                        **CARD,
+                        "card_name":f"Blue spell {index}",
+                        "collector_number":str(index),
+                        "scryfall_id":scryfall_id,
+                        "quantity":4,
+                    }
+                )
+            )
+            db.add(
+                CardReference(
+                    scryfall_id=scryfall_id,
+                    name=f"Blue spell {index}",
+                    set_code="tst",
+                    set_name="Test Set",
+                    collector_number=str(index),
+                    language="en",
+                    oracle_text="Draw a card.",
+                    color_identity="U",
+                    rarity="common",
+                    type_line="Instant",
+                    mana_cost="{1}{U}",
+                    mana_value=2,
+                    keywords="[]",
+                    legalities=json.dumps({"modern":"legal"}),
+                    image_url=f"https://example.test/{index}.jpg",
+                    art_hash=f"{index:016x}",
+                )
+            )
+        land_id="00000000-0000-0000-0000-000000000999"
+        db.add(
+            InventoryItem(
+                **{
+                    **CARD,
+                    "card_name":"Island",
+                    "collector_number":"999",
+                    "scryfall_id":land_id,
+                    "quantity":30,
+                    "color_identity":"U",
+                    "type_line":"Basic Land — Island",
+                }
+            )
+        )
+        db.add(
+            CardReference(
+                scryfall_id=land_id,
+                name="Island",
+                set_code="tst",
+                set_name="Test Set",
+                collector_number="999",
+                language="en",
+                oracle_text="{T}: Add {U}.",
+                color_identity="U",
+                rarity="common",
+                type_line="Basic Land — Island",
+                mana_cost="",
+                mana_value=0,
+                keywords="[]",
+                legalities=json.dumps({"modern":"legal"}),
+                image_url="https://example.test/island.jpg",
+                art_hash="f"*16,
+            )
+        )
+        db.commit()
+
+        async def no_remote_metadata(_provider, _ids):
+            raise AssertionError("complete local metadata should avoid Scryfall")
+
+        monkeypatch.setattr(decks.ScryfallProvider,"get_cards",no_remote_metadata)
+        payload=AutoDeckBuildRequest(
+            name="Optimized blue deck",format="Modern",colors=["U"],strategy="balanced"
+        )
+        proposal=asyncio.run(decks.preview_auto_deck(payload,db))
+        created=asyncio.run(decks.apply_auto_deck(payload,db))
+        assigned=db.query(DeckEntry).filter(DeckEntry.deck_id==created.id).all()
+
+    assert proposal["complete"] is True
+    assert proposal["total_cards"]==60
+    assert created.total_cards==60
+    assert sum(entry.quantity for entry in assigned)==60
+
+
 def test_deck_format_suggestions_require_legality_and_structure(monkeypatch):
     import asyncio
 
