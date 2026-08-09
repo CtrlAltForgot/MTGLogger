@@ -270,6 +270,12 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
         action=by_type["discard_cards"][0];amount=action["amount"]
         ranked=sorted(action["card_ids"],key=lambda card_id:(_card(state,"bot",card_id).get("mana_value") or 0,"Land" not in _card(state,"bot",card_id).get("type_line","")))
         return {"type":"discard_cards","card_ids":ranked[:amount]}
+    if "discard_connive" in by_type:
+        action=by_type["discard_connive"][0];amount=action["amount"];bot=next(player for player in state["players"] if player["id"]=="bot");lands_in_hand=sum("Land" in card.get("type_line","") for card in bot["hand"])
+        def connive_cost(card_id:str)->tuple[float,float]:
+            card=_card(state,"bot",card_id);land="Land" in card.get("type_line","");keep_value=float(card.get("mana_value") or 0)+(3 if land and lands_in_hand<=3 else -1 if land and lands_in_hand>=5 else 0);counter_bonus=0 if land else (1.5 if difficulty=="expert" else .5)
+            return keep_value-counter_bonus,float(card.get("mana_value") or 0)
+        ranked=sorted(action["card_ids"],key=connive_cost);return {"type":"discard_connive","card_ids":ranked[:amount]}
     if "sacrifice_permanents" in by_type:
         action=by_type["sacrifice_permanents"][0];amount=action["amount"]
         ranked=sorted(action["card_ids"],key=lambda card_id:((_card(state,"bot",card_id).get("mana_value") or 0),sum(_stats(state,_card(state,"bot",card_id)))))

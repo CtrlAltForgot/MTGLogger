@@ -855,6 +855,23 @@ def _explore(state:dict,player:dict,creatures:list[dict])->None:
     if not state.get("pending_explore"):_continue_explore(state,player)
 
 
+def _continue_connive(state:dict)->None:
+    queue=state.setdefault("pending_connive_queue",[])
+    while queue:
+        entry=queue.pop(0);player=_player(state,entry["player_id"]);creature=next((card for card in player["battlefield"] if card["instance_id"]==entry["creature_id"] and "Creature" in card.get("type_line","")),None)
+        if not creature:continue
+        amount=entry["amount"];_draw(state,player,amount)
+        if state.get("status")=="complete":state["pending_connive"]=None;queue.clear();return
+        required=min(amount,len(player["hand"]));state["pending_connive"]={**entry,"creature_name":creature["name"],"amount":required};state["priority_player_id"]=player["id"]
+        _log(state,f"{creature['name']} connived {amount}. {player['name']} must discard {required} card{'s' if required!=1 else ''}.");return
+    state["pending_connive"]=None;state["pending_connive_queue"]=[]
+
+
+def _connive(state:dict,player:dict,creature:dict,amount:int=1)->None:
+    state.setdefault("pending_connive_queue",[]).append({"player_id":player["id"],"creature_id":creature["instance_id"],"amount":max(1,amount)})
+    if not state.get("pending_connive"):_continue_connive(state)
+
+
 def _bottom_randomized_exiled(state:dict,player:dict,card_ids:list[str])->None:
     cards=[card for card in player["exile"] if card["instance_id"] in set(card_ids)]
     if cards:_leave_exile(state,player,cards)
@@ -1037,6 +1054,7 @@ def new_game(player_deck: list[dict], opponent_deck: list[dict], play_first: boo
     players = [_new_player(human_id, "You", player_deck, False, player_format), _new_player(bot_id, "Bot" if opponent_is_bot else "Guest", opponent_deck, opponent_is_bot, opponent_format)]
     state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "beginning_draw_pending":True,"first_turn_draw_skipped":False,"active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id,"monarch_id":None,"initiative_id":None, "players": players, "stack": [], "combat": {"attackers": [], "attackers_declared":False,"blocks": {}, "attack_targets": {},"block_orders":{},"damage_pending":False,"damage_step":None,"first_strike_damage_ids":[],"block_triggers_pending":False}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "pending_legendary": None,"pending_commander_zone":[],"pending_library_search":None,"pending_scry":None,"pending_damage_order":None,"pending_ward":None,"pending_blight":None,"pending_proliferate":None,"pending_amass":None,"pending_discovery":None,"pending_manifest":None,"pending_transform":None,"pending_dungeon":None,"pending_trigger_targets":[], "log": []}
     state["pending_explore"]=None;state["pending_explore_queue"]=[]
+    state["pending_connive"]=None;state["pending_connive_queue"]=[]
     for player in players:
         _draw(state, player, 7,False)
     _log(state, "Opening hands drawn. Choose whether to keep or mulligan.")
@@ -1230,6 +1248,7 @@ def _multiplayer(state: dict) -> bool:
 
 def _pending_decision(state:dict)->bool:
     if state.get("pending_explore"):return True
+    if state.get("pending_connive"):return True
     return bool(state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_discovery") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
 
 
@@ -1334,6 +1353,10 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
         if pending_explore["player_id"]!=player_id:return []
         common={"card_id":pending_explore["card_id"],"card":pending_explore["card"],"creature_name":pending_explore["creature_name"]}
         return [{"type":"keep_explored",**common},{"type":"graveyard_explored",**common},{"type":"concede"}]
+    pending_connive=state.get("pending_connive")
+    if pending_connive:
+        if pending_connive["player_id"]!=player_id:return []
+        return [{"type":"discard_connive","card_ids":[card["instance_id"] for card in player["hand"]],"amount":pending_connive["amount"],"creature_name":pending_connive["creature_name"]},{"type":"concede"}]
     pending_discovery=state.get("pending_discovery")
     if pending_discovery:
         if pending_discovery["player_id"]!=player_id:return []
@@ -1660,6 +1683,10 @@ def _resolve_spell(state: dict) -> None:
     elif explore_match:
         repeats={"twice":2,"three times":3}.get(explore_match.group(1),int(explore_match.group(1).split()[0]) if explore_match.group(1) and explore_match.group(1)[0].isdigit() else 1);explorer=target or source_permanent or event_permanent
         if explorer:_explore(state,_player(state,explorer["controller_id"]),[explorer]*repeats)
+    connive_match=re.search(r"\b(?:(?:up to one )?target creature(?: you control)?|this creature|it) connives?(?: (a|one|two|three|four|five|\d+))?\b",keyword_text)
+    if connive_match:
+        words={"a":1,"one":1,"two":2,"three":3,"four":4,"five":5};amount_word=(connive_match.group(1) or "one").casefold();amount=words.get(amount_word,int(amount_word) if amount_word.isdigit() else 1);conniver=target or source_permanent or event_permanent
+        if conniver:_connive(state,_player(state,conniver["controller_id"]),conniver,amount)
     discover_match=re.search(r"\bdiscover (\d+)\b",keyword_text)
     if discover_match:_start_discovery(state,caster,int(discover_match.group(1)),"discover",source_permanent.get("name",card["name"]) if source_permanent else card["name"])
     face_down_text=re.sub(r"\([^()]*(?:to manifest|to cloak)[^()]*\)","",effect_text);source_name=source_permanent.get("name",card["name"]) if source_permanent else card["name"]
@@ -2281,6 +2308,10 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
             elif event == "cycling" and event_card:
                 cycled_name=re.escape(event_card.get("name","").casefold());same_card=source is event_card and re.search(rf"when you cycle (?:~|this card|{cycled_name})\b",lower) is not None
                 matches=same_card or (source is not event_card and owner["id"]==event_owner["id"] and "whenever you cycle a card" in lower)
+            elif event == "connive" and event_card:
+                controlled=event_owner["id"]==owner["id"];self_event=source is event_card and re.search(r"whenever (?:~|this creature|[^,]+) connives?\b",lower) is not None
+                controlled_event=source is not event_card and controlled and re.search(r"whenever (?:a|another) creature you control connives?\b",lower) is not None
+                matches=self_event or controlled_event
             elif event in {"earthbend","waterbend","firebend","airbend"}:
                 multi_bend="whenever you waterbend, earthbend, firebend, or airbend" in lower
                 matches=owner["id"]==event_owner["id"] and (f"whenever you {event}" in lower or multi_bend)
@@ -2588,6 +2619,16 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         else:_log(state,f"{player['name']} kept {card['name']} on top of their library after exploring.")
         _continue_explore(state,player)
         if not state.get("pending_explore"):state["priority_player_id"]=(state.get("pending_trigger_targets") or [{"controller_id":state["active_player_id"]}])[0]["controller_id"]
+    elif action_type=="discard_connive":
+        pending=state.get("pending_connive") or {};requested=action.get("card_ids") or [];required=pending.get("amount",0)
+        if pending.get("player_id")!=player_id or len(requested)!=required or len(set(requested))!=required:raise RuleViolation(f"Choose exactly {required} cards to discard for connive")
+        chosen=[card for card in player["hand"] if card["instance_id"] in set(requested)]
+        if len(chosen)!=required:raise RuleViolation("One or more selected cards are not in your hand")
+        nonlands=sum("Land" not in card.get("type_line","") for card in chosen);creature=next((card for card in player["battlefield"] if card["instance_id"]==pending.get("creature_id")),None);state["pending_connive"]=None;_discard_cards(state,player,chosen)
+        if creature and nonlands:_add_counters(state,creature,"+1/+1",nonlands,player_id,"connive")
+        if creature:_queue_triggers(state,"connive",creature,player);_log(state,f"{creature['name']} received {nonlands} +1/+1 counter{'s' if nonlands!=1 else ''} from conniving.")
+        _continue_connive(state)
+        if not state.get("pending_connive"):state["priority_player_id"]=(state.get("pending_trigger_targets") or [{"controller_id":state["active_player_id"]}])[0]["controller_id"]
     elif action_type=="cast_face_down":
         card=next((card for card in player["hand"] if card["instance_id"]==action.get("card_id")),None);ability=_face_down_ability(card or {})
         if not card or not ability or not (state["active_player_id"]==player_id and state["phase"] in {"precombat_main","postcombat_main"} and not state["stack"]):raise RuleViolation("That card cannot be cast face down now")
