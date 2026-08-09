@@ -48,7 +48,24 @@ def _draw(state: dict, player: dict, amount: int = 1,emit_events:bool=True) -> N
 
 def _gain_life(state:dict,player:dict,amount:int)->None:
     if amount<=0:return
+    for owner in state["players"]:
+        for permanent in owner["battlefield"]:
+            text=(permanent.get("oracle_text") or "").casefold()
+            prevented="players can't gain life" in text or (owner["id"]==player["id"] and "you can't gain life" in text) or (owner["id"]!=player["id"] and "your opponents can't gain life" in text)
+            if prevented:_log(state,f"{permanent['name']} prevented {player['name']} from gaining {amount} life.");return
+    original=amount
+    for permanent in player["battlefield"]:
+        text=(permanent.get("oracle_text") or "").casefold()
+        if "if you would gain life" not in text:continue
+        if re.search(r"gain (?:twice|two times) that much life instead",text):amount*=2
+        elif re.search(r"gain (?:three times|triple) that much life instead",text):amount*=3
+        else:
+            extra=re.search(r"gain that much life plus (\d+) instead",text) or re.search(r"gain that much plus (\d+) life instead",text)
+            if extra:amount+=int(extra.group(1))
     player["life"]+=amount
+    if amount!=original:_log(state,f"{player['name']}'s life gain was replaced from {original} to {amount}.")
+    if player.get("life_gain_event_turn")!=state["turn"]:player["life_gain_event_turn"]=state["turn"];player["life_gain_events_this_turn"]=0
+    player["life_gain_events_this_turn"]=player.get("life_gain_events_this_turn",0)+1
     _queue_triggers(state,"life_gain",None,player)
 
 
@@ -1575,7 +1592,11 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 matches=kind_match and another_ok and (yours or opponent_sacrifice or any_player) and (not one_or_more or dedupe is None or dedupe_key not in dedupe)
                 if matches and one_or_more and dedupe is not None:dedupe.add(dedupe_key)
             elif event == "life_gain":
-                matches=(owner["id"]==event_owner["id"] and re.search(r"whenever you gain life",lower) is not None) or (owner["id"]!=event_owner["id"] and re.search(r"whenever an opponent gains life",lower) is not None) or re.search(r"whenever a player gains life",lower) is not None
+                controlled=owner["id"]==event_owner["id"];count=event_owner.get("life_gain_events_this_turn",0)
+                yours=controlled and (re.search(r"whenever you gain life(?:,|$)",lower) is not None or ("whenever you gain life for the first time each turn" in lower and count==1) or ("whenever you gain life for the second time each turn" in lower and count==2))
+                opposing=not controlled and re.search(r"whenever an opponent gains life(?:,|$)",lower) is not None
+                any_player=re.search(r"whenever a player gains life(?:,|$)",lower) is not None
+                matches=yours or opposing or any_player
             elif event == "draw":
                 controlled=owner["id"]==event_owner["id"];count=event_owner.get("draws_this_turn",0);one_or_more="one or more cards" in lower;dedupe_key=f"draw:{source.get('instance_id')}"
                 yours=controlled and (re.search(r"whenever you draw (?:a|one or more) cards?",lower) is not None or ("whenever you draw your first card each turn" in lower and count==1) or ("whenever you draw your second card each turn" in lower and count==2) or ("whenever you draw your third card each turn" in lower and count==3))
