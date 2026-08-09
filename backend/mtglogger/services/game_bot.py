@@ -215,6 +215,8 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
             beneficial=sum(amount for name,amount in counters.items() if name not in {"-1/-1","stun","poison"});harmful=sum(amount for name,amount in counters.items() if name in {"-1/-1","stun","poison"})
             if (own and beneficial>harmful) or (not own and harmful>=beneficial):chosen.append(target["id"])
         return {"type":"choose_proliferate","target_ids":chosen}
+    if "accept_transform" in by_type or "decline_transform" in by_type:
+        return by_type["decline_transform"][0] if difficulty=="beginner" else by_type["accept_transform"][0]
     if "choose_trigger_target" in by_type:
         action=by_type["choose_trigger_target"][0]
         return {"type":"choose_trigger_target","target_id":_choose_target(state,action)}

@@ -565,13 +565,13 @@ def _new_player(player_id: str, name: str, deck: list[dict], is_bot: bool, forma
         if commander:
             library.remove(commander); commander["commander"] = True; command.append(commander)
     random.SystemRandom().shuffle(library)
-    return {"id": player_id, "name": name, "is_bot": is_bot, "format": format_name, "life": 40 if is_commander else 20, "poison": 0,"firebending_mana":0, "library": library, "hand": [], "battlefield": [], "graveyard": [], "exile": [], "command": command, "commander_casts": 0, "commander_damage": {}, "land_plays_remaining": 1, "kept_hand": False, "mulligans": 0, "lost": False}
+    return {"id": player_id, "name": name, "is_bot": is_bot, "format": format_name, "life": 40 if is_commander else 20, "poison": 0,"firebending_mana":0,"bent_this_turn":[], "library": library, "hand": [], "battlefield": [], "graveyard": [], "exile": [], "command": command, "commander_casts": 0, "commander_damage": {}, "land_plays_remaining": 1, "kept_hand": False, "mulligans": 0, "lost": False}
 
 
 def new_game(player_deck: list[dict], opponent_deck: list[dict], play_first: bool = True, opponent_is_bot: bool = True, player_format: str = "", opponent_format: str = "") -> dict:
     human_id, bot_id = "player", "bot"
     players = [_new_player(human_id, "You", player_deck, False, player_format), _new_player(bot_id, "Bot" if opponent_is_bot else "Guest", opponent_deck, opponent_is_bot, opponent_format)]
-    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "beginning_draw_pending":True,"first_turn_draw_skipped":False,"active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id, "players": players, "stack": [], "combat": {"attackers": [], "blocks": {}, "attack_targets": {},"block_orders":{},"damage_pending":False}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "pending_legendary": None,"pending_commander_zone":[],"pending_library_search":None,"pending_scry":None,"pending_damage_order":None,"pending_ward":None,"pending_blight":None,"pending_proliferate":None,"pending_trigger_targets":[], "log": []}
+    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "beginning_draw_pending":True,"first_turn_draw_skipped":False,"active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id, "players": players, "stack": [], "combat": {"attackers": [], "blocks": {}, "attack_targets": {},"block_orders":{},"damage_pending":False}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "pending_legendary": None,"pending_commander_zone":[],"pending_library_search":None,"pending_scry":None,"pending_damage_order":None,"pending_ward":None,"pending_blight":None,"pending_proliferate":None,"pending_transform":None,"pending_trigger_targets":[], "log": []}
     for player in players:
         _draw(state, player, 7)
     _log(state, "Opening hands drawn. Choose whether to keep or mulligan.")
@@ -714,7 +714,7 @@ def _multiplayer(state: dict) -> bool:
 
 
 def _pending_decision(state:dict)->bool:
-    return bool(state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_trigger_targets"))
+    return bool(state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_transform") or state.get("pending_trigger_targets"))
 
 
 def _queue_commander_zone_choice(state:dict,owner:dict,card:dict,zone:str)->None:
@@ -808,6 +808,10 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
             if owner.get("poison",0)>0:targets.append({"id":owner["id"],"name":owner["name"],"kind":"player","controller_id":owner["id"],"counters":{"poison":owner["poison"]}})
             targets.extend({"id":card["instance_id"],"name":card["name"],"kind":"permanent","controller_id":owner["id"],"counters":{name:amount for name,amount in card.get("counters",{}).items() if amount>0}} for card in owner["battlefield"] if any(amount>0 for amount in card.get("counters",{}).values()))
         return [{"type":"choose_proliferate","targets":targets,"source_name":pending_proliferate["source_name"]},{"type":"concede"}]
+    pending_transform=state.get("pending_transform")
+    if pending_transform:
+        if pending_transform["player_id"]!=player_id:return []
+        return [{"type":"accept_transform","source_name":pending_transform["source_name"]},{"type":"decline_transform","source_name":pending_transform["source_name"]},{"type":"concede"}]
     pending_triggers=state.get("pending_trigger_targets") or []
     if pending_triggers:
         pending=pending_triggers[0]
@@ -1020,7 +1024,14 @@ def _resolve_spell(state: dict) -> None:
         original_text=(source_permanent or card).get("oracle_text") or "";continuation_match=re.search(r"when you do,\s*(.+?)(?:\n|$)",original_text,re.IGNORECASE)
         state["pending_blight"]={"player_id":caster["id"],"amount":int(optional_blight.group(1)),"source_name":source_permanent.get("name",card["name"]) if source_permanent else card["name"],"source_id":source_permanent.get("instance_id") if source_permanent else item.get("source_id"),"continuation":continuation_match.group(1).strip() if continuation_match else ""};state["priority_player_id"]=caster["id"]
         _log(state,f"{caster['name']} may blight {optional_blight.group(1)} for {state['pending_blight']['source_name']}.");return
-    if source_permanent and re.search(r"\btransform (?:this (?:creature|permanent)|it|[a-z][^.]+)\b",effect_text):_transform(state,source_permanent)
+    optional_transform=re.search(r"\byou may transform\b",effect_text)
+    if optional_transform and source_permanent and source_permanent.get("card_faces"):
+        continuation_match=re.search(r"if you do,\s*(.+)",effect_text,re.IGNORECASE)
+        state["pending_transform"]={"player_id":caster["id"],"source_id":source_permanent["instance_id"],"source_name":source_permanent["name"],"continuation":continuation_match.group(1).strip() if continuation_match else ""};state["priority_player_id"]=caster["id"]
+        _log(state,f"{caster['name']} may transform {source_permanent['name']}.");return
+    transform_instruction=source_permanent and re.search(r"\btransform (?:this (?:creature|permanent)|it|[a-z][^.]+)\b",effect_text)
+    all_bending_required="if you've done all four this turn" in effect_text
+    if transform_instruction and (not all_bending_required or set(caster.get("bent_this_turn",[]))>={"waterbend","earthbend","firebend","airbend"}):_transform(state,source_permanent)
     if re.search(r"\bproliferate\b",effect_text):
         state["pending_proliferate"]={"player_id":caster["id"],"source_name":source_permanent.get("name",card["name"]) if source_permanent else card["name"]};state["priority_player_id"]=caster["id"]
         _log(state,f"{caster['name']} will choose permanents and players to proliferate.")
@@ -1110,6 +1121,9 @@ def _resolve_spell(state: dict) -> None:
     if target and counter_match:
         words={"a":1,"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10};amount=words.get(counter_match.group(1),int(counter_match.group(1)) if counter_match.group(1).isdigit() else 1);name=counter_match.group(2).replace("−","-")
         target["counters"][name]=target["counters"].get(name,0)+amount;_log(state,f"{target['name']} received {amount} {name} counter(s).")
+    self_counter=re.search(r"put (a|one|two|three|four|five|\d+) ([+−-]\d+/[+−-]\d+|loyalty|charge|shield|stun) counters? on (?:him|her|it|this (?:creature|permanent))",effect_text)
+    if source_permanent and self_counter:
+        words={"a":1,"one":1,"two":2,"three":3,"four":4,"five":5};amount=words.get(self_counter.group(1),int(self_counter.group(1)) if self_counter.group(1).isdigit() else 1);name=self_counter.group(2).replace("−","-");source_permanent["counters"][name]=source_permanent["counters"].get(name,0)+amount
     keyword_match=re.search(r"target creature gains? ([^.]+?) until end of turn",effect_text)
     if target and keyword_match:
         supported=("flying","first strike","double strike","deathtouch","haste","hexproof","indestructible","lifelink","menace","reach","trample","vigilance")
@@ -1210,7 +1224,8 @@ def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str) -
         if "Aura" in attachment.get("type_line",""):_leave_battlefield(state,attachment_owner,attachment,"graveyard")
     if card in owner["battlefield"]: owner["battlefield"].remove(card)
     earthbend_controller=card.get("earthbend_controller") if destination in {"graveyard","exile"} else None
-    _queue_triggers(state, "dies" if destination == "graveyard" else "leaves", card, owner)
+    _queue_triggers(state,"leaves",card,owner)
+    if destination=="graveyard":_queue_triggers(state,"dies",card,owner)
     card["damage"] = 0; card["tapped"] = False;card.pop("crewed_turn",None)
     if card.get("base_type_line") is not None:card["type_line"]=card.pop("base_type_line")
     if card.get("earthbend_base_type_line") is not None:
@@ -1226,11 +1241,19 @@ def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str) -
 
 
 def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owner: dict) -> None:
+    if event in {"earthbend","waterbend","firebend","airbend"}:
+        event_owner["bent_this_turn"]=sorted(set(event_owner.get("bent_this_turn",[]))|{event})
     sources = [(owner, permanent) for owner in state["players"] for permanent in owner["battlefield"]]
+    if event=="upkeep":
+        for owner,permanent in sources:
+            if permanent.pop("transform_next_upkeep",False):_transform(state,permanent)
     if event in {"dies","cycling"} and event_card: sources.append((event_owner, event_card))
     for owner, source in sources:
         text = source.get("oracle_text") or ""
-        clauses = re.split(r"(?<=[.!])\s+|\n", text)
+        raw_clauses = re.split(r"(?<=[.!])\s+|\n", text);clauses=[]
+        for clause in raw_clauses:
+            if clauses and re.match(r"(?:then if|if you do),?\b",clause.strip(),re.IGNORECASE):clauses[-1]=f"{clauses[-1]} {clause.strip()}"
+            else:clauses.append(clause)
         for clause in clauses:
             lower = clause.casefold(); matches = False
             trigger_count = 1
@@ -1242,8 +1265,10 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 if "if it was kicked" in lower:matches=matches and bool(event_card.get("was_kicked"))
             elif event == "dies" and event_card:
                 matches = (source is event_card and re.search(r"when (?:~|this creature|[^,]+) dies", lower) is not None) or (source is not event_card and "whenever another creature dies" in lower)
+            elif event == "leaves" and event_card:
+                matches=source is not event_card and owner["id"]==event_owner["id"] and "Creature" in event_card.get("type_line","") and "when another creature you control leaves the battlefield" in lower
             elif event == "upkeep":
-                matches = "at the beginning of each player's upkeep" in lower or (owner["id"] == event_owner["id"] and "at the beginning of your upkeep" in lower) or (owner["id"] != event_owner["id"] and "at the beginning of each opponent's upkeep" in lower)
+                matches = "at the beginning of each upkeep" in lower or "at the beginning of each player's upkeep" in lower or (owner["id"] == event_owner["id"] and "at the beginning of your upkeep" in lower) or (owner["id"] != event_owner["id"] and "at the beginning of each opponent's upkeep" in lower)
             elif event == "end_step":
                 matches = "at the beginning of each end step" in lower or (owner["id"] == event_owner["id"] and "at the beginning of your end step" in lower) or (owner["id"] != event_owner["id"] and "at the beginning of each opponent's end step" in lower)
             elif event == "beginning_combat":
@@ -1271,10 +1296,14 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 cycled_name=re.escape(event_card.get("name","").casefold());same_card=source is event_card and re.search(rf"when you cycle (?:~|this card|{cycled_name})\b",lower) is not None
                 matches=same_card or (source is not event_card and owner["id"]==event_owner["id"] and "whenever you cycle a card" in lower)
             elif event in {"earthbend","waterbend","firebend","airbend"}:
-                matches=owner["id"]==event_owner["id"] and f"whenever you {event}" in lower
+                multi_bend="whenever you waterbend, earthbend, firebend, or airbend" in lower
+                matches=owner["id"]==event_owner["id"] and (f"whenever you {event}" in lower or multi_bend)
             if not matches or "," not in clause: continue
             effect = clause.split(",", 1)[1].strip()
+            if event in {"earthbend","waterbend","firebend","airbend"} and "whenever you waterbend, earthbend, firebend, or airbend" in lower:effect=re.split(r"whenever you waterbend, earthbend, firebend, or airbend,",clause,flags=re.IGNORECASE)[1].strip()
             if event=="enters" and re.match(r"if it was kicked,",effect,re.IGNORECASE):effect=effect.split(",",1)[1].strip()
+            if event=="leaves" and "transform" in effect and "next upkeep" in effect:
+                source["transform_next_upkeep"]=True;_log(state,f"{source['name']} will transform at the beginning of the next upkeep.");continue
             ability_card = {**source, "name": f"{source['name']} trigger", "oracle_text": effect, "type_line": "Ability", "mana_cost": ""}
             if event=="attackers_declared" and "firebending" in lower and re.search(r"\badd\b[^.]*\{r\}",lower):ability_card["firebending_trigger"]=True
             fight_steps=_fight_target_steps(state,owner["id"],ability_card,source);targets=[] if fight_steps else _targets(state, owner["id"], ability_card)
@@ -1387,7 +1416,7 @@ def _begin_next_turn(state:dict)->None:
     state["pending_discard"]=None;state["turn"] += 1; state["phase"] = PHASES[0];state["beginning_draw_pending"]=True; state["active_player_id"] = opponent(state, state["active_player_id"])["id"]
     active = _player(state, state["active_player_id"]); active["land_plays_remaining"] = 1
     for owner in state["players"]:
-        owner["firebending_mana"]=0
+        owner["firebending_mana"]=0;owner["bent_this_turn"]=[]
         for permanent in owner["battlefield"]:
             permanent.pop("temporary_power",None);permanent.pop("temporary_toughness",None);permanent.pop("temporary_keywords",None);permanent.pop("cant_attack_until_turn",None);permanent.pop("cant_block_until_turn",None);permanent.pop("regeneration_shields",None);permanent.pop("crewed_turn",None);permanent["damage"]=0
             if permanent.get("base_type_line") is not None:permanent["type_line"]=permanent.pop("base_type_line")
@@ -1705,6 +1734,18 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
                     for name in list(permanent.get("counters",{})):
                         if permanent["counters"][name]>0:permanent["counters"][name]+=1
         state["pending_proliferate"]=None;state["priority_player_id"]=state["active_player_id"];_log(state,f"{player['name']} proliferated {len(requested)} permanent(s) and player(s).")
+    elif action_type in {"accept_transform","decline_transform"}:
+        pending=state.get("pending_transform") or {}
+        if pending.get("player_id")!=player_id:raise RuleViolation("There is no optional transform decision for this player")
+        source=next((card for card in player["battlefield"] if card["instance_id"]==pending.get("source_id")),None)
+        if action_type=="accept_transform":
+            if not source or not _transform(state,source):raise RuleViolation("That permanent can no longer transform")
+            continuation=pending.get("continuation") or "";state["pending_transform"]=None
+            if continuation:
+                state["stack"].append({"id":_id(),"kind":"ability","card":{"name":f"{source['name']} transform effect","oracle_text":continuation,"type_line":"Ability","mana_cost":""},"controller_id":player_id,"target_id":None,"source_id":source["instance_id"]});_resolve_spell(state)
+        else:
+            state["pending_transform"]=None;_log(state,f"{player['name']} chose not to transform {pending['source_name']}.")
+        state["priority_player_id"]=state["active_player_id"]
     elif action_type in {"choose_trigger_target","choose_trigger_targets","skip_trigger"}:
         pending_list=state.get("pending_trigger_targets") or []
         if not pending_list or pending_list[0]["controller_id"]!=player_id:raise RuleViolation("There is no triggered target decision for this player")
