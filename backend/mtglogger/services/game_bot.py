@@ -147,6 +147,7 @@ def _ability_score(state:dict,action:dict)->float:
             source_power,source_toughness=_stats(state,source);enemy_power,enemy_toughness=_stats(state,opponent_card);score+=(8 if source_power>=enemy_toughness else -5)-(9 if enemy_power>=source_toughness else 0)
     if action.get("self_sacrifice"):score-=_threat_score(state,source)*.65
     score-=float(action.get("life_cost") or 0)*1.25
+    if action.get("energy_cost")!="X":score-=float(action.get("energy_cost") or 0)*.35
     counter_cost=action.get("counter_cost") or {};score-=float(counter_cost.get("amount") or 0)*.75
     cost_cards=[_card(state,"bot",card_id) for card_id in action.get("cost_options",[])]
     if cost_cards:

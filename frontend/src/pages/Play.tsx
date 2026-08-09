@@ -23,7 +23,7 @@ function ZoneCard({card,legal,onClick,attacking=false,blocked=false,selected=fal
 
 function HiddenHand({count=0}:{count?:number}){return <Stack direction="row" justifyContent="center" className="hidden-hand">{Array.from({length:Math.min(count,12)},(_,index)=><Box key={index} className="card-back" sx={{ml:index?-4:0}}/>)}</Stack>}
 
-function CommanderDamage({player}:{player?:GamePlayer}){return <>{commanderDamageTotals(player).map(total=><Tooltip key={total.id} title={`${total.name} has dealt ${total.amount} of the 21 combat damage needed to win`}><Chip size="small" color={total.amount>=18?'error':'warning'} label={`⚔ ${total.name} ${total.amount}/21`}/></Tooltip>)}</>}
+function CommanderDamage({player}:{player?:GamePlayer}){return <>{!!player?.energy&&<Tooltip title={`${player.energy_paid_this_turn||0} energy paid this turn`}><Chip size="small" color="info" label={`⚡ ${player.energy} energy`}/></Tooltip>}{commanderDamageTotals(player).map(total=><Tooltip key={total.id} title={`${total.name} has dealt ${total.amount} of the 21 combat damage needed to win`}><Chip size="small" color={total.amount>=18?'error':'warning'} label={`⚔ ${total.name} ${total.amount}/21`}/></Tooltip>)}</>}
 
 function Battlefield({player,game,onCard,selectableIds=new Set(),selectedIds=new Set(),enteringIds=new Set(),onSelect}:{player:GamePlayer;game:Game;onCard:(card:GameCard)=>void;selectableIds?:Set<string>;selectedIds?:Set<string>;enteringIds?:Set<string>;onSelect?:(card:GameCard)=>void}){
   const attackers=new Set(game.state.combat.attackers),blocked=new Set(Object.values(game.state.combat.blocks))

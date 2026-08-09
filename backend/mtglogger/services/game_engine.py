@@ -69,6 +69,36 @@ def _gain_life(state:dict,player:dict,amount:int)->None:
     _queue_triggers(state,"life_gain",None,player)
 
 
+_NUMBER_WORDS={"a":1,"an":1,"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10}
+
+
+def _energy_quantity(text:str,verb:str)->int|str:
+    symbols=re.search(rf"\b{verb}\s+((?:\{{E\}})+)",text,re.IGNORECASE)
+    if symbols:return symbols.group(1).upper().count("{E}")
+    word=re.search(rf"\b{verb}\s+(X|a|an|one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+\{{E\}}",text,re.IGNORECASE)
+    if not word:return 0
+    value=word.group(1).casefold();return "X" if value=="x" else _NUMBER_WORDS.get(value,int(value) if value.isdigit() else 0)
+
+
+def _gain_energy(state:dict,player:dict,amount:int)->int:
+    if amount<=0:return 0
+    original=amount
+    for permanent in player["battlefield"]:
+        text=(permanent.get("oracle_text") or "").casefold()
+        if "if you would get one or more {e}" not in text:continue
+        if "twice that many {e}" in text:amount*=2
+        elif "that many plus one {e}" in text:amount+=1
+    player["energy"]=player.get("energy",0)+amount;player["energy_event_amount"]=amount;_log(state,f"{player['name']} got {amount} energy counter{'s' if amount!=1 else ''}.");_queue_triggers(state,"energy_gain",None,player);player.pop("energy_event_amount",None)
+    if amount!=original:_log(state,f"Energy replacement effects increased the gain from {original} to {amount}.")
+    return amount
+
+
+def _pay_energy(state:dict,player:dict,amount:int)->None:
+    if amount<0 or player.get("energy",0)<amount:raise RuleViolation("Not enough energy")
+    player["energy"]-=amount;player["energy_paid_this_turn"]=player.get("energy_paid_this_turn",0)+amount
+    if amount:_log(state,f"{player['name']} paid {amount} energy counter{'s' if amount!=1 else ''}.")
+
+
 def _take_monarch(state:dict,player:dict)->None:
     previous=state.get("monarch_id")
     state["monarch_id"]=player["id"]
@@ -602,8 +632,8 @@ def _activated_abilities(card: dict) -> list[dict]:
         match = re.match(r"^([^:]+):\s*(.+)$", line.strip())
         if not match: continue
         cost,effect = match.group(1).strip(),match.group(2).strip()
-        waterbend_symbol=_waterbend_symbol(cost);regular_cost=re.sub(r"\bwaterbend\s+\{(?:\d+|X)\}","",cost,flags=re.IGNORECASE)
-        mana_cost="".join(re.findall(r"\{[^}]+\}",regular_cost,re.IGNORECASE)).upper().replace("{T}","").replace("{Q}","")
+        waterbend_symbol=_waterbend_symbol(cost);energy_cost=_energy_quantity(cost,"pay");regular_cost=re.sub(r"\bwaterbend\s+\{(?:\d+|X)\}","",cost,flags=re.IGNORECASE)
+        mana_cost="".join(re.findall(r"\{[^}]+\}",regular_cost,re.IGNORECASE)).upper().replace("{T}","").replace("{Q}","").replace("{E}","")
         taps="{T}" in cost.upper()
         source_name=re.escape(card.get("name", ""));self_reference=rf"(?:~|this (?:artifact|creature|permanent)|{source_name})"
         self_sacrifice=re.search(rf"\bsacrifice {self_reference}\b",cost,re.IGNORECASE) is not None
@@ -622,11 +652,11 @@ def _activated_abilities(card: dict) -> list[dict]:
         blight_match=re.search(r"\bblight (\d+)\b",cost,re.IGNORECASE)
         if blight_match:selection_costs.append({"kind":"blight","filter":"creature","amount":1,"blight_amount":int(blight_match.group(1)),"exclude_source":False})
         unsupported=("discard" in cost.casefold() and not selection_costs) or ("sacrifice" in cost.casefold() and not self_sacrifice and not selection_costs) or ("remove" in cost.casefold() and "counter" in cost.casefold() and not counter_cost) or (waterbend_symbol and selection_costs)
-        if unsupported or (not taps and not mana_cost and not waterbend_symbol and not self_sacrifice and not life_cost and not counter_cost and not selection_costs):continue
+        if unsupported or (not taps and not mana_cost and not waterbend_symbol and not energy_cost and not self_sacrifice and not life_cost and not counter_cost and not selection_costs):continue
         if re.match(r"add (?:\{|one mana)", effect, re.IGNORECASE): continue
         ability_card = {**card, "name": f"{card['name']} ability", "oracle_text": effect, "source_type_line":card.get("type_line",""),"source_mana_cost":card.get("mana_cost",""), "type_line": "Ability", "mana_cost": ""}
         lower_effect=effect.casefold();restrictions={"sorcery":bool(re.search(r"activate (?:this ability )?only (?:as a sorcery|any time you could cast a sorcery)",lower_effect)),"your_turn":bool(re.search(r"activate (?:this ability )?only during your turn",lower_effect)),"opponent_turn":bool(re.search(r"activate (?:this ability )?only during an opponent's turn",lower_effect)),"combat":bool(re.search(r"activate (?:this ability )?only during combat",lower_effect)),"before_attackers":bool(re.search(r"activate (?:this ability )?only before attackers are declared",lower_effect)),"upkeep":bool(re.search(r"activate (?:this ability )?only during your upkeep",lower_effect)),"end_step":bool(re.search(r"activate (?:this ability )?only during your end step",lower_effect)),"once_each_turn":bool(re.search(r"activate (?:this ability )?(?:only |no more than )?once (?:each|per) turn",lower_effect)),"once":bool(re.search(r"activate (?:this ability )?only once(?:\.|$)",lower_effect))}
-        abilities.append({"cost":cost,"mana_cost":mana_cost,"waterbend_symbol":waterbend_symbol,"taps":taps,"self_sacrifice":self_sacrifice,"life_cost":life_cost,"counter_cost":counter_cost,"selection_cost":selection_costs[0] if len(selection_costs)==1 else None,"selection_costs":selection_costs,"restrictions":restrictions,"effect":effect,"card":ability_card})
+        abilities.append({"cost":cost,"mana_cost":mana_cost,"waterbend_symbol":waterbend_symbol,"energy_cost":energy_cost,"taps":taps,"self_sacrifice":self_sacrifice,"life_cost":life_cost,"counter_cost":counter_cost,"selection_cost":selection_costs[0] if len(selection_costs)==1 else None,"selection_costs":selection_costs,"restrictions":restrictions,"effect":effect,"card":ability_card})
     return abilities
 
 
@@ -967,7 +997,7 @@ def _new_player(player_id: str, name: str, deck: list[dict], is_bot: bool, forma
         if commander:
             library.remove(commander); commander["commander"] = True; command.append(commander)
     random.SystemRandom().shuffle(library)
-    return {"id": player_id, "name": name, "is_bot": is_bot, "format": format_name, "life": 40 if is_commander else 20, "poison": 0,"firebending_mana":0,"bent_this_turn":[],"undercity_rooms":[], "library": library, "hand": [], "battlefield": [], "graveyard": [], "exile": [], "command": command, "commander_casts": 0, "commander_damage": {}, "commander_damage_names": {}, "land_plays_remaining": 1, "kept_hand": False, "mulligans": 0, "lost": False}
+    return {"id": player_id, "name": name, "is_bot": is_bot, "format": format_name, "life": 40 if is_commander else 20, "poison": 0,"energy":0,"energy_paid_this_turn":0,"firebending_mana":0,"bent_this_turn":[],"undercity_rooms":[], "library": library, "hand": [], "battlefield": [], "graveyard": [], "exile": [], "command": command, "commander_casts": 0, "commander_damage": {}, "commander_damage_names": {}, "land_plays_remaining": 1, "kept_hand": False, "mulligans": 0, "lost": False}
 
 
 def new_game(player_deck: list[dict], opponent_deck: list[dict], play_first: bool = True, opponent_is_bot: bool = True, player_format: str = "", opponent_format: str = "") -> dict:
@@ -1401,6 +1431,8 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
             if ability["taps"] and (permanent.get("tapped") or ("Creature" in permanent.get("type_line", "") and permanent.get("summoning_sick") and not _has_keyword(permanent,"Haste"))):continue
             waterbend_symbol=ability.get("waterbend_symbol");excluded={permanent["instance_id"]} if ability["taps"] else set();waterbend_x_max=_maximum_waterbend_x(player,{"mana_cost":ability["mana_cost"]},excluded) if waterbend_symbol=="X" else None;waterbend_amount=int(waterbend_symbol) if waterbend_symbol and waterbend_symbol.isdigit() else waterbend_x_max or 0;waterbend_combinations=_waterbend_combinations(player,{"mana_cost":ability["mana_cost"]},waterbend_amount,excluded) if waterbend_symbol else []
             if (waterbend_symbol and not waterbend_combinations) or (not waterbend_symbol and ability["mana_cost"] and not _can_pay(player,{"mana_cost":ability["mana_cost"]},excluded_id=permanent["instance_id"] if ability["taps"] else None)):continue
+            energy_cost=ability.get("energy_cost",0)
+            if energy_cost!="X" and player.get("energy",0)<int(energy_cost or 0):continue
             if ability["life_cost"] and player["life"]<ability["life_cost"]:continue
             if ability["counter_cost"] and permanent.get("counters",{}).get(ability["counter_cost"]["name"],0)<ability["counter_cost"]["amount"]:continue
             selection_costs=ability.get("selection_costs",[]);selection_has_x=any(cost["amount"]=="X" for cost in selection_costs);cost_requirements,cost_combinations=_selection_cost_combinations(player,permanent,selection_costs)
@@ -1408,7 +1440,7 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
             cost_options=list(dict.fromkeys(card_id for requirement in cost_requirements for card_id in requirement["options"]))
             fight_steps=_fight_target_steps(state,player_id,ability["card"],permanent);targets=[] if fight_steps else _targets(state, player_id, ability["card"])
             if (fight_steps and any(not step["targets"] for step in fight_steps)) or (not fight_steps and _target_kind(ability["card"]) and not targets): continue
-            fixed_cost_amount=sum(cost["amount"] for cost in selection_costs if cost["amount"]!="X");action = {"type": "activate", "card_id": permanent["instance_id"], "ability_index": index, "label": f"{ability['cost']}: {ability['effect']}","life_cost":ability["life_cost"],"self_sacrifice":ability["self_sacrifice"],"counter_cost":ability["counter_cost"],"cost_kind":selection_costs[0]["kind"] if len(selection_costs)==1 else "compound" if selection_costs else None,"cost_amount":fixed_cost_amount,"cost_options":cost_options,"cost_requirements":cost_requirements,"cost_combinations":cost_combinations,"selection_x":selection_has_x}
+            fixed_cost_amount=sum(cost["amount"] for cost in selection_costs if cost["amount"]!="X");action = {"type": "activate", "card_id": permanent["instance_id"], "ability_index": index, "label": f"{ability['cost']}: {ability['effect']}","life_cost":ability["life_cost"],"energy_cost":energy_cost,"self_sacrifice":ability["self_sacrifice"],"counter_cost":ability["counter_cost"],"cost_kind":selection_costs[0]["kind"] if len(selection_costs)==1 else "compound" if selection_costs else None,"cost_amount":fixed_cost_amount,"cost_options":cost_options,"cost_requirements":cost_requirements,"cost_combinations":cost_combinations,"selection_x":selection_has_x}
             if len(selection_costs)==1 and selection_costs[0]["kind"]=="blight":action["blight_amount"]=selection_costs[0]["blight_amount"]
             if waterbend_symbol:
                 options=[candidate["instance_id"] for candidate in player["battlefield"] if candidate["instance_id"] not in excluded and not candidate.get("tapped") and any(kind in candidate.get("type_line","") for kind in ("Artifact","Creature"))];action.update({"waterbend":True,"waterbend_amount":waterbend_amount,"cost_kind":"waterbend","cost_min_amount":min(map(len,waterbend_combinations)),"cost_max_amount":max(map(len,waterbend_combinations)),"cost_options":options,"cost_combinations":waterbend_combinations})
@@ -1423,6 +1455,7 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
             elif _has_x_cost({"mana_cost":ability["mana_cost"]}):action.update({"x_min":0,"x_max":_maximum_x(player,{"mana_cost":ability["mana_cost"]},excluded_id=permanent["instance_id"] if ability["taps"] else None)})
             elif waterbend_symbol=="X":
                 by_x={value:_waterbend_combinations(player,{"mana_cost":ability["mana_cost"]},value,excluded) for value in range(0,(waterbend_x_max or 0)+1)};action.update({"x_min":1 if "x can't be 0" in ability["effect"].casefold() else 0,"x_max":waterbend_x_max,"cost_combinations_by_x":by_x})
+            elif energy_cost=="X":action.update({"x_min":0,"x_max":player.get("energy",0)})
             if fight_steps:action["target_steps"]=fight_steps
             elif targets: action["targets"] = targets
             actions.append(action)
@@ -1547,6 +1580,8 @@ def _resolve_spell(state: dict) -> None:
         _log(state,f"{caster['name']} may transform {source_permanent['name']}.");return
     if re.search(r"\b(?:you become|become) the monarch\b",effect_text):_take_monarch(state,caster)
     if re.search(r"\b(?:you take|take) the initiative\b",effect_text):_take_initiative(state,caster)
+    energy_gain=_energy_quantity(effect_text,"get")
+    if isinstance(energy_gain,int) and energy_gain and not re.search(r"\bmay get\b",effect_text):_gain_energy(state,caster,energy_gain)
     transform_instruction=source_permanent and re.search(r"\btransform (?:this (?:creature|permanent)|it|[a-z][^.]+)\b",effect_text)
     all_bending_required="if you've done all four this turn" in effect_text
     if transform_instruction and (not all_bending_required or set(caster.get("bent_this_turn",[]))>={"waterbend","earthbend","firebend","airbend"}):_transform(state,source_permanent)
@@ -2119,6 +2154,8 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                     if one_or_more and dedupe is not None:dedupe.add(dedupe_key)
             elif event=="discover":
                 matches=owner["id"]==event_owner["id"] and "whenever you discover" in lower
+            elif event=="energy_gain":
+                matches=owner["id"]==event_owner["id"] and ("whenever you get one or more {e}" in lower or "whenever you get {e}" in lower)
             elif event=="turned_face_up" and event_card:
                 same_controller=event_owner["id"]==owner["id"];self_event=source is event_card and ("this creature is turned face up" in lower or "is turned face up" in lower and (source.get("name") or "").casefold() in lower)
                 controlled=same_controller and re.search(r"whenever (?:a|another) (?:creature|permanent) you control is turned face up",lower) is not None
@@ -2201,6 +2238,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
             if event=="enters" and re.search(r"\b(?:that many|that much)\b",effect,re.IGNORECASE):effect=re.sub(r"\b(?:that many|that much)\b",str(event_card.get("entry_event_batch_size",1)),effect,flags=re.IGNORECASE)
             if event=="counter_added" and re.search(r"\b(?:that many|that much|the same number)\b",effect,re.IGNORECASE):effect=re.sub(r"\b(?:that many|that much|the same number)\b",str(event_card.get("counter_event_amount",1)),effect,flags=re.IGNORECASE)
             if event=="discover" and "same value" in effect.casefold():effect=re.sub(r"discover again for the same value",f"discover {event_owner.get('discover_event_value',0)}",effect,flags=re.IGNORECASE)
+            if event=="energy_gain":effect=re.sub(r"\bthat (?:many|much)\b",str(event_owner.get("energy_event_amount",1)),effect,flags=re.IGNORECASE)
             if event in {"earthbend","waterbend","firebend","airbend"} and "whenever you waterbend, earthbend, firebend, or airbend" in lower:effect=re.split(r"whenever you waterbend, earthbend, firebend, or airbend,",clause,flags=re.IGNORECASE)[1].strip()
             if event=="enters" and re.match(r"if it was kicked,",effect,re.IGNORECASE):effect=effect.split(",",1)[1].strip()
             if event=="leaves" and "transform" in effect and "next upkeep" in effect:
@@ -2345,7 +2383,7 @@ def _begin_next_turn(state:dict)->None:
             current["battlefield"].remove(permanent);return_to["battlefield"].append(permanent);permanent["controller_id"]=return_to["id"];permanent["summoning_sick"]=True
             _log(state,f"{permanent['name']} returned to {return_to['name']}'s control.")
     for owner in state["players"]:
-        owner["firebending_mana"]=0;owner["bent_this_turn"]=[]
+        owner["firebending_mana"]=0;owner["bent_this_turn"]=[];owner["energy_paid_this_turn"]=0
         for permanent in owner["battlefield"]:
             permanent.pop("temporary_power",None);permanent.pop("temporary_toughness",None);permanent.pop("temporary_keywords",None);permanent.pop("cant_attack_until_turn",None);permanent.pop("cant_block_until_turn",None);permanent.pop("regeneration_shields",None);permanent.pop("deathtouch_damage",None);permanent.pop("crewed_turn",None);permanent["damage"]=0
             if permanent.get("goaded_until_turn",0)<state["turn"]:permanent.pop("goaded_until_turn",None);permanent.pop("goaded_by",None)
@@ -2590,7 +2628,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         available=next((entry for entry in legal_actions(state,player_id) if entry["type"]=="activate" and entry["card_id"]==action.get("card_id") and entry["ability_index"]==index),None)
         if not permanent or not available:raise RuleViolation("That ability cannot be activated")
         ability=_permanent_abilities(state,permanent)[index];target_id=action.get("target_id");targets=available.get("targets",[])
-        waterbend_symbol=ability.get("waterbend_symbol");x_value=int(action.get("x_value") or 0);x_card={"mana_cost":ability["mana_cost"]};has_x=_has_x_cost(x_card) or waterbend_symbol=="X" or bool(available.get("selection_x"));x_max=available.get("x_max",_maximum_x(player,x_card,excluded_id=permanent["instance_id"] if ability["taps"] else None))
+        waterbend_symbol=ability.get("waterbend_symbol");energy_cost=ability.get("energy_cost",0);x_value=int(action.get("x_value") or 0);x_card={"mana_cost":ability["mana_cost"]};has_x=_has_x_cost(x_card) or waterbend_symbol=="X" or energy_cost=="X" or bool(available.get("selection_x"));x_max=available.get("x_max",_maximum_x(player,x_card,excluded_id=permanent["instance_id"] if ability["taps"] else None))
         if (has_x and not available.get("x_min",0)<=x_value<=x_max) or (not has_x and action.get("x_value") is not None):raise RuleViolation("That ability cannot be activated with the chosen X value")
         if targets and target_id not in {target["id"] for target in targets}:raise RuleViolation("Choose a legal target")
         target_ids=action.get("target_ids") or [];target_steps=available.get("target_steps") or []
@@ -2617,6 +2655,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
             _pay_mana(state,player,residual,excluded_ids=excluded|set(selected_cost_ids),x_value=x_value if _has_x_cost(x_card) else 0)
             _set_tapped(state,[selected for selected in player["battlefield"] if selected["instance_id"] in selected_cost_ids],True,player_id,"waterbend")
         elif ability["mana_cost"]:_pay_mana(state,player,{"mana_cost":ability["mana_cost"]},excluded_id=permanent["instance_id"] if ability["taps"] else None,x_value=x_value)
+        _pay_energy(state,player,x_value if energy_cost=="X" else int(energy_cost or 0))
         if ability["life_cost"]:player["life"]-=ability["life_cost"]
         if ability["counter_cost"]:
             name,amount=ability["counter_cost"]["name"],ability["counter_cost"]["amount"];_remove_counters(permanent,name,amount)
