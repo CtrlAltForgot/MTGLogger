@@ -501,6 +501,27 @@ def test_spirit_only_blocking_restriction_and_bot_alone_attacks_are_enforced():
     choice=choose_bot_action(fresh,"expert");assert choice["type"]=="declare_attackers" and choice["attacker_ids"]==[]
 
 
+def test_clue_and_food_tokens_have_functional_sacrifice_abilities():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player")
+    for index in range(2):player["battlefield"].append({**card(761+index,"Island","Basic Land — Island"),"instance_id":f"token-island-{index}","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False})
+    maker={**card(763,"Evidence and Rations","Sorcery"),"oracle_text":"Create a Clue token. Create a Food token.","instance_id":"evidence-rations","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"].append(maker);state=perform_action(state,"player",{"type":"cast","card_id":"evidence-rations"});state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");clue=next(card for card in player["battlefield"] if "Clue" in card["type_line"]);food=next(card for card in player["battlefield"] if "Food" in card["type_line"])
+    before_hand=len(player["hand"]);clue_action=next(action for action in legal_actions(state,"player") if action.get("card_id")==clue["instance_id"]);state=perform_action(state,"player",{"type":"activate","card_id":clue["instance_id"],"ability_index":clue_action["ability_index"],"cost_card_ids":[]});assert not any(card["instance_id"]==clue["instance_id"] for card in next(p for p in state["players"] if p["id"]=="player")["battlefield"]);state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");assert len(player["hand"])==before_hand+1
+    for permanent in player["battlefield"]:permanent["tapped"]=False
+    before_life=player["life"];food_action=next(action for action in legal_actions(state,"player") if action.get("card_id")==food["instance_id"]);state=perform_action(state,"player",{"type":"activate","card_id":food["instance_id"],"ability_index":food_action["ability_index"],"cost_card_ids":[]});state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");assert player["life"]==before_life+3 and not any("Food" in card["type_line"] for card in player["battlefield"])
+
+
+def test_treasure_produces_colored_mana_and_is_sacrificed_during_payment():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");player["battlefield"]=[]
+    maker={**card(764,"Make Treasure","Sorcery"),"oracle_text":"Create a Treasure token.","instance_id":"make-treasure","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"].append(maker);state=perform_action(state,"player",{"type":"cast","card_id":"make-treasure"});state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");treasure=next(card for card in player["battlefield"] if "Treasure" in card["type_line"])
+    red_spell={**card(765,"Red Treasure Spell","Sorcery","{R}"),"oracle_text":"You gain 1 life.","instance_id":"red-treasure-spell","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"].append(red_spell);assert any(action.get("card_id")=="red-treasure-spell" for action in legal_actions(state,"player"));state=perform_action(state,"player",{"type":"cast","card_id":"red-treasure-spell"});player=next(p for p in state["players"] if p["id"]=="player");assert not any(card["instance_id"]==treasure["instance_id"] for card in player["battlefield"])
+
+
+def test_bot_uses_a_clue_when_it_has_mana_and_no_better_spell():
+    state=kept_game();state["active_player_id"]="bot";state["priority_player_id"]="bot";state["phase"]="combat";bot=next(p for p in state["players"] if p["id"]=="bot");bot["hand"]=[];bot["battlefield"]=[]
+    for index in range(2):bot["battlefield"].append({**card(766+index,"Island","Basic Land — Island"),"instance_id":f"bot-clue-island-{index}","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False})
+    clue={**card(768,"Clue Token","Token Artifact — Clue"),"oracle_text":"{2}, Sacrifice this artifact: Draw a card.","mana_value":0,"instance_id":"bot-clue","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False,"token":True};bot["battlefield"].append(clue);choice=choose_bot_action(state,"expert");assert choice["type"]=="activate" and choice["card_id"]=="bot-clue"
+
+
 def test_defender_unblockable_hexproof_protection_and_indestructible_are_enforced():
     state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
     def permanent(index,name,text="",keywords=None,owner="player"):

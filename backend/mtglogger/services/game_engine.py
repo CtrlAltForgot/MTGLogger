@@ -86,7 +86,7 @@ def _land_colors(card: dict) -> set[str]:
 
 
 def _mana_source(card: dict) -> bool:
-    return "Land" in card.get("type_line", "") or re.search(r"\{T\}:\s*Add ", card.get("oracle_text") or "", re.IGNORECASE) is not None
+    return "Land" in card.get("type_line", "") or any(kind in card.get("type_line","") for kind in ("Treasure","Gold")) or re.search(r"\{T\}:\s*Add ", card.get("oracle_text") or "", re.IGNORECASE) is not None
 
 
 def _mana_requirements(card: dict, extra_generic: int = 0, x_value:int=0) -> tuple[list[set[str]], int]:
@@ -295,9 +295,10 @@ def _can_pay(player: dict, card: dict, extra_generic: int = 0, excluded_id: str 
     return len(available) >= generic
 
 
-def _pay_mana(player: dict, card: dict, extra_generic: int = 0, excluded_id: str | None = None,x_value:int=0) -> None:
+def _pay_mana(state:dict,player: dict, card: dict, extra_generic: int = 0, excluded_id: str | None = None,x_value:int=0) -> None:
     colored,generic=_mana_requirements(card,extra_generic,x_value)
     lands = [permanent for permanent in player["battlefield"] if permanent.get("instance_id")!=excluded_id and not permanent.get("tapped") and _mana_source(permanent) and not ("Creature" in permanent.get("type_line", "") and permanent.get("summoning_sick") and not _has_keyword(permanent,"Haste"))]
+    lands.sort(key=lambda permanent:any(kind in permanent.get("type_line","") for kind in ("Treasure","Gold")))
     chosen = []
     for choices in colored:
         land = next((item for item in lands if (_land_colors(item) or {"C"}) & choices), None)
@@ -309,7 +310,14 @@ def _pay_mana(player: dict, card: dict, extra_generic: int = 0, excluded_id: str
     if len(chosen) < len(colored) + generic:
         raise RuleViolation("Not enough mana")
     for land in chosen:
-        land["tapped"] = True
+        if any(kind in land.get("type_line","") for kind in ("Treasure","Gold")):
+            _leave_battlefield(state,player,land,"graveyard");_log(state,f"{player['name']} sacrificed {land['name']} for mana.")
+        else:land["tapped"] = True
+
+
+def _predefined_token(owner:dict,kind:str,tapped:bool=False)->dict:
+    oracle={"Clue":"{2}, Sacrifice this artifact: Draw a card.","Food":"{2}, {T}, Sacrifice this artifact: You gain 3 life.","Treasure":"{T}, Sacrifice this artifact: Add one mana of any color.","Blood":"{1}, {T}, Discard a card, Sacrifice this artifact: Draw a card.","Gold":"Sacrifice this artifact: Add one mana of any color."}[kind]
+    return {"instance_id":_id(),"scryfall_id":f"token-{kind.casefold()}","name":f"{kind} Token","image_url":None,"type_line":f"Token Artifact — {kind}","oracle_text":oracle,"mana_cost":"","mana_value":0,"power":None,"toughness":None,"owner_id":owner["id"],"controller_id":owner["id"],"tapped":tapped,"damage":0,"counters":{},"summoning_sick":False,"token":True,"keywords":[]}
 
 
 def _has_x_cost(card:dict)->bool:
@@ -828,6 +836,11 @@ def _resolve_spell(state: dict) -> None:
         for _ in range(amount):
             caster["battlefield"].append({"instance_id":_id(),"scryfall_id":"token","name":f"{token_match.group(4).title()} Token","image_url":None,"type_line":f"Token Creature — {token_match.group(4).title()}","oracle_text":"","mana_cost":"","mana_value":0,"power":token_match.group(2),"toughness":token_match.group(3),"owner_id":caster["id"],"controller_id":caster["id"],"tapped":False,"damage":0,"counters":{},"summoning_sick":True,"token":True})
         _log(state, f"{caster['name']} created {amount} token(s).")
+    predefined_matches=list(re.finditer(r"create (a|one|two|three|four|five|\d+) (tapped )?(clue|food|treasure|blood|gold) tokens?",effect_text,re.IGNORECASE))
+    for predefined in predefined_matches:
+        word=predefined.group(1).casefold();amount={"a":1,"one":1,"two":2,"three":3,"four":4,"five":5}.get(word,int(word) if word.isdigit() else 1);kind=predefined.group(3).title()
+        for _ in range(amount):caster["battlefield"].append(_predefined_token(caster,kind,bool(predefined.group(2))))
+        _log(state,f"{caster['name']} created {amount} {kind} token(s).")
     entered = False
     if is_permanent_spell:
         card["summoning_sick"] = "Creature" in card.get("type_line", "")
@@ -1092,7 +1105,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         elif chosen_modes or mode_targets:raise RuleViolation("That spell has no modal choice")
         rules_card=_selected_mode_card(card,chosen_modes);targeting_card=_spell_targeting_card(rules_card);targets = _targets(state, player_id, targeting_card); target_id = action.get("target_id")
         if not modal_spec and _target_kind(targeting_card) and target_id not in {target["id"] for target in targets}: raise RuleViolation("Choose a legal target")
-        _pay_mana(player, card, tax,x_value=x_value); player[source].remove(card)
+        _pay_mana(state,player, card, tax,x_value=x_value); player[source].remove(card)
         if card.get("commander"): player["commander_casts"] = player.get("commander_casts", 0) + 1
         effective_target=target_id or (mode_targets[0] if len(mode_targets)==1 else None);stack_item={"id": _id(), "card": card, "controller_id": player_id, "target_id": effective_target,"mode_indices":chosen_modes,"mode_targets":mode_targets,"x_value":x_value};state["stack"].append(stack_item); state["consecutive_passes"] = 0; state["pending_phase_advance"] = False
         _queue_triggers(state,"cast",card,player)
@@ -1106,7 +1119,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         available=next((entry for entry in legal_actions(state,player_id) if entry["type"]=="equip" and entry["card_id"]==action.get("card_id")),None);target_id=action.get("target_id")
         if not available or target_id not in {target["id"] for target in available["targets"]}:raise RuleViolation("That Equipment cannot be attached to that creature now")
         equipment=next(card for card in player["battlefield"] if card["instance_id"]==action["card_id"]);target=next(card for card in player["battlefield"] if card["instance_id"]==target_id)
-        _pay_mana(player,{"mana_cost":available["mana_cost"]});stack_item={"id":_id(),"kind":"equip_ability","card":{**equipment,"name":f"{equipment['name']} equip ability","type_line":"Ability"},"controller_id":player_id,"target_id":target_id,"source_id":equipment["instance_id"]};state["stack"].append(stack_item);state["consecutive_passes"]=0;state["pending_phase_advance"]=False
+        _pay_mana(state,player,{"mana_cost":available["mana_cost"]});stack_item={"id":_id(),"kind":"equip_ability","card":{**equipment,"name":f"{equipment['name']} equip ability","type_line":"Ability"},"controller_id":player_id,"target_id":target_id,"source_id":equipment["instance_id"]};state["stack"].append(stack_item);state["consecutive_passes"]=0;state["pending_phase_advance"]=False
         if _multiplayer(state) or not allow_direct_resolution:state["priority_player_id"]=opponent(state,player_id)["id"]
         _log(state,f"{player['name']} activated {equipment['name']}'s equip ability targeting {target['name']}.")
     elif action_type == "activate":
@@ -1121,7 +1134,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if len(selected_cost_ids)!=required_cost or len(set(selected_cost_ids))!=required_cost or not set(selected_cost_ids).issubset(cost_options):raise RuleViolation(f"Choose exactly {required_cost} legal card(s) for the activation cost")
         selected_cost_cards=[card for zone in (player["hand"],player["battlefield"]) for card in zone if card["instance_id"] in set(selected_cost_ids)]
         if len(selected_cost_cards)!=required_cost:raise RuleViolation("One or more activation cost cards are no longer available")
-        if ability["mana_cost"]:_pay_mana(player,{"mana_cost":ability["mana_cost"]},excluded_id=permanent["instance_id"] if ability["taps"] else None,x_value=x_value)
+        if ability["mana_cost"]:_pay_mana(state,player,{"mana_cost":ability["mana_cost"]},excluded_id=permanent["instance_id"] if ability["taps"] else None,x_value=x_value)
         if ability["life_cost"]:player["life"]-=ability["life_cost"]
         if ability["counter_cost"]:
             name,amount=ability["counter_cost"]["name"],ability["counter_cost"]["amount"];permanent["counters"][name]-=amount
@@ -1199,7 +1212,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if not stack_item:raise RuleViolation("The warded spell or ability is no longer on the stack")
         if action_type=="pay_ward":
             kind=pending.get("cost_type","mana")
-            if kind=="mana":_pay_mana(player,{"mana_cost":pending["mana_cost"]})
+            if kind=="mana":_pay_mana(state,player,{"mana_cost":pending["mana_cost"]})
             elif kind=="life":
                 if player["life"]<pending["amount"]:raise RuleViolation("Not enough life to pay ward")
                 player["life"]-=pending["amount"]
