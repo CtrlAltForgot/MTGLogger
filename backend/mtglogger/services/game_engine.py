@@ -235,6 +235,12 @@ def _targets(state: dict, caster_id: str, card: dict) -> list[dict]:
     return targets
 
 
+def _countered_spell_destination(state:dict,controller:dict,card:dict)->None:
+    owner=_player(state,card.get("owner_id",controller["id"]));card["controller_id"]=owner["id"]
+    if card.get("commander"):owner["command"].append(card)
+    else:owner["graveyard"].append(card)
+
+
 def _multiplayer(state: dict) -> bool:
     return not any(player.get("is_bot") for player in state["players"])
 
@@ -353,11 +359,14 @@ def legal_actions(state: dict, player_id: str) -> list[dict]:
 def _resolve_spell(state: dict) -> None:
     item = state["stack"].pop()
     card, caster = item["card"], _player(state, item["controller_id"])
+    target_kind=_target_kind(card);target_id=item.get("target_id")
+    if target_kind and target_id not in {target["id"] for target in _targets(state,caster["id"],card)}:
+        if item.get("kind","spell")=="spell":_countered_spell_destination(state,caster,card)
+        _log(state,f"{card['name']} was countered because its target was no longer legal.");return
     text = (card.get("oracle_text") or "").casefold()
     is_permanent_spell = item.get("kind", "spell") == "spell" and any(kind in card.get("type_line", "") for kind in ("Creature", "Artifact", "Enchantment", "Planeswalker", "Battle"))
     effect_text = "" if is_permanent_spell and re.search(r"\b(?:when|whenever|at the beginning)\b", text) else text
     other = opponent(state, caster["id"])
-    target_id = item.get("target_id")
     target_player = next((player for player in state["players"] if player["id"] == target_id), None)
     target_owner = next((player for player in state["players"] if any(permanent["instance_id"] == target_id for permanent in player["battlefield"])), None)
     target = next((permanent for player in state["players"] for permanent in player["battlefield"] if permanent["instance_id"] == target_id), None)
@@ -429,7 +438,7 @@ def _resolve_spell(state: dict) -> None:
         if required:state["pending_discard"]={"player_id":caster["id"],"amount":required,"reason":"effect"};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} must discard {required} card(s).")
     if target_stack_item and "counter target spell" in effect_text:
         state["stack"].remove(target_stack_item); countered=target_stack_item["card"]
-        if target_stack_item.get("kind", "spell") == "spell": _player(state,target_stack_item["controller_id"])["graveyard"].append(countered)
+        if target_stack_item.get("kind", "spell") == "spell": _countered_spell_destination(state,_player(state,target_stack_item["controller_id"]),countered)
         _log(state, f"{countered['name']} was countered.")
     if graveyard_target and graveyard_owner:
         if re.search(r"(?:return|put) target (?:creature )?card .*graveyard (?:to|into|onto) (?:the battlefield|play)",effect_text):

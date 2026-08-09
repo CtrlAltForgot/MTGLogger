@@ -340,6 +340,21 @@ def test_counterspell_targets_and_counters_a_spell_on_the_stack():
     bot=next(item for item in state["players"] if item["id"]=="bot");assert any(item["name"]=="Threat" for item in bot["graveyard"]) and not state["stack"]
 
 
+def test_spells_fizzle_when_their_only_target_becomes_illegal():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
+    target={**card(720,"Future Hexproof","Creature — Wizard","","2","2"),"instance_id":"future-hexproof","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};removal={**card(721,"Doom Attempt","Instant"),"oracle_text":"Destroy target creature.","instance_id":"doom-attempt","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};bot["battlefield"].append(target);player["hand"].append(removal)
+    state=perform_action(state,"player",{"type":"cast","card_id":"doom-attempt","target_id":"future-hexproof"});bot=next(p for p in state["players"] if p["id"]=="bot");next(card for card in bot["battlefield"] if card["instance_id"]=="future-hexproof")["temporary_keywords"]=["hexproof"]
+    state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
+    assert any(card["instance_id"]=="future-hexproof" for card in bot["battlefield"]) and any(card["instance_id"]=="doom-attempt" for card in player["graveyard"]) and "no longer legal" in state["log"][-1]["message"]
+
+
+def test_countered_commander_spell_returns_to_command_zone():
+    first,second=decks();state=new_game(first,second,opponent_is_bot=False,player_format="Commander");state=perform_action(state,"player",{"type":"keep"});state=perform_action(state,"bot",{"type":"keep"});state["phase"]="precombat_main";player=next(p for p in state["players"] if p["id"]=="player");guest=next(p for p in state["players"] if p["id"]=="bot")
+    commander={**card(722,"Test Commander","Legendary Creature — Wizard","","2","2"),"instance_id":"test-commander","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False,"commander":True};counter={**card(723,"Command Denial","Instant"),"oracle_text":"Counter target spell.","instance_id":"command-denial","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["command"].append(commander);guest["hand"].append(counter)
+    state=perform_action(state,"player",{"type":"cast","card_id":"test-commander","source":"command"});spell_id=state["stack"][-1]["id"];state=perform_action(state,"bot",{"type":"cast","card_id":"command-denial","target_id":spell_id});state=perform_action(state,"player",{"type":"pass_priority"});state=perform_action(state,"bot",{"type":"pass_priority"});player=next(p for p in state["players"] if p["id"]=="player")
+    assert any(card["instance_id"]=="test-commander" for card in player["command"]) and not any(card["instance_id"]=="test-commander" for card in player["graveyard"])
+
+
 def test_defender_unblockable_hexproof_protection_and_indestructible_are_enforced():
     state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
     def permanent(index,name,text="",keywords=None,owner="player"):
