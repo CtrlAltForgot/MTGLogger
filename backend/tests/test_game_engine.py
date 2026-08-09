@@ -107,6 +107,14 @@ def test_draw_then_discard_creates_a_persisted_caster_choice():
     assert len(player["hand"])==before+1 and any(c["instance_id"]==chosen[0] for c in player["graveyard"]) and state["turn"]==1
 
 
+def test_legend_rule_uses_canonical_name_and_bot_keeps_stronger_copy():
+    state=kept_game();bot=next(p for p in state["players"] if p["id"]=="bot")
+    weak={**card(710,"Fancy Reskin","Legendary Creature — Hero","","1","1"),"rules_name":"Same Hero","mana_value":1,"instance_id":"weak","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};strong={**card(711,"Original Art","Legendary Creature — Hero","","5","5"),"rules_name":"Same Hero","mana_value":5,"instance_id":"strong","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};bot["battlefield"].extend([weak,strong])
+    state=perform_action(state,"player",{"type":"adjust_life","amount":0});assert state["pending_legendary"]["card_ids"]==["weak","strong"] and not legal_actions(state,"player")
+    choice=choose_bot_action(state,"expert");assert choice=={"type":"choose_legendary","card_ids":["strong"]};state=perform_action(state,"bot",choice);bot=next(p for p in state["players"] if p["id"]=="bot")
+    assert any(c["instance_id"]=="strong" for c in bot["battlefield"]) and any(c["instance_id"]=="weak" for c in bot["graveyard"])
+
+
 def test_targeted_removal_requires_and_resolves_a_legal_creature_target():
     state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"})
     player=next(player for player in state["players"] if player["id"]=="player");bot=next(player for player in state["players"] if player["id"]=="bot")

@@ -37,6 +37,7 @@ def _deck_cards(db: Session, deck: Deck) -> list[dict]:
         cards.append({
             "scryfall_id": inventory.scryfall_id,
             "name": (reference.flavor_name or reference.printed_name or reference.name) if reference else inventory.card_name,
+            "rules_name": reference.name if reference else inventory.card_name,
             "image_url": (reference.image_url if reference else inventory.image_url),
             "type_line": (reference.type_line if reference else inventory.type_line) or "",
             "oracle_text": (reference.oracle_text if reference else "") or "",
@@ -60,6 +61,7 @@ def _generated_deck_cards(db: Session, proposal: dict) -> list[dict]:
         cards.append({
             "scryfall_id": item.scryfall_id,
             "name": (reference.flavor_name or reference.printed_name or reference.name) if reference else item.card_name,
+            "rules_name": reference.name if reference else item.card_name,
             "image_url": reference.image_url if reference else item.image_url,
             "type_line": (reference.type_line if reference else item.type_line) or "",
             "oracle_text": (reference.oracle_text if reference else "") or "",

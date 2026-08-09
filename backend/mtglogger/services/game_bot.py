@@ -61,6 +61,9 @@ def choose_bot_action(state: dict, difficulty: str = "standard") -> dict | None:
         action=by_type["sacrifice_permanents"][0];amount=action["amount"]
         ranked=sorted(action["card_ids"],key=lambda card_id:((_card(state,"bot",card_id).get("mana_value") or 0),sum(_stats(_card(state,"bot",card_id)))))
         return {"type":"sacrifice_permanents","card_ids":ranked[:amount]}
+    if "choose_legendary" in by_type:
+        action=by_type["choose_legendary"][0];choice=max(action["card_ids"],key=lambda card_id:((_card(state,"bot",card_id).get("mana_value") or 0),sum(_stats(_card(state,"bot",card_id)))))
+        return {"type":"choose_legendary","card_ids":[choice]}
     if "play_land" in by_type:
         return by_type["play_land"][0]
     if "cast" in by_type:

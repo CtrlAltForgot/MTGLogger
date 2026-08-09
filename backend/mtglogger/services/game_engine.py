@@ -165,7 +165,7 @@ def _new_player(player_id: str, name: str, deck: list[dict], is_bot: bool, forma
 def new_game(player_deck: list[dict], opponent_deck: list[dict], play_first: bool = True, opponent_is_bot: bool = True, player_format: str = "", opponent_format: str = "") -> dict:
     human_id, bot_id = "player", "bot"
     players = [_new_player(human_id, "You", player_deck, False, player_format), _new_player(bot_id, "Bot" if opponent_is_bot else "Guest", opponent_deck, opponent_is_bot, opponent_format)]
-    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id, "players": players, "stack": [], "combat": {"attackers": [], "blocks": {}}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "log": []}
+    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id, "players": players, "stack": [], "combat": {"attackers": [], "blocks": {}}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "pending_legendary": None, "log": []}
     for player in players:
         _draw(state, player, 7)
     _log(state, "Opening hands drawn. Choose whether to keep or mulligan.")
@@ -224,7 +224,7 @@ def _multiplayer(state: dict) -> bool:
 
 
 def _pending_decision(state:dict)->bool:
-    return bool(state.get("pending_discard") or state.get("pending_sacrifice"))
+    return bool(state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary"))
 
 
 def _commander_tax(player: dict, card: dict) -> int:
@@ -250,6 +250,10 @@ def legal_actions(state: dict, player_id: str) -> list[dict]:
     if pending_sacrifice:
         if pending_sacrifice["player_id"]!=player_id:return []
         return [{"type":"sacrifice_permanents","card_ids":pending_sacrifice["card_ids"],"amount":pending_sacrifice["amount"]},{"type":"concede"}]
+    pending_legendary=state.get("pending_legendary")
+    if pending_legendary:
+        if pending_legendary["player_id"]!=player_id:return []
+        return [{"type":"choose_legendary","card_ids":pending_legendary["card_ids"],"amount":1},{"type":"concede"}]
     if state["status"] == "mulligan":
         if player["kept_hand"]:
             return []
@@ -520,6 +524,15 @@ def _state_based_actions(state: dict) -> None:
                 _,toughness=_parse_stats(permanent)
                 if "Creature" in permanent.get("type_line","") and (toughness<=0 or (permanent.get("damage",0)>=toughness and not _has_keyword(permanent,"Indestructible"))):
                     _leave_battlefield(state,owner,permanent,"graveyard");changed=True
+    if _pending_decision(state):return
+    for owner in state["players"]:
+        if any("legend rule doesn't apply" in (permanent.get("oracle_text") or "").casefold() for permanent in owner["battlefield"]):continue
+        groups:dict[str,list[dict]]={}
+        for permanent in owner["battlefield"]:
+            if "Legendary" in permanent.get("type_line",""):groups.setdefault((permanent.get("rules_name") or permanent.get("name","")).casefold(),[]).append(permanent)
+        duplicate=next((cards for cards in groups.values() if len(cards)>1),None)
+        if duplicate:
+            state["pending_legendary"]={"player_id":owner["id"],"card_ids":[card["instance_id"] for card in duplicate]};state["priority_player_id"]=owner["id"];_log(state,f"{owner['name']} must choose one legendary {duplicate[0].get('rules_name') or duplicate[0]['name']} to keep.");return
 
 
 def _begin_next_turn(state:dict)->None:
@@ -644,6 +657,13 @@ def perform_action(state: dict, player_id: str, action: dict) -> dict:
         if len(chosen)!=required:raise RuleViolation("One or more selected permanents are no longer available")
         for card in chosen:_leave_battlefield(state,player,card,"graveyard")
         state["pending_sacrifice"]=None;state["priority_player_id"]=state["active_player_id"];_log(state,f"{player['name']} sacrificed {required} permanent(s).")
+    elif action_type == "choose_legendary":
+        pending=state.get("pending_legendary") or {};requested=action.get("card_ids") or []
+        if pending.get("player_id")!=player_id or len(requested)!=1 or requested[0] not in pending.get("card_ids",[]):raise RuleViolation("Choose exactly one legendary permanent to keep")
+        keep=requested[0]
+        for card in list(player["battlefield"]):
+            if card["instance_id"] in pending["card_ids"] and card["instance_id"]!=keep:_leave_battlefield(state,player,card,"graveyard")
+        state["pending_legendary"]=None;state["priority_player_id"]=state["active_player_id"];_log(state,f"{player['name']} chose a legendary permanent to keep.")
     elif action_type == "adjust_life":
         target_player = _player(state, action.get("target_id") or player_id); amount = max(-100, min(100, int(action.get("amount") or 0))); target_player["life"] += amount; _log(state, f"{target_player['name']}'s life was adjusted by {amount:+d}.")
     elif action_type == "add_counter":
