@@ -96,9 +96,21 @@ def _protected_from(card: dict, source: dict) -> bool:
     return any(f"protection from {names[color]}" in text for color in colors)
 
 
+def _ward_details(card:dict)->dict|None:
+    text=card.get("oracle_text") or "";mana=re.search(r"\bward\s*[—-]?\s*((?:\{[^}]+\})+)",text,re.IGNORECASE)
+    if mana:return {"cost_type":"mana","mana_cost":mana.group(1).upper(),"amount":0,"label":mana.group(1).upper()}
+    life=re.search(r"\bward\s*[—-]?\s*pay (\d+) life\b",text,re.IGNORECASE)
+    if life:return {"cost_type":"life","mana_cost":"","amount":int(life.group(1)),"label":f"Pay {life.group(1)} life"}
+    discard=re.search(r"\bward\s*[—-]?\s*discard (a|one|two|three|four|five|\d+) cards?\b",text,re.IGNORECASE)
+    if discard:
+        value=discard.group(1).casefold();amount={"a":1,"one":1,"two":2,"three":3,"four":4,"five":5}.get(value,int(value) if value.isdigit() else 1)
+        return {"cost_type":"discard","mana_cost":"","amount":amount,"label":f"Discard {amount} card{'s' if amount!=1 else ''}"}
+    return None
+
+
 def _ward_cost(card:dict)->str:
-    match=re.search(r"\bward\s*[—-]?\s*((?:\{[^}]+\})+)",card.get("oracle_text") or "",re.IGNORECASE)
-    return match.group(1).upper() if match else ""
+    details=_ward_details(card)
+    return details["label"] if details else ""
 
 
 def _activated_abilities(card: dict) -> list[dict]:
@@ -257,9 +269,9 @@ def _pending_decision(state:dict)->bool:
 def _queue_ward(state:dict,caster:dict,target_id:str|None,stack_item:dict)->None:
     if not target_id:return
     target_owner=next((owner for owner in state["players"] if any(card["instance_id"]==target_id for card in owner["battlefield"])),None)
-    target=next((card for owner in state["players"] for card in owner["battlefield"] if card["instance_id"]==target_id),None);cost=_ward_cost(target or {})
-    if target and target_owner and target_owner["id"]!=caster["id"] and cost:
-        state["pending_ward"]={"player_id":caster["id"],"stack_id":stack_item["id"],"mana_cost":cost,"source_name":target["name"]};state["priority_player_id"]=caster["id"];_log(state,f"{target['name']}'s ward requires {cost}.")
+    target=next((card for owner in state["players"] for card in owner["battlefield"] if card["instance_id"]==target_id),None);details=_ward_details(target or {})
+    if target and target_owner and target_owner["id"]!=caster["id"] and details:
+        state["pending_ward"]={"player_id":caster["id"],"stack_id":stack_item["id"],"source_name":target["name"],**details};state["priority_player_id"]=caster["id"];_log(state,f"{target['name']}'s ward requires {details['label']}.")
 
 
 def _commander_tax(player: dict, card: dict) -> int:
@@ -303,8 +315,9 @@ def legal_actions(state: dict, player_id: str) -> list[dict]:
     pending_ward=state.get("pending_ward")
     if pending_ward:
         if pending_ward["player_id"]!=player_id:return []
-        actions=[{"type":"decline_ward","mana_cost":pending_ward["mana_cost"],"source_name":pending_ward["source_name"]},{"type":"concede"}]
-        if _can_pay(player,{"mana_cost":pending_ward["mana_cost"]}):actions.insert(0,{"type":"pay_ward","mana_cost":pending_ward["mana_cost"],"source_name":pending_ward["source_name"]})
+        common={"cost_type":pending_ward.get("cost_type","mana"),"mana_cost":pending_ward.get("mana_cost",""),"amount":pending_ward.get("amount",0),"label":pending_ward.get("label",pending_ward.get("mana_cost","")),"source_name":pending_ward["source_name"]};actions=[{"type":"decline_ward",**common},{"type":"concede"}];kind=common["cost_type"]
+        can_pay=(kind=="mana" and _can_pay(player,{"mana_cost":common["mana_cost"]})) or (kind=="life" and player["life"]>=common["amount"]) or (kind=="discard" and len(player["hand"])>=common["amount"])
+        if can_pay:actions.insert(0,{"type":"pay_ward",**common,**({"card_ids":[card["instance_id"] for card in player["hand"]]} if kind=="discard" else {})})
         return actions
     if state["status"] == "mulligan":
         if player["kept_hand"]:
@@ -758,7 +771,19 @@ def perform_action(state: dict, player_id: str, action: dict) -> dict:
         if pending.get("player_id")!=player_id:raise RuleViolation("There is no ward cost for this player")
         stack_item=next((item for item in state["stack"] if item["id"]==pending["stack_id"]),None)
         if not stack_item:raise RuleViolation("The warded spell or ability is no longer on the stack")
-        if action_type=="pay_ward":_pay_mana(player,{"mana_cost":pending["mana_cost"]});_log(state,f"{player['name']} paid {pending['mana_cost']} for {pending['source_name']}'s ward.")
+        if action_type=="pay_ward":
+            kind=pending.get("cost_type","mana")
+            if kind=="mana":_pay_mana(player,{"mana_cost":pending["mana_cost"]})
+            elif kind=="life":
+                if player["life"]<pending["amount"]:raise RuleViolation("Not enough life to pay ward")
+                player["life"]-=pending["amount"]
+            elif kind=="discard":
+                requested=action.get("card_ids") or [];amount=pending["amount"]
+                if len(requested)!=amount or len(set(requested))!=amount:raise RuleViolation(f"Choose exactly {amount} card(s) to discard for ward")
+                chosen=[card for card in player["hand"] if card["instance_id"] in set(requested)]
+                if len(chosen)!=amount:raise RuleViolation("One or more Ward discards are not in your hand")
+                for chosen_card in chosen:player["hand"].remove(chosen_card);player["graveyard"].append(chosen_card)
+            _log(state,f"{player['name']} paid {pending.get('label',pending.get('mana_cost',''))} for {pending['source_name']}'s ward.")
         else:
             state["stack"].remove(stack_item)
             if stack_item.get("kind","spell")=="spell":_countered_spell_destination(state,player,stack_item["card"])

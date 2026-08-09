@@ -365,6 +365,18 @@ def test_ward_requires_a_persisted_pay_or_counter_decision():
     assert choose_bot_action(state,"expert")["type"]=="pay_ward" and choose_bot_action(state,"beginner")["type"]=="decline_ward"
 
 
+def test_life_and_discard_ward_costs_are_validated_and_paid():
+    def ward_state(text,index):
+        state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot");warded={**card(index,"Alternative Ward","Creature — Wizard","","2","2"),"oracle_text":text,"instance_id":"alternative-ward","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};removal={**card(index+1,"Alternative Removal","Instant"),"oracle_text":"Destroy target creature.","instance_id":"alternative-removal","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"].append(removal);bot["battlefield"].append(warded);return perform_action(state,"player",{"type":"cast","card_id":"alternative-removal","target_id":"alternative-ward"})
+
+    state=ward_state("Ward—Pay 3 life.",730);action=next(a for a in legal_actions(state,"player") if a["type"]=="pay_ward");assert action["cost_type"]=="life" and action["amount"]==3
+    state=perform_action(state,"player",{"type":"pay_ward"});assert next(p for p in state["players"] if p["id"]=="player")["life"]==17
+
+    state=ward_state("Ward—Discard a card.",732);action=next(a for a in legal_actions(state,"player") if a["type"]=="pay_ward");chosen=action["card_ids"][0];before=len(next(p for p in state["players"] if p["id"]=="player")["hand"]);assert action["cost_type"]=="discard" and action["amount"]==1
+    state=perform_action(state,"player",{"type":"pay_ward","card_ids":[chosen]});player=next(p for p in state["players"] if p["id"]=="player");assert len(player["hand"])==before-1 and any(card["instance_id"]==chosen for card in player["graveyard"])
+
+
+
 def test_countered_commander_spell_returns_to_command_zone():
     first,second=decks();state=new_game(first,second,opponent_is_bot=False,player_format="Commander");state=perform_action(state,"player",{"type":"keep"});state=perform_action(state,"bot",{"type":"keep"});state["phase"]="precombat_main";player=next(p for p in state["players"] if p["id"]=="player");guest=next(p for p in state["players"] if p["id"]=="bot")
     commander={**card(722,"Test Commander","Legendary Creature — Wizard","","2","2"),"instance_id":"test-commander","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False,"commander":True};counter={**card(723,"Command Denial","Instant"),"oracle_text":"Counter target spell.","instance_id":"command-denial","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["command"].append(commander);guest["hand"].append(counter)
