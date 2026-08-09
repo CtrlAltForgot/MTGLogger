@@ -30,7 +30,8 @@ def opponent(state: dict, player_id: str) -> dict:
     return next(player for player in state["players"] if player["id"] != player_id)
 
 
-def _draw(state: dict, player: dict, amount: int = 1) -> None:
+def _draw(state: dict, player: dict, amount: int = 1,emit_events:bool=True) -> None:
+    trigger_dedupe:set[str]=set()
     for _ in range(amount):
         if not player["library"]:
             if not player.get("lost"):
@@ -38,7 +39,11 @@ def _draw(state: dict, player: dict, amount: int = 1) -> None:
                 player["loss_reason"] = "empty_library"
                 _log(state, f"{player['name']} tried to draw from an empty library.")
             return
-        player["hand"].append(player["library"].pop())
+        drawn=player["library"].pop();player["hand"].append(drawn)
+        if emit_events:
+            if player.get("draw_event_turn")!=state["turn"]:player["draw_event_turn"]=state["turn"];player["draws_this_turn"]=0
+            player["draws_this_turn"]=player.get("draws_this_turn",0)+1
+            _queue_triggers(state,"draw",drawn,player,trigger_dedupe)
 
 
 def _gain_life(state:dict,player:dict,amount:int)->None:
@@ -751,7 +756,7 @@ def new_game(player_deck: list[dict], opponent_deck: list[dict], play_first: boo
     players = [_new_player(human_id, "You", player_deck, False, player_format), _new_player(bot_id, "Bot" if opponent_is_bot else "Guest", opponent_deck, opponent_is_bot, opponent_format)]
     state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "beginning_draw_pending":True,"first_turn_draw_skipped":False,"active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id, "players": players, "stack": [], "combat": {"attackers": [], "attackers_declared":False,"blocks": {}, "attack_targets": {},"block_orders":{},"damage_pending":False,"damage_step":None,"first_strike_damage_ids":[],"block_triggers_pending":False}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "pending_legendary": None,"pending_commander_zone":[],"pending_library_search":None,"pending_scry":None,"pending_damage_order":None,"pending_ward":None,"pending_blight":None,"pending_proliferate":None,"pending_transform":None,"pending_trigger_targets":[], "log": []}
     for player in players:
-        _draw(state, player, 7)
+        _draw(state, player, 7,False)
     _log(state, "Opening hands drawn. Choose whether to keep or mulligan.")
     return state
 
@@ -1560,6 +1565,13 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 if matches and one_or_more and dedupe is not None:dedupe.add(dedupe_key)
             elif event == "life_gain":
                 matches=(owner["id"]==event_owner["id"] and re.search(r"whenever you gain life",lower) is not None) or (owner["id"]!=event_owner["id"] and re.search(r"whenever an opponent gains life",lower) is not None) or re.search(r"whenever a player gains life",lower) is not None
+            elif event == "draw":
+                controlled=owner["id"]==event_owner["id"];count=event_owner.get("draws_this_turn",0);one_or_more="one or more cards" in lower;dedupe_key=f"draw:{source.get('instance_id')}"
+                yours=controlled and (re.search(r"whenever you draw (?:a|one or more) cards?",lower) is not None or ("whenever you draw your first card each turn" in lower and count==1) or ("whenever you draw your second card each turn" in lower and count==2) or ("whenever you draw your third card each turn" in lower and count==3))
+                opposing=not controlled and re.search(r"whenever (?:an|one or more) opponents? draws? (?:a|one or more) cards?",lower) is not None
+                any_player=re.search(r"whenever a player draws? (?:a|one or more) cards?",lower) is not None
+                matches=(yours or opposing or any_player) and (not one_or_more or dedupe is None or dedupe_key not in dedupe)
+                if matches and one_or_more and dedupe is not None:dedupe.add(dedupe_key)
             elif event == "leaves" and event_card:
                 matches=source is not event_card and owner["id"]==event_owner["id"] and "Creature" in event_card.get("type_line","") and "when another creature you control leaves the battlefield" in lower
             elif event == "upkeep":
@@ -1812,7 +1824,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
                 state["status"] = "active"; state["priority_player_id"] = state["active_player_id"];active=_player(state,state["active_player_id"]);_log(state,f"Turn 1 began for {active['name']}. Untap and upkeep started.");_queue_triggers(state,"upkeep",None,active)
     elif action_type == "mulligan":
         player["mulligans"]=min(7,player.get("mulligans",0)+1);player["library"].extend(player["hand"]);player["hand"]=[]
-        random.SystemRandom().shuffle(player["library"]);_draw(state,player,7);_log(state,f"{player['name']} took mulligan {player['mulligans']} and drew seven new cards.")
+        random.SystemRandom().shuffle(player["library"]);_draw(state,player,7,False);_log(state,f"{player['name']} took mulligan {player['mulligans']} and drew seven new cards.")
     elif action_type == "bottom_mulligan_cards":
         required=player.get("mulligans",0);requested=action.get("card_ids") or []
         if state.get("pending_mulligan_bottom")!=player_id or len(requested)!=required or len(set(requested))!=required:raise RuleViolation(f"Choose exactly {required} cards to put on the bottom")
