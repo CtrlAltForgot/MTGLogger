@@ -810,6 +810,23 @@ def test_simultaneous_combat_triggers_use_active_player_then_nonactive_player_or
     assert [item["card"]["name"] for item in state["stack"]]==["Bot Provocateur trigger","Human Sentinel trigger"]
 
 
+def test_attack_trigger_creates_token_tapped_and_attacking_same_defender():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
+    captain={**card(652,"Token Captain","Creature — Soldier","","2","2"),"oracle_text":"Whenever Token Captain attacks, create a 1/1 white Soldier creature token that's tapped and attacking.","instance_id":"token-captain","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};blocker={**card(653,"Waiting Blocker","Creature — Bear","","2","2"),"instance_id":"waiting-blocker","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].append(captain);bot["battlefield"].append(blocker)
+    state=perform_action(state,"player",{"type":"declare_attackers","attacker_ids":["token-captain"]});state=perform_action(state,"bot",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");token=next(card for card in player["battlefield"] if card.get("token"))
+    assert token["tapped"] and token["summoning_sick"] and token["instance_id"] in state["combat"]["attackers"] and state["combat"]["attack_targets"][token["instance_id"]]=="bot"
+    block_action=next(action for action in legal_actions(state,"bot") if action["type"]=="declare_blockers");assert token["instance_id"] in block_action["legal_blocks"]["waiting-blocker"]
+
+
+def test_controller_combat_damage_triggers_count_each_or_once_per_damage_step():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player")
+    attackers=[{**card(654+index,f"Damage Dealer {index}","Creature — Rogue","","1","1"),"instance_id":f"damage-dealer-{index}","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False} for index in range(2)];once={**card(656,"Shared Insight","Enchantment"),"oracle_text":"Whenever one or more creatures you control deal combat damage to a player, draw a card.","instance_id":"shared-insight","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};each={**card(657,"Rogue Lessons","Enchantment"),"oracle_text":"Whenever a creature you control deals combat damage to a player, draw a card.","instance_id":"rogue-lessons","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].extend([*attackers,once,each]);before=len(player["hand"])
+    state=perform_action(state,"player",{"type":"declare_attackers","attacker_ids":[card["instance_id"] for card in attackers]});state=perform_action(state,"bot",{"type":"advance_phase"});state=perform_action(state,"player",{"type":"resolve_combat_damage"})
+    names=[item["card"]["name"] for item in state["stack"]];assert names.count("Shared Insight trigger")==1 and names.count("Rogue Lessons trigger")==2
+    while state["stack"]:state=perform_action(state,"player",{"type":"resolve"})
+    player=next(p for p in state["players"] if p["id"]=="player");assert len(player["hand"])==before+3
+
+
 def test_infect_wither_toxic_and_poison_loss_are_enforced():
     state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
     infect={**card(650,"Infecter","Creature — Horror","","3","3"),"keywords":["Infect"],"instance_id":"infect","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};toxic={**card(651,"Toxic","Creature — Phyrexian","","1","1"),"oracle_text":"Toxic 2","keywords":["Toxic"],"instance_id":"toxic","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};durable={**card(652,"Durable","Creature — Golem","","3","3"),"keywords":["Indestructible"],"instance_id":"durable","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].extend([infect,toxic]);bot["battlefield"].append(durable)

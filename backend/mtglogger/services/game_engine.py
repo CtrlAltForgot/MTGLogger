@@ -1239,9 +1239,13 @@ def _resolve_spell(state: dict) -> None:
     token_match = re.search(r"create (a|one|two|three|four|\d+) (\d+)/(\d+) ([^.]*?) creature tokens?", effect_text)
     if token_match:
         amount = {"a":1,"one":1,"two":2,"three":3,"four":4}.get(token_match.group(1),int(token_match.group(1)) if token_match.group(1).isdigit() else 0)
+        attacking="tapped and attacking" in effect_text;created=[]
         for _ in range(amount):
-            caster["battlefield"].append({"instance_id":_id(),"scryfall_id":"token","name":f"{token_match.group(4).title()} Token","image_url":None,"type_line":f"Token Creature — {token_match.group(4).title()}","oracle_text":"","mana_cost":"","mana_value":0,"power":token_match.group(2),"toughness":token_match.group(3),"owner_id":caster["id"],"controller_id":caster["id"],"tapped":False,"damage":0,"counters":{},"summoning_sick":True,"token":True})
-        _log(state, f"{caster['name']} created {amount} token(s).")
+            descriptor=token_match.group(4).strip();keywords=[keyword.title() for keyword in ("flying","first strike","double strike","deathtouch","haste","lifelink","menace","reach","trample","vigilance") if re.search(rf"\b{keyword}\b",effect_text)];token={"instance_id":_id(),"scryfall_id":"token","name":f"{descriptor.title()} Token","image_url":None,"type_line":f"Token Creature — {descriptor.title()}","oracle_text":"","mana_cost":"","mana_value":0,"power":token_match.group(2),"toughness":token_match.group(3),"owner_id":caster["id"],"controller_id":caster["id"],"tapped":attacking,"damage":0,"counters":{},"summoning_sick":True,"token":True,"keywords":keywords};caster["battlefield"].append(token);created.append(token)
+        if attacking and state.get("phase")=="combat":
+            source_target=state["combat"].get("attack_targets",{}).get(item.get("source_id"),other["id"])
+            for token in created:state["combat"]["attackers"].append(token["instance_id"]);state["combat"]["attack_targets"][token["instance_id"]]=source_target
+        _log(state, f"{caster['name']} created {amount} token(s){' tapped and attacking' if attacking else ''}.")
     predefined_matches=list(re.finditer(r"create (a|one|two|three|four|five|\d+) (tapped )?(clue|food|treasure|blood|gold) tokens?",effect_text,re.IGNORECASE))
     for predefined in predefined_matches:
         word=predefined.group(1).casefold();amount={"a":1,"one":1,"two":2,"three":3,"four":4,"five":5}.get(word,int(word) if word.isdigit() else 1);kind=predefined.group(3).title()
@@ -1297,7 +1301,7 @@ def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str) -
         zone_owner[destination].remove(card);controller=_player(state,earthbend_controller);card["controller_id"]=controller["id"];card["tapped"]=True;card["summoning_sick"]=True;card["counters"]={};controller["battlefield"].append(card);_log(state,f"{card['name']} returned to the battlefield tapped after being earthbent.");_queue_triggers(state,"enters",card,controller)
 
 
-def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owner: dict) -> None:
+def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owner: dict, dedupe:set[str]|None=None) -> None:
     if event in {"earthbend","waterbend","firebend","airbend"}:
         event_owner["bent_this_turn"]=sorted(set(event_owner.get("bent_this_turn",[]))|{event})
     ordered_owners=sorted(state["players"],key=lambda owner:owner["id"]!=state.get("active_player_id"))
@@ -1357,7 +1361,13 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
             elif event == "combat_damage_player" and event_card:
                 source_hit = source.get("instance_id") == event_card.get("instance_id")
                 source_name = re.escape(source.get("name", "").casefold())
-                matches = source_hit and re.search(rf"whenever (?:~|this creature|{source_name}) deals combat damage to (?:a player|an opponent)", lower) is not None
+                controlled_hit=event_card.get("controller_id")==owner["id"]
+                source_match=source_hit and re.search(rf"whenever (?:~|this creature|{source_name}) deals combat damage to (?:a player|an opponent)", lower) is not None
+                one_or_more=controlled_hit and re.search(r"whenever one or more creatures you control deal combat damage to (?:a player|an opponent)",lower) is not None
+                each_creature=controlled_hit and re.search(r"whenever a creature you control deals combat damage to (?:a player|an opponent)",lower) is not None
+                dedupe_key=f"combat-damage:{source.get('instance_id')}"
+                matches=source_match or each_creature or (one_or_more and (dedupe is None or dedupe_key not in dedupe))
+                if matches and one_or_more and dedupe is not None:dedupe.add(dedupe_key)
             elif event == "cycling" and event_card:
                 cycled_name=re.escape(event_card.get("name","").casefold());same_card=source is event_card and re.search(rf"when you cycle (?:~|this card|{cycled_name})\b",lower) is not None
                 matches=same_card or (source is not event_card and owner["id"]==event_owner["id"] and "whenever you cycle a card" in lower)
@@ -1389,7 +1399,7 @@ def _combat_damage(state: dict) -> None:
     attacker = _player(state, state["active_player_id"])
     defender = opponent(state, attacker["id"])
     originally_blocked = set(state["combat"]["blocks"].values())
-    def hit_defender(creature:dict, amount:int,target_id:str)->None:
+    def hit_defender(creature:dict, amount:int,target_id:str,trigger_dedupe:set[str])->None:
         planeswalker=next((card for card in defender["battlefield"] if card["instance_id"]==target_id and "Planeswalker" in card.get("type_line","")),None)
         if planeswalker:planeswalker["counters"]["loyalty"]=max(0,planeswalker["counters"].get("loyalty",0)-amount)
         elif _has_keyword(creature,"Infect"):defender["poison"]=defender.get("poison",0)+amount
@@ -1400,12 +1410,12 @@ def _combat_damage(state: dict) -> None:
         if not planeswalker and creature.get("commander"):
             source = creature.get("owner_id", attacker["id"]); defender.setdefault("commander_damage", {})[source] = defender.setdefault("commander_damage", {}).get(source, 0) + amount
         if not planeswalker and amount > 0:
-            _queue_triggers(state,"combat_damage_player",creature,attacker)
+            _queue_triggers(state,"combat_damage_player",creature,attacker,trigger_dedupe)
 
     first_strike_ids=set(state["combat"].get("first_strike_damage_ids") or [])
     def damage_step(first: bool) -> None:
         battlefield = {card["instance_id"]: card for player in state["players"] for card in player["battlefield"]}
-        deathtouch_hit:set[str]=set();life_gain={attacker["id"]:0,defender["id"]:0}
+        deathtouch_hit:set[str]=set();trigger_dedupe:set[str]=set();life_gain={attacker["id"]:0,defender["id"]:0}
         def strikes(card:dict)->bool:
             has_first=_has_keyword(card,"First strike");double=_has_keyword(card,"Double strike")
             return has_first or double if first else card["instance_id"] not in first_strike_ids or double
@@ -1415,13 +1425,13 @@ def _combat_damage(state: dict) -> None:
             power=max(0,_parse_stats(creature,state)[0]);assigned_ids=state["combat"].get("block_orders",{}).get(attacker_id) or [blocker_id for blocker_id,target_id in state["combat"]["blocks"].items() if target_id==attacker_id];blockers=[battlefield[blocker_id] for blocker_id in assigned_ids if blocker_id in battlefield]
             attack_target=state["combat"].get("attack_targets",{}).get(attacker_id,defender["id"])
             if attacker_id not in originally_blocked:
-                hit_defender(creature,power,attack_target);continue
+                hit_defender(creature,power,attack_target,trigger_dedupe);continue
             remaining=power
             for blocker in blockers:
                 _,toughness=_parse_stats(blocker,state);lethal=1 if _has_keyword(creature,"Deathtouch") else max(1,toughness-blocker.get("damage",0));assigned=min(remaining,lethal);dealt=_damage_permanent(state,blocker,assigned,creature);remaining-=assigned
                 if dealt and _has_keyword(creature,"Deathtouch"):deathtouch_hit.add(blocker["instance_id"])
                 if dealt and _has_keyword(creature,"Lifelink"):life_gain[attacker["id"]]+=dealt
-            if remaining and _has_keyword(creature,"Trample"):hit_defender(creature,remaining,attack_target)
+            if remaining and _has_keyword(creature,"Trample"):hit_defender(creature,remaining,attack_target,trigger_dedupe)
         for blocker_id,attacker_id in state["combat"]["blocks"].items():
             blocker,creature=battlefield.get(blocker_id),battlefield.get(attacker_id)
             if not blocker or not creature or not strikes(blocker):continue
