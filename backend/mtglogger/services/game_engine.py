@@ -1537,7 +1537,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
     if event=="upkeep":
         for owner,permanent in sources:
             if permanent.pop("transform_next_upkeep",False):_transform(state,permanent)
-    if event in {"dies","cycling","discard"} and event_card:
+    if event in {"dies","cycling","discard","cast"} and event_card:
         if not any(source is event_card for _,source in sources):
             insert_at=max((index+1 for index,(owner,_) in enumerate(sources) if owner["id"]==event_owner["id"]),default=len(sources));sources.insert(insert_at,(event_owner,event_card))
     for owner, source in sources:
@@ -1601,9 +1601,15 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
             elif event == "beginning_combat":
                 matches = owner["id"]==event_owner["id"] and re.search(r"at the beginning of combat on your turn",lower) is not None
             elif event == "cast" and event_card:
-                cast_by_controller = event_owner["id"] == owner["id"]
-                type_line = event_card.get("type_line", "").casefold()
-                matches = cast_by_controller and ("whenever you cast a spell" in lower or ("whenever you cast a creature spell" in lower and "creature" in type_line) or ("whenever you cast a noncreature spell" in lower and "creature" not in type_line) or ("whenever you cast an instant or sorcery spell" in lower and any(kind in type_line for kind in ("instant", "sorcery"))))
+                controlled=event_owner["id"]==owner["id"];type_line=event_card.get("type_line","").casefold();count=event_owner.get("spells_cast_this_turn",0);cast_zone=event_card.get("cast_source_zone","hand");colors=set(event_card.get("colors") or [])
+                kind_match=((re.search(r"casts? (?:a|an) spell(?: from (?:exile|your graveyard))?(?:,|$)",lower) is not None) or ("creature spell" in lower and "creature" in type_line) or ("noncreature spell" in lower and "creature" not in type_line) or ("instant or sorcery spell" in lower and any(kind in type_line for kind in ("instant","sorcery"))) or ("artifact spell" in lower and "artifact" in type_line) or ("enchantment spell" in lower and "enchantment" in type_line) or ("planeswalker spell" in lower and "planeswalker" in type_line) or ("permanent spell" in lower and any(kind in type_line for kind in ("creature","artifact","enchantment","planeswalker","battle"))) or ("legendary spell" in lower and "legendary" in type_line) or ("historic spell" in lower and ("legendary" in type_line or "artifact" in type_line or "saga" in type_line)) or ("multicolored spell" in lower and len(colors)>=2))
+                zone_ok=("from exile" not in lower or cast_zone=="exile") and ("from your graveyard" not in lower or cast_zone=="graveyard")
+                ordinal=("whenever you cast your first spell each turn" in lower and count==1) or ("whenever you cast your second spell each turn" in lower and count==2) or ("whenever you cast your third spell each turn" in lower and count==3)
+                yours=controlled and source is not event_card and ("whenever you cast" in lower or "whenever you cast or copy" in lower) and (kind_match or ordinal) and zone_ok
+                opposing=not controlled and "whenever an opponent casts" in lower and kind_match and zone_ok
+                any_player="whenever a player casts" in lower and kind_match and zone_ok
+                self_cast=source is event_card and re.search(r"when you cast (?:this spell|~)",lower) is not None
+                matches=yours or opposing or any_player or self_cast
             elif event == "attackers_declared":
                 attacking_ids = set(state.get("combat", {}).get("attackers", []))
                 controlled_attackers = [card for card in owner["battlefield"] if card.get("instance_id") in attacking_ids]
@@ -1920,7 +1926,9 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if card.get("commander"): player["commander_casts"] = player.get("commander_casts", 0) + 1
         effective_target=target_id or (mode_targets[0] if len(mode_targets)==1 else None);stack_item={"id": _id(), "card": card, "controller_id": player_id, "target_id": effective_target,"target_ids":target_ids,"mode_indices":chosen_modes,"mode_targets":mode_targets,"x_value":x_value,"flashback":bool(flashback),"kicked":requested_kicked,"blighted":requested_blight};state["stack"].append(stack_item);state["stack"].extend(cost_triggers); state["consecutive_passes"] = 0; state["pending_phase_advance"] = False
         if requested_waterbend:_queue_triggers(state,"waterbend",card,player)
-        _queue_triggers(state,"cast",card,player)
+        if player.get("cast_event_turn")!=state["turn"]:player["cast_event_turn"]=state["turn"];player["spells_cast_this_turn"]=0
+        player["spells_cast_this_turn"]=player.get("spells_cast_this_turn",0)+1;card["cast_source_zone"]="graveyard" if source=="flashback" else "exile" if source=="airbend" else source
+        _queue_triggers(state,"cast",card,player);card.pop("cast_source_zone",None)
         ward_targets=[effective_target] if effective_target else []
         ward_targets.extend(target for target in mode_targets if target and target not in ward_targets)
         ward_targets.extend(target for target in target_ids if target not in ward_targets)
