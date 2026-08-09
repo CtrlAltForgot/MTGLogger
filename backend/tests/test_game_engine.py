@@ -1179,3 +1179,12 @@ def test_blight_may_kill_its_creature_and_paid_modal_cost_requires_both_modes():
     action=next(action for action in legal_actions(state,"player") if action.get("card_id")=="test-pyrrhic" and action.get("blighted"));assert action["mode_min"]==action["mode_max"]==2
     state=perform_action(state,"player",{"type":"cast","card_id":"test-pyrrhic","blighted":True,"cost_card_ids":["tiny-blight-victim"],"chosen_modes":[0,1],"mode_targets":["target-relic","target-giant"]});player=next(p for p in state["players"] if p["id"]=="player")
     assert any(card["instance_id"]=="tiny-blight-victim" for card in player["graveyard"])
+
+
+def test_blight_activated_ability_uses_one_creature_and_resolves_after_it_dies():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player")
+    source={**card(1160,"Blight Scholar","Creature — Goblin Warlock","","1","1"),"oracle_text":"Blight 2: Draw a card.","instance_id":"blight-scholar","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"]=[source];before=len(player["library"])
+    action=next(action for action in legal_actions(state,"player") if action.get("card_id")=="blight-scholar");assert action["cost_kind"]=="blight" and action["blight_amount"]==2 and action["cost_options"]==["blight-scholar"]
+    state=perform_action(state,"player",{"type":"activate","card_id":"blight-scholar","ability_index":action["ability_index"],"cost_card_ids":["blight-scholar"]});player=next(p for p in state["players"] if p["id"]=="player")
+    assert any(card["instance_id"]=="blight-scholar" for card in player["graveyard"]) and state["stack"][-1]["card"]["name"]=="Blight Scholar ability"
+    state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");assert len(player["library"])==before-1
