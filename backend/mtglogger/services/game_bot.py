@@ -1,7 +1,7 @@
 import random
 import re
 
-from .game_engine import _effective_rules_text, _has_keyword, _parse_stats, _protected_from, legal_actions, perform_action
+from .game_engine import _can_block_pair, _effective_rules_text, _has_keyword, _parse_stats, legal_actions, perform_action
 
 
 def _card(state: dict, player_id: str, instance_id: str) -> dict:
@@ -44,8 +44,7 @@ def _choose_target(state:dict,action:dict)->str:
 
 
 def _can_block(state:dict,attacker:dict,blocker:dict)->bool:
-    text=_effective_rules_text(state,attacker)
-    return "can't be blocked" not in text and "unblockable" not in text and (not _has_keyword(attacker,"Flying") or _has_keyword(blocker,"Flying") or _has_keyword(blocker,"Reach")) and not _protected_from(attacker,blocker)
+    return _can_block_pair(state,attacker,blocker)
 
 
 def _choose_attackers(state:dict,ids:list[str],difficulty:str)->list[str]:
@@ -60,6 +59,10 @@ def _choose_attackers(state:dict,ids:list[str],difficulty:str)->list[str]:
     if difficulty=="expert" and len(ids)>len(blockers):
         pressure=sorted((card_id for card_id in ids if card_id not in selected),key=lambda card_id:_stats(state,attackers[card_id])[0],reverse=True)
         selected.extend(pressure[:max(0,len(ids)-len(blockers)-len(selected))])
+    if len(selected)==1 and "can't attack or block alone" in _effective_rules_text(state,attackers[selected[0]]):
+        companion=next((card_id for card_id in ids if card_id not in selected),None)
+        if companion:selected.append(companion)
+        else:selected=[]
     return selected
 
 
@@ -87,6 +90,9 @@ def _choose_blocks(state:dict,action:dict,difficulty:str)->dict[str,str]:
             chosen=legal[:needed]
             if difficulty=="standard" and sum(_stats(state,blockers[blocker_id])[0] for blocker_id in chosen)<toughness and power<4:continue
         for blocker_id in chosen:result[blocker_id]=attacker_id;available.remove(blocker_id)
+    if len(result)==1:
+        blocker_id=next(iter(result))
+        if "can't attack or block alone" in _effective_rules_text(state,blockers[blocker_id]):return {}
     return result
 
 

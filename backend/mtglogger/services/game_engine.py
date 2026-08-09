@@ -140,6 +140,36 @@ def _effective_rules_text(state:dict,card:dict)->str:
     return "\n".join([card.get("oracle_text") or "",*attachment_texts]).casefold()
 
 
+def _can_attack(state:dict,card:dict,attacker:dict,defender:dict)->bool:
+    text=_effective_rules_text(state,card)
+    if card.get("cant_attack_until_turn")==state["turn"]:return False
+    defender_override="defender" in text and "can attack as though it didn't have defender" in text and any("Creature" in permanent.get("type_line","") and _parse_stats(permanent,state)[0]>=4 for permanent in attacker["battlefield"])
+    if _has_keyword(card,"Defender") and not defender_override:return False
+    if "can't attack unless" in text or "can't attack or block unless" in text:
+        if "seven or more cards in your graveyard" in text and len(attacker["graveyard"])<7:return False
+        if "there is a mountain on the battlefield" in text and not any("mountain" in permanent.get("type_line","").casefold() for owner in state["players"] for permanent in owner["battlefield"]):return False
+        if "defending player controls an enchantment or an enchanted permanent" in text and not any("Enchantment" in permanent.get("type_line","") or permanent.get("attached_to") for permanent in defender["battlefield"]):return False
+        if "you control another creature with power 4 or greater" in text and not any(permanent["instance_id"]!=card["instance_id"] and "Creature" in permanent.get("type_line","") and _parse_stats(permanent,state)[0]>=4 for permanent in attacker["battlefield"]):return False
+        if re.search(r"unless (?:its controller|you) pay",text):return False
+    elif "can't attack" in text and "can't attack or block alone" not in text:return False
+    return True
+
+
+def _can_block_pair(state:dict,attacker:dict,blocker:dict)->bool:
+    attacker_text=_effective_rules_text(state,attacker);blocker_text=_effective_rules_text(state,blocker)
+    if blocker.get("cant_block_until_turn")==state["turn"]:return False
+    conditional="can't attack or block unless" in blocker_text
+    if conditional and "you control another creature with power 4 or greater" in blocker_text:
+        controller=_player(state,blocker.get("controller_id"));conditional=any(permanent["instance_id"]!=blocker["instance_id"] and "Creature" in permanent.get("type_line","") and _parse_stats(permanent,state)[0]>=4 for permanent in controller["battlefield"])
+        if not conditional:return False
+    elif conditional:return False
+    if "can't block" in blocker_text and "can't attack or block alone" not in blocker_text and "can't attack or block unless" not in blocker_text and "can't block or be blocked by non-spirit creatures" not in blocker_text:return False
+    if "can't be blocked" in attacker_text or "unblockable" in attacker_text:return False
+    if "can't be blocked by non-spirit creatures" in attacker_text and "spirit" not in blocker.get("type_line","").casefold():return False
+    if "can't block or be blocked by non-spirit creatures" in blocker_text and "spirit" not in attacker.get("type_line","").casefold():return False
+    return (not _has_keyword(attacker,"Flying") or _has_keyword(blocker,"Flying") or _has_keyword(blocker,"Reach")) and not _protected_from(attacker,blocker)
+
+
 def _toxic_value(card: dict) -> int:
     match=re.search(r"\btoxic (\d+)\b",card.get("oracle_text") or "",re.IGNORECASE)
     return int(match.group(1)) if match else 0
@@ -391,7 +421,7 @@ def _target_kind(card: dict) -> str | None:
     if re.search(r"target player mills?", text): return "player"
     if re.search(r"target player sacrifices?",text):return "player"
     if re.search(r"(?:destroy|exile) target (?:artifact, creature, enchantment, planeswalker|nonland permanent|permanent)", text): return "permanent"
-    if re.search(r"(?:destroy|exile|tap|untap|return) target creature", text) or re.search(r"target creature .*(?:gets [+-](?:\d+|x)/[+-](?:\d+|x)|gains? [^.]+ until end of turn)", text) or re.search(r"(?:deals (?:\d+|x) damage|put .+ counters?) (?:to|on) target creature", text): return "creature"
+    if re.search(r"(?:destroy|exile|tap|untap|return) target creature", text) or re.search(r"target creature .*(?:gets [+-](?:\d+|x)/[+-](?:\d+|x)|gains? [^.]+ until end of turn|can(?:not|'t) (?:attack|block))", text) or re.search(r"(?:deals (?:\d+|x) damage|put .+ counters?) (?:to|on) target creature", text): return "creature"
     for kind in ("artifact","enchantment","land","planeswalker"):
         if re.search(rf"(?:destroy|exile|tap|untap|return) target {kind}\b",text):return kind
     if re.search(r"return target (?:nonland )?permanent", text): return "permanent"
@@ -632,17 +662,18 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
     else:
         actions.append({"type": "advance_phase"})
     if active and state["phase"] == "combat" and not state["combat"]["attackers"]:
-        eligible = [card["instance_id"] for card in player["battlefield"] if "Creature" in card.get("type_line", "") and not card.get("tapped") and not _has_keyword(card,"Defender") and "can't attack" not in _effective_rules_text(state,card) and (not card.get("summoning_sick") or _has_keyword(card, "Haste"))]
+        defender=opponent(state,player_id);eligible = [card["instance_id"] for card in player["battlefield"] if "Creature" in card.get("type_line", "") and not card.get("tapped") and _can_attack(state,card,player,defender) and (not card.get("summoning_sick") or _has_keyword(card, "Haste"))]
         if eligible:
             defending=opponent(state,player_id);defenders=[{"id":defending["id"],"name":defending["name"],"kind":"player","controller_id":defending["id"]}]
             defenders.extend({"id":card["instance_id"],"name":card["name"],"kind":"permanent","controller_id":defending["id"]} for card in defending["battlefield"] if "Planeswalker" in card.get("type_line",""))
             actions.append({"type": "declare_attackers", "card_ids": eligible,"defenders":defenders})
     elif not active and state["phase"] == "combat" and state["combat"]["attackers"] and not state["combat"].get("damage_pending"):
         attackers = [card for card in opponent(state, player_id)["battlefield"] if card["instance_id"] in state["combat"]["attackers"]]
-        blockers = [card["instance_id"] for card in player["battlefield"] if "Creature" in card.get("type_line", "") and not card.get("tapped") and "can't block" not in _effective_rules_text(state,card)]
+        blockers = [card["instance_id"] for card in player["battlefield"] if "Creature" in card.get("type_line", "") and not card.get("tapped")]
         if blockers:
-            legal_blocks = {blocker["instance_id"]:[attacker["instance_id"] for attacker in attackers if "can't be blocked" not in _effective_rules_text(state,attacker) and "unblockable" not in _effective_rules_text(state,attacker) and (not _has_keyword(attacker,"Flying") or _has_keyword(blocker,"Flying") or _has_keyword(blocker,"Reach")) and not _protected_from(attacker,blocker)] for blocker in player["battlefield"] if blocker["instance_id"] in blockers}
-            if any(legal_blocks.values()): actions.append({"type": "declare_blockers", "card_ids": blockers, "legal_blocks": legal_blocks})
+            legal_blocks = {blocker["instance_id"]:[attacker["instance_id"] for attacker in attackers if _can_block_pair(state,attacker,blocker)] for blocker in player["battlefield"] if blocker["instance_id"] in blockers}
+            eligible_blockers=[blocker_id for blocker_id,attacker_ids in legal_blocks.items() if attacker_ids]
+            if eligible_blockers: actions.append({"type": "declare_blockers", "card_ids": eligible_blockers, "legal_blocks": legal_blocks})
     return actions
 
 
@@ -702,6 +733,19 @@ def _resolve_spell(state: dict) -> None:
         _leave_battlefield(state, target_owner, target, "hand"); _log(state, f"{target['name']} returned to its owner's hand.")
     if target and re.search(r"\btap target creature", effect_text): target["tapped"] = True
     if target and re.search(r"\buntap target creature", effect_text): target["tapped"] = False
+    if target and re.search(r"(?:target|that) creature can(?:not|'t) attack(?: or block)? this turn",effect_text):target["cant_attack_until_turn"]=state["turn"]
+    if target and re.search(r"(?:target|that) creature can(?:not|'t) (?:attack or )?block this turn",effect_text):target["cant_block_until_turn"]=state["turn"]
+    global_no_blocks=re.search(r"(?:other )?creatures(?: controlled by that player| without flying)? can(?:not|'t) block this turn",effect_text)
+    if global_no_blocks:
+        artifact_condition="if you control three or more artifacts" in effect_text
+        if artifact_condition and sum("Artifact" in permanent.get("type_line","") for permanent in caster["battlefield"])<3:global_no_blocks=None
+    if global_no_blocks:
+        affected=(target_player or target_owner) if "controlled by that player" in global_no_blocks.group(0) else None
+        for owner in state["players"]:
+            if affected and owner["id"]!=affected["id"]:continue
+            for permanent in owner["battlefield"]:
+                if "Creature" not in permanent.get("type_line","") or ("other creatures" in global_no_blocks.group(0) and target and permanent["instance_id"]==target["instance_id"]) or ("without flying" in global_no_blocks.group(0) and _has_keyword(permanent,"Flying")):continue
+                permanent["cant_block_until_turn"]=state["turn"]
     stats_match = re.search(r"target creature[^.]* gets ([+-]\d+)/([+-]\d+) until end of turn", effect_text)
     if target and stats_match:
         target["temporary_power"] = target.get("temporary_power", 0) + int(stats_match.group(1))
@@ -963,7 +1007,7 @@ def _begin_next_turn(state:dict)->None:
     state["pending_discard"]=None;state["turn"] += 1; state["phase"] = PHASES[0];state["beginning_draw_pending"]=True; state["active_player_id"] = opponent(state, state["active_player_id"])["id"]
     active = _player(state, state["active_player_id"]); active["land_plays_remaining"] = 1
     for owner in state["players"]:
-        for permanent in owner["battlefield"]: permanent.pop("temporary_power",None); permanent.pop("temporary_toughness",None);permanent.pop("temporary_keywords",None); permanent["damage"] = 0
+        for permanent in owner["battlefield"]: permanent.pop("temporary_power",None); permanent.pop("temporary_toughness",None);permanent.pop("temporary_keywords",None);permanent.pop("cant_attack_until_turn",None);permanent.pop("cant_block_until_turn",None); permanent["damage"] = 0
     for permanent in active["battlefield"]: permanent["tapped"] = False; permanent["summoning_sick"] = False
     _log(state, f"Turn {state['turn']} began for {active['name']}. Untap and upkeep started."); _queue_triggers(state,"upkeep",None,active)
 
@@ -1116,6 +1160,9 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         requested = set(action.get("attacker_ids") or [])
         eligible = {card_id for entry in legal_actions(state, player_id) if entry["type"] == "declare_attackers" for card_id in entry.get("card_ids", [])}
         if not requested.issubset(eligible): raise RuleViolation("One or more attackers are not eligible")
+        if len(requested)==1:
+            lone=next(card for card in player["battlefield"] if card["instance_id"] in requested)
+            if "can't attack or block alone" in _effective_rules_text(state,lone):raise RuleViolation(f"{lone['name']} can't attack alone")
         attack_action=next(entry for entry in legal_actions(state,player_id) if entry["type"]=="declare_attackers");defender_ids={target["id"] for target in attack_action.get("defenders",[])};requested_targets=action.get("attack_targets") or {};default_target=opponent(state,player_id)["id"]
         if any(requested_targets.get(attacker_id,default_target) not in defender_ids for attacker_id in requested):raise RuleViolation("Choose a legal defender for every attacker")
         state["combat"]["attackers"] = list(requested)
@@ -1129,6 +1176,9 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         block_action=next((entry for entry in legal_actions(state,player_id) if entry["type"]=="declare_blockers"),None);available=set(block_action.get("card_ids",[])) if block_action else set();legal_blocks=block_action.get("legal_blocks",{}) if block_action else {}
         blocks = action.get("blocks") or {}
         if not set(blocks).issubset(available) or any(attacker_id not in legal_blocks.get(blocker_id,[]) for blocker_id,attacker_id in blocks.items()): raise RuleViolation("One or more blocks are illegal")
+        if len(blocks)==1:
+            lone=next(card for card in player["battlefield"] if card["instance_id"] in blocks)
+            if "can't attack or block alone" in _effective_rules_text(state,lone):raise RuleViolation(f"{lone['name']} can't block alone")
         attacking_owner=opponent(state,player_id);battlefield={card["instance_id"]:card for card in attacking_owner["battlefield"]}
         for attacker_id in state["combat"]["attackers"]:
             if _has_keyword(battlefield.get(attacker_id,{}),"Menace") and 0<list(blocks.values()).count(attacker_id)<2:raise RuleViolation("A creature with menace must be blocked by at least two creatures")
