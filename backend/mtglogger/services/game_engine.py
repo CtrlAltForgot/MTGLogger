@@ -33,10 +33,10 @@ def opponent(state: dict, player_id: str) -> dict:
 def _draw(state: dict, player: dict, amount: int = 1) -> None:
     for _ in range(amount):
         if not player["library"]:
-            player["lost"] = True
-            state["status"] = "complete"
-            state["winner_id"] = opponent(state, player["id"])["id"]
-            _log(state, f"{player['name']} tried to draw from an empty library and lost.")
+            if not player.get("lost"):
+                player["lost"] = True
+                player["loss_reason"] = "empty_library"
+                _log(state, f"{player['name']} tried to draw from an empty library.")
             return
         player["hand"].append(player["library"].pop())
 
@@ -1269,8 +1269,12 @@ def _resolve_spell(state: dict) -> None:
             parts=target["type_line"].split(" — ",1);target["type_line"]=f"{parts[0]} Creature"+(f" — {parts[1]}" if len(parts)>1 else "")
         target["power"]="0";target["toughness"]="0";target["earthbent"]=True;target["earthbend_controller"]=caster["id"];target["counters"]["+1/+1"]=target["counters"].get("+1/+1",0)+earthbend
         _log(state,f"{caster['name']} earthbent {target['name']} for {earthbend}.");_queue_triggers(state,"earthbend",target,caster)
-    draw_match = re.search(r"draw (?:a|one|two|three|four|\d+) cards?", effect_text);ordered_scry_draw=bool(draw_match and re.search(r"(?:scry|surveil) [^,.]+, then draw",effect_text))
-    if draw_match and not ordered_scry_draw:
+    each_draw_match=re.search(r"each player draws? (?:a|one|two|three|four|\d+) cards?",effect_text)
+    draw_match = re.search(r"(?<!each player )draw (?:a|one|two|three|four|\d+) cards?", effect_text);ordered_scry_draw=bool(draw_match and re.search(r"(?:scry|surveil) [^,.]+, then draw",effect_text))
+    if each_draw_match:
+        word=each_draw_match.group(0).split()[-2];amount={"a":1,"one":1,"two":2,"three":3,"four":4}.get(word,int(word) if word.isdigit() else 0)
+        for drawing_player in state["players"]:_draw(state,drawing_player,amount)
+    elif draw_match and not ordered_scry_draw:
         word = draw_match.group(0).split()[1]
         _draw(state, caster, {"a": 1, "one": 1, "two": 2, "three": 3, "four": 4}.get(word,int(word) if word.isdigit() else 0))
     life_match = re.search(r"you gain (\d+) life", effect_text)
@@ -1635,9 +1639,13 @@ def _combat_damage(state: dict) -> None:
 
 def _check_winner(state: dict) -> None:
     losers = [player for player in state["players"] if player["life"] <= 0 or player.get("poison",0)>=10 or player.get("lost") or any(amount >= 21 for amount in player.get("commander_damage", {}).values())]
-    if losers:
+    if len(losers)==len(state["players"]):
+        state["status"]="complete";state["winner_id"]=None;state["result_reason"]="draw"
+        _log(state,"The game ended in a draw because all remaining players lost simultaneously.")
+    elif losers:
         state["status"] = "complete"
         state["winner_id"] = opponent(state, losers[0]["id"])["id"]
+        state["result_reason"] = losers[0].get("loss_reason") or "game_rule"
         _log(state, f"{opponent(state, losers[0]['id'])['name']} wins the game.")
 
 
@@ -2055,7 +2063,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         else:
             _advance_turn_phase(state)
     elif action_type == "concede":
-        state["status"] = "complete"; state["winner_id"] = opponent(state, player_id)["id"]; _log(state, f"{player['name']} conceded.")
+        state["status"] = "complete"; state["winner_id"] = opponent(state, player_id)["id"];state["result_reason"]="concession"; _log(state, f"{player['name']} conceded.")
     elif action_type == "discard_cards":
         pending=state.get("pending_discard") or {};requested=action.get("card_ids") or [];required=pending.get("amount",0)
         if pending.get("player_id")!=player_id or len(requested)!=required or len(set(requested))!=required:raise RuleViolation(f"Choose exactly {required} cards to discard")

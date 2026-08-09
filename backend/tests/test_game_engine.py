@@ -899,6 +899,17 @@ def test_empty_library_loss_waits_until_draw_after_upkeep_resolves():
     state=perform_action(state,"bot",{"type":"advance_phase"});assert state["status"]=="complete" and state["winner_id"]=="player"
 
 
+def test_each_player_drawing_from_empty_libraries_ends_in_a_draw():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot");player["library"]=[];bot["library"]=[]
+    spell={**card(942,"Shared Fate","Sorcery"),"oracle_text":"Each player draws a card.","instance_id":"shared-fate","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"].append(spell);state=perform_action(state,"player",{"type":"cast","card_id":"shared-fate"});state=perform_action(state,"player",{"type":"resolve"})
+    assert all(owner["lost"] and owner["loss_reason"]=="empty_library" for owner in state["players"]);assert state["status"]=="complete" and state["winner_id"] is None and state["result_reason"]=="draw"
+
+
+def test_simultaneous_state_based_losses_are_a_draw_not_an_arbitrary_win():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot");player["life"]=0;bot["life"]=0
+    state=perform_action(state,"player",{"type":"adjust_life","amount":0});assert state["status"]=="complete" and state["winner_id"] is None and state["result_reason"]=="draw"
+
+
 def test_bot_discards_automatically_and_no_maximum_hand_size_is_honored():
     state=kept_game();bot=next(p for p in state["players"] if p["id"]=="bot");state["active_player_id"]="bot";state["priority_player_id"]="bot";state["phase"]="ending"
     while len(bot["hand"])<9:bot["hand"].append(bot["library"].pop())
