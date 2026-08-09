@@ -258,10 +258,18 @@ def test_twenty_one_unblocked_commander_damage_ends_game():
     first,second=decks();state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});state=perform_action(state,"player",{"type":"advance_phase"})
     player=next(item for item in state["players"] if item["id"]=="player")
     commander={**card(400,"Huge Commander","Legendary Creature — Giant","","21","21"),"instance_id":"huge-commander","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False,"commander":True};player["battlefield"].append(commander)
+    defender=next(item for item in state["players"] if item["id"]=="bot");defender["life"]=40
     state=perform_action(state,"player",{"type":"declare_attackers","attacker_ids":["huge-commander"]});state=perform_action(state,"bot",{"type":"advance_phase"});state=deal_combat_damage(state)
     defender=next(item for item in state["players"] if item["id"]=="bot")
-    assert defender["commander_damage"]["player"]==21
+    assert defender["life"]==19 and defender["commander_damage"]["huge-commander"]==21 and defender["commander_damage_names"]["huge-commander"]=="Huge Commander"
     assert state["status"]=="complete" and state["winner_id"]=="player"
+
+
+def test_damage_from_different_commanders_never_combines_for_the_twenty_one_limit():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});state=perform_action(state,"player",{"type":"advance_phase"});player=next(item for item in state["players"] if item["id"]=="player");defender=next(item for item in state["players"] if item["id"]=="bot");defender["life"]=40
+    commanders=[{**card(401+index,name,"Legendary Creature — Soldier","","11","11"),"instance_id":instance_id,"owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False,"commander":True} for index,(name,instance_id) in enumerate((("Partner One","partner-one"),("Partner Two","partner-two")))]
+    player["battlefield"].extend(commanders);state=perform_action(state,"player",{"type":"declare_attackers","attacker_ids":["partner-one","partner-two"]});state=perform_action(state,"bot",{"type":"advance_phase"});state=deal_combat_damage(state);defender=next(item for item in state["players"] if item["id"]=="bot")
+    assert defender["life"]==18 and defender["commander_damage"]=={"partner-one":11,"partner-two":11} and state["status"]=="active"
 
 
 def test_tap_ability_uses_stack_draws_and_cannot_be_reused_while_tapped():

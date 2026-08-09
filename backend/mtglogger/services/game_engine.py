@@ -717,7 +717,7 @@ def _new_player(player_id: str, name: str, deck: list[dict], is_bot: bool, forma
         if commander:
             library.remove(commander); commander["commander"] = True; command.append(commander)
     random.SystemRandom().shuffle(library)
-    return {"id": player_id, "name": name, "is_bot": is_bot, "format": format_name, "life": 40 if is_commander else 20, "poison": 0,"firebending_mana":0,"bent_this_turn":[], "library": library, "hand": [], "battlefield": [], "graveyard": [], "exile": [], "command": command, "commander_casts": 0, "commander_damage": {}, "land_plays_remaining": 1, "kept_hand": False, "mulligans": 0, "lost": False}
+    return {"id": player_id, "name": name, "is_bot": is_bot, "format": format_name, "life": 40 if is_commander else 20, "poison": 0,"firebending_mana":0,"bent_this_turn":[], "library": library, "hand": [], "battlefield": [], "graveyard": [], "exile": [], "command": command, "commander_casts": 0, "commander_damage": {}, "commander_damage_names": {}, "land_plays_remaining": 1, "kept_hand": False, "mulligans": 0, "lost": False}
 
 
 def new_game(player_deck: list[dict], opponent_deck: list[dict], play_first: bool = True, opponent_is_bot: bool = True, player_format: str = "", opponent_format: str = "") -> dict:
@@ -1577,7 +1577,13 @@ def _combat_damage(state: dict) -> None:
         if not planeswalker and amount>0 and toxic:defender["poison"]=defender.get("poison",0)+toxic
         if _has_keyword(creature,"Lifelink"): attacker["life"] += amount
         if not planeswalker and creature.get("commander"):
-            source = creature.get("owner_id", attacker["id"]); defender.setdefault("commander_damage", {})[source] = defender.setdefault("commander_damage", {}).get(source, 0) + amount
+            source = creature["instance_id"];damage=defender.setdefault("commander_damage", {});names=defender.setdefault("commander_damage_names", {})
+            # Games saved before individual commander tracking used the owner's id.
+            # A legacy total can only represent one commander, so migrate it on the
+            # first subsequent hit instead of silently resetting that game's clock.
+            legacy_source=creature.get("owner_id",attacker["id"])
+            if legacy_source in damage and source not in damage and not names:damage[source]=damage.pop(legacy_source)
+            damage[source]=damage.get(source,0)+amount;names[source]=creature.get("rules_name") or creature["name"]
         if not planeswalker and amount > 0:
             _queue_triggers(state,"combat_damage_player",creature,attacker,trigger_dedupe)
 
