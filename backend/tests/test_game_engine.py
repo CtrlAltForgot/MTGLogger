@@ -1,7 +1,7 @@
 import pytest
 
 from mtglogger.services.game_bot import _choose_blocks, choose_bot_action, run_bot
-from mtglogger.services.game_engine import RuleViolation, _add_saga_lore, _has_keyword, _queue_triggers, legal_actions, new_game, perform_action, public_state
+from mtglogger.services.game_engine import RuleViolation, _add_saga_lore, _has_keyword, _leave_graveyard, _queue_triggers, legal_actions, new_game, perform_action, public_state
 
 
 def card(index:int,name:str,type_line:str,mana_cost:str="",power:str|None=None,toughness:str|None=None,quantity:int=1):
@@ -137,6 +137,33 @@ def test_graveyard_targets_return_to_hand_reanimate_and_exile():
     reanimate=spell(683,"Reanimate","Put target creature card from a graveyard onto the battlefield under your control.");player["hand"].append(reanimate);state=perform_action(state,"player",{"type":"cast","card_id":"Reanimate","target_id":"enemy-corpse"});state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");assert any(c["instance_id"]=="enemy-corpse" and c["controller_id"]=="player" for c in player["battlefield"])
     removal=spell(684,"Removal","Destroy target creature.");player["hand"].append(removal);state=perform_action(state,"player",{"type":"cast","card_id":"Removal","target_id":"enemy-corpse"});state=perform_action(state,"player",{"type":"resolve"});bot=next(p for p in state["players"] if p["id"]=="bot");assert any(c["instance_id"]=="enemy-corpse" for c in bot["graveyard"])
     exile=spell(685,"Grave Hate","Exile target creature card from a graveyard.");player=next(p for p in state["players"] if p["id"]=="player");player["hand"].append(exile);state=perform_action(state,"player",{"type":"cast","card_id":"Grave Hate","target_id":"enemy-corpse"});state=perform_action(state,"player",{"type":"resolve"});bot=next(p for p in state["players"] if p["id"]=="bot");assert any(c["instance_id"]=="enemy-corpse" for c in bot["exile"])
+
+
+def test_graveyard_exit_triggers_cover_each_batch_types_and_opponents():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot");player["battlefield"]=[];bot["battlefield"]=[]
+    def permanent(index,instance_id,text,owner_id):return {**card(index,instance_id.replace("-"," ").title(),"Enchantment"),"oracle_text":text,"instance_id":instance_id,"owner_id":owner_id,"controller_id":owner_id,"tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    player["battlefield"].extend([permanent(686,"each-exit","Whenever a card leaves your graveyard, you gain 1 life.","player"),permanent(687,"batch-exit","Whenever one or more cards leave your graveyard, you gain 2 life.","player"),permanent(688,"creature-exit","Whenever one or more creature cards leave your graveyard, you gain 3 life.","player")]);bot["battlefield"].append(permanent(689,"opponent-exit","Whenever a card leaves an opponent's graveyard, you gain 4 life.","bot"))
+    creature={**card(690,"Departing Creature","Creature — Spirit"),"instance_id":"departing-creature","owner_id":"player","controller_id":"player"};land={**card(691,"Departing Land","Basic Land — Forest"),"instance_id":"departing-land","owner_id":"player","controller_id":"player"};player["graveyard"].extend([creature,land]);_leave_graveyard(state,player,[creature,land])
+    assert [item["card"]["name"] for item in state["stack"]].count("Each Exit trigger")==2
+    assert [item["card"]["name"] for item in state["stack"]].count("Batch Exit trigger")==1
+    assert [item["card"]["name"] for item in state["stack"]].count("Creature Exit trigger")==1
+    assert [item["card"]["name"] for item in state["stack"]].count("Opponent Exit trigger")==2
+
+
+def test_flashback_graveyard_exit_trigger_stacks_above_the_spell():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");player["battlefield"]=[]
+    witness={**card(692,"Grave Exit Witness","Enchantment"),"oracle_text":"Whenever one or more cards leave your graveyard, you gain 2 life.","instance_id":"grave-exit-witness","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};spell={**card(693,"Echoing Memory","Sorcery"),"oracle_text":"You gain 1 life.\nFlashback {0}","instance_id":"echoing-memory","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].append(witness);player["graveyard"].append(spell);life=player["life"]
+    state=perform_action(state,"player",{"type":"cast","card_id":"echoing-memory","source":"flashback"});assert [item["card"]["name"] for item in state["stack"]]==["Echoing Memory","Grave Exit Witness trigger"]
+    state=perform_action(state,"player",{"type":"resolve"});assert next(p for p in state["players"] if p["id"]=="player")["life"]==life+2 and state["stack"][-1]["card"]["name"]=="Echoing Memory"
+    state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");assert player["life"]==life+3 and spell in player["exile"]
+
+
+def test_reanimation_and_manual_graveyard_moves_emit_exit_events_only_on_true_exits():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");player["battlefield"]=[]
+    witness={**card(694,"Return Witness","Enchantment"),"oracle_text":"Whenever a creature card leaves your graveyard, you gain 1 life.","instance_id":"return-witness","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};corpse={**card(695,"Returning Friend","Creature — Citizen","","2","2"),"instance_id":"returning-friend","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};spell={**card(696,"Raise Friend","Sorcery"),"oracle_text":"Return target creature card from your graveyard to the battlefield.","instance_id":"raise-friend","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].append(witness);player["graveyard"].append(corpse);player["hand"].append(spell)
+    state=perform_action(state,"player",{"type":"cast","card_id":"raise-friend","target_id":"returning-friend"});state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");assert any(card["instance_id"]=="returning-friend" for card in player["battlefield"]) and state["stack"][-1]["card"]["name"]=="Return Witness trigger"
+    state=perform_action(state,"player",{"type":"resolve"});state=perform_action(state,"player",{"type":"move_zone","target_id":"returning-friend","destination":"graveyard"});state=perform_action(state,"player",{"type":"move_zone","target_id":"returning-friend","destination":"graveyard"});assert not state["stack"]
+    state=perform_action(state,"player",{"type":"move_zone","target_id":"returning-friend","destination":"exile"});assert state["stack"][-1]["card"]["name"]=="Return Witness trigger"
 
 
 def test_opponent_chooses_forced_sacrifice_and_bot_picks_lowest_value():

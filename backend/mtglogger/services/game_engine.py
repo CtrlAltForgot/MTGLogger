@@ -1443,12 +1443,12 @@ def _resolve_spell(state: dict) -> None:
         _log(state, f"{countered['name']} was countered.")
     if graveyard_target and graveyard_owner:
         if re.search(r"(?:return|put) target (?:creature )?card .*graveyard (?:to|into|onto) (?:the battlefield|play)",effect_text):
-            graveyard_owner["graveyard"].remove(graveyard_target);graveyard_target["controller_id"]=caster["id"];graveyard_target["summoning_sick"]=True;caster["battlefield"].append(graveyard_target);_log(state,f"{graveyard_target['name']} returned to the battlefield under {caster['name']}'s control.")
+            _leave_graveyard(state,graveyard_owner,[graveyard_target]);graveyard_target["controller_id"]=caster["id"];graveyard_target["summoning_sick"]=True;caster["battlefield"].append(graveyard_target);_log(state,f"{graveyard_target['name']} returned to the battlefield under {caster['name']}'s control.")
             _queue_triggers(state,"enters",graveyard_target,caster)
         elif re.search(r"return target (?:creature )?card .*graveyard to (?:your|its owner'?s) hand",effect_text):
-            graveyard_owner["graveyard"].remove(graveyard_target);graveyard_target["controller_id"]=graveyard_target.get("owner_id",graveyard_owner["id"]);_player(state,graveyard_target["controller_id"])["hand"].append(graveyard_target);_log(state,f"{graveyard_target['name']} returned to its owner's hand.")
+            _leave_graveyard(state,graveyard_owner,[graveyard_target]);graveyard_target["controller_id"]=graveyard_target.get("owner_id",graveyard_owner["id"]);_player(state,graveyard_target["controller_id"])["hand"].append(graveyard_target);_log(state,f"{graveyard_target['name']} returned to its owner's hand.")
         elif re.search(r"exile target (?:creature )?card .*graveyard",effect_text):
-            graveyard_owner["graveyard"].remove(graveyard_target);graveyard_owner["exile"].append(graveyard_target);_log(state,f"{graveyard_target['name']} was exiled from a graveyard.")
+            _leave_graveyard(state,graveyard_owner,[graveyard_target]);graveyard_owner["exile"].append(graveyard_target);_log(state,f"{graveyard_target['name']} was exiled from a graveyard.")
     sacrifice_match=re.search(r"(?:target player|each opponent) sacrifices? (a|one|two|three|four|\d+) (creature|permanent)s?",effect_text)
     if sacrifice_match:
         words={"a":1,"one":1,"two":2,"three":3,"four":4};amount=words.get(sacrifice_match.group(1),int(sacrifice_match.group(1)) if sacrifice_match.group(1).isdigit() else 1);affected=target_player if "target player" in sacrifice_match.group(0) and target_player else other;kind=sacrifice_match.group(2)
@@ -1564,6 +1564,22 @@ def _discard_cards(state:dict,player:dict,cards:list[dict])->None:
         _queue_triggers(state,"discard",card,player,dedupe,sources)
 
 
+def _leave_graveyard(state:dict,owner:dict,cards:list[dict])->list[dict]:
+    """Remove a batch from one graveyard and announce the resulting zone event.
+
+    Trigger sources are snapshotted once and a shared dedupe set makes wording such
+    as "one or more cards" trigger once for the entire batch, while ordinary
+    per-card wording still triggers for every card that actually left.
+    """
+    leaving=[card for card in cards if card in owner["graveyard"]]
+    if not leaving:return []
+    ordered_owners=sorted(state["players"],key=lambda source_owner:source_owner["id"]!=state.get("active_player_id"));sources=[(source_owner,source) for source_owner in ordered_owners for source in source_owner["battlefield"]];dedupe=set()
+    for card in leaving:
+        owner["graveyard"].remove(card)
+        _queue_triggers(state,"graveyard_leave",card,owner,dedupe,sources)
+    return leaving
+
+
 def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owner: dict, dedupe:set[str]|None=None, sources_override:list[tuple[dict,dict]]|None=None) -> None:
     if event in {"earthbend","waterbend","firebend","airbend"}:
         event_owner["bent_this_turn"]=sorted(set(event_owner.get("bent_this_turn",[]))|{event})
@@ -1630,6 +1646,15 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 opposing=not controlled and re.search(r"whenever (?:an|one or more) opponents? discards? (?:a|one or more) cards?",lower) is not None
                 any_player=re.search(r"whenever (?:a|one or more) players? discards? (?:a|one or more) cards?",lower) is not None
                 matches=kind_ok and (self_discard or yours or opposing or any_player) and (not one_or_more or dedupe is None or dedupe_key not in dedupe)
+                if matches and one_or_more and dedupe is not None:dedupe.add(dedupe_key)
+            elif event == "graveyard_leave" and event_card:
+                controlled=owner["id"]==event_owner["id"];type_line=event_card.get("type_line","").casefold();one_or_more="one or more" in lower;dedupe_key=f"graveyard-leave:{source.get('instance_id')}"
+                kind_ok=not (("creature card" in lower and "creature" not in type_line) or ("noncreature card" in lower and "creature" in type_line) or ("land card" in lower and "land" not in type_line) or ("nonland card" in lower and "land" in type_line))
+                during_your_turn="during your turn" not in lower or state.get("active_player_id")==owner["id"]
+                yours=controlled and re.search(r"whenever (?:a|one or more) (?:creature |noncreature |land |nonland )?cards? leaves? your graveyard",lower) is not None
+                opposing=not controlled and re.search(r"whenever (?:a|one or more) (?:creature |noncreature |land |nonland )?cards? leaves? an opponent'?s graveyard",lower) is not None
+                any_graveyard=re.search(r"whenever (?:a|one or more) (?:creature |noncreature |land |nonland )?cards? leaves? a graveyard",lower) is not None
+                matches=kind_ok and during_your_turn and (yours or opposing or any_graveyard) and (not one_or_more or dedupe is None or dedupe_key not in dedupe)
                 if matches and one_or_more and dedupe is not None:dedupe.add(dedupe_key)
             elif event == "leaves" and event_card:
                 matches=source is not event_card and owner["id"]==event_owner["id"] and "Creature" in event_card.get("type_line","") and "when another creature you control leaves the battlefield" in lower
@@ -1963,8 +1988,9 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
             blight_target=next((creature for creature in player["battlefield"] if creature["instance_id"] in set(selected_cost_ids) and "Creature" in creature.get("type_line","")),None)
             if not blight_target:raise RuleViolation("Choose one creature you control to blight")
             _apply_blight(state,player,blight_target,int(available.get("blight_amount",0)))
+        if zone_name=="graveyard":_leave_graveyard(state,player,[card])
+        else:player[zone_name].remove(card)
         cost_triggers=state["stack"][stack_before_cost:];del state["stack"][stack_before_cost:]
-        player[zone_name].remove(card)
         card.pop("airbent",None)
         if card.get("commander"): player["commander_casts"] = player.get("commander_casts", 0) + 1
         effective_target=target_id or (mode_targets[0] if len(mode_targets)==1 else None);stack_item={"id": _id(), "card": card, "controller_id": player_id, "target_id": effective_target,"target_ids":target_ids,"mode_indices":chosen_modes,"mode_targets":mode_targets,"x_value":x_value,"flashback":bool(flashback),"kicked":requested_kicked,"blighted":requested_blight};state["stack"].append(stack_item);state["stack"].extend(cost_triggers); state["consecutive_passes"] = 0; state["pending_phase_advance"] = False
@@ -2299,9 +2325,11 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         moved_name=card["name"]
         if source=="battlefield":_leave_battlefield(state,source_owner,card,destination)
         else:
-            source_owner[source].remove(card)
+            if source==destination:pass
+            elif source=="graveyard":_leave_graveyard(state,source_owner,[card])
+            else:source_owner[source].remove(card)
             if card.get("card_faces"):_set_card_face(card,0)
-            source_owner[destination].append(card)
+            if source!=destination:source_owner[destination].append(card)
         _log(state, f"{moved_name} moved from {source} to {destination}.")
     _state_based_actions(state);_check_winner(state)
     state["version"] += 1
