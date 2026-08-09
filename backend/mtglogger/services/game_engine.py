@@ -146,6 +146,26 @@ def _flashback_ability(card:dict)->dict|None:
     return {"mana_cost":match.group(1).upper(),"behold_amount":amount,"behold_type":(match.group(3) or "").removesuffix("s").casefold()}
 
 
+def _kicker_cost(card:dict)->str|None:
+    match=re.search(r"(?:^|\n)Kicker\s+((?:\{[^}]+\})+)",card.get("oracle_text") or "",re.IGNORECASE)
+    return match.group(1).upper() if match else None
+
+
+def _kicked_rules_card(card:dict,kicked:bool)->dict:
+    clauses=re.split(r"(?<=[.!])\s+|\n",card.get("oracle_text") or "");resolved=[]
+    for clause in clauses:
+        if re.match(r"\s*Kicker\b",clause,re.IGNORECASE):continue
+        conditional=re.match(r"\s*If (?:this spell|it) was kicked,\s*(.+)",clause,re.IGNORECASE)
+        if not conditional:resolved.append(clause);continue
+        if not kicked:continue
+        effect=conditional.group(1)
+        if re.search(r"\binstead\b",effect,re.IGNORECASE):
+            effect=re.sub(r"\s+instead(?=[,.]|$)","",effect,flags=re.IGNORECASE)
+            if resolved:resolved.pop()
+        resolved.append(effect)
+    return {**card,"oracle_text":" ".join(filter(None,resolved))}
+
+
 def _aura_allowed_types(card:dict)->set[str]:
     match=re.search(r"(?:^|\n)Enchant ([^\n.]+)",card.get("oracle_text") or "",re.IGNORECASE)
     if not match or "permanent" in match.group(1).casefold():return set()
@@ -645,7 +665,7 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
     castable.extend((card, "command") for card in player.get("command", []))
     castable.extend((card,"flashback") for card in player["graveyard"] if _flashback_ability(card))
     for card, source in castable:
-        flashback=_flashback_ability(card) if source=="flashback" else None;cost_card={**card,"mana_cost":flashback["mana_cost"]} if flashback else card
+        flashback=_flashback_ability(card) if source=="flashback" else None;cost_card={**card,"mana_cost":flashback["mana_cost"]} if flashback else card;kicker_cost=_kicker_cost(card)
         instant_speed = "Instant" in card.get("type_line", "") or _has_keyword(card, "Flash")
         total_tax=_commander_tax(player,card) if source=="command" else 0
         behold_options=[candidate for zone in (player["hand"],player["battlefield"]) for candidate in zone if flashback and flashback["behold_type"] in candidate.get("type_line","").casefold()]
@@ -663,10 +683,20 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
             if len(modes)<modal_spec["min_modes"] and not modal_spec["repeatable"]:continue
             action.update({"mode_count":modal_spec["min_modes"],"mode_min":modal_spec["min_modes"],"mode_max":min(modal_spec["max_modes"],len(modes) if not modal_spec["repeatable"] else modal_spec["max_modes"]),"mode_repeatable":modal_spec["repeatable"],"mode_distinct_targets":modal_spec["distinct_targets"],"modes":modes})
         else:
-            targeting_card=_spell_targeting_card(card);targets = _targets(state, player_id, targeting_card)
+            targeting_card=_spell_targeting_card(_kicked_rules_card(card,False));targets = _targets(state, player_id, targeting_card)
             if _target_kind(targeting_card) and not targets: continue
             if targets: action["targets"] = targets
         actions.append(action)
+        if kicker_cost:
+            kicked_cost_card={**cost_card,"mana_cost":f"{cost_card.get('mana_cost') or ''}{kicker_cost}"}
+            if _can_pay(player,kicked_cost_card,total_tax):
+                kicked={**action,"kicked":True,"kicker_cost":kicker_cost,"label":f"{action['label']} + kicker {kicker_cost}"}
+                if not modal_spec:
+                    kicked.pop("targets",None);kicked_targeting=_spell_targeting_card(_kicked_rules_card(card,True));kicked_targets=_targets(state,player_id,kicked_targeting)
+                    if _target_kind(kicked_targeting) and not kicked_targets:continue
+                    if kicked_targets:kicked["targets"]=kicked_targets
+                if _has_x_cost(kicked_cost_card):kicked.update({"x_min":0,"x_max":_maximum_x(player,kicked_cost_card,total_tax)})
+                actions.append(kicked)
     for card in player["hand"]:
         cycling=_cycling_ability(card)
         if cycling and _can_pay(player,{"mana_cost":cycling["mana_cost"]}):
@@ -739,7 +769,9 @@ def _resolve_spell(state: dict) -> None:
         for position,index in enumerate(item["mode_indices"]):
             option=options[index];mode_card=_x_rules_card({**card,"name":f"{card['name']} — mode {position+1}","oracle_text":option["label"]},item.get("x_value"));state["stack"].append({"id":_id(),"kind":"modal_effect","card":mode_card,"controller_id":caster["id"],"target_id":targets[position] if position<len(targets) else None,"x_value":item.get("x_value")});_resolve_spell(state)
         caster["exile" if item.get("flashback") else "graveyard"].append(card);_log(state,f"{card['name']} resolved with {len(item['mode_indices'])} modes.");return
-    rules_card=_selected_mode_card(card,item.get("mode_indices")) if item.get("kind","spell")=="spell" else card;rules_card=_x_rules_card(rules_card,item.get("x_value"));targeting_card=_spell_targeting_card(rules_card) if item.get("kind","spell")=="spell" else rules_card;target_kind=_target_kind(targeting_card);target_id=item.get("target_id")
+    rules_card=_selected_mode_card(card,item.get("mode_indices")) if item.get("kind","spell")=="spell" else card
+    if item.get("kind","spell")=="spell":rules_card=_kicked_rules_card(rules_card,bool(item.get("kicked")))
+    rules_card=_x_rules_card(rules_card,item.get("x_value"));targeting_card=_spell_targeting_card(rules_card) if item.get("kind","spell")=="spell" else rules_card;target_kind=_target_kind(targeting_card);target_id=item.get("target_id")
     if target_kind and target_id not in {target["id"] for target in _targets(state,caster["id"],targeting_card)}:
         if item.get("kind","spell")=="spell":_countered_spell_destination(state,caster,card,item.get("flashback",False))
         _log(state,f"{card['name']} was countered because its target was no longer legal.");return
@@ -890,6 +922,7 @@ def _resolve_spell(state: dict) -> None:
         _log(state,f"{caster['name']} created {amount} {kind} token(s).")
     entered = False
     if is_permanent_spell:
+        card["was_kicked"]=bool(item.get("kicked"))
         card["summoning_sick"] = "Creature" in card.get("type_line", "")
         if re.search(r"\benters (?:the battlefield )?tapped\b",text):card["tapped"]=True
         enters_counters=re.search(r"enters(?: the battlefield)? with (\d+) ([+−-]\d+/[+−-]\d+|loyalty|charge|shield|stun) counters?",text)
@@ -933,6 +966,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 is_creature = "creature" in event_card.get("type_line", "").casefold()
                 is_land = "land" in event_card.get("type_line", "").casefold()
                 matches = under_control and ((is_creature and (("whenever another creature enters" in lower and source is not event_card) or "whenever a creature enters the battlefield under your control" in lower)) or (is_land and re.search(r"whenever (?:a|another) land enters(?: the battlefield)? under your control", lower) is not None) or (source is event_card and re.search(r"when (?:~|this (?:creature|permanent)|[^,]+) enters", lower) is not None))
+                if "if it was kicked" in lower:matches=matches and bool(event_card.get("was_kicked"))
             elif event == "dies" and event_card:
                 matches = (source is event_card and re.search(r"when (?:~|this creature|[^,]+) dies", lower) is not None) or (source is not event_card and "whenever another creature dies" in lower)
             elif event == "upkeep":
@@ -962,7 +996,9 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 cycled_name=re.escape(event_card.get("name","").casefold());same_card=source is event_card and re.search(rf"when you cycle (?:~|this card|{cycled_name})\b",lower) is not None
                 matches=same_card or (source is not event_card and owner["id"]==event_owner["id"] and "whenever you cycle a card" in lower)
             if not matches or "," not in clause: continue
-            effect = clause.split(",", 1)[1].strip(); ability_card = {**source, "name": f"{source['name']} trigger", "oracle_text": effect, "type_line": "Ability", "mana_cost": ""}
+            effect = clause.split(",", 1)[1].strip()
+            if event=="enters" and re.match(r"if it was kicked,",effect,re.IGNORECASE):effect=effect.split(",",1)[1].strip()
+            ability_card = {**source, "name": f"{source['name']} trigger", "oracle_text": effect, "type_line": "Ability", "mana_cost": ""}
             targets = _targets(state, owner["id"], ability_card)
             for _ in range(trigger_count):
                 trigger={"id":_id(),"kind":"trigger","card":ability_card,"controller_id":owner["id"],"target_id":None,"source_id":source["instance_id"]}
@@ -1134,11 +1170,13 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
     elif action_type == "cast":
         requested_source=action.get("source");zone_name="graveyard" if requested_source=="flashback" else requested_source if requested_source in {"hand","command"} else next((zone for zone in ("hand","command") if any(card["instance_id"]==action.get("card_id") for card in player.get(zone,[]))),None)
         source="flashback" if zone_name=="graveyard" else zone_name;card=next((card for card in player.get(zone_name or "hand",[]) if card["instance_id"]==action.get("card_id")),None);flashback=_flashback_ability(card or {}) if source=="flashback" else None
-        available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="cast" and entry["card_id"]==action.get("card_id") and entry.get("source")==source),None)
+        requested_kicked=bool(action.get("kicked"));available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="cast" and entry["card_id"]==action.get("card_id") and entry.get("source")==source and bool(entry.get("kicked"))==requested_kicked),None)
         tax = _commander_tax(player, card) if card and source=="command" else 0
         if not card:raise RuleViolation("That spell cannot be cast")
         if not available:raise RuleViolation("That spell cannot be cast from that zone")
-        cost_card={**card,"mana_cost":flashback["mana_cost"]} if flashback else card;x_value=int(action.get("x_value") or 0);x_max=_maximum_x(player,cost_card,tax)
+        cost_card={**card,"mana_cost":flashback["mana_cost"]} if flashback else card
+        if requested_kicked:cost_card={**cost_card,"mana_cost":f"{cost_card.get('mana_cost') or ''}{_kicker_cost(card) or ''}"}
+        x_value=int(action.get("x_value") or 0);x_max=_maximum_x(player,cost_card,tax)
         if (_has_x_cost(cost_card) and not 0<=x_value<=x_max) or (not _has_x_cost(cost_card) and action.get("x_value") is not None): raise RuleViolation("That spell cannot be cast with the chosen X value")
         selected_cost_ids=action.get("cost_card_ids") or [];required_cost=available.get("cost_amount",0);cost_options=set(available.get("cost_options",[]))
         if len(selected_cost_ids)!=required_cost or len(set(selected_cost_ids))!=required_cost or not set(selected_cost_ids).issubset(cost_options):raise RuleViolation(f"Choose exactly {required_cost} cards or permanents for the additional cost")
@@ -1157,11 +1195,11 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
             selected_targets=[target for target in mode_targets if target]
             if modal_spec["distinct_targets"] and len(selected_targets)!=len(set(selected_targets)):raise RuleViolation("Each mode must have a different target")
         elif chosen_modes or mode_targets:raise RuleViolation("That spell has no modal choice")
-        rules_card=_selected_mode_card(card,chosen_modes);targeting_card=_spell_targeting_card(rules_card);targets = _targets(state, player_id, targeting_card); target_id = action.get("target_id")
+        rules_card=_kicked_rules_card(_selected_mode_card(card,chosen_modes),requested_kicked);targeting_card=_spell_targeting_card(rules_card);targets = _targets(state, player_id, targeting_card); target_id = action.get("target_id")
         if not modal_spec and _target_kind(targeting_card) and target_id not in {target["id"] for target in targets}: raise RuleViolation("Choose a legal target")
         _pay_mana(state,player,cost_card,tax,x_value=x_value);player[zone_name].remove(card)
         if card.get("commander"): player["commander_casts"] = player.get("commander_casts", 0) + 1
-        effective_target=target_id or (mode_targets[0] if len(mode_targets)==1 else None);stack_item={"id": _id(), "card": card, "controller_id": player_id, "target_id": effective_target,"mode_indices":chosen_modes,"mode_targets":mode_targets,"x_value":x_value,"flashback":bool(flashback)};state["stack"].append(stack_item); state["consecutive_passes"] = 0; state["pending_phase_advance"] = False
+        effective_target=target_id or (mode_targets[0] if len(mode_targets)==1 else None);stack_item={"id": _id(), "card": card, "controller_id": player_id, "target_id": effective_target,"mode_indices":chosen_modes,"mode_targets":mode_targets,"x_value":x_value,"flashback":bool(flashback),"kicked":requested_kicked};state["stack"].append(stack_item); state["consecutive_passes"] = 0; state["pending_phase_advance"] = False
         _queue_triggers(state,"cast",card,player)
         ward_targets=[effective_target] if effective_target else []
         ward_targets.extend(target for target in mode_targets if target and target not in ward_targets)
@@ -1169,7 +1207,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if (_multiplayer(state) or not allow_direct_resolution) and not state.get("pending_ward") and not state.get("pending_trigger_targets"): state["priority_player_id"] = opponent(state, player_id)["id"]
         mode_label="; ".join(next(mode["label"] for mode in modal_options if mode["index"]==index) for index in chosen_modes)
         behold_names=[next(candidate["name"] for zone in (player["hand"],player["battlefield"]) for candidate in zone if candidate["instance_id"]==card_id) for card_id in selected_cost_ids]
-        _log(state, f"{player['name']} cast {card['name']}{' using flashback' if flashback else ''}{f' with X={x_value}' if _has_x_cost(cost_card) else ''}{f' choosing {mode_label}' if mode_label else ''}{f' with {tax} commander tax' if tax else ''}{f' by beholding {', '.join(behold_names)}' if behold_names else ''}{' targeting '+next((target['name'] for target in targets if target['id']==target_id),'') if target_id else ''}.")
+        _log(state, f"{player['name']} cast {card['name']}{' using flashback' if flashback else ''}{' with kicker' if requested_kicked else ''}{f' with X={x_value}' if _has_x_cost(cost_card) else ''}{f' choosing {mode_label}' if mode_label else ''}{f' with {tax} commander tax' if tax else ''}{f' by beholding {', '.join(behold_names)}' if behold_names else ''}{' targeting '+next((target['name'] for target in targets if target['id']==target_id),'') if target_id else ''}.")
     elif action_type == "cycle":
         card=next((card for card in player["hand"] if card["instance_id"]==action.get("card_id")),None);cycling=_cycling_ability(card or {})
         available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="cycle" and entry["card_id"]==action.get("card_id")),None)
