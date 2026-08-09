@@ -208,6 +208,13 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
         if "pay_blight" in by_type and difficulty!="beginner":
             action=by_type["pay_blight"][0];chosen=_choose_ability_cost(state,action);return {"type":"pay_blight","cost_card_ids":chosen}
         return by_type["decline_blight"][0]
+    if "choose_proliferate" in by_type:
+        action=by_type["choose_proliferate"][0];chosen=[]
+        for target in action.get("targets",[]):
+            counters=target.get("counters",{});own=target.get("controller_id")=="bot"
+            beneficial=sum(amount for name,amount in counters.items() if name not in {"-1/-1","stun","poison"});harmful=sum(amount for name,amount in counters.items() if name in {"-1/-1","stun","poison"})
+            if (own and beneficial>harmful) or (not own and harmful>=beneficial):chosen.append(target["id"])
+        return {"type":"choose_proliferate","target_ids":chosen}
     if "choose_trigger_target" in by_type:
         action=by_type["choose_trigger_target"][0]
         return {"type":"choose_trigger_target","target_id":_choose_target(state,action)}

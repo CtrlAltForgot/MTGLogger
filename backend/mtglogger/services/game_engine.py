@@ -553,7 +553,7 @@ def _new_player(player_id: str, name: str, deck: list[dict], is_bot: bool, forma
 def new_game(player_deck: list[dict], opponent_deck: list[dict], play_first: bool = True, opponent_is_bot: bool = True, player_format: str = "", opponent_format: str = "") -> dict:
     human_id, bot_id = "player", "bot"
     players = [_new_player(human_id, "You", player_deck, False, player_format), _new_player(bot_id, "Bot" if opponent_is_bot else "Guest", opponent_deck, opponent_is_bot, opponent_format)]
-    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "beginning_draw_pending":True,"first_turn_draw_skipped":False,"active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id, "players": players, "stack": [], "combat": {"attackers": [], "blocks": {}, "attack_targets": {},"block_orders":{},"damage_pending":False}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "pending_legendary": None,"pending_commander_zone":[],"pending_library_search":None,"pending_scry":None,"pending_damage_order":None,"pending_ward":None,"pending_blight":None,"pending_trigger_targets":[], "log": []}
+    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "beginning_draw_pending":True,"first_turn_draw_skipped":False,"active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id, "players": players, "stack": [], "combat": {"attackers": [], "blocks": {}, "attack_targets": {},"block_orders":{},"damage_pending":False}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "pending_legendary": None,"pending_commander_zone":[],"pending_library_search":None,"pending_scry":None,"pending_damage_order":None,"pending_ward":None,"pending_blight":None,"pending_proliferate":None,"pending_trigger_targets":[], "log": []}
     for player in players:
         _draw(state, player, 7)
     _log(state, "Opening hands drawn. Choose whether to keep or mulligan.")
@@ -696,7 +696,7 @@ def _multiplayer(state: dict) -> bool:
 
 
 def _pending_decision(state:dict)->bool:
-    return bool(state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_trigger_targets"))
+    return bool(state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_trigger_targets"))
 
 
 def _queue_commander_zone_choice(state:dict,owner:dict,card:dict,zone:str)->None:
@@ -782,6 +782,14 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
         actions=[{"type":"decline_blight","source_name":pending_blight["source_name"],"blight_amount":pending_blight["amount"]},{"type":"concede"}]
         if creatures:actions.insert(0,{"type":"pay_blight","source_name":pending_blight["source_name"],"blight_amount":pending_blight["amount"],"cost_kind":"blight","cost_amount":1,"cost_options":creatures})
         return actions
+    pending_proliferate=state.get("pending_proliferate")
+    if pending_proliferate:
+        if pending_proliferate["player_id"]!=player_id:return []
+        targets=[]
+        for owner in state["players"]:
+            if owner.get("poison",0)>0:targets.append({"id":owner["id"],"name":owner["name"],"kind":"player","controller_id":owner["id"],"counters":{"poison":owner["poison"]}})
+            targets.extend({"id":card["instance_id"],"name":card["name"],"kind":"permanent","controller_id":owner["id"],"counters":{name:amount for name,amount in card.get("counters",{}).items() if amount>0}} for card in owner["battlefield"] if any(amount>0 for amount in card.get("counters",{}).values()))
+        return [{"type":"choose_proliferate","targets":targets,"source_name":pending_proliferate["source_name"]},{"type":"concede"}]
     pending_triggers=state.get("pending_trigger_targets") or []
     if pending_triggers:
         pending=pending_triggers[0]
@@ -994,6 +1002,9 @@ def _resolve_spell(state: dict) -> None:
         original_text=(source_permanent or card).get("oracle_text") or "";continuation_match=re.search(r"when you do,\s*(.+?)(?:\n|$)",original_text,re.IGNORECASE)
         state["pending_blight"]={"player_id":caster["id"],"amount":int(optional_blight.group(1)),"source_name":source_permanent.get("name",card["name"]) if source_permanent else card["name"],"source_id":source_permanent.get("instance_id") if source_permanent else item.get("source_id"),"continuation":continuation_match.group(1).strip() if continuation_match else ""};state["priority_player_id"]=caster["id"]
         _log(state,f"{caster['name']} may blight {optional_blight.group(1)} for {state['pending_blight']['source_name']}.");return
+    if re.search(r"\bproliferate\b",effect_text):
+        state["pending_proliferate"]={"player_id":caster["id"],"source_name":source_permanent.get("name",card["name"]) if source_permanent else card["name"]};state["priority_player_id"]=caster["id"]
+        _log(state,f"{caster['name']} will choose permanents and players to proliferate.")
     if re.search(r"\bairbend (?:up to one )?target (?:creature|spell|creature or spell)\b",effect_text):
         airbent=None;airbend_owner=None
         if target and target_owner:
@@ -1660,6 +1671,20 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
                 else:_log(state,f"{pending['source_name']}'s reflexive trigger had no legal target.")
         else:_log(state,f"{player['name']} chose not to blight for {pending['source_name']}.")
         state["pending_blight"]=None;state["priority_player_id"]=(state.get("pending_trigger_targets") or [{"controller_id":state["active_player_id"]}])[0]["controller_id"]
+    elif action_type=="choose_proliferate":
+        pending=state.get("pending_proliferate") or {}
+        if pending.get("player_id")!=player_id:raise RuleViolation("There is no proliferate decision for this player")
+        requested=action.get("target_ids") or []
+        if len(requested)!=len(set(requested)):raise RuleViolation("Choose each proliferate target at most once")
+        eligible={owner["id"] for owner in state["players"] if owner.get("poison",0)>0}|{card["instance_id"] for owner in state["players"] for card in owner["battlefield"] if any(amount>0 for amount in card.get("counters",{}).values())}
+        if not set(requested).issubset(eligible):raise RuleViolation("Choose only permanents and players that already have counters")
+        for owner in state["players"]:
+            if owner["id"] in requested:owner["poison"]+=1
+            for permanent in owner["battlefield"]:
+                if permanent["instance_id"] in requested:
+                    for name in list(permanent.get("counters",{})):
+                        if permanent["counters"][name]>0:permanent["counters"][name]+=1
+        state["pending_proliferate"]=None;state["priority_player_id"]=state["active_player_id"];_log(state,f"{player['name']} proliferated {len(requested)} permanent(s) and player(s).")
     elif action_type in {"choose_trigger_target","choose_trigger_targets","skip_trigger"}:
         pending_list=state.get("pending_trigger_targets") or []
         if not pending_list or pending_list[0]["controller_id"]!=player_id:raise RuleViolation("There is no triggered target decision for this player")
