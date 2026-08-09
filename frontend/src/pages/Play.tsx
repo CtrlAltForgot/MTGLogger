@@ -85,6 +85,7 @@ export default function Play(){
   const player=game?.state.players.find(item=>item.id===viewerId),bot=game?.state.players.find(item=>item.id===opponentId)
   const phase=phases.find(([key])=>key===game?.state.phase)?.[1]
   const attackAction=game?.legal_actions.find(action=>action.type==='declare_attackers'),blockAction=game?.legal_actions.find(action=>action.type==='declare_blockers')
+  const combatDamageAction=game?.legal_actions.find(action=>action.type==='resolve_combat_damage')
   const discardAction=game?.legal_actions.find(action=>action.type==='discard_cards')
   const mulliganBottomAction=game?.legal_actions.find(action=>action.type==='bottom_mulligan_cards'),handChoiceAction=discardAction||mulliganBottomAction
   const sacrificeAction=game?.legal_actions.find(action=>action.type==='sacrifice_permanents')
@@ -168,7 +169,7 @@ export default function Play(){
         {sacrificeAction&&<><Chip color="error" label={`Sacrifice ${selectedSacrifices.length}/${sacrificeAction.amount}`}/><Button variant="contained" color="error" disabled={busy||selectedSacrifices.length!==sacrificeAction.amount} onClick={()=>void act({type:'sacrifice_permanents',card_ids:selectedSacrifices})}>Confirm sacrifice</Button></>}
         {legendaryAction&&<><Chip color="warning" label="Choose the legendary permanent to keep"/><Button variant="contained" color="warning" disabled={busy||selectedLegendary.length!==1} onClick={()=>void act({type:'choose_legendary',card_ids:selectedLegendary})}>Keep selected</Button></>}
         {legal('advance_phase')&&<Button variant="contained" disabled={busy} onClick={()=>void act({type:'advance_phase'})}>Next · {phases[(phases.findIndex(([key])=>key===game.state.phase)+1)%phases.length][1]}</Button>}
-        {legal('resolve_combat_damage')&&<Button variant="contained" color="warning" disabled={busy} onClick={()=>void act({type:'resolve_combat_damage'})}>Deal combat damage</Button>}
+        {combatDamageAction&&<Button variant="contained" color="warning" disabled={busy} onClick={()=>void act({type:'resolve_combat_damage'})}>Deal {combatDamageAction.damage_step==='first_strike'?'first-strike':'regular'} damage</Button>}
         <Button size="small" onClick={()=>void act({type:'adjust_life',target_id:viewerId,amount:-1})}>−1 life</Button><Button size="small" onClick={()=>void act({type:'adjust_life',target_id:viewerId,amount:1})}>+1 life</Button><Button size="small" startIcon={<Build/>} onClick={()=>setToolsOpen(true)}>Table tools</Button>{legal('concede')&&<Button color="error" disabled={busy} onClick={()=>void act({type:'concede'})}>Concede</Button>}
       </Stack>
       <Paper className="game-log" variant="outlined"><Typography variant="overline">Game log</Typography>{game.state.log.slice(-8).reverse().map(entry=><Typography key={entry.id} variant="caption" display="block"><b>T{entry.turn}</b> · {entry.message}</Typography>)}</Paper>

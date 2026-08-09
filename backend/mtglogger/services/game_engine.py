@@ -597,7 +597,7 @@ def _new_player(player_id: str, name: str, deck: list[dict], is_bot: bool, forma
 def new_game(player_deck: list[dict], opponent_deck: list[dict], play_first: bool = True, opponent_is_bot: bool = True, player_format: str = "", opponent_format: str = "") -> dict:
     human_id, bot_id = "player", "bot"
     players = [_new_player(human_id, "You", player_deck, False, player_format), _new_player(bot_id, "Bot" if opponent_is_bot else "Guest", opponent_deck, opponent_is_bot, opponent_format)]
-    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "beginning_draw_pending":True,"first_turn_draw_skipped":False,"active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id, "players": players, "stack": [], "combat": {"attackers": [], "blocks": {}, "attack_targets": {},"block_orders":{},"damage_pending":False}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "pending_legendary": None,"pending_commander_zone":[],"pending_library_search":None,"pending_scry":None,"pending_damage_order":None,"pending_ward":None,"pending_blight":None,"pending_proliferate":None,"pending_transform":None,"pending_trigger_targets":[], "log": []}
+    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "beginning_draw_pending":True,"first_turn_draw_skipped":False,"active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id, "players": players, "stack": [], "combat": {"attackers": [], "blocks": {}, "attack_targets": {},"block_orders":{},"damage_pending":False,"damage_step":None,"first_strike_damage_ids":[]}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "pending_legendary": None,"pending_commander_zone":[],"pending_library_search":None,"pending_scry":None,"pending_damage_order":None,"pending_ward":None,"pending_blight":None,"pending_proliferate":None,"pending_transform":None,"pending_trigger_targets":[], "log": []}
     for player in players:
         _draw(state, player, 7)
     _log(state, "Opening hands drawn. Choose whether to keep or mulligan.")
@@ -1005,7 +1005,9 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
     elif state["stack"]:
         actions.append({"type": "resolve"})
     elif state["combat"].get("damage_pending"):
-        actions.append({"type":"resolve_combat_damage"})
+        participants=[card for owner in state["players"] for card in owner["battlefield"] if card["instance_id"] in state["combat"]["attackers"] or card["instance_id"] in state["combat"]["blocks"]]
+        first_step=state["combat"].get("damage_step") is None and any(_has_keyword(card,"First strike") or _has_keyword(card,"Double strike") for card in participants)
+        actions.append({"type":"resolve_combat_damage","damage_step":"first_strike" if first_step else "regular"})
     else:
         actions.append({"type": "advance_phase"})
     if active and state["phase"] == "combat" and not state["combat"]["attackers"]:
@@ -1391,12 +1393,13 @@ def _combat_damage(state: dict) -> None:
         if not planeswalker and amount > 0:
             _queue_triggers(state,"combat_damage_player",creature,attacker)
 
+    first_strike_ids=set(state["combat"].get("first_strike_damage_ids") or [])
     def damage_step(first: bool) -> None:
         battlefield = {card["instance_id"]: card for player in state["players"] for card in player["battlefield"]}
         deathtouch_hit:set[str]=set();life_gain={attacker["id"]:0,defender["id"]:0}
         def strikes(card:dict)->bool:
             has_first=_has_keyword(card,"First strike");double=_has_keyword(card,"Double strike")
-            return has_first or double if first else not has_first or double
+            return has_first or double if first else card["instance_id"] not in first_strike_ids or double
         for attacker_id in state["combat"]["attackers"]:
             creature=battlefield.get(attacker_id)
             if not creature or not strikes(creature):continue
@@ -1424,10 +1427,14 @@ def _combat_damage(state: dict) -> None:
                 if creature.get("damage",0)>=toughness or creature["instance_id"] in deathtouch_hit:_destroy_permanent(state,owner,creature)
 
     participants=[card for owner in (attacker,defender) for card in owner["battlefield"] if card["instance_id"] in state["combat"]["attackers"] or card["instance_id"] in state["combat"]["blocks"]]
-    if any(_has_keyword(card,"First strike") or _has_keyword(card,"Double strike") for card in participants):damage_step(True)
+    if state["combat"].get("damage_step") is None:
+        first_strike_ids={card["instance_id"] for card in participants if _has_keyword(card,"First strike") or _has_keyword(card,"Double strike")}
+        if first_strike_ids:
+            state["combat"]["first_strike_damage_ids"]=list(first_strike_ids);damage_step(True);state["combat"]["damage_step"]="regular";state["combat"]["damage_pending"]=True;state["priority_player_id"]=state["active_player_id"];state["consecutive_passes"]=0
+            _log(state,"First-strike combat damage resolved. Players may respond before regular combat damage.");return
     damage_step(False)
     _log(state, "Combat damage resolved.")
-    state["combat"] = {"attackers": [], "blocks": {},"attack_targets":{},"block_orders":{},"damage_pending":False}
+    state["combat"] = {"attackers": [], "blocks": {},"attack_targets":{},"block_orders":{},"damage_pending":False,"damage_step":None,"first_strike_damage_ids":[]}
 
 
 def _check_winner(state: dict) -> None:

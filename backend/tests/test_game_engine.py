@@ -21,7 +21,9 @@ def kept_game():
 
 
 def deal_combat_damage(state):
-    return perform_action(state,state["active_player_id"],{"type":"resolve_combat_damage"})
+    state=perform_action(state,state["active_player_id"],{"type":"resolve_combat_damage"})
+    if state["combat"].get("damage_pending"):state=perform_action(state,state["active_player_id"],{"type":"resolve_combat_damage"})
+    return state
 
 
 def test_public_state_hides_opponent_hand_and_library():
@@ -761,6 +763,27 @@ def test_first_strike_kills_before_retaliation_and_double_strike_hits_twice():
     assert any(item["instance_id"]=="striker" and item["damage"]==0 for item in player["battlefield"])
     assert any(item["instance_id"]=="blocker" for item in bot["graveyard"])
     assert bot["life"]==16
+
+
+def test_first_strike_opens_priority_before_regular_combat_damage():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
+    double={**card(643,"Priority Duelist","Creature — Knight","","2","2"),"keywords":["Double strike"],"instance_id":"priority-duelist","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};pump={**card(644,"Between Steps","Instant"),"oracle_text":"Target creature gets +2/+2 until end of turn.","instance_id":"between-steps","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].append(double);player["hand"].append(pump)
+    state=perform_action(state,"player",{"type":"declare_attackers","attacker_ids":["priority-duelist"]});state=perform_action(state,"bot",{"type":"advance_phase"});action=next(action for action in legal_actions(state,"player") if action["type"]=="resolve_combat_damage");assert action["damage_step"]=="first_strike"
+    state=perform_action(state,"player",{"type":"resolve_combat_damage"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
+    assert bot["life"]==18 and state["combat"]["damage_pending"] and state["combat"]["damage_step"]=="regular" and state["priority_player_id"]=="player"
+    actions=legal_actions(state,"player");assert next(action for action in actions if action["type"]=="resolve_combat_damage")["damage_step"]=="regular" and any(action.get("card_id")=="between-steps" for action in actions)
+    state=perform_action(state,"player",{"type":"cast","card_id":"between-steps","target_id":"priority-duelist"});state=perform_action(state,"player",{"type":"resolve"});state=perform_action(state,"player",{"type":"resolve_combat_damage"});bot=next(p for p in state["players"] if p["id"]=="bot")
+    assert bot["life"]==14 and not state["combat"]["damage_pending"] and not state["combat"]["attackers"]
+
+
+def test_multiplayer_priority_protocol_passes_separately_for_each_damage_step():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");guest=next(p for p in state["players"] if p["id"]=="bot");guest["is_bot"]=False
+    striker={**card(645,"Guest Test Striker","Creature — Knight","","2","3"),"keywords":["First strike"],"instance_id":"guest-striker","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};blocker={**card(646,"Guest Test Blocker","Creature — Soldier","","1","4"),"instance_id":"guest-blocker","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].append(striker);guest["battlefield"].append(blocker)
+    state=perform_action(state,"player",{"type":"declare_attackers","attacker_ids":["guest-striker"]},allow_direct_resolution=False);state=perform_action(state,"bot",{"type":"declare_blockers","blocks":{"guest-blocker":"guest-striker"}},allow_direct_resolution=False)
+    state=perform_action(state,"player",{"type":"pass_priority"},allow_direct_resolution=False);state=perform_action(state,"bot",{"type":"pass_priority"},allow_direct_resolution=False);guest=next(p for p in state["players"] if p["id"]=="bot")
+    assert next(card for card in guest["battlefield"] if card["instance_id"]=="guest-blocker")["damage"]==2 and state["combat"]["damage_step"]=="regular" and state["priority_player_id"]=="player"
+    state=perform_action(state,"player",{"type":"pass_priority"},allow_direct_resolution=False);state=perform_action(state,"bot",{"type":"pass_priority"},allow_direct_resolution=False);player=next(p for p in state["players"] if p["id"]=="player")
+    assert next(card for card in player["battlefield"] if card["instance_id"]=="guest-striker")["damage"]==1 and not state["combat"]["damage_pending"]
 
 
 def test_infect_wither_toxic_and_poison_loss_are_enforced():
