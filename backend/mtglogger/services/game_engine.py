@@ -1445,8 +1445,7 @@ def _resolve_spell(state: dict) -> None:
         _log(state, f"{countered['name']} was countered.")
     if graveyard_target and graveyard_owner:
         if re.search(r"(?:return|put) target (?:creature )?card .*graveyard (?:to|into|onto) (?:the battlefield|play)",effect_text):
-            _leave_graveyard(state,graveyard_owner,[graveyard_target]);graveyard_target["controller_id"]=caster["id"];graveyard_target["summoning_sick"]=True;caster["battlefield"].append(graveyard_target);_log(state,f"{graveyard_target['name']} returned to the battlefield under {caster['name']}'s control.")
-            _queue_triggers(state,"enters",graveyard_target,caster)
+            _leave_graveyard(state,graveyard_owner,[graveyard_target]);graveyard_target["controller_id"]=caster["id"];graveyard_target["summoning_sick"]=True;_enter_battlefield(state,caster,[graveyard_target],"graveyard");_log(state,f"{graveyard_target['name']} returned to the battlefield under {caster['name']}'s control.")
         elif re.search(r"return target (?:creature )?card .*graveyard to (?:your|its owner'?s) hand",effect_text):
             _leave_graveyard(state,graveyard_owner,[graveyard_target]);graveyard_target["controller_id"]=graveyard_target.get("owner_id",graveyard_owner["id"]);_player(state,graveyard_target["controller_id"])["hand"].append(graveyard_target);_log(state,f"{graveyard_target['name']} returned to its owner's hand.")
         elif re.search(r"exile target (?:creature )?card .*graveyard",effect_text):
@@ -1480,18 +1479,18 @@ def _resolve_spell(state: dict) -> None:
         subtype=re.sub(r"\b(?:white|blue|black|red|green|colorless|and)\b"," ",descriptor).strip();subtype=re.sub(r"\s+"," ",subtype) or "Creature"
         keywords=[keyword.title() for keyword in ("flying","first strike","double strike","deathtouch","haste","lifelink","menace","reach","trample","vigilance") if re.search(rf"\b{keyword}\b",effect_text)]
         for _ in range(amount):
-            token={"instance_id":_id(),"scryfall_id":"token","name":f"{subtype.title()} Token","image_url":None,"type_line":f"Token Creature — {subtype.title()}","oracle_text":"","mana_cost":"","mana_value":0,"colors":colors,"power":token_match.group(3),"toughness":token_match.group(4),"owner_id":caster["id"],"controller_id":caster["id"],"tapped":tapped,"damage":0,"counters":{},"summoning_sick":True,"token":True,"keywords":keywords};caster["battlefield"].append(token);created.append(token)
+            token={"instance_id":_id(),"scryfall_id":"token","name":f"{subtype.title()} Token","image_url":None,"type_line":f"Token Creature — {subtype.title()}","oracle_text":"","mana_cost":"","mana_value":0,"colors":colors,"power":token_match.group(3),"toughness":token_match.group(4),"owner_id":caster["id"],"controller_id":caster["id"],"tapped":tapped,"damage":0,"counters":{},"summoning_sick":True,"token":True,"keywords":keywords};created.append(token)
         if attacking and state.get("phase")=="combat":
             source_target=state["combat"].get("attack_targets",{}).get(item.get("source_id"),other["id"])
             for token in created:state["combat"]["attackers"].append(token["instance_id"]);state["combat"]["attack_targets"][token["instance_id"]]=source_target
-        for token in created:_queue_triggers(state,"enters",token,caster)
+        _enter_battlefield(state,caster,created,"token")
         _log(state, f"{caster['name']} created {amount} token(s){' tapped and attacking' if attacking else ''}.")
     predefined_matches=list(re.finditer(r"create (a|one|two|three|four|five|\d+) (tapped )?(clue|food|treasure|blood|gold) tokens?",effect_text,re.IGNORECASE))
     for predefined in predefined_matches:
         word=predefined.group(1).casefold();amount={"a":1,"one":1,"two":2,"three":3,"four":4,"five":5}.get(word,int(word) if word.isdigit() else 1);kind=predefined.group(3).title()
         created=[]
-        for _ in range(amount):token=_predefined_token(caster,kind,bool(predefined.group(2)));caster["battlefield"].append(token);created.append(token)
-        for token in created:_queue_triggers(state,"enters",token,caster)
+        for _ in range(amount):created.append(_predefined_token(caster,kind,bool(predefined.group(2))))
+        _enter_battlefield(state,caster,created,"token")
         _log(state,f"{caster['name']} created {amount} {kind} token(s).")
     saga_transformed=False
     if source_permanent and "exile this saga, then return it to the battlefield transformed under your control" in effect_text:
@@ -1499,7 +1498,7 @@ def _resolve_spell(state: dict) -> None:
         if saga_owner:
             _leave_battlefield(state,saga_owner,source_permanent,"exile",exile_actor_id=caster["id"]);zone_owner=_player(state,source_permanent.get("owner_id",saga_owner["id"]))
             _leave_exile(state,zone_owner,[source_permanent])
-            source_permanent["controller_id"]=caster["id"];source_permanent["counters"]={};source_permanent["summoning_sick"]=True;source_permanent["tapped"]=False;_set_card_face(source_permanent,1);caster["battlefield"].append(source_permanent);_queue_triggers(state,"enters",source_permanent,caster);saga_transformed=True;_log(state,f"{source_permanent['name']} returned transformed under {caster['name']}'s control.")
+            source_permanent["controller_id"]=caster["id"];source_permanent["counters"]={};source_permanent["summoning_sick"]=True;source_permanent["tapped"]=False;_set_card_face(source_permanent,1);_enter_battlefield(state,caster,[source_permanent],"exile");saga_transformed=True;_log(state,f"{source_permanent['name']} returned transformed under {caster['name']}'s control.")
     entered = False
     if is_permanent_spell:
         card["was_kicked"]=bool(item.get("kicked"))
@@ -1508,14 +1507,13 @@ def _resolve_spell(state: dict) -> None:
         enters_counters=re.search(r"enters(?: the battlefield)? with (\d+) ([+−-]\d+/[+−-]\d+|loyalty|charge|shield|stun) counters?",text)
         if enters_counters:
             counter_name=enters_counters.group(2).replace("−","-");card["counters"][counter_name]=card["counters"].get(counter_name,0)+int(enters_counters.group(1))
-        caster["battlefield"].append(card)
+        _enter_battlefield(state,caster,[card],item.get("cast_source_zone","stack"),True)
         if "Aura" in card.get("type_line","") and (target or target_player):_attach(state,card,target or target_player)
         entered = True
     elif item.get("kind", "spell") == "spell":
         if item.get("flashback"):_put_into_exile(state,caster,[card],"stack",caster["id"])
         else:caster["graveyard"].append(card)
     _log(state, f"{card['name']} resolved.")
-    if entered: _queue_triggers(state, "enters", card, caster)
     if entered and "Saga" in card.get("type_line",""):_add_saga_lore(state,caster,card)
     if not saga_transformed:_finish_saga_final_chapter(state,item)
 
@@ -1545,7 +1543,7 @@ def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str, t
     if earthbend_controller:
         if destination=="exile":_leave_exile(state,zone_owner,[card])
         else:zone_owner[destination].remove(card)
-        controller=_player(state,earthbend_controller);card["controller_id"]=controller["id"];card["tapped"]=True;card["summoning_sick"]=True;card["counters"]={};controller["battlefield"].append(card);_log(state,f"{card['name']} returned to the battlefield tapped after being earthbent.");_queue_triggers(state,"enters",card,controller)
+        controller=_player(state,earthbend_controller);card["controller_id"]=controller["id"];card["tapped"]=True;card["summoning_sick"]=True;card["counters"]={};_enter_battlefield(state,controller,[card],destination);_log(state,f"{card['name']} returned to the battlefield tapped after being earthbent.")
 
 
 def _sacrifice_permanents(state:dict,owner:dict,cards:list[dict])->None:
@@ -1603,6 +1601,20 @@ def _leave_exile(state:dict,owner:dict,cards:list[dict])->list[dict]:
     return leaving
 
 
+def _enter_battlefield(state:dict,controller:dict,cards:list[dict],origin:str="effect",was_cast:bool=False,played:bool=False)->list[dict]:
+    entering=[card for card in cards if not any(card in owner["battlefield"] for owner in state["players"])]
+    if not entering:return []
+    batch_size=len(entering);dedupe:set[str]=set()
+    for card in entering:
+        card["controller_id"]=controller["id"];card["entry_event_origin"]=origin;card["entry_event_was_cast"]=was_cast;card["entry_event_played"]=played;card["entry_event_batch_size"]=batch_size
+        controller["battlefield"].append(card)
+    ordered_owners=sorted(state["players"],key=lambda owner:owner["id"]!=state.get("active_player_id"));sources=[(owner,permanent) for owner in ordered_owners for permanent in owner["battlefield"]]
+    for card in entering:_queue_triggers(state,"enters",card,controller,dedupe,sources)
+    for card in entering:
+        for key in ("entry_event_origin","entry_event_was_cast","entry_event_played","entry_event_batch_size"):card.pop(key,None)
+    return entering
+
+
 def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owner: dict, dedupe:set[str]|None=None, sources_override:list[tuple[dict,dict]]|None=None) -> None:
     if event in {"earthbend","waterbend","firebend","airbend"}:
         event_owner["bent_this_turn"]=sorted(set(event_owner.get("bent_this_turn",[]))|{event})
@@ -1624,12 +1636,33 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
             lower = clause.casefold(); matches = False
             trigger_count = 1
             if event == "enters" and event_card:
-                under_control = event_card.get("controller_id") == owner["id"]
-                is_creature = "creature" in event_card.get("type_line", "").casefold()
-                is_land = "land" in event_card.get("type_line", "").casefold()
-                is_artifact = "artifact" in event_card.get("type_line", "").casefold()
-                matches = under_control and ((is_creature and (("whenever another creature enters" in lower and source is not event_card) or "whenever a creature enters the battlefield under your control" in lower)) or (is_artifact and re.search(r"whenever (?:an|another) artifact enters(?: the battlefield)? under your control",lower) is not None and ("another artifact" not in lower or source is not event_card)) or (is_land and re.search(r"whenever (?:a|another) land enters(?: the battlefield)? under your control", lower) is not None) or (source is event_card and re.search(r"when (?:~|this (?:creature|permanent)|[^,]+) enters", lower) is not None))
+                etb_boundary=re.search(r",\s*(?=(?:you\b|put\b|create\b|draw\b|each\b|target\b|this\b|that\b|it\b|its\b|gain\b|tap\b|untap\b|exile\b|investigate\b|proliferate\b|scry\b|mill\b|add\b|amass\b|venture\b|return\b|search\b|[a-z0-9' -]+ deals?\b))",lower);condition=lower[:etb_boundary.start()] if etb_boundary else lower.split(",",1)[0];type_line=event_card.get("type_line","").casefold();under_control=event_card.get("controller_id")==owner["id"];owned=event_card.get("owner_id")==owner["id"];one_or_more="one or more" in condition;dedupe_key=f"enters:{source.get('instance_id')}:{condition}"
+                is_creature="creature" in type_line;is_land="land" in type_line;is_artifact="artifact" in type_line;is_enchantment="enchantment" in type_line;is_token=bool(event_card.get("token"));is_permanent=any(kind in type_line for kind in ("artifact","battle","creature","enchantment","land","planeswalker"))
+                kind_ok=(("token" in condition and is_token) or ("creature" in condition and is_creature) or ("land" in condition and is_land) or ("artifact" in condition and is_artifact) or ("enchantment" in condition and is_enchantment) or ("permanent" in condition and is_permanent))
+                kind_ok=kind_ok and not (("nontoken" in condition and is_token) or ("noncreature" in condition and is_creature) or ("nonland" in condition and is_land) or ("artifact creature" in condition and not (is_artifact and is_creature)))
+                source_name=(source.get("name") or "").casefold();self_reference="this creature" in condition or "this permanent" in condition or "this artifact" in condition or "this enchantment" in condition or "this land" in condition or bool(source_name and source_name in condition);self_enters=source is event_card and self_reference and "enter" in condition
+                kind_ok=kind_ok or self_enters
+                controlled_scope=("you control" in condition or "under your control" in condition) and under_control;owned_scope="you own" in condition and owned;opponent_scope=("opponent controls" in condition or "opponents control" in condition or "under an opponent's control" in condition) and not under_control;enchanted_scope="enchanted player controls" in condition and source.get("attached_to")==event_card.get("controller_id")
+                global_scope=not self_reference and not any(phrase in condition for phrase in ("you control","under your control","you own","opponent controls","opponents control","under an opponent's control","enchanted player controls"))
+                another_ok="another" not in condition and "other " not in condition or source is not event_card
+                relationship_ok=self_enters or (another_ok and (controlled_scope or owned_scope or opponent_scope or enchanted_scope or global_scope))
+                colors={color.casefold() for color in event_card.get("colors",[])};color_words={"white":"w","blue":"u","black":"b","red":"r","green":"g"};color_ok=all(symbol in colors for word,symbol in color_words.items() if re.search(rf"\b{word} (?:artifact |enchantment |land |)?creature",condition))
+                subtype_terms=[]
+                subtype_match=re.search(r"(?:another |a |one or more (?:other )?)([a-z, /'-]+?)s? you control (?:with [^,]+ )?enter",condition)
+                if subtype_match:
+                    descriptor=subtype_match.group(1);ignored={"creature","creatures","artifact","artifacts","enchantment","enchantments","land","lands","token","tokens","nontoken","noncreature","nonland","green","white","blue","black","red","colorless","permanent","permanents","artifact creature"};subtype_terms=[term.strip() for term in re.split(r",| and/or | or | and ",descriptor) if term.strip() not in ignored]
+                if subtype_terms:kind_ok=kind_ok or is_creature
+                subtype_ok=not subtype_terms or any(re.search(rf"\b{re.escape(term.rstrip('s'))}s?\b",type_line) for term in subtype_terms)
+                power,toughness=_parse_stats(event_card,state) if is_creature else (0,0);threshold=re.search(r"(?:power|mana value) (\d+) or (?:greater|less)",condition);value=(event_card.get("mana_value") or 0) if threshold and "mana value" in condition else power;threshold_ok=not threshold or (value>=int(threshold.group(1)) if "greater" in threshold.group(0) else value<=int(threshold.group(1)))
+                feature_ok=("with flying" not in condition or _has_keyword(event_card,"Flying")) and ("face-down" not in condition or event_card.get("face_down"))
+                origin=event_card.get("entry_event_origin");origin_ok=("entered from a graveyard" not in lower and "entered or were cast from a graveyard" not in lower or origin=="graveyard" or event_card.get("entry_event_was_cast") and origin=="graveyard") and ("entered from exile" not in lower and "entered or was cast from exile" not in lower or origin=="exile" or event_card.get("entry_event_was_cast") and origin=="exile") and ("without being played" not in lower or not event_card.get("entry_event_played"))
+                during_turn="during your turn" not in condition or state.get("active_player_id")==owner["id"]
+                once_each_turn="triggers only once each turn" in text.casefold();resolved_turns=source.get("entry_trigger_turns",{});already_triggered=resolved_turns.get(condition)==state.get("turn")
+                entry_phrase=re.search(r"\benters?\b",condition) is not None
+                matches=entry_phrase and kind_ok and relationship_ok and color_ok and subtype_ok and threshold_ok and feature_ok and origin_ok and during_turn and (not one_or_more or dedupe is None or dedupe_key not in dedupe) and (not once_each_turn or not already_triggered)
                 if "if it was kicked" in lower:matches=matches and bool(event_card.get("was_kicked"))
+                if matches and one_or_more and dedupe is not None:dedupe.add(dedupe_key)
+                if matches and once_each_turn:source.setdefault("entry_trigger_turns",{})[condition]=state.get("turn")
             elif event == "dies" and event_card:
                 is_creature="creature" in event_card.get("type_line","").casefold();same_controller=event_card.get("controller_id")==source.get("controller_id",owner["id"]);self_dies=source is event_card and re.search(r"when (?:~|this creature|[^,]+) dies",lower) is not None
                 another=source is not event_card and "whenever another creature dies" in lower
@@ -1764,10 +1797,14 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 matches=owner["id"]==event_owner["id"] and (f"whenever you {event}" in lower or multi_bend)
             if not matches or "," not in clause: continue
             effect = clause.split(",", 1)[1].strip()
+            if event=="enters":
+                etb_effect_boundary=re.search(r",\s*(?=(?:you\b|put\b|create\b|draw\b|each\b|target\b|this\b|that\b|it\b|its\b|gain\b|tap\b|untap\b|exile\b|investigate\b|proliferate\b|scry\b|mill\b|add\b|amass\b|venture\b|return\b|search\b|[a-z0-9' -]+ deals?\b))",clause,re.IGNORECASE)
+                if etb_effect_boundary:effect=clause[etb_effect_boundary.end():].strip()
             if event=="exile":
                 exile_effect=re.search(r",\s*((?:you (?:may|draw)|put|create|return|target|it deals|destroy)\b.*)$",clause,re.IGNORECASE)
                 if exile_effect:effect=exile_effect.group(1).strip()
             if event=="exile" and "that many" in effect.casefold():effect=re.sub(r"\bthat many\b",str(event_card.get("exile_event_batch_size",1)),effect,flags=re.IGNORECASE)
+            if event=="enters" and re.search(r"\b(?:that many|that much)\b",effect,re.IGNORECASE):effect=re.sub(r"\b(?:that many|that much)\b",str(event_card.get("entry_event_batch_size",1)),effect,flags=re.IGNORECASE)
             if event in {"earthbend","waterbend","firebend","airbend"} and "whenever you waterbend, earthbend, firebend, or airbend" in lower:effect=re.split(r"whenever you waterbend, earthbend, firebend, or airbend,",clause,flags=re.IGNORECASE)[1].strip()
             if event=="enters" and re.match(r"if it was kicked,",effect,re.IGNORECASE):effect=effect.split(",",1)[1].strip()
             if event=="leaves" and "transform" in effect and "next upkeep" in effect:
@@ -1979,7 +2016,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
     elif action_type == "play_land":
         card = next((card for card in player["hand"] if card["instance_id"] == action.get("card_id") and "Land" in card.get("type_line", "")), None)
         if not card: raise RuleViolation("That land is not in your hand")
-        player["hand"].remove(card);card["summoning_sick"]=True;player["battlefield"].append(card); player["land_plays_remaining"] -= 1; _log(state, f"{player['name']} played {card['name']}."); _queue_triggers(state,"enters",card,player)
+        player["hand"].remove(card);card["summoning_sick"]=True;_enter_battlefield(state,player,[card],"hand",played=True);player["land_plays_remaining"]-=1;_log(state,f"{player['name']} played {card['name']}.")
     elif action_type == "cast":
         requested_source=action.get("source");zone_name="graveyard" if requested_source=="flashback" else "exile" if requested_source=="airbend" else requested_source if requested_source in {"hand","command"} else next((zone for zone in ("hand","command") if any(card["instance_id"]==action.get("card_id") for card in player.get(zone,[]))),None)
         source="flashback" if zone_name=="graveyard" else "airbend" if zone_name=="exile" and requested_source=="airbend" else zone_name;card=next((card for card in player.get(zone_name or "hand",[]) if card["instance_id"]==action.get("card_id")),None);flashback=_flashback_ability(card or {}) if source=="flashback" else None
@@ -2042,7 +2079,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         cost_triggers=state["stack"][stack_before_cost:];del state["stack"][stack_before_cost:]
         card.pop("airbent",None)
         if card.get("commander"): player["commander_casts"] = player.get("commander_casts", 0) + 1
-        effective_target=target_id or (mode_targets[0] if len(mode_targets)==1 else None);stack_item={"id": _id(), "card": card, "controller_id": player_id, "target_id": effective_target,"target_ids":target_ids,"mode_indices":chosen_modes,"mode_targets":mode_targets,"x_value":x_value,"flashback":bool(flashback),"kicked":requested_kicked,"blighted":requested_blight};state["stack"].append(stack_item);state["stack"].extend(cost_triggers); state["consecutive_passes"] = 0; state["pending_phase_advance"] = False
+        effective_target=target_id or (mode_targets[0] if len(mode_targets)==1 else None);stack_item={"id": _id(), "card": card, "controller_id": player_id, "target_id": effective_target,"target_ids":target_ids,"mode_indices":chosen_modes,"mode_targets":mode_targets,"x_value":x_value,"flashback":bool(flashback),"kicked":requested_kicked,"blighted":requested_blight,"cast_source_zone":"graveyard" if source=="flashback" else "exile" if source=="airbend" else source};state["stack"].append(stack_item);state["stack"].extend(cost_triggers); state["consecutive_passes"] = 0; state["pending_phase_advance"] = False
         if requested_waterbend:_queue_triggers(state,"waterbend",card,player)
         if player.get("cast_event_turn")!=state["turn"]:player["cast_event_turn"]=state["turn"];player["spells_cast_this_turn"]=0
         player["spells_cast_this_turn"]=player.get("spells_cast_this_turn",0)+1;card["cast_source_zone"]="graveyard" if source=="flashback" else "exile" if source=="airbend" else source
@@ -2343,7 +2380,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         random.SystemRandom().shuffle(player["library"]);destination=pending.get("destination","hand")
         for card in chosen:
             if destination=="battlefield":
-                card["controller_id"]=player_id;card["tapped"]=bool(pending.get("tapped"));card["summoning_sick"]=True;player["battlefield"].append(card);_queue_triggers(state,"enters",card,player)
+                card["controller_id"]=player_id;card["tapped"]=bool(pending.get("tapped"));card["summoning_sick"]=True;_enter_battlefield(state,player,[card],"library")
             elif destination=="library_top":player["library"].append(card)
             else:player["hand"].append(card)
         state["pending_library_search"]=None;state["priority_player_id"]=(state.get("pending_trigger_targets") or [{"controller_id":state["active_player_id"]}])[0]["controller_id"];_log(state,f"{player['name']} found {len(chosen)} card(s), moved them to {destination.replace('_',' ')}, and shuffled.")
@@ -2365,7 +2402,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if not permanent: raise RuleViolation("Choose a permanent")
         name = (action.get("counter_name") or "+1/+1")[:32]; amount = max(-20, min(20, int(action.get("amount") or 1))); permanent["counters"][name] = max(0, permanent["counters"].get(name, 0) + amount); _log(state, f"{permanent['name']} now has {permanent['counters'][name]} {name} counter(s).")
     elif action_type == "create_token":
-        token = {"instance_id":_id(),"scryfall_id":"token","name":(action.get("token_name") or "Creature Token")[:80],"image_url":None,"type_line":"Token Creature","oracle_text":"","mana_cost":"","mana_value":0,"power":str(max(0,min(99,int(action.get("power") or 1)))),"toughness":str(max(1,min(99,int(action.get("toughness") or 1)))),"owner_id":player_id,"controller_id":player_id,"tapped":False,"damage":0,"counters":{},"summoning_sick":True,"token":True}; player["battlefield"].append(token); _log(state, f"{player['name']} created {token['name']}.")
+        token = {"instance_id":_id(),"scryfall_id":"token","name":(action.get("token_name") or "Creature Token")[:80],"image_url":None,"type_line":"Token Creature","oracle_text":"","mana_cost":"","mana_value":0,"power":str(max(0,min(99,int(action.get("power") or 1)))),"toughness":str(max(1,min(99,int(action.get("toughness") or 1)))),"owner_id":player_id,"controller_id":player_id,"tapped":False,"damage":0,"counters":{},"summoning_sick":True,"token":True};_enter_battlefield(state,player,[token],"token");_log(state,f"{player['name']} created {token['name']}.")
     elif action_type == "move_zone":
         source_owner = next((owner for owner in state["players"] if any(card["instance_id"] == action.get("target_id") for zone in ("hand","battlefield","graveyard","exile") for card in owner[zone])), None)
         destination = action.get("destination")
