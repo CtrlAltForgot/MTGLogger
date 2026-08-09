@@ -75,7 +75,8 @@ def _mana_requirements(card: dict, extra_generic: int = 0) -> tuple[list[set[str
 
 
 def _has_keyword(card: dict, keyword: str) -> bool:
-    return keyword.casefold() in {value.casefold() for value in card.get("keywords", [])} or re.search(rf"\b{re.escape(keyword.casefold())}\b", (card.get("oracle_text") or "").casefold()) is not None
+    printed={value.casefold() for value in card.get("keywords", [])};temporary={value.casefold() for value in card.get("temporary_keywords", [])}
+    return keyword.casefold() in printed|temporary or re.search(rf"\b{re.escape(keyword.casefold())}\b", (card.get("oracle_text") or "").casefold()) is not None
 
 
 def _toxic_value(card: dict) -> int:
@@ -205,7 +206,7 @@ def _target_kind(card: dict) -> str | None:
     if re.search(r"target player mills?", text): return "player"
     if re.search(r"target player sacrifices?",text):return "player"
     if re.search(r"(?:destroy|exile) target (?:artifact, creature, enchantment, planeswalker|nonland permanent|permanent)", text): return "permanent"
-    if re.search(r"(?:destroy|exile|tap|untap|return) target creature", text) or re.search(r"target creature .*gets [+-]\d+/[+-]\d+", text) or re.search(r"deals \d+ damage to target creature", text): return "creature"
+    if re.search(r"(?:destroy|exile|tap|untap|return) target creature", text) or re.search(r"target creature .*(?:gets [+-]\d+/[+-]\d+|gains? [^.]+ until end of turn)", text) or re.search(r"(?:deals \d+ damage|put .+ counters?) (?:to|on) target creature", text): return "creature"
     if re.search(r"return target (?:nonland )?permanent", text): return "permanent"
     if re.search(r"deals \d+ damage to any target", text): return "any"
     return None
@@ -386,6 +387,15 @@ def _resolve_spell(state: dict) -> None:
     if target and stats_match:
         target["temporary_power"] = target.get("temporary_power", 0) + int(stats_match.group(1))
         target["temporary_toughness"] = target.get("temporary_toughness", 0) + int(stats_match.group(2))
+    counter_match=re.search(r"put (a|one|two|three|four|five|six|seven|eight|nine|ten|\d+) ([+−-]\d+/[+−-]\d+|loyalty|charge|shield|stun) counters? on target (?:creature|permanent|artifact|planeswalker)",effect_text)
+    if target and counter_match:
+        words={"a":1,"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10};amount=words.get(counter_match.group(1),int(counter_match.group(1)) if counter_match.group(1).isdigit() else 1);name=counter_match.group(2).replace("−","-")
+        target["counters"][name]=target["counters"].get(name,0)+amount;_log(state,f"{target['name']} received {amount} {name} counter(s).")
+    keyword_match=re.search(r"target creature gains? ([^.]+?) until end of turn",effect_text)
+    if target and keyword_match:
+        supported=("flying","first strike","double strike","deathtouch","haste","hexproof","indestructible","lifelink","menace","reach","trample","vigilance")
+        gained=[keyword for keyword in supported if re.search(rf"\b{re.escape(keyword)}\b",keyword_match.group(1))]
+        target["temporary_keywords"]=sorted(set(target.get("temporary_keywords",[]))|set(gained));_log(state,f"{target['name']} gained {', '.join(gained)} until end of turn.")
     mill_match = re.search(r"target player mills? (\d+|one|two|three|four|five|six|seven|eight|nine|ten) cards?", effect_text)
     if mill_match and target_player:
         words={"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10}; amount=words.get(mill_match.group(1),int(mill_match.group(1)) if mill_match.group(1).isdigit() else 0)
@@ -441,6 +451,7 @@ def _resolve_spell(state: dict) -> None:
     entered = False
     if is_permanent_spell:
         card["summoning_sick"] = "Creature" in card.get("type_line", "")
+        if re.search(r"\benters (?:the battlefield )?tapped\b",text):card["tapped"]=True
         caster["battlefield"].append(card); entered = True
     elif item.get("kind", "spell") == "spell":
         caster["graveyard"].append(card)
@@ -574,7 +585,7 @@ def _begin_next_turn(state:dict)->None:
     state["pending_discard"]=None;state["turn"] += 1; state["phase"] = PHASES[0]; state["active_player_id"] = opponent(state, state["active_player_id"])["id"]
     active = _player(state, state["active_player_id"]); active["land_plays_remaining"] = 1
     for owner in state["players"]:
-        for permanent in owner["battlefield"]: permanent.pop("temporary_power",None); permanent.pop("temporary_toughness",None); permanent["damage"] = 0
+        for permanent in owner["battlefield"]: permanent.pop("temporary_power",None); permanent.pop("temporary_toughness",None);permanent.pop("temporary_keywords",None); permanent["damage"] = 0
     for permanent in active["battlefield"]: permanent["tapped"] = False; permanent["summoning_sick"] = False
     _draw(state, active); _log(state, f"Turn {state['turn']} began for {active['name']}."); _queue_triggers(state,"upkeep",None,active)
 

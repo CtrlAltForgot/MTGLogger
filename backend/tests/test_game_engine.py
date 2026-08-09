@@ -283,6 +283,20 @@ def test_bounce_tap_combat_trick_mill_and_discard_effects_resolve():
     assert len(next(item for item in state["players"] if item["id"]=="bot")["hand"])==before_hand-2
 
 
+def test_counters_temporary_keywords_and_enters_tapped_are_enforced():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player")
+    creature={**card(690,"Young Hero","Creature — Human","","1","1"),"instance_id":"hero","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":True};player["battlefield"].append(creature)
+    boon={**card(691,"Heroic Boon","Instant"),"oracle_text":"Put two +1/+1 counters on target creature. Target creature gains haste and indestructible until end of turn.","instance_id":"boon","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"].append(boon)
+    action=next(a for a in legal_actions(state,"player") if a.get("card_id")=="boon");assert {target["id"] for target in action["targets"]}=={"hero"}
+    state=perform_action(state,"player",{"type":"cast","card_id":"boon","target_id":"hero"});state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");hero=next(c for c in player["battlefield"] if c["instance_id"]=="hero")
+    assert hero["counters"]["+1/+1"]==2 and set(hero["temporary_keywords"])=={"haste","indestructible"}
+    state=perform_action(state,"player",{"type":"advance_phase"});assert "hero" in next(a for a in legal_actions(state,"player") if a["type"]=="declare_attackers")["card_ids"]
+
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player")
+    tapped={**card(692,"Sleepy Golem","Artifact Creature — Golem","","3","3"),"oracle_text":"Sleepy Golem enters the battlefield tapped.","instance_id":"sleepy","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"].append(tapped)
+    state=perform_action(state,"player",{"type":"cast","card_id":"sleepy"});state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");assert next(c for c in player["battlefield"] if c["instance_id"]=="sleepy")["tapped"]
+
+
 def test_counterspell_targets_and_counters_a_spell_on_the_stack():
     state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(item for item in state["players"] if item["id"]=="player");bot=next(item for item in state["players"] if item["id"]=="bot")
     bot["is_bot"]=False
