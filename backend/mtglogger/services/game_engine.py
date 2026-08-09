@@ -551,6 +551,26 @@ def _targets(state: dict, caster_id: str, card: dict) -> list[dict]:
     return targets
 
 
+def _fight_target_steps(state:dict,caster_id:str,card:dict,source:dict|None=None)->list[dict]:
+    text=(card.get("oracle_text") or "").casefold()
+    if "fight" not in text:return []
+    source_fight=bool(source and (re.search(r"(?:this creature|this permanent|it) fights? (?:up to one )?target creature",text) or re.search(rf"\b{re.escape(source.get('name','').casefold())}\b fights? (?:up to one )?target creature",text)))
+    two_target=bool(re.search(r"target creature(?: you control)? fights? (?:another )?target creature",text) or re.search(r"two target creatures fight",text) or "fight each other" in text)
+    if not source_fight and not two_target:return []
+    candidates=[]
+    for owner in state["players"]:
+        for creature in owner["battlefield"]:
+            if "Creature" not in creature.get("type_line","") or _has_keyword(creature,"Shroud") or (owner["id"]!=caster_id and _has_keyword(creature,"Hexproof")) or _protected_from(creature,card):continue
+            candidates.append({"id":creature["instance_id"],"name":creature["name"],"kind":"permanent","controller_id":owner["id"]})
+    opponent_only=bool(re.search(r"target creature (?:you don.t control|an opponent controls)",text))
+    if source_fight:
+        targets=[target for target in candidates if target["id"]!=source["instance_id"] and (not opponent_only or target["controller_id"]!=caster_id)]
+        return [{"label":f"Choose a creature for {source['name']} to fight","targets":targets}]
+    first=[target for target in candidates if target["controller_id"]==caster_id] if "target creature you control" in text else candidates
+    second=[target for target in candidates if target["controller_id"]!=caster_id] if opponent_only else candidates
+    return [{"label":"Choose the first fighting creature","targets":first},{"label":"Choose the other fighting creature","targets":second,"distinct":True}]
+
+
 def _countered_spell_destination(state:dict,controller:dict,card:dict,flashback:bool=False)->None:
     owner=_player(state,card.get("owner_id",controller["id"]));card["controller_id"]=owner["id"]
     destination="exile" if flashback else "graveyard";owner[destination].append(card)
@@ -645,6 +665,7 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
     if pending_triggers:
         pending=pending_triggers[0]
         if pending["controller_id"]!=player_id:return []
+        if pending.get("target_steps"):return [{"type":"choose_trigger_targets","target_steps":pending["target_steps"],"label":pending["card"]["oracle_text"],"source_name":pending["source_name"]},{"type":"concede"}]
         targets=_targets(state,player_id,pending["card"])
         return ([{"type":"choose_trigger_target","targets":targets,"label":pending["card"]["oracle_text"],"source_name":pending["source_name"]},{"type":"concede"}] if targets else [{"type":"skip_trigger","source_name":pending["source_name"]},{"type":"concede"}])
     if state["status"] == "mulligan":
@@ -683,18 +704,28 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
             if len(modes)<modal_spec["min_modes"] and not modal_spec["repeatable"]:continue
             action.update({"mode_count":modal_spec["min_modes"],"mode_min":modal_spec["min_modes"],"mode_max":min(modal_spec["max_modes"],len(modes) if not modal_spec["repeatable"] else modal_spec["max_modes"]),"mode_repeatable":modal_spec["repeatable"],"mode_distinct_targets":modal_spec["distinct_targets"],"modes":modes})
         else:
-            targeting_card=_spell_targeting_card(_kicked_rules_card(card,False));targets = _targets(state, player_id, targeting_card)
-            if _target_kind(targeting_card) and not targets: continue
-            if targets: action["targets"] = targets
+            base_rules=_kicked_rules_card(card,False);fight_steps=_fight_target_steps(state,player_id,base_rules)
+            if fight_steps:
+                if any(not step["targets"] for step in fight_steps):continue
+                action["target_steps"]=fight_steps
+            else:
+                targeting_card=_spell_targeting_card(base_rules);targets = _targets(state, player_id, targeting_card)
+                if _target_kind(targeting_card) and not targets: continue
+                if targets: action["targets"] = targets
         actions.append(action)
         if kicker_cost:
             kicked_cost_card={**cost_card,"mana_cost":f"{cost_card.get('mana_cost') or ''}{kicker_cost}"}
             if _can_pay(player,kicked_cost_card,total_tax):
                 kicked={**action,"kicked":True,"kicker_cost":kicker_cost,"label":f"{action['label']} + kicker {kicker_cost}"}
                 if not modal_spec:
-                    kicked.pop("targets",None);kicked_targeting=_spell_targeting_card(_kicked_rules_card(card,True));kicked_targets=_targets(state,player_id,kicked_targeting)
-                    if _target_kind(kicked_targeting) and not kicked_targets:continue
-                    if kicked_targets:kicked["targets"]=kicked_targets
+                    kicked.pop("targets",None);kicked.pop("target_steps",None);kicked_rules=_kicked_rules_card(card,True);kicked_fight=_fight_target_steps(state,player_id,kicked_rules)
+                    if kicked_fight:
+                        if any(not step["targets"] for step in kicked_fight):continue
+                        kicked["target_steps"]=kicked_fight
+                    else:
+                        kicked_targeting=_spell_targeting_card(kicked_rules);kicked_targets=_targets(state,player_id,kicked_targeting)
+                        if _target_kind(kicked_targeting) and not kicked_targets:continue
+                        if kicked_targets:kicked["targets"]=kicked_targets
                 if _has_x_cost(kicked_cost_card):kicked.update({"x_min":0,"x_max":_maximum_x(player,kicked_cost_card,total_tax)})
                 actions.append(kicked)
     for card in player["hand"]:
@@ -709,11 +740,12 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
             if ability["counter_cost"] and permanent.get("counters",{}).get(ability["counter_cost"]["name"],0)<ability["counter_cost"]["amount"]:continue
             cost_options=_activated_cost_options(player,permanent,ability["selection_cost"])
             if ability["selection_cost"] and len(cost_options)<ability["selection_cost"]["amount"]:continue
-            targets = _targets(state, player_id, ability["card"])
-            if _target_kind(ability["card"]) and not targets: continue
+            fight_steps=_fight_target_steps(state,player_id,ability["card"],permanent);targets=[] if fight_steps else _targets(state, player_id, ability["card"])
+            if (fight_steps and any(not step["targets"] for step in fight_steps)) or (not fight_steps and _target_kind(ability["card"]) and not targets): continue
             action = {"type": "activate", "card_id": permanent["instance_id"], "ability_index": index, "label": f"{ability['cost']}: {ability['effect']}","life_cost":ability["life_cost"],"self_sacrifice":ability["self_sacrifice"],"counter_cost":ability["counter_cost"],"cost_kind":ability["selection_cost"]["kind"] if ability["selection_cost"] else None,"cost_amount":ability["selection_cost"]["amount"] if ability["selection_cost"] else 0,"cost_options":[card["instance_id"] for card in cost_options]}
             if _has_x_cost({"mana_cost":ability["mana_cost"]}):action.update({"x_min":0,"x_max":_maximum_x(player,{"mana_cost":ability["mana_cost"]},excluded_id=permanent["instance_id"] if ability["taps"] else None)})
-            if targets: action["targets"] = targets
+            if fight_steps:action["target_steps"]=fight_steps
+            elif targets: action["targets"] = targets
             actions.append(action)
     if active and main and not state["stack"]:
         for permanent in player["battlefield"]:
@@ -772,6 +804,10 @@ def _resolve_spell(state: dict) -> None:
     rules_card=_selected_mode_card(card,item.get("mode_indices")) if item.get("kind","spell")=="spell" else card
     if item.get("kind","spell")=="spell":rules_card=_kicked_rules_card(rules_card,bool(item.get("kicked")))
     rules_card=_x_rules_card(rules_card,item.get("x_value"));targeting_card=_spell_targeting_card(rules_card) if item.get("kind","spell")=="spell" else rules_card;target_kind=_target_kind(targeting_card);target_id=item.get("target_id")
+    source_permanent=next((permanent for player in state["players"] for permanent in player["battlefield"] if permanent["instance_id"]==item.get("source_id")),None);target_ids=item.get("target_ids") or [];fight_steps=_fight_target_steps(state,caster["id"],rules_card,source_permanent);valid_fight_ids=[target_value for position,target_value in enumerate(target_ids) if position<len(fight_steps) and target_value in {target["id"] for target in fight_steps[position]["targets"]}]
+    if target_ids and not valid_fight_ids:
+        if item.get("kind","spell")=="spell":_countered_spell_destination(state,caster,card,item.get("flashback",False))
+        _log(state,f"{card['name']} was countered because all of its fight targets were no longer legal.");return
     if target_kind and target_id not in {target["id"] for target in _targets(state,caster["id"],targeting_card)}:
         if item.get("kind","spell")=="spell":_countered_spell_destination(state,caster,card,item.get("flashback",False))
         _log(state,f"{card['name']} was countered because its target was no longer legal.");return
@@ -782,7 +818,6 @@ def _resolve_spell(state: dict) -> None:
     target_player = next((player for player in state["players"] if player["id"] == target_id), None)
     target_owner = next((player for player in state["players"] if any(permanent["instance_id"] == target_id for permanent in player["battlefield"])), None)
     target = next((permanent for player in state["players"] for permanent in player["battlefield"] if permanent["instance_id"] == target_id), None)
-    source_permanent = next((permanent for player in state["players"] for permanent in player["battlefield"] if permanent["instance_id"] == item.get("source_id")), None)
     target_stack_item = next((entry for entry in state["stack"] if entry["id"] == target_id), None)
     graveyard_owner=next((player for player in state["players"] if any(graveyard_card["instance_id"]==target_id for graveyard_card in player["graveyard"])),None)
     graveyard_target=next((graveyard_card for player in state["players"] for graveyard_card in player["graveyard"] if graveyard_card["instance_id"]==target_id),None)
@@ -807,6 +842,10 @@ def _resolve_spell(state: dict) -> None:
             if _has_keyword(card,"Infect"):target_player["poison"]=target_player.get("poison",0)+amount
             else:target_player["life"] -= amount
         elif target:_damage_permanent(state,target,amount,card)
+    if fight_steps and len(valid_fight_ids)==len(fight_steps):
+        fighters=([source_permanent,next((permanent for owner in state["players"] for permanent in owner["battlefield"] if permanent["instance_id"]==valid_fight_ids[0]),None)] if len(fight_steps)==1 else [next((permanent for owner in state["players"] for permanent in owner["battlefield"] if permanent["instance_id"]==fighter_id),None) for fighter_id in valid_fight_ids[:2]])
+        if all(fighters) and fighters[0] is not fighters[1]:
+            first,second=fighters;first_power=max(0,_parse_stats(first,state)[0]);second_power=max(0,_parse_stats(second,state)[0]);_damage_permanent(state,second,first_power,first);_damage_permanent(state,first,second_power,second);first["fought_turn"]=state["turn"];second["fought_turn"]=state["turn"];_log(state,f"{first['name']} fought {second['name']}.")
     if target and target_owner and re.search(r"destroy target (?:creature|permanent|nonland permanent)", effect_text):
         if _destroy_permanent(state,target_owner,target,"can't be regenerated" in effect_text):_log(state, f"{target['name']} was destroyed.")
     if target and target_owner and re.search(r"exile target (?:creature|permanent|nonland permanent)", effect_text):
@@ -999,10 +1038,13 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
             effect = clause.split(",", 1)[1].strip()
             if event=="enters" and re.match(r"if it was kicked,",effect,re.IGNORECASE):effect=effect.split(",",1)[1].strip()
             ability_card = {**source, "name": f"{source['name']} trigger", "oracle_text": effect, "type_line": "Ability", "mana_cost": ""}
-            targets = _targets(state, owner["id"], ability_card)
+            fight_steps=_fight_target_steps(state,owner["id"],ability_card,source);targets=[] if fight_steps else _targets(state, owner["id"], ability_card)
             for _ in range(trigger_count):
                 trigger={"id":_id(),"kind":"trigger","card":ability_card,"controller_id":owner["id"],"target_id":None,"source_id":source["instance_id"]}
-                if _target_kind(ability_card):
+                if fight_steps:
+                    if all(step["targets"] for step in fight_steps):state.setdefault("pending_trigger_targets",[]).append({"controller_id":owner["id"],"source_name":source["name"],"trigger":trigger,"card":ability_card,"target_steps":fight_steps});state["priority_player_id"]=state["pending_trigger_targets"][0]["controller_id"]
+                    else:_log(state,f"{source['name']}'s fight trigger had no legal targets and was removed.")
+                elif _target_kind(ability_card):
                     if targets:state.setdefault("pending_trigger_targets",[]).append({"controller_id":owner["id"],"source_name":source["name"],"trigger":trigger,"card":ability_card});state["priority_player_id"]=state["pending_trigger_targets"][0]["controller_id"]
                     else:_log(state,f"{source['name']}'s trigger had no legal target and was removed.")
                 else:state["stack"].append(trigger)
@@ -1180,6 +1222,10 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if (_has_x_cost(cost_card) and not 0<=x_value<=x_max) or (not _has_x_cost(cost_card) and action.get("x_value") is not None): raise RuleViolation("That spell cannot be cast with the chosen X value")
         selected_cost_ids=action.get("cost_card_ids") or [];required_cost=available.get("cost_amount",0);cost_options=set(available.get("cost_options",[]))
         if len(selected_cost_ids)!=required_cost or len(set(selected_cost_ids))!=required_cost or not set(selected_cost_ids).issubset(cost_options):raise RuleViolation(f"Choose exactly {required_cost} cards or permanents for the additional cost")
+        target_ids=action.get("target_ids") or [];target_steps=available.get("target_steps") or []
+        if target_steps:
+            if len(target_ids)!=len(target_steps) or any(target_id not in {target["id"] for target in target_steps[index]["targets"]} for index,target_id in enumerate(target_ids)) or any(step.get("distinct") and target_ids[index] in target_ids[:index] for index,step in enumerate(target_steps)):raise RuleViolation("Choose each legal fight target exactly once")
+        elif target_ids:raise RuleViolation("That spell does not use multiple targets")
         if not _can_pay(player,cost_card,tax,x_value=x_value):raise RuleViolation("That spell cannot be cast")
         modal_spec=_modal_spec(card);modal_options=(modal_spec or {}).get("options",[]);chosen_modes=action.get("chosen_modes") or [];mode_targets=action.get("mode_targets") or []
         if modal_spec and len(chosen_modes)==1 and not mode_targets:mode_targets=[action.get("target_id")]
@@ -1199,10 +1245,11 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if not modal_spec and _target_kind(targeting_card) and target_id not in {target["id"] for target in targets}: raise RuleViolation("Choose a legal target")
         _pay_mana(state,player,cost_card,tax,x_value=x_value);player[zone_name].remove(card)
         if card.get("commander"): player["commander_casts"] = player.get("commander_casts", 0) + 1
-        effective_target=target_id or (mode_targets[0] if len(mode_targets)==1 else None);stack_item={"id": _id(), "card": card, "controller_id": player_id, "target_id": effective_target,"mode_indices":chosen_modes,"mode_targets":mode_targets,"x_value":x_value,"flashback":bool(flashback),"kicked":requested_kicked};state["stack"].append(stack_item); state["consecutive_passes"] = 0; state["pending_phase_advance"] = False
+        effective_target=target_id or (mode_targets[0] if len(mode_targets)==1 else None);stack_item={"id": _id(), "card": card, "controller_id": player_id, "target_id": effective_target,"target_ids":target_ids,"mode_indices":chosen_modes,"mode_targets":mode_targets,"x_value":x_value,"flashback":bool(flashback),"kicked":requested_kicked};state["stack"].append(stack_item); state["consecutive_passes"] = 0; state["pending_phase_advance"] = False
         _queue_triggers(state,"cast",card,player)
         ward_targets=[effective_target] if effective_target else []
         ward_targets.extend(target for target in mode_targets if target and target not in ward_targets)
+        ward_targets.extend(target for target in target_ids if target not in ward_targets)
         for ward_target in ward_targets:_queue_ward(state,player,ward_target,stack_item)
         if (_multiplayer(state) or not allow_direct_resolution) and not state.get("pending_ward") and not state.get("pending_trigger_targets"): state["priority_player_id"] = opponent(state, player_id)["id"]
         mode_label="; ".join(next(mode["label"] for mode in modal_options if mode["index"]==index) for index in chosen_modes)
@@ -1232,6 +1279,10 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         x_value=int(action.get("x_value") or 0);x_card={"mana_cost":ability["mana_cost"]};x_max=_maximum_x(player,x_card,excluded_id=permanent["instance_id"] if ability["taps"] else None)
         if (_has_x_cost(x_card) and not 0<=x_value<=x_max) or (not _has_x_cost(x_card) and action.get("x_value") is not None):raise RuleViolation("That ability cannot be activated with the chosen X value")
         if targets and target_id not in {target["id"] for target in targets}:raise RuleViolation("Choose a legal target")
+        target_ids=action.get("target_ids") or [];target_steps=available.get("target_steps") or []
+        if target_steps:
+            if len(target_ids)!=len(target_steps) or any(target_value not in {target["id"] for target in target_steps[position]["targets"]} for position,target_value in enumerate(target_ids)) or any(step.get("distinct") and target_ids[position] in target_ids[:position] for position,step in enumerate(target_steps)):raise RuleViolation("Choose each legal fight target exactly once")
+        elif target_ids:raise RuleViolation("That ability does not use multiple targets")
         selected_cost_ids=action.get("cost_card_ids") or [];required_cost=available.get("cost_amount",0);cost_options=set(available.get("cost_options",[]))
         if len(selected_cost_ids)!=required_cost or len(set(selected_cost_ids))!=required_cost or not set(selected_cost_ids).issubset(cost_options):raise RuleViolation(f"Choose exactly {required_cost} legal card(s) for the activation cost")
         selected_cost_cards=[card for zone in (player["hand"],player["battlefield"]) for card in zone if card["instance_id"] in set(selected_cost_ids)]
@@ -1241,7 +1292,8 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if ability["counter_cost"]:
             name,amount=ability["counter_cost"]["name"],ability["counter_cost"]["amount"];permanent["counters"][name]-=amount
         if ability["taps"]:permanent["tapped"]=True
-        stack_item={"id":_id(),"kind":"ability","card":ability["card"],"controller_id":player_id,"target_id":target_id,"source_id":permanent["instance_id"],"x_value":x_value};state["stack"].append(stack_item);state["consecutive_passes"]=0;state["pending_phase_advance"]=False;_queue_ward(state,player,target_id,stack_item)
+        stack_item={"id":_id(),"kind":"ability","card":ability["card"],"controller_id":player_id,"target_id":target_id,"target_ids":target_ids,"source_id":permanent["instance_id"],"x_value":x_value};state["stack"].append(stack_item);state["consecutive_passes"]=0;state["pending_phase_advance"]=False
+        for ward_target in ([target_id] if target_id else [])+target_ids:_queue_ward(state,player,ward_target,stack_item)
         if ability["self_sacrifice"]:_leave_battlefield(state,player,permanent,"graveyard")
         if available.get("cost_kind")=="discard":
             for card in selected_cost_cards:player["hand"].remove(card);player["graveyard"].append(card)
@@ -1333,11 +1385,15 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if action_type=="pay_ward" and remaining:
             state["pending_ward"]={**remaining[0],"remaining":remaining[1:]};state["priority_player_id"]=player_id
         else:state["pending_ward"]=None;state["priority_player_id"]=opponent(state,player_id)["id"] if (_multiplayer(state) or not allow_direct_resolution) else player_id
-    elif action_type in {"choose_trigger_target","skip_trigger"}:
+    elif action_type in {"choose_trigger_target","choose_trigger_targets","skip_trigger"}:
         pending_list=state.get("pending_trigger_targets") or []
         if not pending_list or pending_list[0]["controller_id"]!=player_id:raise RuleViolation("There is no triggered target decision for this player")
         pending=pending_list.pop(0);targets=_targets(state,player_id,pending["card"]);target_id=action.get("target_id")
-        if action_type=="choose_trigger_target":
+        if action_type=="choose_trigger_targets":
+            steps=pending.get("target_steps") or [];target_ids=action.get("target_ids") or []
+            if len(target_ids)!=len(steps) or any(target_value not in {target["id"] for target in steps[position]["targets"]} for position,target_value in enumerate(target_ids)) or any(step.get("distinct") and target_ids[position] in target_ids[:position] for position,step in enumerate(steps)):raise RuleViolation("Choose legal targets for the fight trigger")
+            trigger=pending["trigger"];trigger["target_ids"]=target_ids;state["stack"].append(trigger);_log(state,f"{player['name']} chose the fighters for {pending['source_name']}'s trigger.")
+        elif action_type=="choose_trigger_target":
             if target_id not in {target["id"] for target in targets}:raise RuleViolation("Choose a legal target for the triggered ability")
             trigger=pending["trigger"];trigger["target_id"]=target_id;state["stack"].append(trigger);_log(state,f"{player['name']} chose {next(target['name'] for target in targets if target['id']==target_id)} for {pending['source_name']}'s trigger.")
         elif targets:raise RuleViolation("This triggered ability still has legal targets")

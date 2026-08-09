@@ -1,5 +1,6 @@
 import random
 import re
+from itertools import product
 
 from .game_engine import _can_block_pair, _effective_rules_text, _has_keyword, _parse_stats, legal_actions, perform_action
 
@@ -41,6 +42,22 @@ def _choose_target(state:dict,action:dict)->str:
         unshielded=[target for target in vulnerable if (_target_card(state,target["id"]) or {}).get("counters",{}).get("shield",0)==0]
         preferred=unshielded or vulnerable or preferred
     return max(preferred,key=lambda target:_threat_score(state,_target_card(state,target["id"]) or {}))["id"]
+
+
+def _choose_fight_targets(state:dict,action:dict)->list[str]:
+    steps=action.get("target_steps") or [];choices=[]
+    for targets in product(*(step.get("targets",[]) for step in steps)):
+        ids=[target["id"] for target in targets]
+        if any(step.get("distinct") and ids[index] in ids[:index] for index,step in enumerate(steps)):continue
+        fighters=[_target_card(state,target_id) for target_id in ids]
+        if len(fighters)==1 and action.get("card_id"):
+            source=_card(state,"bot",action["card_id"])
+            if source in next(player for player in state["players"] if player["id"]=="bot")["battlefield"]:fighters.insert(0,source)
+        if len(fighters)>=2 and all(fighters):
+            first,second=fighters[:2];first_power,first_toughness=_stats(state,first);second_power,second_toughness=_stats(state,second);enemy=second.get("controller_id")!="bot";score=(_threat_score(state,second) if enemy else -_threat_score(state,second))+(8 if first_power>=second_toughness else -5)-(7 if second_power>=first_toughness else 0)
+        else:score=_threat_score(state,fighters[-1] or {}) if fighters else 0
+        choices.append((score,ids))
+    return max(choices,key=lambda choice:choice[0])[1] if choices else []
 
 
 def _can_block(state:dict,attacker:dict,blocker:dict)->bool:
@@ -109,6 +126,10 @@ def _ability_score(state:dict,action:dict)->float:
         threatened=bool(state["stack"] and state["stack"][-1].get("target_id")==source["instance_id"] and "destroy" in (state["stack"][-1]["card"].get("oracle_text") or "").casefold())
         combat=state.get("combat",{});in_combat=source["instance_id"] in combat.get("attackers",[]) or source["instance_id"] in combat.get("blocks",{}) or source["instance_id"] in combat.get("blocks",{}).values()
         score+=9 if threatened else 4 if combat.get("damage_pending") and in_combat else -6
+    if action.get("target_steps"):
+        target_ids=_choose_fight_targets(state,action);opponent_card=_target_card(state,target_ids[-1]) if target_ids else None
+        if opponent_card:
+            source_power,source_toughness=_stats(state,source);enemy_power,enemy_toughness=_stats(state,opponent_card);score+=(8 if source_power>=enemy_toughness else -5)-(9 if enemy_power>=source_toughness else 0)
     if action.get("self_sacrifice"):score-=_threat_score(state,source)*.65
     score-=float(action.get("life_cost") or 0)*1.25
     counter_cost=action.get("counter_cost") or {};score-=float(counter_cost.get("amount") or 0)*.75
@@ -171,6 +192,8 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
     if "choose_trigger_target" in by_type:
         action=by_type["choose_trigger_target"][0]
         return {"type":"choose_trigger_target","target_id":_choose_target(state,action)}
+    if "choose_trigger_targets" in by_type:
+        action=by_type["choose_trigger_targets"][0];return {"type":"choose_trigger_targets","target_ids":_choose_fight_targets(state,action)}
     if "skip_trigger" in by_type:return by_type["skip_trigger"][0]
     if "bottom_mulligan_cards" in by_type:
         action=by_type["bottom_mulligan_cards"][0];amount=action["amount"]
@@ -246,6 +269,7 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
             choice = max(spells, key=lambda action: ((_card(state,"bot",action["card_id"]).get("mana_value") or 0)+(2 if action.get("kicked") else 0),len(_card(state,"bot",action["card_id"]).get("oracle_text") or "")))
         if choice.get("x_max") is not None:choice={**choice,"x_value":_choose_x(state,choice)}
         if choice.get("cost_options"):choice={**choice,"cost_card_ids":_choose_ability_cost(state,choice)}
+        if choice.get("target_steps"):choice={**choice,"target_ids":_choose_fight_targets(state,choice)}
         if choice.get("modes"):
             maximum=choice.get("mode_max",choice.get("mode_count",1));minimum=choice.get("mode_min",choice.get("mode_count",1));ranked=sorted(choice["modes"],key=lambda candidate:_mode_score(state,candidate),reverse=True)
             chosen=([ranked[0]]*maximum if choice.get("mode_repeatable") and ranked else ranked[:maximum])
@@ -274,6 +298,7 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
             if choice.get("x_max") is not None:choice={**choice,"x_value":_choose_x(state,choice)}
             if choice.get("targets"):
                 choice={**choice,"target_id":_choose_target(state,choice)}
+            if choice.get("target_steps"):choice={**choice,"target_ids":_choose_fight_targets(state,choice)}
             return choice
     if "activate_loyalty" in by_type:
         choices=by_type["activate_loyalty"];choice=max(choices,key=lambda action:len(action.get("label","")))
