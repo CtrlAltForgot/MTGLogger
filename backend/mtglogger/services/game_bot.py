@@ -102,9 +102,21 @@ def _ability_score(state:dict,action:dict)->float:
     if action.get("self_sacrifice"):score-=_threat_score(state,source)*.65
     score-=float(action.get("life_cost") or 0)*1.25
     counter_cost=action.get("counter_cost") or {};score-=float(counter_cost.get("amount") or 0)*.75
+    cost_cards=[_card(state,"bot",card_id) for card_id in action.get("cost_options",[])]
+    if cost_cards:
+        ranked=sorted(cost_cards,key=lambda card:_threat_score(state,card) if action.get("cost_kind")=="sacrifice" else float(card.get("mana_value") or 0)+(2 if "Land" in card.get("type_line","") else 0));score-=sum((_threat_score(state,card)*.55 if action.get("cost_kind")=="sacrifice" else float(card.get("mana_value") or 0)+.5) for card in ranked[:action.get("cost_amount",1)])
     bot=next(player for player in state["players"] if player["id"]=="bot")
     if action.get("life_cost",0)>=bot["life"]:score-=100
     return score
+
+
+def _choose_ability_cost(state:dict,action:dict)->list[str]:
+    amount=action.get("cost_amount",0)
+    if not amount:return []
+    cards=[_card(state,"bot",card_id) for card_id in action.get("cost_options",[])]
+    if action.get("cost_kind")=="sacrifice":cards.sort(key=lambda card:_threat_score(state,card))
+    else:cards.sort(key=lambda card:("Land" in card.get("type_line",""),card.get("mana_value") or 0))
+    return [card["instance_id"] for card in cards[:amount]]
 
 
 def choose_bot_action(state: dict, difficulty: str = "standard") -> dict | None:
@@ -170,6 +182,7 @@ def choose_bot_action(state: dict, difficulty: str = "standard") -> dict | None:
     if "activate" in by_type:
         choices=by_type["activate"];choice=max(choices,key=lambda action:_ability_score(state,action))
         if difficulty=="beginner" or _ability_score(state,choice)>0:
+            choice={**choice,"cost_card_ids":_choose_ability_cost(state,choice)}
             if choice.get("targets"):
                 choice={**choice,"target_id":_choose_target(state,choice)}
             return choice

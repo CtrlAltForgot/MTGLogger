@@ -610,9 +610,18 @@ def test_activated_abilities_pay_source_sacrifice_life_and_counter_costs():
     state=perform_action(state,"player",{"type":"resolve"});life_action=next(action for action in legal_actions(state,"player") if action.get("card_id")=="life-bargain");state=perform_action(state,"player",{"type":"activate","card_id":"life-bargain","ability_index":life_action["ability_index"]});assert next(p for p in state["players"] if p["id"]=="player")["life"]==before_life-1
 
 
-def test_selectable_activated_costs_remain_hidden_until_a_choice_flow_exists():
-    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player");altar={**card(920,"Choice Altar","Artifact"),"oracle_text":"Sacrifice another creature: Draw a card.\nDiscard a card: Draw a card.","instance_id":"choice-altar","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].append(altar)
-    assert not any(action.get("card_id")=="choice-altar" for action in legal_actions(state,"player"))
+def test_selectable_activated_costs_require_and_pay_exact_legal_choices():
+    from mtglogger.schemas import GameAction
+
+    assert GameAction(type="activate",cost_card_ids=["chosen"]).model_dump()["cost_card_ids"]==["chosen"]
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player");altar={**card(920,"Choice Altar","Artifact"),"oracle_text":"Sacrifice another creature: Draw a card.\nDiscard a card: Draw a card.","instance_id":"choice-altar","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};fodder={**card(921,"Fodder","Creature — Citizen","","1","1"),"instance_id":"fodder","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].extend([altar,fodder]);discard_id=player["hand"][0]["instance_id"]
+    actions=[action for action in legal_actions(state,"player") if action.get("card_id")=="choice-altar"];sacrifice=next(action for action in actions if action["cost_kind"]=="sacrifice");discard=next(action for action in actions if action["cost_kind"]=="discard")
+    assert sacrifice["cost_options"]==["fodder"] and sacrifice["cost_amount"]==1 and discard_id in discard["cost_options"]
+    try:perform_action(state,"player",{"type":"activate","card_id":"choice-altar","ability_index":sacrifice["ability_index"],"cost_card_ids":[]})
+    except RuleViolation:pass
+    else:raise AssertionError("selectable activation accepted a missing cost choice")
+    state=perform_action(state,"player",{"type":"activate","card_id":"choice-altar","ability_index":sacrifice["ability_index"],"cost_card_ids":["fodder"]});player=next(p for p in state["players"] if p["id"]=="player");assert any(card["instance_id"]=="fodder" for card in player["graveyard"])
+    state=perform_action(state,"player",{"type":"resolve"});discard=next(action for action in legal_actions(state,"player") if action.get("card_id")=="choice-altar" and action["cost_kind"]=="discard");state=perform_action(state,"player",{"type":"activate","card_id":"choice-altar","ability_index":discard["ability_index"],"cost_card_ids":[discard_id]});player=next(p for p in state["players"] if p["id"]=="player");assert any(card["instance_id"]==discard_id for card in player["graveyard"])
 
 
 def test_expert_bot_uses_profitable_costly_abilities_but_never_pays_lethal_life():
@@ -620,3 +629,7 @@ def test_expert_bot_uses_profitable_costly_abilities_but_never_pays_lethal_life(
     fatal={**card(930,"Fatal Bargain","Artifact"),"oracle_text":"Pay 2 life: Draw a card.","instance_id":"fatal-bargain","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};relic={**card(931,"Scholar Relic","Artifact"),"oracle_text":"Sacrifice Scholar Relic: Draw three cards.","instance_id":"scholar-relic","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};bot["battlefield"].append(fatal)
     assert any(action.get("card_id")=="fatal-bargain" for action in legal_actions(state,"bot")) and choose_bot_action(state,"expert")["type"]=="advance_phase"
     bot["battlefield"].append(relic);choice=choose_bot_action(state,"expert");assert choice["type"]=="activate" and choice["card_id"]=="scholar-relic"
+
+    state=kept_game();state["active_player_id"]="bot";state["priority_player_id"]="bot";state["phase"]="precombat_main";bot=next(p for p in state["players"] if p["id"]=="bot");bot["hand"]=[];bot["land_plays_remaining"]=0
+    altar={**card(932,"Bot Altar","Artifact"),"oracle_text":"Sacrifice a creature: Draw two cards.","instance_id":"bot-altar","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};cheap={**card(933,"Cheap Token","Token Creature — Citizen","","1","1"),"instance_id":"cheap-token","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False,"token":True};valuable={**card(934,"Valuable Dragon","Creature — Dragon","","6","6"),"instance_id":"valuable-dragon","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};bot["battlefield"]=[altar,cheap,valuable];choice=choose_bot_action(state,"expert")
+    assert choice["type"]=="activate" and choice["card_id"]=="bot-altar" and choice["cost_card_ids"]==["cheap-token"]

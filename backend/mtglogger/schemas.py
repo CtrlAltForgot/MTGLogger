@@ -311,6 +311,7 @@ class GameAction(BaseModel):
     attacker_ids: list[str] = Field(default_factory=list)
     attack_targets: dict[str, str] = Field(default_factory=dict)
     card_ids: list[str] = Field(default_factory=list)
+    cost_card_ids: list[str] = Field(default_factory=list)
     top_ids: list[str] = Field(default_factory=list)
     bottom_ids: list[str] = Field(default_factory=list)
     graveyard_ids: list[str] = Field(default_factory=list)
