@@ -159,13 +159,13 @@ def _new_player(player_id: str, name: str, deck: list[dict], is_bot: bool, forma
         if commander:
             library.remove(commander); commander["commander"] = True; command.append(commander)
     random.SystemRandom().shuffle(library)
-    return {"id": player_id, "name": name, "is_bot": is_bot, "format": format_name, "life": 40 if is_commander else 20, "poison": 0, "library": library, "hand": [], "battlefield": [], "graveyard": [], "exile": [], "command": command, "commander_casts": 0, "commander_damage": {}, "land_plays_remaining": 1, "kept_hand": False, "lost": False}
+    return {"id": player_id, "name": name, "is_bot": is_bot, "format": format_name, "life": 40 if is_commander else 20, "poison": 0, "library": library, "hand": [], "battlefield": [], "graveyard": [], "exile": [], "command": command, "commander_casts": 0, "commander_damage": {}, "land_plays_remaining": 1, "kept_hand": False, "mulligans": 0, "lost": False}
 
 
 def new_game(player_deck: list[dict], opponent_deck: list[dict], play_first: bool = True, opponent_is_bot: bool = True, player_format: str = "", opponent_format: str = "") -> dict:
     human_id, bot_id = "player", "bot"
     players = [_new_player(human_id, "You", player_deck, False, player_format), _new_player(bot_id, "Bot" if opponent_is_bot else "Guest", opponent_deck, opponent_is_bot, opponent_format)]
-    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id, "players": players, "stack": [], "combat": {"attackers": [], "blocks": {}}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "log": []}
+    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id, "players": players, "stack": [], "combat": {"attackers": [], "blocks": {}}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "log": []}
     for player in players:
         _draw(state, player, 7)
     _log(state, "Opening hands drawn. Choose whether to keep or mulligan.")
@@ -239,6 +239,8 @@ def legal_actions(state: dict, player_id: str) -> list[dict]:
     if state["status"] == "mulligan":
         if player["kept_hand"]:
             return []
+        if state.get("pending_mulligan_bottom") == player_id:
+            return [{"type":"bottom_mulligan_cards","card_ids":[card["instance_id"] for card in player["hand"]],"amount":player.get("mulligans",0)}]
         return [{"type": "keep"}, {"type": "mulligan"}]
     if state["priority_player_id"] != player_id:
         return []
@@ -520,12 +522,21 @@ def perform_action(state: dict, player_id: str, action: dict) -> dict:
     if action_type not in allowed and action_type not in manual_actions:
         raise RuleViolation(f"{action_type} is not legal right now")
     if action_type == "keep":
-        player["kept_hand"] = True; _log(state, f"{player['name']} kept seven cards.")
-        if all(item["kept_hand"] for item in state["players"]):
-            state["status"] = "active"; state["priority_player_id"] = state["active_player_id"]
+        if player.get("mulligans",0):state["pending_mulligan_bottom"]=player_id;_log(state,f"{player['name']} kept and must put {player['mulligans']} card(s) on the bottom.")
+        else:
+            player["kept_hand"] = True; _log(state, f"{player['name']} kept seven cards.")
+            if all(item["kept_hand"] for item in state["players"]):state["status"] = "active"; state["priority_player_id"] = state["active_player_id"]
     elif action_type == "mulligan":
-        size = max(1, len(player["hand"]) - 1); player["library"].extend(player["hand"]); player["hand"] = []
-        random.SystemRandom().shuffle(player["library"]); _draw(state, player, size); _log(state, f"{player['name']} mulliganed to {size}.")
+        player["mulligans"]=min(7,player.get("mulligans",0)+1);player["library"].extend(player["hand"]);player["hand"]=[]
+        random.SystemRandom().shuffle(player["library"]);_draw(state,player,7);_log(state,f"{player['name']} took mulligan {player['mulligans']} and drew seven new cards.")
+    elif action_type == "bottom_mulligan_cards":
+        required=player.get("mulligans",0);requested=action.get("card_ids") or []
+        if state.get("pending_mulligan_bottom")!=player_id or len(requested)!=required or len(set(requested))!=required:raise RuleViolation(f"Choose exactly {required} cards to put on the bottom")
+        chosen=[card for card in player["hand"] if card["instance_id"] in set(requested)]
+        if len(chosen)!=required:raise RuleViolation("One or more selected cards are not in your hand")
+        for card in chosen:player["hand"].remove(card);player["library"].insert(0,card)
+        state["pending_mulligan_bottom"]=None;player["kept_hand"]=True;_log(state,f"{player['name']} put {required} card(s) on the bottom and kept {len(player['hand'])}.")
+        if all(item["kept_hand"] for item in state["players"]):state["status"]="active";state["priority_player_id"]=state["active_player_id"]
     elif action_type == "play_land":
         card = next((card for card in player["hand"] if card["instance_id"] == action.get("card_id") and "Land" in card.get("type_line", "")), None)
         if not card: raise RuleViolation("That land is not in your hand")

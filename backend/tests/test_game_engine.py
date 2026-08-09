@@ -29,8 +29,10 @@ def test_public_state_hides_opponent_hand_and_library():
 def test_mulligan_reduces_hand_and_both_keeps_start_game():
     first,second=decks();state=new_game(first,second)
     state=perform_action(state,"player",{"type":"mulligan"})
+    player=next(player for player in state["players"] if player["id"]=="player");assert len(player["hand"])==7 and player["mulligans"]==1
+    state=perform_action(state,"player",{"type":"keep"});bottom=legal_actions(state,"player")[0];assert bottom["type"]=="bottom_mulligan_cards" and bottom["amount"]==1
+    state=perform_action(state,"player",{"type":"bottom_mulligan_cards","card_ids":bottom["card_ids"][:1]});state=perform_action(state,"bot",{"type":"keep"})
     assert len(next(player for player in state["players"] if player["id"]=="player")["hand"])==6
-    state=perform_action(state,"player",{"type":"keep"});state=perform_action(state,"bot",{"type":"keep"})
     assert state["status"]=="active"
 
 

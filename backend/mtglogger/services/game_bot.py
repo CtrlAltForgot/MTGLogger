@@ -15,6 +15,10 @@ def choose_bot_action(state: dict, difficulty: str = "standard") -> dict | None:
     by_type = {kind: [action for action in actions if action["type"] == kind] for kind in {action["type"] for action in actions}}
     if "keep" in by_type:
         return by_type["keep"][0]
+    if "bottom_mulligan_cards" in by_type:
+        action=by_type["bottom_mulligan_cards"][0];amount=action["amount"]
+        ranked=sorted(action["card_ids"],key=lambda card_id:("Land" in _card(state,"bot",card_id).get("type_line",""),-(_card(state,"bot",card_id).get("mana_value") or 0)))
+        return {"type":"bottom_mulligan_cards","card_ids":ranked[:amount]}
     if "resolve" in by_type:
         return by_type["resolve"][0]
     if "discard_to_hand_size" in by_type:
