@@ -411,13 +411,13 @@ def _remove_from_combat(state:dict,card_id:str)->None:
         if card_id in order:order.remove(card_id)
 
 
-def _destroy_permanent(state:dict,owner:dict,card:dict,cant_regenerate:bool=False)->bool:
+def _destroy_permanent(state:dict,owner:dict,card:dict,cant_regenerate:bool=False,trigger_sources:list[tuple[dict,dict]]|None=None,trigger_dedupe:set[str]|None=None)->bool:
     if _has_keyword(card,"Indestructible"):return False
     if _consume_shield(state,card,"destruction"):return False
     regenerations=card.get("regeneration_shields",0)
     if regenerations and not cant_regenerate:
         card["regeneration_shields"]=regenerations-1;card["tapped"]=True;card["damage"]=0;_remove_from_combat(state,card["instance_id"]);_log(state,f"{card['name']} regenerated instead of being destroyed.");return False
-    _leave_battlefield(state,owner,card,"graveyard");return True
+    _leave_battlefield(state,owner,card,"graveyard",trigger_sources,trigger_dedupe);return True
 
 
 def _ward_details(card:dict)->dict|None:
@@ -1412,13 +1412,13 @@ def _resolve_spell(state: dict) -> None:
     exile_all = re.search(r"exile all (creatures|artifacts|enchantments|nonland permanents)", effect_text)
     for match,destination in ((destroy_all,"graveyard"),(exile_all,"exile")):
         if not match: continue
-        kind=match.group(1)
+        kind=match.group(1);trigger_sources=[(source_owner,source) for source_owner in state["players"] for source in source_owner["battlefield"]];trigger_dedupe=set()
         for owner in state["players"]:
             for permanent in list(owner["battlefield"]):
                 type_line=permanent.get("type_line","").casefold();matches=(kind=="nonland permanents" and "land" not in type_line) or kind[:-1] in type_line
                 if matches:
-                    if destination=="graveyard":_destroy_permanent(state,owner,permanent,"can't be regenerated" in effect_text)
-                    else:_leave_battlefield(state,owner,permanent,destination)
+                    if destination=="graveyard":_destroy_permanent(state,owner,permanent,"can't be regenerated" in effect_text,trigger_sources,trigger_dedupe)
+                    else:_leave_battlefield(state,owner,permanent,destination,trigger_sources,trigger_dedupe)
         _log(state,f"All {kind} were {'destroyed' if destination=='graveyard' else 'exiled'}.")
     global_stats=re.search(r"(?:all|each) creatures?(?: you control| your opponents control)? get ([+-]\d+)/([+-]\d+) until end of turn",effect_text)
     if global_stats:
@@ -1474,7 +1474,7 @@ def _resolve_spell(state: dict) -> None:
     if not saga_transformed:_finish_saga_final_chapter(state,item)
 
 
-def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str) -> None:
+def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str, trigger_sources:list[tuple[dict,dict]]|None=None, trigger_dedupe:set[str]|None=None) -> None:
     if card.get("attached_to"):_detach(state,card)
     attachments=[(attachment_owner,attachment) for attachment_owner in state["players"] for attachment in list(attachment_owner["battlefield"]) if attachment.get("attached_to")==card.get("instance_id")]
     for attachment_owner,attachment in attachments:
@@ -1482,8 +1482,8 @@ def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str) -
         if "Aura" in attachment.get("type_line",""):_leave_battlefield(state,attachment_owner,attachment,"graveyard")
     if card in owner["battlefield"]: owner["battlefield"].remove(card)
     earthbend_controller=card.get("earthbend_controller") if destination in {"graveyard","exile"} else None
-    _queue_triggers(state,"leaves",card,owner)
-    if destination=="graveyard":_queue_triggers(state,"dies",card,owner)
+    _queue_triggers(state,"leaves",card,owner,trigger_dedupe,trigger_sources)
+    if destination=="graveyard":_queue_triggers(state,"dies",card,owner,trigger_dedupe,trigger_sources)
     card["damage"] = 0; card["tapped"] = False;card.pop("crewed_turn",None);card.pop("temporary_control_return_to",None);card.pop("activated_ability_usage",None)
     if card.get("base_type_line") is not None:card["type_line"]=card.pop("base_type_line")
     if card.get("earthbend_base_type_line") is not None:
@@ -1498,16 +1498,17 @@ def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str) -
         zone_owner[destination].remove(card);controller=_player(state,earthbend_controller);card["controller_id"]=controller["id"];card["tapped"]=True;card["summoning_sick"]=True;card["counters"]={};controller["battlefield"].append(card);_log(state,f"{card['name']} returned to the battlefield tapped after being earthbent.");_queue_triggers(state,"enters",card,controller)
 
 
-def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owner: dict, dedupe:set[str]|None=None) -> None:
+def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owner: dict, dedupe:set[str]|None=None, sources_override:list[tuple[dict,dict]]|None=None) -> None:
     if event in {"earthbend","waterbend","firebend","airbend"}:
         event_owner["bent_this_turn"]=sorted(set(event_owner.get("bent_this_turn",[]))|{event})
     ordered_owners=sorted(state["players"],key=lambda owner:owner["id"]!=state.get("active_player_id"))
-    sources = [(owner, permanent) for owner in ordered_owners for permanent in owner["battlefield"]]
+    sources = list(sources_override) if sources_override is not None else [(owner, permanent) for owner in ordered_owners for permanent in owner["battlefield"]]
     if event=="upkeep":
         for owner,permanent in sources:
             if permanent.pop("transform_next_upkeep",False):_transform(state,permanent)
     if event in {"dies","cycling"} and event_card:
-        insert_at=max((index+1 for index,(owner,_) in enumerate(sources) if owner["id"]==event_owner["id"]),default=len(sources));sources.insert(insert_at,(event_owner,event_card))
+        if not any(source is event_card for _,source in sources):
+            insert_at=max((index+1 for index,(owner,_) in enumerate(sources) if owner["id"]==event_owner["id"]),default=len(sources));sources.insert(insert_at,(event_owner,event_card))
     for owner, source in sources:
         text = source.get("oracle_text") or ""
         raw_clauses = re.split(r"(?<=[.!])\s+|\n", text);clauses=[]
@@ -1525,7 +1526,14 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 matches = under_control and ((is_creature and (("whenever another creature enters" in lower and source is not event_card) or "whenever a creature enters the battlefield under your control" in lower)) or (is_artifact and re.search(r"whenever (?:an|another) artifact enters(?: the battlefield)? under your control",lower) is not None and ("another artifact" not in lower or source is not event_card)) or (is_land and re.search(r"whenever (?:a|another) land enters(?: the battlefield)? under your control", lower) is not None) or (source is event_card and re.search(r"when (?:~|this (?:creature|permanent)|[^,]+) enters", lower) is not None))
                 if "if it was kicked" in lower:matches=matches and bool(event_card.get("was_kicked"))
             elif event == "dies" and event_card:
-                matches = (source is event_card and re.search(r"when (?:~|this creature|[^,]+) dies", lower) is not None) or (source is not event_card and "whenever another creature dies" in lower)
+                is_creature="creature" in event_card.get("type_line","").casefold();same_controller=event_card.get("controller_id")==source.get("controller_id",owner["id"]);self_dies=source is event_card and re.search(r"when (?:~|this creature|[^,]+) dies",lower) is not None
+                another=source is not event_card and "whenever another creature dies" in lower
+                controlled=is_creature and same_controller and re.search(r"whenever (?:another |a )?creature you control dies",lower) is not None and ("another creature" not in lower or source is not event_card)
+                opposing=is_creature and not same_controller and re.search(r"whenever (?:another |a )?creature an opponent controls dies",lower) is not None
+                any_creature=is_creature and re.search(r"whenever a creature dies",lower) is not None
+                one_or_more=is_creature and source is not event_card and "whenever one or more other creatures die" in lower;dedupe_key=f"dies:{source.get('instance_id')}"
+                matches=self_dies or another or controlled or opposing or any_creature or (one_or_more and (dedupe is None or dedupe_key not in dedupe))
+                if matches and one_or_more and dedupe is not None:dedupe.add(dedupe_key)
             elif event == "leaves" and event_card:
                 matches=source is not event_card and owner["id"]==event_owner["id"] and "Creature" in event_card.get("type_line","") and "when another creature you control leaves the battlefield" in lower
             elif event == "upkeep":
@@ -1679,7 +1687,7 @@ def _check_winner(state: dict) -> None:
 def _state_based_actions(state: dict) -> None:
     changed=True
     while changed:
-        changed=False
+        changed=False;trigger_sources=[(source_owner,source) for source_owner in state["players"] for source in source_owner["battlefield"]];trigger_dedupe=set()
         for owner in state["players"]:
             for permanent in list(owner["battlefield"]):
                 if permanent.get("attached_to"):
@@ -1687,14 +1695,14 @@ def _state_based_actions(state: dict) -> None:
                     if target and target.get("instance_id") and permanent.get("control_aura_return_to") and target.get("controller_id")!=permanent.get("controller_id"):_change_control(state,target,_player(state,permanent["controller_id"]))
                     if illegal:
                         _detach(state,permanent)
-                        if aura:_leave_battlefield(state,owner,permanent,"graveyard");changed=True;continue
+                        if aura:_leave_battlefield(state,owner,permanent,"graveyard",trigger_sources,trigger_dedupe);changed=True;continue
                 _,toughness=_parse_stats(permanent,state)
                 if "Creature" in permanent.get("type_line","") and (toughness<=0 or (permanent.get("damage",0)>=toughness and not _has_keyword(permanent,"Indestructible"))):
-                    if toughness<=0:_leave_battlefield(state,owner,permanent,"graveyard")
-                    else:_destroy_permanent(state,owner,permanent)
+                    if toughness<=0:_leave_battlefield(state,owner,permanent,"graveyard",trigger_sources,trigger_dedupe)
+                    else:_destroy_permanent(state,owner,permanent,trigger_sources=trigger_sources,trigger_dedupe=trigger_dedupe)
                     changed=True
                 elif "Planeswalker" in permanent.get("type_line","") and permanent.get("counters",{}).get("loyalty",0)<=0:
-                    _leave_battlefield(state,owner,permanent,"graveyard");changed=True
+                    _leave_battlefield(state,owner,permanent,"graveyard",trigger_sources,trigger_dedupe);changed=True
     if _pending_decision(state):return
     for owner in state["players"]:
         if any("legend rule doesn't apply" in (permanent.get("oracle_text") or "").casefold() for permanent in owner["battlefield"]):continue
