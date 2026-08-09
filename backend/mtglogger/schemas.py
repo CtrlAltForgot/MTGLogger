@@ -251,6 +251,8 @@ class AutoDeckBuildRequest(BaseModel):
     format: str = Field(min_length=1, max_length=64)
     colors: list[str] = Field(min_length=1, max_length=5)
     strategy: str = Field("balanced", max_length=32)
+    focus: str = Field("", max_length=100)
+    focus_mode: str = Field("prefer", pattern="^(prefer|strict)$")
 
 
 class AutoDeckCard(BaseModel):
@@ -258,6 +260,7 @@ class AutoDeckCard(BaseModel):
     scryfall_id: str
     name: str
     set_code: str
+    set_name: str
     collector_number: str
     image_url: str | None
     quantity: int
@@ -273,11 +276,18 @@ class AutoDeckProposal(BaseModel):
     colors: list[str]
     strategy: str
     theme: str
+    focus: str
+    focus_mode: str
+    matched_sets: list[str]
     target_size: int
     total_cards: int
     complete: bool
     land_count: int
     average_mana_value: float
+    synergy_score: float
+    quality_score: float
+    mana_sources: dict[str, int]
+    curve: dict[str, int]
     role_counts: dict[str, int]
     warnings: list[str]
     explanation: list[str]

@@ -154,6 +154,8 @@ async def _auto_deck_proposal(payload: AutoDeckBuildRequest, db: Session) -> dic
             payload.colors,
             payload.strategy,
             payload.name,
+            payload.focus,
+            payload.focus_mode,
         )
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc

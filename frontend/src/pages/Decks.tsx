@@ -48,7 +48,7 @@ export default function Decks() {
     [availablePage, setAvailablePage] = useState(0),
     [availablePageSize, setAvailablePageSize] = useState(50);
   const [form, setForm] = useState({ name: "", format: "", description: "", image_url: "" });
-  const [autoForm,setAutoForm]=useState({name:"My optimized deck",format:"Commander",colors:["U"] as string[],strategy:"balanced"});
+  const [autoForm,setAutoForm]=useState<AutoBuildForm>({name:"My optimized deck",format:"Commander",colors:["U"],strategy:"balanced",focus:"",focus_mode:"prefer"});
   const [autoProposal,setAutoProposal]=useState<AutoDeckProposal>();
   const selected = useMemo(
     () => decks.find((deck) => deck.id === selectedId),
@@ -688,14 +688,10 @@ function DeckDialog({open,title,form,setForm,busy,close,submit,submitLabel,cover
   );
 }
 
-type AutoBuildForm={name:string;format:string;colors:string[];strategy:string}
+type AutoBuildForm={name:string;format:string;colors:string[];strategy:string;focus:string;focus_mode:'prefer'|'strict'}
 const manaColors=[
-  {key:'W',label:'White',background:'#f5f0d8',color:'#29251b'},
-  {key:'U',label:'Blue',background:'#4aa3df',color:'#071c2d'},
-  {key:'B',label:'Black',background:'#39323f',color:'#fff'},
-  {key:'R',label:'Red',background:'#df5b4e',color:'#2b0907'},
-  {key:'G',label:'Green',background:'#4ea66b',color:'#071f10'},
-  {key:'C',label:'Colorless',background:'#aaa8a2',color:'#1d1c19'},
+  {key:'W',label:'White'}, {key:'U',label:'Blue'}, {key:'B',label:'Black'},
+  {key:'R',label:'Red'}, {key:'G',label:'Green'}, {key:'C',label:'Colorless'},
 ]
 const autoStrategies=[['balanced','Best available'],['aggro','Aggro'],['midrange','Midrange'],['control','Control'],['tokens','Tokens'],['artifacts','Artifacts'],['enchantments','Enchantments'],['graveyard','Graveyard'],['counters','Counters'],['lifegain','Lifegain'],['sacrifice','Sacrifice'],['spells','Spellslinger'],['creatures','Creature synergy']]
 
@@ -713,13 +709,15 @@ function AutoBuildDialog({open,form,setForm,proposal,error,busy,close,preview,ap
       <Grid container spacing={2}>
         <Grid size={{xs:12,sm:7}}><TextField fullWidth label="Deck name" value={form.name} onChange={event=>setForm({...form,name:event.target.value})}/></Grid>
         <Grid size={{xs:12,sm:5}}><TextField select fullWidth label="Format" value={form.format} onChange={event=>setForm({...form,format:event.target.value})}>{deckFormats.map(format=><MenuItem key={format} value={format}>{format}</MenuItem>)}</TextField></Grid>
-        <Grid size={{xs:12,sm:7}}><Typography variant="overline" color="text.secondary">Color identity</Typography><Stack direction="row" spacing={1} mt={.5}>{manaColors.map(mana=><Tooltip title={mana.label} key={mana.key}><IconButton aria-label={mana.label} aria-pressed={form.colors.includes(mana.key)} onClick={()=>toggleColor(mana.key)} sx={{width:44,height:44,fontWeight:950,fontFamily:'serif',fontSize:20,color:mana.color,bgcolor:mana.background,border:'3px solid',borderColor:form.colors.includes(mana.key)?'primary.main':'transparent',boxShadow:form.colors.includes(mana.key)?'0 0 0 2px rgba(255,99,119,.28)':'none','&:hover':{bgcolor:mana.background,filter:'brightness(1.08)'}}}>{mana.key}</IconButton></Tooltip>)}</Stack></Grid>
+        <Grid size={{xs:12,sm:7}}><Typography variant="overline" color="text.secondary">Color identity</Typography><Stack direction="row" spacing={1} mt={.5}>{manaColors.map(mana=><Tooltip title={mana.label} key={mana.key}><IconButton aria-label={mana.label} aria-pressed={form.colors.includes(mana.key)} onClick={()=>toggleColor(mana.key)} sx={{width:46,height:46,p:.45,bgcolor:'rgba(255,255,255,.06)',border:'3px solid',borderColor:form.colors.includes(mana.key)?'primary.main':'transparent',boxShadow:form.colors.includes(mana.key)?'0 0 0 2px rgba(255,99,119,.28)':'none','&:hover':{bgcolor:'rgba(255,255,255,.12)',transform:'translateY(-1px)'}}}><Box component="img" src={`https://svgs.scryfall.io/card-symbols/${mana.key}.svg`} alt={`${mana.label} mana`} sx={{width:34,height:34,display:'block'}}/></IconButton></Tooltip>)}</Stack></Grid>
         <Grid size={{xs:12,sm:5}}><TextField select fullWidth label="Strategy" value={form.strategy} onChange={event=>setForm({...form,strategy:event.target.value})}>{autoStrategies.map(([value,label])=><MenuItem key={value} value={value}>{label}</MenuItem>)}</TextField></Grid>
+        <Grid size={{xs:12,sm:7}}><TextField fullWidth label="Set or collection focus (optional)" placeholder="Avatar" value={form.focus} onChange={event=>setForm({...form,focus:event.target.value})} helperText="Matches the set name or code across your unassigned collection."/></Grid>
+        <Grid size={{xs:12,sm:5}}><TextField select fullWidth label="Collection focus mode" value={form.focus_mode} disabled={!form.focus.trim()} onChange={event=>setForm({...form,focus_mode:event.target.value as 'prefer'|'strict'})} helperText={form.focus_mode==='strict'?'Every selected card must match.':'Prefer matches, then use the best supporting cards.'}><MenuItem value="prefer">Prefer matching cards</MenuItem><MenuItem value="strict">Only matching cards</MenuItem></TextField></Grid>
       </Grid>
       {proposal&&<Box mt={3}>
         <Alert severity={proposal.complete?'success':'warning'}><Typography fontWeight={900}>{proposal.complete?`Complete ${proposal.total_cards}-card deck ready`:`${proposal.total_cards} of ${proposal.target_size} cards available`}</Typography><Typography variant="body2">{proposal.explanation.join(' ')}</Typography></Alert>
         {proposal.warnings.map(warning=><Alert severity="warning" variant="outlined" sx={{mt:1}} key={warning}>{warning}</Alert>)}
-        <Stack direction="row" gap={1} flexWrap="wrap" useFlexGap my={2}><Chip color="primary" label={`Theme · ${proposal.theme.replaceAll('-',' ')}`}/><Chip label={`${proposal.land_count} lands`}/><Chip label={`Average MV ${proposal.average_mana_value.toFixed(2)}`}/>{Object.entries(proposal.role_counts).filter(([role])=>!['land','leader'].includes(role)).map(([role,count])=><Chip size="small" variant="outlined" key={role} label={`${count} ${role}`}/>)}</Stack>
+        <Stack direction="row" gap={1} flexWrap="wrap" useFlexGap my={2}><Chip color="primary" label={`Theme · ${proposal.theme.replaceAll('-',' ')}`}/><Chip color="success" label={`Quality ${proposal.quality_score.toFixed(0)}/100`}/><Chip color="info" label={`Synergy ${proposal.synergy_score.toFixed(0)}/100`}/><Chip label={`${proposal.land_count} lands`}/><Chip label={`Average MV ${proposal.average_mana_value.toFixed(2)}`}/>{proposal.matched_sets.map(set=><Chip size="small" variant="outlined" color="secondary" key={set} label={set}/>)}{Object.entries(proposal.role_counts).filter(([role])=>!['land','leader'].includes(role)).map(([role,count])=><Chip size="small" variant="outlined" key={role} label={`${count} ${role}`}/>)}</Stack>
         <Card variant="outlined" sx={{maxHeight:390,overflowY:'auto'}}>
           <CardContent>
             {proposal.cards.map(card=><Stack key={card.inventory_id} direction="row" spacing={1.25} alignItems="center" py={.75}>
@@ -727,7 +725,7 @@ function AutoBuildDialog({open,form,setForm,proposal,error,busy,close,preview,ap
               <Typography fontWeight={900} minWidth={28}>×{card.quantity}</Typography>
               <Box flex={1} minWidth={0}>
                 <Typography fontWeight={800} noWrap><CardName scryfallId={card.scryfall_id}>{card.name}</CardName></Typography>
-                <Typography variant="caption" color="text.secondary">{card.set_code.toUpperCase()} #{card.collector_number} · MV {card.mana_value.toFixed(1)} · {card.reasons.join(' · ')}</Typography>
+                <Typography variant="caption" color="text.secondary">{card.set_name} · {card.set_code.toUpperCase()} #{card.collector_number} · MV {card.mana_value.toFixed(1)} · {card.reasons.join(' · ')}</Typography>
               </Box>
               <Chip size="small" color={card.role==='leader'?'primary':card.role==='land'?'success':'default'} label={card.role}/>
             </Stack>)}
