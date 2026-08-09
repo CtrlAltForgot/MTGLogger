@@ -102,7 +102,7 @@ def _mana_requirements(card: dict, extra_generic: int = 0, x_value:int=0) -> tup
 
 def _has_keyword(card: dict, keyword: str) -> bool:
     printed={value.casefold() for value in card.get("keywords", [])};temporary={value.casefold() for value in card.get("temporary_keywords", [])};attached={value.casefold() for values in card.get("attachment_keywords",{}).values() for value in values}
-    return keyword.casefold() in printed|temporary|attached or re.search(rf"\b{re.escape(keyword.casefold())}\b", (card.get("oracle_text") or "").casefold()) is not None
+    return keyword.casefold() in printed|temporary|attached or (keyword.casefold()=="haste" and bool(card.get("earthbent"))) or re.search(rf"\b{re.escape(keyword.casefold())}\b", (card.get("oracle_text") or "").casefold()) is not None
 
 
 def _attachment_keywords(card:dict)->list[str]:
@@ -159,6 +159,11 @@ def _kicker_cost(card:dict)->str|None:
 
 def _has_convoke(card:dict)->bool:
     return _has_keyword(card,"Convoke")
+
+
+def _earthbend_value(card:dict)->int|None:
+    match=re.search(r"\bearthbend\s+(\d+)\b",card.get("oracle_text") or "",re.IGNORECASE)
+    return int(match.group(1)) if match else None
 
 
 def _kicked_rules_card(card:dict,kicked:bool)->dict:
@@ -524,6 +529,7 @@ def _target_kind(card: dict) -> str | None:
         if allowed=={"player"}:return "player"
         if allowed or re.search(r"\benchant (?:nonland )?permanent\b",text):return "permanent"
     if "counter target spell" in text: return "spell"
+    if re.search(r"\bearthbend\s+\d+\b",text):return "land"
     if re.search(r"target creature card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_creature"
     if re.search(r"target (?:nonland )?card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_card"
     if re.search(r"target player mills?", text): return "player"
@@ -890,6 +896,14 @@ def _resolve_spell(state: dict) -> None:
     target_stack_item = next((entry for entry in state["stack"] if entry["id"] == target_id), None)
     graveyard_owner=next((player for player in state["players"] if any(graveyard_card["instance_id"]==target_id for graveyard_card in player["graveyard"])),None)
     graveyard_target=next((graveyard_card for player in state["players"] for graveyard_card in player["graveyard"] if graveyard_card["instance_id"]==target_id),None)
+    earthbend=_earthbend_value(rules_card)
+    if earthbend is not None and target and target_owner and "Land" in target.get("type_line","") and target["controller_id"]==caster["id"]:
+        if not target.get("earthbent"):
+            target["earthbend_base_type_line"]=target.get("type_line","");target["earthbend_base_power"]=target.get("power");target["earthbend_base_toughness"]=target.get("toughness")
+        if "Creature" not in target.get("type_line",""):
+            parts=target["type_line"].split(" — ",1);target["type_line"]=f"{parts[0]} Creature"+(f" — {parts[1]}" if len(parts)>1 else "")
+        target["power"]="0";target["toughness"]="0";target["earthbent"]=True;target["earthbend_controller"]=caster["id"];target["counters"]["+1/+1"]=target["counters"].get("+1/+1",0)+earthbend
+        _log(state,f"{caster['name']} earthbent {target['name']} for {earthbend}.");_queue_triggers(state,"earthbend",target,caster)
     draw_match = re.search(r"draw (?:a|one|two|three|four|\d+) cards?", effect_text)
     if draw_match:
         word = draw_match.group(0).split()[1]
@@ -1052,13 +1066,19 @@ def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str) -
         _detach(state,attachment)
         if "Aura" in attachment.get("type_line",""):_leave_battlefield(state,attachment_owner,attachment,"graveyard")
     if card in owner["battlefield"]: owner["battlefield"].remove(card)
+    earthbend_controller=card.get("earthbend_controller") if destination in {"graveyard","exile"} else None
+    _queue_triggers(state, "dies" if destination == "graveyard" else "leaves", card, owner)
     card["damage"] = 0; card["tapped"] = False;card.pop("crewed_turn",None)
     if card.get("base_type_line") is not None:card["type_line"]=card.pop("base_type_line")
-    _queue_triggers(state, "dies" if destination == "graveyard" else "leaves", card, owner)
+    if card.get("earthbend_base_type_line") is not None:
+        card["type_line"]=card.pop("earthbend_base_type_line");card["power"]=card.pop("earthbend_base_power",None);card["toughness"]=card.pop("earthbend_base_toughness",None)
+    card.pop("earthbent",None);card.pop("earthbend_controller",None)
     if card.get("token"): return
     zone_owner=_player(state,card.get("owner_id",owner["id"]));card["controller_id"]=zone_owner["id"]
     zone_owner[destination].append(card)
     _queue_commander_zone_choice(state,zone_owner,card,destination)
+    if earthbend_controller:
+        zone_owner[destination].remove(card);controller=_player(state,earthbend_controller);card["controller_id"]=controller["id"];card["tapped"]=True;card["summoning_sick"]=True;card["counters"]={};controller["battlefield"].append(card);_log(state,f"{card['name']} returned to the battlefield tapped after being earthbent.");_queue_triggers(state,"enters",card,controller)
 
 
 def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owner: dict) -> None:
@@ -1104,6 +1124,8 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
             elif event == "cycling" and event_card:
                 cycled_name=re.escape(event_card.get("name","").casefold());same_card=source is event_card and re.search(rf"when you cycle (?:~|this card|{cycled_name})\b",lower) is not None
                 matches=same_card or (source is not event_card and owner["id"]==event_owner["id"] and "whenever you cycle a card" in lower)
+            elif event in {"earthbend","waterbend","firebend","airbend"}:
+                matches=owner["id"]==event_owner["id"] and f"whenever you {event}" in lower
             if not matches or "," not in clause: continue
             effect = clause.split(",", 1)[1].strip()
             if event=="enters" and re.match(r"if it was kicked,",effect,re.IGNORECASE):effect=effect.split(",",1)[1].strip()
