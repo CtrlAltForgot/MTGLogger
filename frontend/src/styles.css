@@ -97,6 +97,7 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .play-card.is-tapped { transform:rotate(90deg) scale(.82); margin-inline:3px -5px; }
 .play-card.is-tapped:hover { transform:rotate(90deg) translateX(-16px) scale(1.12); }
 .play-card.is-legal { cursor:pointer; box-shadow:0 0 0 3px #62e59b,0 0 22px rgba(98,229,155,.8); border-radius:7px; animation:legal-pulse 1.8s ease-in-out infinite; }
+.play-card.is-selected { transform:translateY(-22px) scale(1.08); box-shadow:0 0 0 4px #ffd45f,0 0 30px rgba(255,212,95,.9); animation:none; z-index:12; }
 .play-card.is-attacking { transform:translateY(20px); box-shadow:0 0 0 3px #ff687c; border-radius:7px; }
 .play-counter,.play-blocked { position:absolute !important; right:-8px; bottom:-8px; z-index:5; }
 .play-blocked { top:-8px; bottom:auto; }
