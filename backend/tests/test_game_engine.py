@@ -123,6 +123,14 @@ def test_planeswalker_loyalty_abilities_once_per_turn_and_zero_loyalty_death():
     bolt={**card(721,"Loyalty Bolt","Instant"),"oracle_text":"Loyalty Bolt deals 4 damage to any target.","instance_id":"bolt","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"].append(bolt);state=perform_action(state,"player",{"type":"cast","card_id":"bolt","target_id":"walker"});state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");assert any(c["instance_id"]=="walker" for c in player["graveyard"])
 
 
+def test_attackers_choose_planeswalker_defenders_and_remove_loyalty():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
+    attacker={**card(730,"Walker Hunter","Creature — Warrior","","4","4"),"instance_id":"hunter","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};walker={**card(731,"Enemy Walker","Legendary Planeswalker — Test"),"loyalty":"3","instance_id":"enemy-walker","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{"loyalty":3},"summoning_sick":False};player["battlefield"].append(attacker);bot["battlefield"].append(walker)
+    attack=next(a for a in legal_actions(state,"player") if a["type"]=="declare_attackers");assert {target["id"] for target in attack["defenders"]}=={"bot","enemy-walker"}
+    state=perform_action(state,"player",{"type":"declare_attackers","attacker_ids":["hunter"],"attack_targets":{"hunter":"enemy-walker"}});state=perform_action(state,"bot",{"type":"advance_phase"});bot=next(p for p in state["players"] if p["id"]=="bot")
+    assert bot["life"]==20 and any(c["instance_id"]=="enemy-walker" for c in bot["graveyard"])
+
+
 def test_targeted_removal_requires_and_resolves_a_legal_creature_target():
     state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"})
     player=next(player for player in state["players"] if player["id"]=="player");bot=next(player for player in state["players"] if player["id"]=="bot")

@@ -177,7 +177,7 @@ def _new_player(player_id: str, name: str, deck: list[dict], is_bot: bool, forma
 def new_game(player_deck: list[dict], opponent_deck: list[dict], play_first: bool = True, opponent_is_bot: bool = True, player_format: str = "", opponent_format: str = "") -> dict:
     human_id, bot_id = "player", "bot"
     players = [_new_player(human_id, "You", player_deck, False, player_format), _new_player(bot_id, "Bot" if opponent_is_bot else "Guest", opponent_deck, opponent_is_bot, opponent_format)]
-    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id, "players": players, "stack": [], "combat": {"attackers": [], "blocks": {}}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "pending_legendary": None, "log": []}
+    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id, "players": players, "stack": [], "combat": {"attackers": [], "blocks": {}, "attack_targets": {}}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "pending_legendary": None, "log": []}
     for player in players:
         _draw(state, player, 7)
     _log(state, "Opening hands drawn. Choose whether to keep or mulligan.")
@@ -320,7 +320,9 @@ def legal_actions(state: dict, player_id: str) -> list[dict]:
     if active and state["phase"] == "combat" and not state["combat"]["attackers"]:
         eligible = [card["instance_id"] for card in player["battlefield"] if "Creature" in card.get("type_line", "") and not card.get("tapped") and not _has_keyword(card,"Defender") and "can't attack" not in (card.get("oracle_text") or "").casefold() and (not card.get("summoning_sick") or _has_keyword(card, "Haste"))]
         if eligible:
-            actions.append({"type": "declare_attackers", "card_ids": eligible})
+            defending=opponent(state,player_id);defenders=[{"id":defending["id"],"name":defending["name"],"kind":"player","controller_id":defending["id"]}]
+            defenders.extend({"id":card["instance_id"],"name":card["name"],"kind":"permanent","controller_id":defending["id"]} for card in defending["battlefield"] if "Planeswalker" in card.get("type_line",""))
+            actions.append({"type": "declare_attackers", "card_ids": eligible,"defenders":defenders})
     elif not active and state["phase"] == "combat" and state["combat"]["attackers"]:
         attackers = [card for card in opponent(state, player_id)["battlefield"] if card["instance_id"] in state["combat"]["attackers"]]
         blockers = [card["instance_id"] for card in player["battlefield"] if "Creature" in card.get("type_line", "") and not card.get("tapped")]
@@ -479,13 +481,15 @@ def _combat_damage(state: dict) -> None:
     attacker = _player(state, state["active_player_id"])
     defender = opponent(state, attacker["id"])
     originally_blocked = set(state["combat"]["blocks"].values())
-    def hit_player(creature:dict, amount:int)->None:
-        if _has_keyword(creature,"Infect"):defender["poison"]=defender.get("poison",0)+amount
+    def hit_defender(creature:dict, amount:int,target_id:str)->None:
+        planeswalker=next((card for card in defender["battlefield"] if card["instance_id"]==target_id and "Planeswalker" in card.get("type_line","")),None)
+        if planeswalker:planeswalker["counters"]["loyalty"]=max(0,planeswalker["counters"].get("loyalty",0)-amount)
+        elif _has_keyword(creature,"Infect"):defender["poison"]=defender.get("poison",0)+amount
         else:defender["life"] -= amount
         toxic=_toxic_value(creature)
-        if amount>0 and toxic:defender["poison"]=defender.get("poison",0)+toxic
+        if not planeswalker and amount>0 and toxic:defender["poison"]=defender.get("poison",0)+toxic
         if _has_keyword(creature,"Lifelink"): attacker["life"] += amount
-        if creature.get("commander"):
+        if not planeswalker and creature.get("commander"):
             source = creature.get("owner_id", attacker["id"]); defender.setdefault("commander_damage", {})[source] = defender.setdefault("commander_damage", {}).get(source, 0) + amount
 
     def damage_step(first: bool) -> None:
@@ -498,15 +502,16 @@ def _combat_damage(state: dict) -> None:
             creature=battlefield.get(attacker_id)
             if not creature or not strikes(creature):continue
             power=max(0,_parse_stats(creature)[0]);blockers=[battlefield[blocker_id] for blocker_id,target_id in state["combat"]["blocks"].items() if target_id==attacker_id and blocker_id in battlefield]
+            attack_target=state["combat"].get("attack_targets",{}).get(attacker_id,defender["id"])
             if attacker_id not in originally_blocked:
-                hit_player(creature,power);continue
+                hit_defender(creature,power,attack_target);continue
             remaining=power
             for blocker in blockers:
                 _,toughness=_parse_stats(blocker);lethal=1 if _has_keyword(creature,"Deathtouch") else max(1,toughness-blocker.get("damage",0));assigned=min(remaining,lethal);bucket=counter_damage if _has_keyword(creature,"Infect") or _has_keyword(creature,"Wither") else damage;bucket[blocker["instance_id"]]=bucket.get(blocker["instance_id"],0)+assigned;remaining-=assigned
                 if assigned and _has_keyword(creature,"Deathtouch"):deathtouch_hit.add(blocker["instance_id"])
             dealt=power-remaining
             if dealt and _has_keyword(creature,"Lifelink"):life_gain[attacker["id"]]+=dealt
-            if remaining and _has_keyword(creature,"Trample"):hit_player(creature,remaining)
+            if remaining and _has_keyword(creature,"Trample"):hit_defender(creature,remaining,attack_target)
         for blocker_id,attacker_id in state["combat"]["blocks"].items():
             blocker,creature=battlefield.get(blocker_id),battlefield.get(attacker_id)
             if not blocker or not creature or not strikes(blocker):continue
@@ -528,7 +533,7 @@ def _combat_damage(state: dict) -> None:
     if any(_has_keyword(card,"First strike") or _has_keyword(card,"Double strike") for card in participants):damage_step(True)
     damage_step(False)
     _log(state, "Combat damage resolved.")
-    state["combat"] = {"attackers": [], "blocks": {}}
+    state["combat"] = {"attackers": [], "blocks": {},"attack_targets":{}}
 
 
 def _check_winner(state: dict) -> None:
@@ -657,7 +662,10 @@ def perform_action(state: dict, player_id: str, action: dict) -> dict:
         requested = set(action.get("attacker_ids") or [])
         eligible = {card_id for entry in legal_actions(state, player_id) if entry["type"] == "declare_attackers" for card_id in entry.get("card_ids", [])}
         if not requested.issubset(eligible): raise RuleViolation("One or more attackers are not eligible")
+        attack_action=next(entry for entry in legal_actions(state,player_id) if entry["type"]=="declare_attackers");defender_ids={target["id"] for target in attack_action.get("defenders",[])};requested_targets=action.get("attack_targets") or {};default_target=opponent(state,player_id)["id"]
+        if any(requested_targets.get(attacker_id,default_target) not in defender_ids for attacker_id in requested):raise RuleViolation("Choose a legal defender for every attacker")
         state["combat"]["attackers"] = list(requested)
+        state["combat"]["attack_targets"]={attacker_id:requested_targets.get(attacker_id,default_target) for attacker_id in requested}
         for card in player["battlefield"]:
             if card["instance_id"] in requested and not _has_keyword(card,"Vigilance"): card["tapped"] = True
         state["priority_player_id"] = opponent(state, player_id)["id"]; _log(state, f"{player['name']} attacked with {len(requested)} creature(s).")

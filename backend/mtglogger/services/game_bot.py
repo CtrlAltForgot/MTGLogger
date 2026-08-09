@@ -92,7 +92,8 @@ def choose_bot_action(state: dict, difficulty: str = "standard") -> dict | None:
             ids = action["card_ids"][: max(1, len(action["card_ids"]) // 2)]
         else:
             ids = action["card_ids"]
-        return {"type": "declare_attackers", "attacker_ids": ids}
+        defenders=action.get("defenders",[]);planeswalkers=[target for target in defenders if target["kind"]=="permanent"];target=(planeswalkers[0] if difficulty=="expert" and planeswalkers else defenders[0]) if defenders else None
+        return {"type": "declare_attackers", "attacker_ids": ids,"attack_targets":{card_id:target["id"] for card_id in ids} if target else {}}
     if "declare_blockers" in by_type:
         action = by_type["declare_blockers"][0]
         return {"type": "declare_blockers", "blocks": _choose_blocks(state,action,difficulty)}
