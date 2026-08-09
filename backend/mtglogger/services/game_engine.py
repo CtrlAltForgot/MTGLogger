@@ -599,7 +599,7 @@ def _pay_mana(state:dict,player: dict, card: dict, extra_generic: int = 0, exclu
         if land.get("firebending_mana"):player["firebending_mana"]=max(0,player.get("firebending_mana",0)-1)
         elif option["self_sacrifice"]:
             player["life"]-=option["life_cost"]
-            _leave_battlefield(state,player,land,"graveyard");_log(state,f"{player['name']} sacrificed {land['name']} for mana.")
+            _sacrifice_permanents(state,player,[land]);_log(state,f"{player['name']} sacrificed {land['name']} for mana.")
         else:
             player["life"]-=option["life_cost"]
             if option["taps"]:land["tapped"] = True
@@ -892,7 +892,7 @@ def _finish_saga_final_chapter(state:dict,item:dict)->None:
     if not item.get("saga_final"):return
     saga=next((permanent for owner in state["players"] for permanent in owner["battlefield"] if permanent["instance_id"]==item.get("source_id") and "Saga" in permanent.get("type_line","")),None)
     if not saga:return
-    owner=next(owner for owner in state["players"] if saga in owner["battlefield"]);_leave_battlefield(state,owner,saga,"graveyard");_log(state,f"{saga['name']} was sacrificed after its final chapter.")
+    owner=next(owner for owner in state["players"] if saga in owner["battlefield"]);_sacrifice_permanents(state,owner,[saga]);_log(state,f"{saga['name']} was sacrificed after its final chapter.")
 
 
 def _counter_stack_item(state:dict,item:dict)->None:
@@ -1498,6 +1498,15 @@ def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str, t
         zone_owner[destination].remove(card);controller=_player(state,earthbend_controller);card["controller_id"]=controller["id"];card["tapped"]=True;card["summoning_sick"]=True;card["counters"]={};controller["battlefield"].append(card);_log(state,f"{card['name']} returned to the battlefield tapped after being earthbent.");_queue_triggers(state,"enters",card,controller)
 
 
+def _sacrifice_permanents(state:dict,owner:dict,cards:list[dict])->None:
+    cards=[card for card in cards if card in owner["battlefield"]]
+    if not cards:return
+    sources=[(source_owner,source) for source_owner in state["players"] for source in source_owner["battlefield"]];dedupe=set()
+    for card in cards:
+        _queue_triggers(state,"sacrifice",card,owner,dedupe,sources)
+        _leave_battlefield(state,owner,card,"graveyard",sources,dedupe)
+
+
 def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owner: dict, dedupe:set[str]|None=None, sources_override:list[tuple[dict,dict]]|None=None) -> None:
     if event in {"earthbend","waterbend","firebend","airbend"}:
         event_owner["bent_this_turn"]=sorted(set(event_owner.get("bent_this_turn",[]))|{event})
@@ -1533,6 +1542,15 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 any_creature=is_creature and re.search(r"whenever a creature dies",lower) is not None
                 one_or_more=is_creature and source is not event_card and "whenever one or more other creatures die" in lower;dedupe_key=f"dies:{source.get('instance_id')}"
                 matches=self_dies or another or controlled or opposing or any_creature or (one_or_more and (dedupe is None or dedupe_key not in dedupe))
+                if matches and one_or_more and dedupe is not None:dedupe.add(dedupe_key)
+            elif event == "sacrifice" and event_card:
+                under_control=event_card.get("controller_id")==source.get("controller_id",owner["id"]);type_line=event_card.get("type_line","").casefold();is_token=bool(event_card.get("token"));one_or_more="one or more" in lower;dedupe_key=f"sacrifice:{source.get('instance_id')}"
+                kind_match=(("permanent" in lower and not ("nonland permanent" in lower and "land" in type_line)) or ("artifact" in lower and "artifact" in type_line) or ("creature" in lower and "creature" in type_line) or ("token" in lower and is_token))
+                yours=under_control and re.search(r"whenever you sacrifice (?:a|an|another|one or more)",lower) is not None
+                opponent_sacrifice=not under_control and re.search(r"whenever an opponent sacrifices (?:a|an|one or more)",lower) is not None
+                any_player=re.search(r"whenever a player sacrifices (?:a|an|one or more)",lower) is not None
+                another_ok="another" not in lower or source is not event_card
+                matches=kind_match and another_ok and (yours or opponent_sacrifice or any_player) and (not one_or_more or dedupe is None or dedupe_key not in dedupe)
                 if matches and one_or_more and dedupe is not None:dedupe.add(dedupe_key)
             elif event == "leaves" and event_card:
                 matches=source is not event_card and owner["id"]==event_owner["id"] and "Creature" in event_card.get("type_line","") and "when another creature you control leaves the battlefield" in lower
@@ -1807,6 +1825,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         waterbend_symbol=_spell_waterbend_symbol(card);x_value=int(action.get("x_value") or 0);has_x=_has_x_cost(cost_card) or waterbend_symbol=="X";x_max=available.get("x_max",_maximum_x(player,cost_card,tax))
         if (has_x and not available.get("x_min",0)<=x_value<=x_max) or (not has_x and action.get("x_value") is not None): raise RuleViolation("That spell cannot be cast with the chosen X value")
         selected_cost_ids=action.get("cost_card_ids") or [];required_cost=available.get("cost_amount",0);cost_options=set(available.get("cost_options",[]))
+        stack_before_cost=len(state["stack"])
         if requested_waterbend:
             combinations_for_x=(available.get("cost_combinations_by_x") or {}).get(x_value,available.get("cost_combinations",[]));valid_groups={tuple(sorted(group)) for group in combinations_for_x}
             if tuple(sorted(selected_cost_ids)) not in valid_groups:raise RuleViolation("Choose artifacts and creatures that produce a legal waterbend payment")
@@ -1850,10 +1869,11 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
             blight_target=next((creature for creature in player["battlefield"] if creature["instance_id"] in set(selected_cost_ids) and "Creature" in creature.get("type_line","")),None)
             if not blight_target:raise RuleViolation("Choose one creature you control to blight")
             _apply_blight(state,player,blight_target,int(available.get("blight_amount",0)))
+        cost_triggers=state["stack"][stack_before_cost:];del state["stack"][stack_before_cost:]
         player[zone_name].remove(card)
         card.pop("airbent",None)
         if card.get("commander"): player["commander_casts"] = player.get("commander_casts", 0) + 1
-        effective_target=target_id or (mode_targets[0] if len(mode_targets)==1 else None);stack_item={"id": _id(), "card": card, "controller_id": player_id, "target_id": effective_target,"target_ids":target_ids,"mode_indices":chosen_modes,"mode_targets":mode_targets,"x_value":x_value,"flashback":bool(flashback),"kicked":requested_kicked,"blighted":requested_blight};state["stack"].append(stack_item); state["consecutive_passes"] = 0; state["pending_phase_advance"] = False
+        effective_target=target_id or (mode_targets[0] if len(mode_targets)==1 else None);stack_item={"id": _id(), "card": card, "controller_id": player_id, "target_id": effective_target,"target_ids":target_ids,"mode_indices":chosen_modes,"mode_targets":mode_targets,"x_value":x_value,"flashback":bool(flashback),"kicked":requested_kicked,"blighted":requested_blight};state["stack"].append(stack_item);state["stack"].extend(cost_triggers); state["consecutive_passes"] = 0; state["pending_phase_advance"] = False
         if requested_waterbend:_queue_triggers(state,"waterbend",card,player)
         _queue_triggers(state,"cast",card,player)
         ward_targets=[effective_target] if effective_target else []
@@ -1934,12 +1954,13 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         stack_item={"id":_id(),"kind":"ability","card":ability["card"],"controller_id":player_id,"target_id":target_id,"target_ids":target_ids,"source_id":permanent["instance_id"],"x_value":x_value};state["stack"].append(stack_item);state["consecutive_passes"]=0;state["pending_phase_advance"]=False
         if waterbend_symbol:_queue_triggers(state,"waterbend",permanent,player)
         for ward_target in ([target_id] if target_id else [])+target_ids:_queue_ward(state,player,ward_target,stack_item)
-        if ability["self_sacrifice"]:_leave_battlefield(state,player,permanent,"graveyard")
+        sacrifice_cards=[permanent] if ability["self_sacrifice"] else []
         discard_ids={card_id for requirement in available.get("cost_requirements",[]) if requirement["kind"]=="discard" for card_id in requirement["options"]}
         sacrifice_ids={card_id for requirement in available.get("cost_requirements",[]) if requirement["kind"]=="sacrifice" for card_id in requirement["options"]}
         for card in list(selected_cost_cards):
             if card["instance_id"] in discard_ids and card in player["hand"]:player["hand"].remove(card);player["graveyard"].append(card)
-            elif card["instance_id"] in sacrifice_ids and card in player["battlefield"]:_leave_battlefield(state,player,card,"graveyard")
+            elif card["instance_id"] in sacrifice_ids and card in player["battlefield"]:sacrifice_cards.append(card)
+        _sacrifice_permanents(state,player,list({card["instance_id"]:card for card in sacrifice_cards}.values()))
         if (_multiplayer(state) or not allow_direct_resolution) and not state.get("pending_ward") and not state.get("pending_trigger_targets"):state["priority_player_id"]=opponent(state,player_id)["id"]
         _log(state,f"{player['name']} activated {permanent['name']}: {ability['effect']}")
     elif action_type == "activate_loyalty":
@@ -2113,7 +2134,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if pending.get("player_id")!=player_id or len(requested)!=required or len(set(requested))!=required or not set(requested).issubset(allowed_ids):raise RuleViolation(f"Choose exactly {required} legal permanent(s) to sacrifice")
         chosen=[card for card in player["battlefield"] if card["instance_id"] in set(requested)]
         if len(chosen)!=required:raise RuleViolation("One or more selected permanents are no longer available")
-        for card in chosen:_leave_battlefield(state,player,card,"graveyard")
+        _sacrifice_permanents(state,player,chosen)
         state["pending_sacrifice"]=None;state["priority_player_id"]=state["active_player_id"];_log(state,f"{player['name']} sacrificed {required} permanent(s).")
     elif action_type == "choose_legendary":
         pending=state.get("pending_legendary") or {};requested=action.get("card_ids") or []
