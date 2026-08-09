@@ -1,7 +1,7 @@
 import pytest
 
 from mtglogger.services.game_bot import _choose_blocks, choose_bot_action, run_bot
-from mtglogger.services.game_engine import RuleViolation, _add_counters, _add_saga_lore, _amass, _change_control, _combat_damage, _connive, _counter_stack_item, _enter_battlefield, _explore, _face_down_ability, _has_keyword, _leave_graveyard, _put_into_exile, _queue_triggers, _set_tapped, _venture_undercity, _ward_details, legal_actions, new_game, perform_action, public_state
+from mtglogger.services.game_engine import RuleViolation, _add_counters, _add_saga_lore, _amass, _change_control, _combat_damage, _connive, _counter_stack_item, _enter_battlefield, _explore, _face_down_ability, _has_keyword, _leave_graveyard, _put_into_exile, _queue_triggers, _set_day_night, _set_tapped, _venture_undercity, _ward_details, legal_actions, new_game, perform_action, public_state
 
 
 def card(index:int,name:str,type_line:str,mana_cost:str="",power:str|None=None,toughness:str|None=None,quantity:int=1):
@@ -2150,3 +2150,23 @@ def test_targeted_connive_and_connive_triggers_are_server_authoritative():
 
 def test_bot_connive_discards_a_low_value_nonland_to_grow_the_creature():
     state=kept_game();state["active_player_id"]="bot";state["priority_player_id"]="bot";bot=next(p for p in state["players"] if p["id"]=="bot");rogue={**card(1760,"Bot Rogue","Creature — Rogue","","2","2"),"instance_id":"bot-rogue","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};weak={**card(1761,"Weak Trick","Instant","{U}"),"mana_value":1,"instance_id":"weak-trick","owner_id":"bot","controller_id":"bot"};strong={**card(1762,"Strong Trick","Sorcery","{5}{U}"),"mana_value":6,"instance_id":"strong-trick","owner_id":"bot","controller_id":"bot"};bot["battlefield"]=[rogue];bot["hand"]=[weak,strong];state["pending_connive"]={"player_id":"bot","creature_id":"bot-rogue","creature_name":"Bot Rogue","amount":1};choice=choose_bot_action(state,"expert");assert choice=={"type":"discard_connive","card_ids":["weak-trick"]}
+
+
+def daybound_card(instance_id:str="day-wolf"):
+    faces=[{"name":"Village Wolf","type_line":"Creature — Werewolf","oracle_text":"Daybound","mana_cost":"{2}{G}","power":"2","toughness":"3","keywords":["Daybound"],"image_url":"https://example.test/day.jpg"},{"name":"Night Packleader","type_line":"Creature — Werewolf","oracle_text":"Nightbound","mana_cost":"","power":"4","toughness":"4","keywords":["Nightbound"],"image_url":"https://example.test/night.jpg"}]
+    return {**card(1770,"Village Wolf","Creature — Werewolf","{2}{G}","2","3"),**faces[0],"instance_id":instance_id,"owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False,"card_faces":faces,"current_face":0}
+
+
+def test_daybound_initializes_day_and_zero_spell_turn_changes_every_permanent_to_night():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player");wolf=daybound_card();_enter_battlefield(state,player,[wolf],"effect");assert state["day_night"]=="day" and wolf["name"]=="Village Wolf"
+    state["phase"]="ending";state["priority_player_id"]="player";state=perform_action(state,"player",{"type":"advance_phase"});wolf=next(card for card in next(p for p in state["players"] if p["id"]=="player")["battlefield"] if card["instance_id"]=="day-wolf");assert state["day_night"]=="night" and wolf["name"]=="Night Packleader" and _has_keyword(wolf,"Nightbound")
+
+
+def test_two_spell_turn_changes_night_back_to_day_and_nightbound_enters_transformed():
+    state=kept_game();state["day_night"]="night";player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot");wolf=daybound_card("night-entry");_enter_battlefield(state,player,[wolf],"effect");assert wolf["name"]=="Night Packleader" and wolf["current_face"]==1
+    state["active_player_id"]="bot";state["priority_player_id"]="bot";state["phase"]="ending";bot["cast_event_turn"]=state["turn"];bot["spells_cast_this_turn"]=2;state=perform_action(state,"bot",{"type":"advance_phase"});wolf=next(card for card in next(p for p in state["players"] if p["id"]=="player")["battlefield"] if card["instance_id"]=="night-entry");assert state["day_night"]=="day" and wolf["name"]=="Village Wolf" and wolf["current_face"]==0
+
+
+def test_day_night_transition_triggers_and_all_cast_paths_share_spell_counting():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player");watcher={**card(1780,"Celestus Watcher","Enchantment"),"oracle_text":"Whenever day becomes night or whenever night becomes day, you gain 1 life.","instance_id":"celestus-watcher","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].append(watcher);before=player["life"];_set_day_night(state,"day");_set_day_night(state,"night");assert state["stack"][-1]["card"]["name"]=="Celestus Watcher trigger";state=perform_action(state,"player",{"type":"resolve"});assert next(p for p in state["players"] if p["id"]=="player")["life"]==before+1
+    state["stack"]=[];state["turn"]=4;state["phase"]="precombat_main";player=next(p for p in state["players"] if p["id"]=="player");lands=[{**card(1781+index,"Island","Basic Land — Island"),"instance_id":f"day-count-land-{index}","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False} for index in range(3)];morph={**card(1785,"Counted Morph","Creature — Wizard","{4}{U}","3","3"),"oracle_text":"Morph {U}","instance_id":"counted-morph","owner_id":"player","controller_id":"player"};player["battlefield"].extend(lands);player["hand"].append(morph);state=perform_action(state,"player",{"type":"cast_face_down","card_id":"counted-morph"});player=next(p for p in state["players"] if p["id"]=="player");assert player["cast_event_turn"]==4 and player["spells_cast_this_turn"]==1

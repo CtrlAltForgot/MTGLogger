@@ -93,6 +93,11 @@ def _gain_energy(state:dict,player:dict,amount:int)->int:
     return amount
 
 
+def _record_spell_cast(state:dict,player:dict)->None:
+    if player.get("cast_event_turn")!=state["turn"]:player["cast_event_turn"]=state["turn"];player["spells_cast_this_turn"]=0
+    player["spells_cast_this_turn"]=player.get("spells_cast_this_turn",0)+1
+
+
 def _pay_energy(state:dict,player:dict,amount:int)->None:
     if amount<0 or player.get("energy",0)<amount:raise RuleViolation("Not enough energy")
     player["energy"]-=amount;player["energy_paid_this_turn"]=player.get("energy_paid_this_turn",0)+amount
@@ -611,6 +616,17 @@ def _transform(state:dict,card:dict)->bool:
     _log(state,f"{previous} transformed into {card['name']}.");return True
 
 
+def _set_day_night(state:dict,value:str)->None:
+    previous=state.get("day_night")
+    if value not in {"day","night"} or previous==value:return
+    state["day_night"]=value;_log(state,f"It became {value}.")
+    for owner in state["players"]:
+        for permanent in list(owner["battlefield"]):
+            if value=="night" and _has_keyword(permanent,"Daybound"):_transform(state,permanent)
+            elif value=="day" and _has_keyword(permanent,"Nightbound"):_transform(state,permanent)
+    state["day_night_event"]=value;_queue_triggers(state,"day_night",None,_player(state,state["active_player_id"]));state.pop("day_night_event",None)
+
+
 def _saga_chapters(card:dict)->dict[int,str]:
     chapters={};roman={"I":1,"II":2,"III":3,"IV":4,"V":5}
     for line in (card.get("oracle_text") or "").splitlines():
@@ -1055,6 +1071,7 @@ def new_game(player_deck: list[dict], opponent_deck: list[dict], play_first: boo
     state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "beginning_draw_pending":True,"first_turn_draw_skipped":False,"active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id,"monarch_id":None,"initiative_id":None, "players": players, "stack": [], "combat": {"attackers": [], "attackers_declared":False,"blocks": {}, "attack_targets": {},"block_orders":{},"damage_pending":False,"damage_step":None,"first_strike_damage_ids":[],"block_triggers_pending":False}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "pending_legendary": None,"pending_commander_zone":[],"pending_library_search":None,"pending_scry":None,"pending_damage_order":None,"pending_ward":None,"pending_blight":None,"pending_proliferate":None,"pending_amass":None,"pending_discovery":None,"pending_manifest":None,"pending_transform":None,"pending_dungeon":None,"pending_trigger_targets":[], "log": []}
     state["pending_explore"]=None;state["pending_explore_queue"]=[]
     state["pending_connive"]=None;state["pending_connive_queue"]=[]
+    state["day_night"]=None
     for player in players:
         _draw(state, player, 7,False)
     _log(state, "Opening hands drawn. Choose whether to keep or mulligan.")
@@ -1992,6 +2009,9 @@ def _enter_battlefield(state:dict,controller:dict,cards:list[dict],origin:str="e
     if not entering:return []
     batch_size=len(entering);dedupe:set[str]=set()
     for card in entering:
+        if _has_keyword(card,"Daybound"):
+            if state.get("day_night") is None:_set_day_night(state,"day")
+            elif state.get("day_night")=="night":_set_card_face(card,1)
         card["controller_id"]=controller["id"];card["entry_event_origin"]=origin;card["entry_event_was_cast"]=was_cast;card["entry_event_played"]=played;card["entry_event_batch_size"]=batch_size
         controller["battlefield"].append(card)
     ordered_owners=sorted(state["players"],key=lambda owner:owner["id"]!=state.get("active_player_id"));sources=[(owner,permanent) for owner in ordered_owners for permanent in owner["battlefield"]]
@@ -2312,6 +2332,8 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 controlled=event_owner["id"]==owner["id"];self_event=source is event_card and re.search(r"whenever (?:~|this creature|[^,]+) connives?\b",lower) is not None
                 controlled_event=source is not event_card and controlled and re.search(r"whenever (?:a|another) creature you control connives?\b",lower) is not None
                 matches=self_event or controlled_event
+            elif event == "day_night":
+                transition=state.get("day_night_event");matches=(transition=="night" and "day becomes night" in lower and "whenever" in lower) or (transition=="day" and "night becomes day" in lower and "whenever" in lower)
             elif event in {"earthbend","waterbend","firebend","airbend"}:
                 multi_bend="whenever you waterbend, earthbend, firebend, or airbend" in lower
                 matches=owner["id"]==event_owner["id"] and (f"whenever you {event}" in lower or multi_bend)
@@ -2466,8 +2488,11 @@ def _state_based_actions(state: dict) -> None:
 
 
 def _begin_next_turn(state:dict)->None:
+    previous_active=_player(state,state["active_player_id"]);previous_spells=previous_active.get("spells_cast_this_turn",0) if previous_active.get("cast_event_turn")==state["turn"] else 0
     state["pending_discard"]=None;state["turn"] += 1; state["phase"] = PHASES[0];state["beginning_draw_pending"]=True; state["active_player_id"] = opponent(state, state["active_player_id"])["id"]
     active = _player(state, state["active_player_id"]); active["land_plays_remaining"] = 1
+    if state.get("day_night")=="day" and previous_spells==0:_set_day_night(state,"night")
+    elif state.get("day_night")=="night" and previous_spells>=2:_set_day_night(state,"day")
     temporary_controlled=[card for owner in state["players"] for card in owner["battlefield"] if card.get("temporary_control_return_to")]
     for permanent in temporary_controlled:
         return_to=_player(state,permanent.pop("temporary_control_return_to"));current=next(owner for owner in state["players"] if permanent in owner["battlefield"])
@@ -2561,7 +2586,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if action_type=="cast_discovered" and _target_kind(targeting_card) and target_id not in {target["id"] for target in targets}:raise RuleViolation("Choose a legal target for the discovered spell")
         remaining=[card_id for card_id in pending["revealed_ids"] if card_id!=candidate["instance_id"]];state["pending_discovery"]=None
         if action_type=="cast_discovered":
-            _leave_exile(state,player,[candidate]);stack_item={"id":_id(),"card":candidate,"controller_id":player_id,"target_id":target_id,"target_ids":[],"mode_indices":[],"mode_targets":[],"x_value":0,"free_cast":True,"cast_source_zone":"exile"};state["stack"].append(stack_item);player["spells_cast_this_turn"]=player.get("spells_cast_this_turn",0)+1;candidate["cast_source_zone"]="exile";_queue_triggers(state,"cast",candidate,player);_queue_cascade_triggers(state,player,candidate);candidate.pop("cast_source_zone",None);_log(state,f"{player['name']} cast {candidate['name']} without paying its mana cost.")
+            _leave_exile(state,player,[candidate]);stack_item={"id":_id(),"card":candidate,"controller_id":player_id,"target_id":target_id,"target_ids":[],"mode_indices":[],"mode_targets":[],"x_value":0,"free_cast":True,"cast_source_zone":"exile"};state["stack"].append(stack_item);_record_spell_cast(state,player);candidate["cast_source_zone"]="exile";_queue_triggers(state,"cast",candidate,player);_queue_cascade_triggers(state,player,candidate);candidate.pop("cast_source_zone",None);_log(state,f"{player['name']} cast {candidate['name']} without paying its mana cost.")
         elif action_type=="hand_discovered":
             _leave_exile(state,player,[candidate]);player["hand"].append(candidate);_log(state,f"{player['name']} put {candidate['name']} into their hand.")
         else:
@@ -2632,7 +2657,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
     elif action_type=="cast_face_down":
         card=next((card for card in player["hand"] if card["instance_id"]==action.get("card_id")),None);ability=_face_down_ability(card or {})
         if not card or not ability or not (state["active_player_id"]==player_id and state["phase"] in {"precombat_main","postcombat_main"} and not state["stack"]):raise RuleViolation("That card cannot be cast face down now")
-        _pay_mana(state,player,{"mana_cost":"{3}"});player["hand"].remove(card);_make_face_down(card,player,False,ability);state["stack"].append({"id":_id(),"kind":"spell","card":card,"controller_id":player_id,"target_id":None,"target_ids":[],"mode_indices":[],"mode_targets":[],"face_down_cast":True,"cast_source_zone":"hand"});player["spells_cast_this_turn"]=player.get("spells_cast_this_turn",0)+1;_queue_triggers(state,"cast",card,player);state["consecutive_passes"]=0;state["pending_phase_advance"]=False
+        _pay_mana(state,player,{"mana_cost":"{3}"});player["hand"].remove(card);_make_face_down(card,player,False,ability);state["stack"].append({"id":_id(),"kind":"spell","card":card,"controller_id":player_id,"target_id":None,"target_ids":[],"mode_indices":[],"mode_targets":[],"face_down_cast":True,"cast_source_zone":"hand"});_record_spell_cast(state,player);_queue_triggers(state,"cast",card,player);state["consecutive_passes"]=0;state["pending_phase_advance"]=False
         if _multiplayer(state) or not allow_direct_resolution:state["priority_player_id"]=opponent(state,player_id)["id"]
         _log(state,f"{player['name']} cast a creature spell face down for {{3}}.")
     elif action_type == "play_land":
@@ -2701,8 +2726,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if card.get("commander"): player["commander_casts"] = player.get("commander_casts", 0) + 1
         effective_target=target_id or (mode_targets[0] if len(mode_targets)==1 else None);stack_item={"id": _id(), "card": card, "controller_id": player_id, "target_id": effective_target,"target_ids":target_ids,"mode_indices":chosen_modes,"mode_targets":mode_targets,"x_value":x_value,"flashback":bool(flashback),"suspended_cast":source=="suspend","kicked":requested_kicked,"blighted":requested_blight,"cast_source_zone":"graveyard" if source=="flashback" else "exile" if source in {"airbend","suspend","foretell"} else source};state["stack"].append(stack_item);state["stack"].extend(cost_triggers); state["consecutive_passes"] = 0; state["pending_phase_advance"] = False
         if requested_waterbend:_queue_triggers(state,"waterbend",card,player)
-        if player.get("cast_event_turn")!=state["turn"]:player["cast_event_turn"]=state["turn"];player["spells_cast_this_turn"]=0
-        player["spells_cast_this_turn"]=player.get("spells_cast_this_turn",0)+1;card["cast_source_zone"]="graveyard" if source=="flashback" else "exile" if source in {"airbend","suspend","foretell"} else source
+        _record_spell_cast(state,player);card["cast_source_zone"]="graveyard" if source=="flashback" else "exile" if source in {"airbend","suspend","foretell"} else source
         _queue_triggers(state,"cast",card,player);_queue_cascade_triggers(state,player,card);card.pop("cast_source_zone",None)
         ward_targets=[effective_target] if effective_target else []
         ward_targets.extend(target for target in mode_targets if target and target not in ward_targets)
