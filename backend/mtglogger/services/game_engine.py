@@ -129,6 +129,11 @@ def _equip_cost(card:dict)->str|None:
     return match.group(1).upper() if match else None
 
 
+def _crew_value(card:dict)->int|None:
+    match=re.search(r"(?:^|\n)Crew\s+(\d+)\b",card.get("oracle_text") or "",re.IGNORECASE)
+    return int(match.group(1)) if match else None
+
+
 def _cycling_ability(card:dict)->dict|None:
     for line in (card.get("oracle_text") or "").splitlines():
         match=re.match(r"^((?:[A-Za-z][A-Za-z ]*)?cycling)\s+((?:\{[^}]+\})+)",line.strip(),re.IGNORECASE)
@@ -370,7 +375,7 @@ def _pay_mana(state:dict,player: dict, card: dict, extra_generic: int = 0, exclu
 
 def _predefined_token(owner:dict,kind:str,tapped:bool=False)->dict:
     oracle={"Clue":"{2}, Sacrifice this artifact: Draw a card.","Food":"{2}, {T}, Sacrifice this artifact: You gain 3 life.","Treasure":"{T}, Sacrifice this artifact: Add one mana of any color.","Blood":"{1}, {T}, Discard a card, Sacrifice this artifact: Draw a card.","Gold":"Sacrifice this artifact: Add one mana of any color."}[kind]
-    return {"instance_id":_id(),"scryfall_id":f"token-{kind.casefold()}","name":f"{kind} Token","image_url":None,"type_line":f"Token Artifact — {kind}","oracle_text":oracle,"mana_cost":"","mana_value":0,"power":None,"toughness":None,"owner_id":owner["id"],"controller_id":owner["id"],"tapped":tapped,"damage":0,"counters":{},"summoning_sick":False,"token":True,"keywords":[]}
+    return {"instance_id":_id(),"scryfall_id":f"token-{kind.casefold()}","name":f"{kind} Token","image_url":None,"type_line":f"Token Artifact — {kind}","oracle_text":oracle,"mana_cost":"","mana_value":0,"power":None,"toughness":None,"owner_id":owner["id"],"controller_id":owner["id"],"tapped":tapped,"damage":0,"counters":{},"summoning_sick":True,"token":True,"keywords":[]}
 
 
 def _has_x_cost(card:dict)->bool:
@@ -747,6 +752,12 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
             if fight_steps:action["target_steps"]=fight_steps
             elif targets: action["targets"] = targets
             actions.append(action)
+    for vehicle in player["battlefield"]:
+        required_power=_crew_value(vehicle)
+        if required_power is None:continue
+        crew_options=[creature for creature in player["battlefield"] if creature["instance_id"]!=vehicle["instance_id"] and "Creature" in creature.get("type_line","") and not creature.get("tapped")]
+        if sum(max(0,_parse_stats(creature,state)[0]) for creature in crew_options)>=required_power:
+            actions.append({"type":"crew","card_id":vehicle["instance_id"],"label":f"Crew {required_power} · {vehicle['name']}","cost_kind":"crew","cost_required_power":required_power,"cost_options":[creature["instance_id"] for creature in crew_options]})
     if active and main and not state["stack"]:
         for permanent in player["battlefield"]:
             if "Planeswalker" not in permanent.get("type_line","") or permanent.get("loyalty_activated_turn")==state["turn"]:continue
@@ -796,6 +807,12 @@ def _resolve_spell(state: dict) -> None:
         equipment=next((permanent for permanent in caster["battlefield"] if permanent["instance_id"]==item.get("source_id") and "Equipment" in permanent.get("type_line","")),None);target=next((permanent for permanent in caster["battlefield"] if permanent["instance_id"]==item.get("target_id") and "Creature" in permanent.get("type_line","")),None)
         if not equipment or not target or _has_keyword(target,"Shroud") or _protected_from(target,equipment):_log(state,f"{card['name']} did not resolve because its source or target was no longer legal.");return
         _attach(state,equipment,target);_log(state,f"{caster['name']} equipped {target['name']} with {equipment['name']}.");return
+    if item.get("kind")=="crew_ability":
+        vehicle=next((permanent for permanent in caster["battlefield"] if permanent["instance_id"]==item.get("source_id") and _crew_value(permanent) is not None),None)
+        if not vehicle:_log(state,f"{card['name']} did not resolve because its Vehicle left the battlefield.");return
+        if "Creature" not in vehicle.get("type_line",""):
+            vehicle["base_type_line"]=vehicle.get("type_line","");vehicle["type_line"]=vehicle["type_line"].replace("Artifact — Vehicle","Artifact Creature — Vehicle").replace("Artifact —","Artifact Creature —")
+        vehicle["crewed_turn"]=state["turn"];_log(state,f"{vehicle['name']} became an artifact creature until end of turn.");return
     if item.get("kind","spell")=="spell" and len(item.get("mode_indices") or [])>1:
         options={option["index"]:option for option in _modal_options(card)};targets=item.get("mode_targets") or []
         for position,index in enumerate(item["mode_indices"]):
@@ -918,7 +935,7 @@ def _resolve_spell(state: dict) -> None:
         _log(state, f"{countered['name']} was countered.")
     if graveyard_target and graveyard_owner:
         if re.search(r"(?:return|put) target (?:creature )?card .*graveyard (?:to|into|onto) (?:the battlefield|play)",effect_text):
-            graveyard_owner["graveyard"].remove(graveyard_target);graveyard_target["controller_id"]=caster["id"];graveyard_target["summoning_sick"]="Creature" in graveyard_target.get("type_line","");caster["battlefield"].append(graveyard_target);_log(state,f"{graveyard_target['name']} returned to the battlefield under {caster['name']}'s control.")
+            graveyard_owner["graveyard"].remove(graveyard_target);graveyard_target["controller_id"]=caster["id"];graveyard_target["summoning_sick"]=True;caster["battlefield"].append(graveyard_target);_log(state,f"{graveyard_target['name']} returned to the battlefield under {caster['name']}'s control.")
             _queue_triggers(state,"enters",graveyard_target,caster)
         elif re.search(r"return target (?:creature )?card .*graveyard to (?:your|its owner'?s) hand",effect_text):
             graveyard_owner["graveyard"].remove(graveyard_target);graveyard_target["controller_id"]=graveyard_target.get("owner_id",graveyard_owner["id"]);_player(state,graveyard_target["controller_id"])["hand"].append(graveyard_target);_log(state,f"{graveyard_target['name']} returned to its owner's hand.")
@@ -962,7 +979,7 @@ def _resolve_spell(state: dict) -> None:
     entered = False
     if is_permanent_spell:
         card["was_kicked"]=bool(item.get("kicked"))
-        card["summoning_sick"] = "Creature" in card.get("type_line", "")
+        card["summoning_sick"] = True
         if re.search(r"\benters (?:the battlefield )?tapped\b",text):card["tapped"]=True
         enters_counters=re.search(r"enters(?: the battlefield)? with (\d+) ([+−-]\d+/[+−-]\d+|loyalty|charge|shield|stun) counters?",text)
         if enters_counters:
@@ -983,7 +1000,8 @@ def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str) -
         _detach(state,attachment)
         if "Aura" in attachment.get("type_line",""):_leave_battlefield(state,attachment_owner,attachment,"graveyard")
     if card in owner["battlefield"]: owner["battlefield"].remove(card)
-    card["damage"] = 0; card["tapped"] = False
+    card["damage"] = 0; card["tapped"] = False;card.pop("crewed_turn",None)
+    if card.get("base_type_line") is not None:card["type_line"]=card.pop("base_type_line")
     _queue_triggers(state, "dies" if destination == "graveyard" else "leaves", card, owner)
     if card.get("token"): return
     zone_owner=_player(state,card.get("owner_id",owner["id"]));card["controller_id"]=zone_owner["id"]
@@ -1148,7 +1166,9 @@ def _begin_next_turn(state:dict)->None:
     state["pending_discard"]=None;state["turn"] += 1; state["phase"] = PHASES[0];state["beginning_draw_pending"]=True; state["active_player_id"] = opponent(state, state["active_player_id"])["id"]
     active = _player(state, state["active_player_id"]); active["land_plays_remaining"] = 1
     for owner in state["players"]:
-        for permanent in owner["battlefield"]: permanent.pop("temporary_power",None); permanent.pop("temporary_toughness",None);permanent.pop("temporary_keywords",None);permanent.pop("cant_attack_until_turn",None);permanent.pop("cant_block_until_turn",None);permanent.pop("regeneration_shields",None); permanent["damage"] = 0
+        for permanent in owner["battlefield"]:
+            permanent.pop("temporary_power",None);permanent.pop("temporary_toughness",None);permanent.pop("temporary_keywords",None);permanent.pop("cant_attack_until_turn",None);permanent.pop("cant_block_until_turn",None);permanent.pop("regeneration_shields",None);permanent.pop("crewed_turn",None);permanent["damage"]=0
+            if permanent.get("base_type_line") is not None:permanent["type_line"]=permanent.pop("base_type_line")
     for permanent in active["battlefield"]: permanent["tapped"] = False; permanent["summoning_sick"] = False
     _log(state, f"Turn {state['turn']} began for {active['name']}. Untap and upkeep started."); _queue_triggers(state,"upkeep",None,active)
 
@@ -1208,7 +1228,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
     elif action_type == "play_land":
         card = next((card for card in player["hand"] if card["instance_id"] == action.get("card_id") and "Land" in card.get("type_line", "")), None)
         if not card: raise RuleViolation("That land is not in your hand")
-        player["hand"].remove(card); player["battlefield"].append(card); player["land_plays_remaining"] -= 1; _log(state, f"{player['name']} played {card['name']}."); _queue_triggers(state,"enters",card,player)
+        player["hand"].remove(card);card["summoning_sick"]=True;player["battlefield"].append(card); player["land_plays_remaining"] -= 1; _log(state, f"{player['name']} played {card['name']}."); _queue_triggers(state,"enters",card,player)
     elif action_type == "cast":
         requested_source=action.get("source");zone_name="graveyard" if requested_source=="flashback" else requested_source if requested_source in {"hand","command"} else next((zone for zone in ("hand","command") if any(card["instance_id"]==action.get("card_id") for card in player.get(zone,[]))),None)
         source="flashback" if zone_name=="graveyard" else zone_name;card=next((card for card in player.get(zone_name or "hand",[]) if card["instance_id"]==action.get("card_id")),None);flashback=_flashback_ability(card or {}) if source=="flashback" else None
@@ -1271,6 +1291,16 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         _pay_mana(state,player,{"mana_cost":available["mana_cost"]});stack_item={"id":_id(),"kind":"equip_ability","card":{**equipment,"name":f"{equipment['name']} equip ability","type_line":"Ability"},"controller_id":player_id,"target_id":target_id,"source_id":equipment["instance_id"]};state["stack"].append(stack_item);state["consecutive_passes"]=0;state["pending_phase_advance"]=False
         if _multiplayer(state) or not allow_direct_resolution:state["priority_player_id"]=opponent(state,player_id)["id"]
         _log(state,f"{player['name']} activated {equipment['name']}'s equip ability targeting {target['name']}.")
+    elif action_type == "crew":
+        available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="crew" and entry["card_id"]==action.get("card_id")),None);selected_ids=action.get("cost_card_ids") or []
+        if not available or not selected_ids or len(selected_ids)!=len(set(selected_ids)) or not set(selected_ids).issubset(set(available["cost_options"])):raise RuleViolation("Choose untapped creatures you control to crew that Vehicle")
+        selected=[creature for creature in player["battlefield"] if creature["instance_id"] in set(selected_ids)]
+        if sum(max(0,_parse_stats(creature,state)[0]) for creature in selected)<available["cost_required_power"]:raise RuleViolation(f"Choose creatures with at least {available['cost_required_power']} total power")
+        vehicle=next(card for card in player["battlefield"] if card["instance_id"]==action["card_id"])
+        for creature in selected:creature["tapped"]=True
+        state["stack"].append({"id":_id(),"kind":"crew_ability","card":{**vehicle,"name":f"{vehicle['name']} crew ability","type_line":"Ability"},"controller_id":player_id,"target_id":None,"source_id":vehicle["instance_id"]});state["consecutive_passes"]=0;state["pending_phase_advance"]=False
+        if _multiplayer(state) or not allow_direct_resolution:state["priority_player_id"]=opponent(state,player_id)["id"]
+        _log(state,f"{player['name']} tapped {len(selected)} creature(s) with {sum(max(0,_parse_stats(creature,state)[0]) for creature in selected)} total power to crew {vehicle['name']}.")
     elif action_type == "activate":
         permanent=next((card for card in player["battlefield"] if card["instance_id"]==action.get("card_id")),None);index=action.get("ability_index")
         available=next((entry for entry in legal_actions(state,player_id) if entry["type"]=="activate" and entry["card_id"]==action.get("card_id") and entry["ability_index"]==index),None)
@@ -1454,7 +1484,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         random.SystemRandom().shuffle(player["library"]);destination=pending.get("destination","hand")
         for card in chosen:
             if destination=="battlefield":
-                card["controller_id"]=player_id;card["tapped"]=bool(pending.get("tapped"));card["summoning_sick"]="Creature" in card.get("type_line","");player["battlefield"].append(card);_queue_triggers(state,"enters",card,player)
+                card["controller_id"]=player_id;card["tapped"]=bool(pending.get("tapped"));card["summoning_sick"]=True;player["battlefield"].append(card);_queue_triggers(state,"enters",card,player)
             elif destination=="library_top":player["library"].append(card)
             else:player["hand"].append(card)
         state["pending_library_search"]=None;state["priority_player_id"]=(state.get("pending_trigger_targets") or [{"controller_id":state["active_player_id"]}])[0]["controller_id"];_log(state,f"{player['name']} found {len(chosen)} card(s), moved them to {destination.replace('_',' ')}, and shuffled.")

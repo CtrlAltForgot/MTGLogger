@@ -1,6 +1,6 @@
 import random
 import re
-from itertools import product
+from itertools import combinations,product
 
 from .game_engine import _can_block_pair, _effective_rules_text, _has_keyword, _parse_stats, legal_actions, perform_action
 
@@ -58,6 +58,15 @@ def _choose_fight_targets(state:dict,action:dict)->list[str]:
         else:score=_threat_score(state,fighters[-1] or {}) if fighters else 0
         choices.append((score,ids))
     return max(choices,key=lambda choice:choice[0])[1] if choices else []
+
+
+def _choose_crew_cost(state:dict,action:dict)->list[str]:
+    cards=[_card(state,"bot",card_id) for card_id in action.get("cost_options",[])];required=int(action.get("cost_required_power") or 0);choices=[]
+    for amount in range(1,len(cards)+1):
+        for group in combinations(cards,amount):
+            power=sum(max(0,_stats(state,card)[0]) for card in group)
+            if power>=required:choices.append((power-required,sum(_threat_score(state,card) for card in group),len(group),[card["instance_id"] for card in group]))
+    return min(choices,key=lambda choice:choice[:3])[3] if choices else []
 
 
 def _can_block(state:dict,attacker:dict,blocker:dict)->bool:
@@ -247,6 +256,13 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
         return {"type":"order_blockers","block_orders":orders}
     if "play_land" in by_type:
         return by_type["play_land"][0]
+    if "crew" in by_type:
+        usable=[]
+        for action in by_type["crew"]:
+            vehicle=_card(state,"bot",action["card_id"]);active=state["active_player_id"]=="bot"
+            if vehicle.get("crewed_turn")!=state["turn"] and not (active and state["phase"] in {"precombat_main","combat"} and vehicle.get("summoning_sick")):usable.append(action)
+        if usable:
+            choice=max(usable,key=lambda action:_threat_score(state,_card(state,"bot",action["card_id"])));return {**choice,"cost_card_ids":_choose_crew_cost(state,choice)}
     if "cycle" in by_type:
         bot=next(player for player in state["players"] if player["id"]=="bot");lands_in_hand=sum("Land" in card.get("type_line","") for card in bot["hand"]);lands_in_play=sum("Land" in card.get("type_line","") for card in bot["battlefield"])
         choice=min(by_type["cycle"],key=lambda action:(_card(state,"bot",action["card_id"]).get("mana_value") or 0))
