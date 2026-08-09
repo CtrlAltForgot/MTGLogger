@@ -111,10 +111,41 @@ def _card_colors(card: dict) -> set[str]:
 
 def _protected_from(card: dict, source: dict) -> bool:
     text = (card.get("oracle_text") or "").casefold()
-    if _has_keyword(card, "Shroud"): return True
+    if "protection from everything" in text:return True
     colors = _card_colors(source)
     names = {"W":"white","U":"blue","B":"black","R":"red","G":"green"}
-    return any(f"protection from {names[color]}" in text for color in colors)
+    if any(f"protection from {names[color]}" in text for color in colors):return True
+    source_types=source.get("type_line","").casefold()
+    for kind in ("artifact","creature","enchantment","instant","land","planeswalker","sorcery"):
+        if kind in source_types and f"protection from {kind}s" in text:return True
+    return len(colors)>1 and "protection from multicolored" in text
+
+
+def _consume_shield(state:dict,card:dict,reason:str)->bool:
+    shields=card.get("counters",{}).get("shield",0)
+    if shields<=0:return False
+    card["counters"]["shield"]=shields-1
+    _log(state,f"A shield counter protected {card['name']} from {reason}.")
+    return True
+
+
+def _damage_permanent(state:dict,target:dict,amount:int,source:dict)->int:
+    if amount<=0:return 0
+    if _protected_from(target,source):
+        _log(state,f"Protection prevented {amount} damage to {target['name']}.");return 0
+    if _consume_shield(state,target,"damage"):return 0
+    if _has_keyword(source,"Infect") or _has_keyword(source,"Wither"):
+        target["counters"]["-1/-1"]=target["counters"].get("-1/-1",0)+amount
+    elif "Planeswalker" in target.get("type_line",""):
+        target["counters"]["loyalty"]=max(0,target["counters"].get("loyalty",0)-amount)
+    else:target["damage"]+=amount
+    return amount
+
+
+def _destroy_permanent(state:dict,owner:dict,card:dict)->bool:
+    if _has_keyword(card,"Indestructible"):return False
+    if _consume_shield(state,card,"destruction"):return False
+    _leave_battlefield(state,owner,card,"graveyard");return True
 
 
 def _ward_details(card:dict)->dict|None:
@@ -277,7 +308,7 @@ def _targets(state: dict, caster_id: str, card: dict) -> list[dict]:
                 if "you control" in text and player["id"] != caster_id: continue
                 if "an opponent controls" in text and player["id"] == caster_id: continue
                 if "nonland permanent" in text and "Land" in permanent.get("type_line", ""): continue
-                if player["id"] != caster_id and _has_keyword(permanent,"Hexproof"): continue
+                if _has_keyword(permanent,"Shroud") or (player["id"] != caster_id and _has_keyword(permanent,"Hexproof")): continue
                 if _protected_from(permanent,card): continue
                 targets.append({"id": permanent["instance_id"], "name": permanent["name"], "kind": "permanent", "controller_id": player["id"]})
     return targets
@@ -463,12 +494,9 @@ def _resolve_spell(state: dict) -> None:
         if target_player:
             if _has_keyword(card,"Infect"):target_player["poison"]=target_player.get("poison",0)+amount
             else:target_player["life"] -= amount
-        elif target:
-            if _has_keyword(card,"Infect") or _has_keyword(card,"Wither"):target["counters"]["-1/-1"]=target["counters"].get("-1/-1",0)+amount
-            elif "Planeswalker" in target.get("type_line",""):target["counters"]["loyalty"]=max(0,target["counters"].get("loyalty",0)-amount)
-            else:target["damage"] += amount
+        elif target:_damage_permanent(state,target,amount,card)
     if target and target_owner and re.search(r"destroy target (?:creature|permanent|nonland permanent)", effect_text):
-        if not _has_keyword(target,"Indestructible"): _leave_battlefield(state, target_owner, target, "graveyard"); _log(state, f"{target['name']} was destroyed.")
+        if _destroy_permanent(state,target_owner,target):_log(state, f"{target['name']} was destroyed.")
     if target and target_owner and re.search(r"exile target (?:creature|permanent|nonland permanent)", effect_text):
         _leave_battlefield(state, target_owner, target, "exile"); _log(state, f"{target['name']} was exiled.")
     if target and target_owner and re.search(r"return target (?:creature|permanent|nonland permanent).* to (?:its|their) owner'?s hand", effect_text):
@@ -535,7 +563,9 @@ def _resolve_spell(state: dict) -> None:
         for owner in state["players"]:
             for permanent in list(owner["battlefield"]):
                 type_line=permanent.get("type_line","").casefold();matches=(kind=="nonland permanents" and "land" not in type_line) or kind[:-1] in type_line
-                if matches and not (destination=="graveyard" and _has_keyword(permanent,"Indestructible")): _leave_battlefield(state,owner,permanent,destination)
+                if matches:
+                    if destination=="graveyard":_destroy_permanent(state,owner,permanent)
+                    else:_leave_battlefield(state,owner,permanent,destination)
         _log(state,f"All {kind} were {'destroyed' if destination=='graveyard' else 'exiled'}.")
     global_stats=re.search(r"(?:all|each) creatures?(?: you control| your opponents control)? get ([+-]\d+)/([+-]\d+) until end of turn",effect_text)
     if global_stats:
@@ -643,7 +673,7 @@ def _combat_damage(state: dict) -> None:
 
     def damage_step(first: bool) -> None:
         battlefield = {card["instance_id"]: card for player in state["players"] for card in player["battlefield"]}
-        deathtouch_hit:set[str]=set();damage:dict[str,int]={};counter_damage:dict[str,int]={};life_gain={attacker["id"]:0,defender["id"]:0}
+        deathtouch_hit:set[str]=set();life_gain={attacker["id"]:0,defender["id"]:0}
         def strikes(card:dict)->bool:
             has_first=_has_keyword(card,"First strike");double=_has_keyword(card,"Double strike")
             return has_first or double if first else not has_first or double
@@ -656,27 +686,22 @@ def _combat_damage(state: dict) -> None:
                 hit_defender(creature,power,attack_target);continue
             remaining=power
             for blocker in blockers:
-                _,toughness=_parse_stats(blocker,state);lethal=1 if _has_keyword(creature,"Deathtouch") else max(1,toughness-blocker.get("damage",0));assigned=min(remaining,lethal);bucket=counter_damage if _has_keyword(creature,"Infect") or _has_keyword(creature,"Wither") else damage;bucket[blocker["instance_id"]]=bucket.get(blocker["instance_id"],0)+assigned;remaining-=assigned
-                if assigned and _has_keyword(creature,"Deathtouch"):deathtouch_hit.add(blocker["instance_id"])
-            dealt=power-remaining
-            if dealt and _has_keyword(creature,"Lifelink"):life_gain[attacker["id"]]+=dealt
+                _,toughness=_parse_stats(blocker,state);lethal=1 if _has_keyword(creature,"Deathtouch") else max(1,toughness-blocker.get("damage",0));assigned=min(remaining,lethal);dealt=_damage_permanent(state,blocker,assigned,creature);remaining-=assigned
+                if dealt and _has_keyword(creature,"Deathtouch"):deathtouch_hit.add(blocker["instance_id"])
+                if dealt and _has_keyword(creature,"Lifelink"):life_gain[attacker["id"]]+=dealt
             if remaining and _has_keyword(creature,"Trample"):hit_defender(creature,remaining,attack_target)
         for blocker_id,attacker_id in state["combat"]["blocks"].items():
             blocker,creature=battlefield.get(blocker_id),battlefield.get(attacker_id)
             if not blocker or not creature or not strikes(blocker):continue
-            amount=max(0,_parse_stats(blocker,state)[0]);bucket=counter_damage if _has_keyword(blocker,"Infect") or _has_keyword(blocker,"Wither") else damage;bucket[creature["instance_id"]]=bucket.get(creature["instance_id"],0)+amount
-            if amount and _has_keyword(blocker,"Deathtouch"):deathtouch_hit.add(creature["instance_id"])
-            if amount and _has_keyword(blocker,"Lifelink"):life_gain[defender["id"]]+=amount
-        for card_id,amount in damage.items():
-            if card_id in battlefield:battlefield[card_id]["damage"]+=amount
-        for card_id,amount in counter_damage.items():
-            if card_id in battlefield:battlefield[card_id]["counters"]["-1/-1"]=battlefield[card_id]["counters"].get("-1/-1",0)+amount
+            amount=max(0,_parse_stats(blocker,state)[0]);dealt=_damage_permanent(state,creature,amount,blocker)
+            if dealt and _has_keyword(blocker,"Deathtouch"):deathtouch_hit.add(creature["instance_id"])
+            if dealt and _has_keyword(blocker,"Lifelink"):life_gain[defender["id"]]+=dealt
         attacker["life"]+=life_gain[attacker["id"]];defender["life"]+=life_gain[defender["id"]]
         for owner in (attacker,defender):
             for creature in list(owner["battlefield"]):
                 if "Creature" not in creature.get("type_line",""):continue
                 _,toughness=_parse_stats(creature,state)
-                if (creature.get("damage",0)>=toughness or creature["instance_id"] in deathtouch_hit) and not _has_keyword(creature,"Indestructible"):_leave_battlefield(state,owner,creature,"graveyard")
+                if creature.get("damage",0)>=toughness or creature["instance_id"] in deathtouch_hit:_destroy_permanent(state,owner,creature)
 
     participants=[card for owner in (attacker,defender) for card in owner["battlefield"] if card["instance_id"] in state["combat"]["attackers"] or card["instance_id"] in state["combat"]["blocks"]]
     if any(_has_keyword(card,"First strike") or _has_keyword(card,"Double strike") for card in participants):damage_step(True)
@@ -701,7 +726,9 @@ def _state_based_actions(state: dict) -> None:
             for permanent in list(owner["battlefield"]):
                 _,toughness=_parse_stats(permanent,state)
                 if "Creature" in permanent.get("type_line","") and (toughness<=0 or (permanent.get("damage",0)>=toughness and not _has_keyword(permanent,"Indestructible"))):
-                    _leave_battlefield(state,owner,permanent,"graveyard");changed=True
+                    if toughness<=0:_leave_battlefield(state,owner,permanent,"graveyard")
+                    else:_destroy_permanent(state,owner,permanent)
+                    changed=True
                 elif "Planeswalker" in permanent.get("type_line","") and permanent.get("counters",{}).get("loyalty",0)<=0:
                     _leave_battlefield(state,owner,permanent,"graveyard");changed=True
     if _pending_decision(state):return
