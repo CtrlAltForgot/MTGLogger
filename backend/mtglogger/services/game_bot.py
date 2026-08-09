@@ -204,6 +204,10 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
                 amount=action.get("amount",1);ranked=sorted(action["card_ids"],key=lambda card_id:(_card(state,"bot",card_id).get("mana_value") or 0,"Land" not in _card(state,"bot",card_id).get("type_line","")));return {**action,"card_ids":ranked[:amount]}
             return action
         return by_type["decline_ward"][0]
+    if "pay_blight" in by_type or "decline_blight" in by_type:
+        if "pay_blight" in by_type and difficulty!="beginner":
+            action=by_type["pay_blight"][0];chosen=_choose_ability_cost(state,action);return {"type":"pay_blight","cost_card_ids":chosen}
+        return by_type["decline_blight"][0]
     if "choose_trigger_target" in by_type:
         action=by_type["choose_trigger_target"][0]
         return {"type":"choose_trigger_target","target_id":_choose_target(state,action)}

@@ -1188,3 +1188,20 @@ def test_blight_activated_ability_uses_one_creature_and_resolves_after_it_dies()
     state=perform_action(state,"player",{"type":"activate","card_id":"blight-scholar","ability_index":action["ability_index"],"cost_card_ids":["blight-scholar"]});player=next(p for p in state["players"] if p["id"]=="player")
     assert any(card["instance_id"]=="blight-scholar" for card in player["graveyard"]) and state["stack"][-1]["card"]["name"]=="Blight Scholar ability"
     state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");assert len(player["library"])==before-1
+
+
+def test_optional_triggered_blight_queues_reflexive_trigger_after_state_actions():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player")
+    torchmaster={**card(1170,"Test Torchmaster","Creature — Goblin Warrior","","3","3"),"oracle_text":"At the beginning of combat on your turn, you may blight 1. When you do, target creature gains haste until end of turn.","instance_id":"test-torchmaster","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};victim={**card(1171,"Doomed Goblin","Creature — Goblin","","1","1"),"instance_id":"doomed-goblin","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};recipient={**card(1172,"Haste Recipient","Creature — Warrior","","2","2"),"instance_id":"haste-recipient","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":True};player["battlefield"]=[torchmaster,victim,recipient]
+    state=perform_action(state,"player",{"type":"advance_phase"});assert state["phase"]=="combat" and state["stack"][-1]["card"]["name"]=="Test Torchmaster trigger"
+    state=perform_action(state,"player",{"type":"resolve"});actions=legal_actions(state,"player");pay=next(action for action in actions if action["type"]=="pay_blight");assert pay["blight_amount"]==1 and set(pay["cost_options"])=={"test-torchmaster","doomed-goblin","haste-recipient"}
+    state=perform_action(state,"player",{"type":"pay_blight","cost_card_ids":["doomed-goblin"]});player=next(p for p in state["players"] if p["id"]=="player");assert any(card["instance_id"]=="doomed-goblin" for card in player["graveyard"])
+    target_action=next(action for action in legal_actions(state,"player") if action["type"]=="choose_trigger_target");assert "doomed-goblin" not in {target["id"] for target in target_action["targets"]}
+    state=perform_action(state,"player",{"type":"choose_trigger_target","target_id":"haste-recipient"});state=perform_action(state,"player",{"type":"resolve"});recipient=next(card for card in next(p for p in state["players"] if p["id"]=="player")["battlefield"] if card["instance_id"]=="haste-recipient");assert "haste" in recipient["temporary_keywords"]
+
+
+def test_optional_triggered_blight_can_be_declined_and_bots_make_a_choice():
+    state=kept_game();state["pending_blight"]={"player_id":"player","amount":2,"source_name":"Optional Blight","source_id":None,"continuation":"Draw a card."};state["priority_player_id"]="player"
+    state=perform_action(state,"player",{"type":"decline_blight"});assert state["pending_blight"] is None and not state["stack"]
+    state=kept_game();state["pending_blight"]={"player_id":"bot","amount":1,"source_name":"Bot Blight","source_id":None,"continuation":""};state["priority_player_id"]="bot";bot=next(p for p in state["players"] if p["id"]=="bot");bot["battlefield"].append({**card(1180,"Bot Blight Victim","Creature — Goblin","","2","2"),"instance_id":"bot-blight-victim","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False})
+    assert choose_bot_action(state,"beginner")["type"]=="decline_blight" and choose_bot_action(state,"expert")["type"]=="pay_blight"

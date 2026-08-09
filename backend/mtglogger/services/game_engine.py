@@ -553,7 +553,7 @@ def _new_player(player_id: str, name: str, deck: list[dict], is_bot: bool, forma
 def new_game(player_deck: list[dict], opponent_deck: list[dict], play_first: bool = True, opponent_is_bot: bool = True, player_format: str = "", opponent_format: str = "") -> dict:
     human_id, bot_id = "player", "bot"
     players = [_new_player(human_id, "You", player_deck, False, player_format), _new_player(bot_id, "Bot" if opponent_is_bot else "Guest", opponent_deck, opponent_is_bot, opponent_format)]
-    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "beginning_draw_pending":True,"first_turn_draw_skipped":False,"active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id, "players": players, "stack": [], "combat": {"attackers": [], "blocks": {}, "attack_targets": {},"block_orders":{},"damage_pending":False}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "pending_legendary": None,"pending_commander_zone":[],"pending_library_search":None,"pending_scry":None,"pending_damage_order":None,"pending_ward":None,"pending_trigger_targets":[], "log": []}
+    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "beginning_draw_pending":True,"first_turn_draw_skipped":False,"active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id, "players": players, "stack": [], "combat": {"attackers": [], "blocks": {}, "attack_targets": {},"block_orders":{},"damage_pending":False}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "pending_legendary": None,"pending_commander_zone":[],"pending_library_search":None,"pending_scry":None,"pending_damage_order":None,"pending_ward":None,"pending_blight":None,"pending_trigger_targets":[], "log": []}
     for player in players:
         _draw(state, player, 7)
     _log(state, "Opening hands drawn. Choose whether to keep or mulligan.")
@@ -696,7 +696,7 @@ def _multiplayer(state: dict) -> bool:
 
 
 def _pending_decision(state:dict)->bool:
-    return bool(state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_trigger_targets"))
+    return bool(state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_trigger_targets"))
 
 
 def _queue_commander_zone_choice(state:dict,owner:dict,card:dict,zone:str)->None:
@@ -774,6 +774,13 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
         common={"cost_type":pending_ward.get("cost_type","mana"),"mana_cost":pending_ward.get("mana_cost",""),"amount":pending_ward.get("amount",0),"label":pending_ward.get("label",pending_ward.get("mana_cost","")),"source_name":pending_ward["source_name"]};actions=[{"type":"decline_ward",**common},{"type":"concede"}];kind=common["cost_type"]
         can_pay=(kind=="mana" and _can_pay(player,{"mana_cost":common["mana_cost"]})) or (kind=="life" and player["life"]>=common["amount"]) or (kind=="discard" and len(player["hand"])>=common["amount"])
         if can_pay:actions.insert(0,{"type":"pay_ward",**common,**({"card_ids":[card["instance_id"] for card in player["hand"]]} if kind=="discard" else {})})
+        return actions
+    pending_blight=state.get("pending_blight")
+    if pending_blight:
+        if pending_blight["player_id"]!=player_id:return []
+        creatures=[card["instance_id"] for card in player["battlefield"] if "Creature" in card.get("type_line","")]
+        actions=[{"type":"decline_blight","source_name":pending_blight["source_name"],"blight_amount":pending_blight["amount"]},{"type":"concede"}]
+        if creatures:actions.insert(0,{"type":"pay_blight","source_name":pending_blight["source_name"],"blight_amount":pending_blight["amount"],"cost_kind":"blight","cost_amount":1,"cost_options":creatures})
         return actions
     pending_triggers=state.get("pending_trigger_targets") or []
     if pending_triggers:
@@ -982,6 +989,11 @@ def _resolve_spell(state: dict) -> None:
     target_stack_item = next((entry for entry in state["stack"] if entry["id"] == target_id), None)
     graveyard_owner=next((player for player in state["players"] if any(graveyard_card["instance_id"]==target_id for graveyard_card in player["graveyard"])),None)
     graveyard_target=next((graveyard_card for player in state["players"] for graveyard_card in player["graveyard"] if graveyard_card["instance_id"]==target_id),None)
+    optional_blight=re.search(r"\byou may blight (\d+)\b",effect_text)
+    if optional_blight:
+        original_text=(source_permanent or card).get("oracle_text") or "";continuation_match=re.search(r"when you do,\s*(.+?)(?:\n|$)",original_text,re.IGNORECASE)
+        state["pending_blight"]={"player_id":caster["id"],"amount":int(optional_blight.group(1)),"source_name":source_permanent.get("name",card["name"]) if source_permanent else card["name"],"source_id":source_permanent.get("instance_id") if source_permanent else item.get("source_id"),"continuation":continuation_match.group(1).strip() if continuation_match else ""};state["priority_player_id"]=caster["id"]
+        _log(state,f"{caster['name']} may blight {optional_blight.group(1)} for {state['pending_blight']['source_name']}.");return
     if re.search(r"\bairbend (?:up to one )?target (?:creature|spell|creature or spell)\b",effect_text):
         airbent=None;airbend_owner=None
         if target and target_owner:
@@ -1203,6 +1215,8 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 matches = "at the beginning of each player's upkeep" in lower or (owner["id"] == event_owner["id"] and "at the beginning of your upkeep" in lower) or (owner["id"] != event_owner["id"] and "at the beginning of each opponent's upkeep" in lower)
             elif event == "end_step":
                 matches = "at the beginning of each end step" in lower or (owner["id"] == event_owner["id"] and "at the beginning of your end step" in lower) or (owner["id"] != event_owner["id"] and "at the beginning of each opponent's end step" in lower)
+            elif event == "beginning_combat":
+                matches = owner["id"]==event_owner["id"] and re.search(r"at the beginning of combat on your turn",lower) is not None
             elif event == "cast" and event_card:
                 cast_by_controller = event_owner["id"] == owner["id"]
                 type_line = event_card.get("type_line", "").casefold()
@@ -1373,6 +1387,8 @@ def _advance_turn_phase(state: dict) -> None:
             for owner in state["players"]:owner["firebending_mana"]=0
         if state["phase"] == "ending":
             _queue_triggers(state,"end_step",None,_player(state,state["active_player_id"]))
+        elif state["phase"] == "combat":
+            _queue_triggers(state,"beginning_combat",None,_player(state,state["active_player_id"]))
     if not state.get("pending_trigger_targets"):
         state["priority_player_id"] = state["active_player_id"]
     state["pending_phase_advance"] = False; state["consecutive_passes"] = 0
@@ -1628,6 +1644,22 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if action_type=="pay_ward" and remaining:
             state["pending_ward"]={**remaining[0],"remaining":remaining[1:]};state["priority_player_id"]=player_id
         else:state["pending_ward"]=None;state["priority_player_id"]=opponent(state,player_id)["id"] if (_multiplayer(state) or not allow_direct_resolution) else player_id
+    elif action_type in {"pay_blight","decline_blight"}:
+        pending=state.get("pending_blight") or {}
+        if pending.get("player_id")!=player_id:raise RuleViolation("There is no optional blight decision for this player")
+        if action_type=="pay_blight":
+            chosen=action.get("cost_card_ids") or [];creature=next((card for card in player["battlefield"] if card["instance_id"] in set(chosen) and "Creature" in card.get("type_line","")),None)
+            if len(chosen)!=1 or not creature:raise RuleViolation("Choose exactly one creature you control to blight")
+            _apply_blight(state,player,creature,pending["amount"])
+            _state_based_actions(state)
+            continuation=pending.get("continuation") or ""
+            if continuation:
+                ability_card={"name":f"{pending['source_name']} reflexive trigger","oracle_text":continuation,"type_line":"Ability","mana_cost":""};trigger={"id":_id(),"kind":"trigger","card":ability_card,"controller_id":player_id,"target_id":None,"source_id":pending.get("source_id")};targets=_targets(state,player_id,ability_card)
+                if _target_kind(ability_card) and targets:state.setdefault("pending_trigger_targets",[]).append({"controller_id":player_id,"source_name":pending["source_name"],"trigger":trigger,"card":ability_card})
+                elif not _target_kind(ability_card):state["stack"].append(trigger)
+                else:_log(state,f"{pending['source_name']}'s reflexive trigger had no legal target.")
+        else:_log(state,f"{player['name']} chose not to blight for {pending['source_name']}.")
+        state["pending_blight"]=None;state["priority_player_id"]=(state.get("pending_trigger_targets") or [{"controller_id":state["active_player_id"]}])[0]["controller_id"]
     elif action_type in {"choose_trigger_target","choose_trigger_targets","skip_trigger"}:
         pending_list=state.get("pending_trigger_targets") or []
         if not pending_list or pending_list[0]["controller_id"]!=player_id:raise RuleViolation("There is no triggered target decision for this player")
