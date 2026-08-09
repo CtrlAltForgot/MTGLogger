@@ -522,7 +522,7 @@ def _destroy_permanent(state:dict,owner:dict,card:dict,cant_regenerate:bool=Fals
 
 
 def _ward_details(card:dict)->dict|None:
-    if card.get("face_down") and card.get("cloaked"):return {"cost_type":"mana","mana_cost":"{2}","amount":0,"label":"{2}"}
+    if card.get("face_down") and (card.get("cloaked") or card.get("disguised")):return {"cost_type":"mana","mana_cost":"{2}","amount":0,"label":"{2}"}
     text=card.get("oracle_text") or "";mana=re.search(r"\bward\s*[—-]?\s*((?:\{[^}]+\})+)",text,re.IGNORECASE)
     if mana:return {"cost_type":"mana","mana_cost":mana.group(1).upper(),"amount":0,"label":mana.group(1).upper()}
     life=re.search(r"\bward\s*[—-]?\s*pay (\d+) life\b",text,re.IGNORECASE)
@@ -827,17 +827,70 @@ def _queue_cascade_triggers(state:dict,player:dict,card:dict)->None:
 _FACE_DOWN_KEYS=("name","image_url","type_line","oracle_text","mana_cost","mana_value","power","toughness","loyalty","keywords","colors")
 
 
-def _manifest_card(state:dict,controller:dict,card:dict,cloaked:bool=False,origin:str="library")->dict:
-    card["face_down_values"]={key:deepcopy(card.get(key)) for key in _FACE_DOWN_KEYS};card["face_down"]=True;card["cloaked"]=cloaked
+def _face_down_ability(card:dict)->dict|None:
+    match=re.search(r"(?:^|\n)(Morph|Megamorph|Disguise)\s*[—-]?\s*([^(.\n]+)",card.get("oracle_text") or "",re.IGNORECASE)
+    if not match:return None
+    cost_text=match.group(2).strip();mana=re.fullmatch(r"(?:\{[^}]+\})+",cost_text)
+    ability={"mechanic":match.group(1).casefold(),"mana_cost":mana.group(0).upper() if mana else "","cost_text":cost_text}
+    if mana:return ability
+    life=re.fullmatch(r"pay (\d+) life",cost_text,re.IGNORECASE)
+    if life:return {**ability,"cost_kind":"life","amount":int(life.group(1))}
+    reveal=re.fullmatch(r"reveal an? (white|blue|black|red|green) card in your hand",cost_text,re.IGNORECASE)
+    if reveal:return {**ability,"cost_kind":"reveal","amount":1,"filter":reveal.group(1).casefold()}
+    discard=re.fullmatch(r"discard an?(?: ([A-Za-z]+))? card",cost_text,re.IGNORECASE)
+    if discard:return {**ability,"cost_kind":"discard","amount":1,"filter":discard.group(1).casefold() if discard.group(1) else "card"}
+    returning=re.fullmatch(r"return (a|one|two|three|\d+) ([A-Za-z]+)(?:s)? you control to (?:its|their) owner's hand",cost_text,re.IGNORECASE)
+    sacrifice=re.fullmatch(r"sacrifice (another|a|one|two|three|\d+) ([A-Za-z]+)(?:s)?",cost_text,re.IGNORECASE)
+    words={"a":1,"one":1,"two":2,"three":3,"another":1}
+    if returning:return {**ability,"cost_kind":"return","amount":words.get(returning.group(1).casefold(),int(returning.group(1)) if returning.group(1).isdigit() else 1),"filter":returning.group(2).casefold().removesuffix("s")}
+    if sacrifice:return {**ability,"cost_kind":"sacrifice","amount":words.get(sacrifice.group(1).casefold(),int(sacrifice.group(1)) if sacrifice.group(1).isdigit() else 1),"filter":sacrifice.group(2).casefold().removesuffix("s"),"exclude_source":sacrifice.group(1).casefold()=="another"}
+    return ability
+
+
+def _make_face_down(card:dict,controller:dict,cloaked:bool=False,ability:dict|None=None)->dict:
+    values={key:deepcopy(card.get(key)) for key in _FACE_DOWN_KEYS}
+    if ability:values.update({"turn_up_cost":ability["mana_cost"],"turn_up_ability":deepcopy(ability),"face_down_mechanic":ability["mechanic"]})
+    card["face_down_values"]=values;card["face_down"]=True;card["cloaked"]=cloaked;card["disguised"]=bool(ability and ability["mechanic"]=="disguise")
     card.update({"name":"Face-Down Creature","image_url":None,"type_line":"Creature","oracle_text":"","mana_cost":"","mana_value":0,"power":"2","toughness":"2","loyalty":None,"keywords":[],"colors":[]});card["controller_id"]=controller["id"];card["summoning_sick"]=True;card["tapped"]=False;card["damage"]=0;card["counters"]={}
+    return card
+
+
+def _restore_face_down_identity(card:dict)->None:
+    values=card.pop("face_down_values",None)
+    if not values:return
+    for key in _FACE_DOWN_KEYS:
+        if key in values:card[key]=values[key]
+    card.pop("face_down",None);card.pop("cloaked",None);card.pop("disguised",None)
+
+
+def _turn_face_up_action(player:dict,permanent:dict)->dict|None:
+    values=permanent.get("face_down_values") or {};underlying_type=values.get("type_line") or ""
+    if not permanent.get("face_down") or (not values.get("turn_up_ability") and "Creature" not in underlying_type):return None
+    ability=values.get("turn_up_ability") or {};cost=ability.get("mana_cost") or values.get("mana_cost") or "";name=values.get("name","card")
+    if cost:return {"type":"turn_face_up","card_id":permanent["instance_id"],"mana_cost":cost,"label":f"Turn {name} face up · {cost}"} if _can_pay(player,{"mana_cost":cost}) else None
+    kind=ability.get("cost_kind");amount=int(ability.get("amount") or 0);filter_name=ability.get("filter","");options=[]
+    if kind=="life":return {"type":"turn_face_up","card_id":permanent["instance_id"],"turn_cost_kind":"life","life_cost":amount,"label":f"Turn {name} face up · pay {amount} life"} if player["life"]>=amount else None
+    if kind in {"reveal","discard"}:
+        color_symbol={"white":"W","blue":"U","black":"B","red":"R","green":"G"}.get(filter_name)
+        options=[card for card in player["hand"] if filter_name=="card" or (color_symbol and color_symbol in _card_colors(card)) or filter_name in card.get("type_line","").casefold()]
+    elif kind in {"return","sacrifice"}:
+        options=[card for card in player["battlefield"] if (not ability.get("exclude_source") or card["instance_id"]!=permanent["instance_id"]) and filter_name in card.get("type_line","").casefold()]
+    if kind and len(options)>=amount:return {"type":"turn_face_up","card_id":permanent["instance_id"],"turn_cost_kind":kind,"cost_kind":kind,"cost_amount":amount,"cost_options":[card["instance_id"] for card in options],"label":f"Turn {name} face up · {ability.get('cost_text','special cost')}"}
+    return None
+
+
+def _manifest_card(state:dict,controller:dict,card:dict,cloaked:bool=False,origin:str="library")->dict:
+    _make_face_down(card,controller,cloaked)
     _enter_battlefield(state,controller,[card],origin);_log(state,f"{controller['name']} put a card onto the battlefield face down{' with cloak' if cloaked else ''}.");return card
 
 
 def _turn_face_up(state:dict,player:dict,card:dict)->None:
-    values=card.pop("face_down_values",None)
+    values=deepcopy(card.get("face_down_values"))
     if not values:return
-    for key,value in values.items():card[key]=value
-    card.pop("face_down",None);card.pop("cloaked",None);_log(state,f"{player['name']} turned {card['name']} face up.");_queue_triggers(state,"turned_face_up",card,player)
+    mechanic=values.get("face_down_mechanic")
+    _restore_face_down_identity(card)
+    if mechanic=="megamorph":_add_counters(state,card,"+1/+1",1,player["id"],"megamorph")
+    _log(state,f"{player['name']} turned {card['name']} face up.");_queue_triggers(state,"turned_face_up",card,player)
 
 
 def _start_manifest_dread(state:dict,player:dict,source_name:str,repeats:int=1)->None:
@@ -939,7 +992,10 @@ def public_state(state: dict, viewer_id: str = "player") -> dict:
             player["hand_count"] = len(player["hand"])
             player["hand"] = []
             for card in player["battlefield"]:
-                if card.get("face_down"):card.pop("face_down_values",None)
+                if card.get("face_down"):card.pop("face_down_values",None);card.pop("disguised",None)
+    for item in visible.get("stack",[]):
+        if item.get("controller_id")!=viewer_id and item.get("card",{}).get("face_down"):
+            item["card"].pop("face_down_values",None);item["card"].pop("disguised",None)
     pending_search=visible.get("pending_library_search")
     if pending_search and pending_search.get("player_id")!=viewer_id:pending_search["card_ids"]=[]
     pending_dungeon=visible.get("pending_dungeon")
@@ -1065,6 +1121,7 @@ def _fight_target_steps(state:dict,caster_id:str,card:dict,source:dict|None=None
 
 
 def _countered_spell_destination(state:dict,controller:dict,card:dict,flashback:bool=False)->None:
+    _restore_face_down_identity(card)
     owner=_player(state,card.get("owner_id",controller["id"]));card["controller_id"]=owner["id"]
     destination="exile" if flashback else "graveyard"
     if flashback:_put_into_exile(state,owner,[card],"stack",controller["id"])
@@ -1249,12 +1306,16 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
     actions = [{"type": "concede"}]
     active = state["active_player_id"] == player_id
     for permanent in player["battlefield"]:
-        values=permanent.get("face_down_values") or {};cost=values.get("mana_cost") or "";underlying_type=values.get("type_line") or ""
-        if permanent.get("face_down") and "Creature" in underlying_type and cost and _can_pay(player,{"mana_cost":cost}):actions.append({"type":"turn_face_up","card_id":permanent["instance_id"],"mana_cost":cost,"label":f"Turn {values.get('name','card')} face up · {cost}"})
+        turn_action=_turn_face_up_action(player,permanent)
+        if turn_action:actions.append(turn_action)
     main = state["phase"] in {"precombat_main", "postcombat_main"}
     if active and main and not state["stack"]:
         if player["land_plays_remaining"]:
             actions.extend({"type": "play_land", "card_id": card["instance_id"]} for card in player["hand"] if "Land" in card.get("type_line", ""))
+        if _can_pay(player,{"mana_cost":"{3}"}):
+            for hand_card in player["hand"]:
+                face_down=_face_down_ability(hand_card)
+                if face_down:actions.append({"type":"cast_face_down","card_id":hand_card["instance_id"],"mana_cost":"{3}","label":f"Cast {hand_card['name']} face down for {{3}} · {face_down['mechanic'].title()} {face_down['mana_cost']}"})
     castable = [(card, "hand") for card in player["hand"]]
     castable.extend((card, "command") for card in player.get("command", []))
     castable.extend((card,"flashback") for card in player["graveyard"] if _flashback_ability(card))
@@ -1523,7 +1584,7 @@ def _resolve_spell(state: dict) -> None:
         elif target_stack_item:
             state["stack"].remove(target_stack_item);airbent=target_stack_item["card"];airbend_owner=_player(state,airbent.get("owner_id",target_stack_item["controller_id"]))
             if not airbent.get("token"):
-                airbent["controller_id"]=airbend_owner["id"];airbent["airbent"]=True;_put_into_exile(state,airbend_owner,[airbent],"stack",caster["id"])
+                _restore_face_down_identity(airbent);airbent["controller_id"]=airbend_owner["id"];airbent["airbent"]=True;_put_into_exile(state,airbend_owner,[airbent],"stack",caster["id"])
         if airbent:
             _log(state,f"{caster['name']} airbent {airbent['name']}.");_queue_triggers(state,"airbend",source_permanent or card,caster)
     if (card.get("firebending_trigger") or "lasts until end of combat" in effect_text or "don't lose this mana as steps end" in effect_text) and re.search(r"\badd\b",effect_text):
@@ -2382,9 +2443,20 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if pending.get("repeats",1)>1:_start_manifest_dread(state,player,pending["source_name"],pending["repeats"]-1)
         elif not state.get("pending_trigger_targets"):state["priority_player_id"]=state["active_player_id"]
     elif action_type=="turn_face_up":
-        permanent=next((card for card in player["battlefield"] if card["instance_id"]==action.get("card_id") and card.get("face_down")),None);values=(permanent or {}).get("face_down_values") or {};cost=values.get("mana_cost") or ""
-        if not permanent or "Creature" not in (values.get("type_line") or "") or not cost:raise RuleViolation("That card cannot be turned face up by paying its mana cost")
-        _pay_mana(state,player,{"mana_cost":cost});_turn_face_up(state,player,permanent)
+        permanent=next((card for card in player["battlefield"] if card["instance_id"]==action.get("card_id") and card.get("face_down")),None);available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="turn_face_up" and entry["card_id"]==action.get("card_id")),None)
+        if not permanent or not available:raise RuleViolation("That card cannot be turned face up right now")
+        kind=available.get("turn_cost_kind");selected_ids=action.get("cost_card_ids") or [];amount=int(available.get("cost_amount") or 0);allowed=set(available.get("cost_options",[]))
+        if kind in {"reveal","discard","return","sacrifice"} and (len(selected_ids)!=amount or len(set(selected_ids))!=amount or not set(selected_ids).issubset(allowed)):raise RuleViolation(f"Choose exactly {amount} legal card(s) for the turn-up cost")
+        if kind=="life":player["life"]-=int(available.get("life_cost") or 0)
+        elif kind=="reveal":
+            revealed=[card for card in player["hand"] if card["instance_id"] in set(selected_ids)];_log(state,f"{player['name']} revealed {', '.join(card['name'] for card in revealed)}.")
+        elif kind=="discard":_discard_cards(state,player,[card for card in player["hand"] if card["instance_id"] in set(selected_ids)])
+        elif kind=="return":
+            for selected in list(player["battlefield"]):
+                if selected["instance_id"] in set(selected_ids):_leave_battlefield(state,player,selected,"hand")
+        elif kind=="sacrifice":_sacrifice_permanents(state,player,[card for card in player["battlefield"] if card["instance_id"] in set(selected_ids)])
+        else:_pay_mana(state,player,{"mana_cost":available["mana_cost"]})
+        _turn_face_up(state,player,permanent)
     elif action_type=="choose_dungeon_room":
         pending=state.get("pending_dungeon") or {};room=action.get("room")
         if pending.get("player_id")!=player_id or pending.get("kind")!="room" or room not in pending.get("options",[]):raise RuleViolation("Choose a connected Undercity room")
@@ -2404,6 +2476,12 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
             chosen=next(card for card in top if card["instance_id"]==card_id);player["library"].remove(chosen);top.remove(chosen);chosen["controller_id"]=player_id;chosen["summoning_sick"]=True;chosen["hexproof_until_turn"]=state["turn"]+1;_add_counters(state,chosen,"+1/+1",3,player_id,"dungeon");_enter_battlefield(state,player,[chosen],"library")
         for card in top:player["library"].remove(card)
         random.SystemRandom().shuffle(top);player["library"][0:0]=top;state["priority_player_id"]=state["active_player_id"];_log(state,f"{player['name']} completed the Undercity.")
+    elif action_type=="cast_face_down":
+        card=next((card for card in player["hand"] if card["instance_id"]==action.get("card_id")),None);ability=_face_down_ability(card or {})
+        if not card or not ability or not (state["active_player_id"]==player_id and state["phase"] in {"precombat_main","postcombat_main"} and not state["stack"]):raise RuleViolation("That card cannot be cast face down now")
+        _pay_mana(state,player,{"mana_cost":"{3}"});player["hand"].remove(card);_make_face_down(card,player,False,ability);state["stack"].append({"id":_id(),"kind":"spell","card":card,"controller_id":player_id,"target_id":None,"target_ids":[],"mode_indices":[],"mode_targets":[],"face_down_cast":True,"cast_source_zone":"hand"});player["spells_cast_this_turn"]=player.get("spells_cast_this_turn",0)+1;_queue_triggers(state,"cast",card,player);state["consecutive_passes"]=0;state["pending_phase_advance"]=False
+        if _multiplayer(state) or not allow_direct_resolution:state["priority_player_id"]=opponent(state,player_id)["id"]
+        _log(state,f"{player['name']} cast a creature spell face down for {{3}}.")
     elif action_type == "play_land":
         card = next((card for card in player["hand"] if card["instance_id"] == action.get("card_id") and "Land" in card.get("type_line", "")), None)
         if not card: raise RuleViolation("That land is not in your hand")

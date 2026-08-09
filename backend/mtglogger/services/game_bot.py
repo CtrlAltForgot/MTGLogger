@@ -306,7 +306,7 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
     if "play_land" in by_type:
         return by_type["play_land"][0]
     if "turn_face_up" in by_type:
-        return max(by_type["turn_face_up"],key=lambda action:_threat_score(state,_card(state,"bot",action["card_id"])))
+        return max(by_type["turn_face_up"],key=lambda action:_threat_score(state,{**_card(state,"bot",action["card_id"]),**(_card(state,"bot",action["card_id"]).get("face_down_values") or {})}))
     if "crew" in by_type:
         usable=[]
         for action in by_type["crew"]:
@@ -319,6 +319,8 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
         choice=min(by_type["cycle"],key=lambda action:(_card(state,"bot",action["card_id"]).get("mana_value") or 0))
         stranded=(_card(state,"bot",choice["card_id"]).get("mana_value") or 0)>lands_in_play+2
         if "cast" not in by_type or lands_in_hand<2 or (difficulty=="expert" and stranded):return choice
+    if "cast_face_down" in by_type and "cast" not in by_type:
+        choices=by_type["cast_face_down"];return random.choice(choices) if difficulty=="beginner" else max(choices,key=lambda action:_threat_score(state,_card(state,"bot",action["card_id"])))
     if "cast" in by_type:
         spells = by_type["cast"]
         if state["stack"]:
