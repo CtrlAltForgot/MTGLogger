@@ -91,6 +91,14 @@ def test_graveyard_targets_return_to_hand_reanimate_and_exile():
     exile=spell(685,"Grave Hate","Exile target creature card from a graveyard.");player=next(p for p in state["players"] if p["id"]=="player");player["hand"].append(exile);state=perform_action(state,"player",{"type":"cast","card_id":"Grave Hate","target_id":"enemy-corpse"});state=perform_action(state,"player",{"type":"resolve"});bot=next(p for p in state["players"] if p["id"]=="bot");assert any(c["instance_id"]=="enemy-corpse" for c in bot["exile"])
 
 
+def test_opponent_chooses_forced_sacrifice_and_bot_picks_lowest_value():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
+    small={**card(690,"Small","Creature — Rat","","1","1"),"instance_id":"small","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};large={**card(691,"Large","Creature — Giant","","6","6"),"mana_value":6,"instance_id":"large","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};bot["battlefield"].extend([small,large])
+    edict={**card(692,"Edict","Sorcery"),"oracle_text":"Each opponent sacrifices a creature.","instance_id":"edict","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"].append(edict);state=perform_action(state,"player",{"type":"cast","card_id":"edict"});state=perform_action(state,"player",{"type":"resolve"})
+    action=choose_bot_action(state,"expert");assert action=={"type":"sacrifice_permanents","card_ids":["small"]}
+    state=perform_action(state,"bot",action);bot=next(p for p in state["players"] if p["id"]=="bot");assert any(c["instance_id"]=="small" for c in bot["graveyard"]) and any(c["instance_id"]=="large" for c in bot["battlefield"])
+
+
 def test_targeted_removal_requires_and_resolves_a_legal_creature_target():
     state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"})
     player=next(player for player in state["players"] if player["id"]=="player");bot=next(player for player in state["players"] if player["id"]=="bot")

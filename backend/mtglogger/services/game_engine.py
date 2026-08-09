@@ -165,7 +165,7 @@ def _new_player(player_id: str, name: str, deck: list[dict], is_bot: bool, forma
 def new_game(player_deck: list[dict], opponent_deck: list[dict], play_first: bool = True, opponent_is_bot: bool = True, player_format: str = "", opponent_format: str = "") -> dict:
     human_id, bot_id = "player", "bot"
     players = [_new_player(human_id, "You", player_deck, False, player_format), _new_player(bot_id, "Bot" if opponent_is_bot else "Guest", opponent_deck, opponent_is_bot, opponent_format)]
-    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id, "players": players, "stack": [], "combat": {"attackers": [], "blocks": {}}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "log": []}
+    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id, "players": players, "stack": [], "combat": {"attackers": [], "blocks": {}}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "log": []}
     for player in players:
         _draw(state, player, 7)
     _log(state, "Opening hands drawn. Choose whether to keep or mulligan.")
@@ -188,6 +188,7 @@ def _target_kind(card: dict) -> str | None:
     if re.search(r"target creature card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_creature"
     if re.search(r"target (?:nonland )?card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_card"
     if re.search(r"target player mills?", text): return "player"
+    if re.search(r"target player sacrifices?",text):return "player"
     if re.search(r"(?:destroy|exile) target (?:artifact, creature, enchantment, planeswalker|nonland permanent|permanent)", text): return "permanent"
     if re.search(r"(?:destroy|exile|tap|untap|return) target creature", text) or re.search(r"target creature .*gets [+-]\d+/[+-]\d+", text) or re.search(r"deals \d+ damage to target creature", text): return "creature"
     if re.search(r"return target (?:nonland )?permanent", text): return "permanent"
@@ -241,6 +242,10 @@ def legal_actions(state: dict, player_id: str) -> list[dict]:
     if pending_discard:
         if pending_discard["player_id"] != player_id:return []
         return [{"type":"discard_to_hand_size","card_ids":[card["instance_id"] for card in player["hand"]],"amount":pending_discard["amount"]},{"type":"concede"}]
+    pending_sacrifice=state.get("pending_sacrifice")
+    if pending_sacrifice:
+        if pending_sacrifice["player_id"]!=player_id:return []
+        return [{"type":"sacrifice_permanents","card_ids":pending_sacrifice["card_ids"],"amount":pending_sacrifice["amount"]},{"type":"concede"}]
     if state["status"] == "mulligan":
         if player["kept_hand"]:
             return []
@@ -365,6 +370,11 @@ def _resolve_spell(state: dict) -> None:
             graveyard_owner["graveyard"].remove(graveyard_target);graveyard_target["controller_id"]=graveyard_target.get("owner_id",graveyard_owner["id"]);_player(state,graveyard_target["controller_id"])["hand"].append(graveyard_target);_log(state,f"{graveyard_target['name']} returned to its owner's hand.")
         elif re.search(r"exile target (?:creature )?card .*graveyard",effect_text):
             graveyard_owner["graveyard"].remove(graveyard_target);graveyard_owner["exile"].append(graveyard_target);_log(state,f"{graveyard_target['name']} was exiled from a graveyard.")
+    sacrifice_match=re.search(r"(?:target player|each opponent) sacrifices? (a|one|two|three|four|\d+) (creature|permanent)s?",effect_text)
+    if sacrifice_match:
+        words={"a":1,"one":1,"two":2,"three":3,"four":4};amount=words.get(sacrifice_match.group(1),int(sacrifice_match.group(1)) if sacrifice_match.group(1).isdigit() else 1);affected=target_player if "target player" in sacrifice_match.group(0) and target_player else other;kind=sacrifice_match.group(2)
+        choices=[permanent["instance_id"] for permanent in affected["battlefield"] if kind=="permanent" or "Creature" in permanent.get("type_line","")];required=min(amount,len(choices))
+        if required:state["pending_sacrifice"]={"player_id":affected["id"],"amount":required,"card_ids":choices};state["priority_player_id"]=affected["id"];_log(state,f"{affected['name']} must sacrifice {required} {kind}(s).")
     destroy_all = re.search(r"destroy all (creatures|artifacts|enchantments|nonland permanents)", effect_text)
     exile_all = re.search(r"exile all (creatures|artifacts|enchantments|nonland permanents)", effect_text)
     for match,destination in ((destroy_all,"graveyard"),(exile_all,"exile")):
@@ -586,7 +596,7 @@ def perform_action(state: dict, player_id: str, action: dict) -> dict:
             state["consecutive_passes"] = 0
             if state["stack"]: _resolve_spell(state)
             elif state.get("pending_phase_advance"): _advance_turn_phase(state)
-            state["priority_player_id"] = state["active_player_id"]
+            if not state.get("pending_sacrifice"):state["priority_player_id"] = state["active_player_id"]
         else:
             state["priority_player_id"] = opponent(state, player_id)["id"]
     elif action_type == "declare_attackers":
@@ -619,6 +629,13 @@ def perform_action(state: dict, player_id: str, action: dict) -> dict:
         if len(chosen)!=required:raise RuleViolation("One or more selected cards are not in your hand")
         for card in chosen:player["hand"].remove(card);player["graveyard"].append(card)
         _log(state,f"{player['name']} discarded {required} card(s) to maximum hand size.");_begin_next_turn(state)
+    elif action_type == "sacrifice_permanents":
+        pending=state.get("pending_sacrifice") or {};requested=action.get("card_ids") or [];required=pending.get("amount",0);allowed_ids=set(pending.get("card_ids",[]))
+        if pending.get("player_id")!=player_id or len(requested)!=required or len(set(requested))!=required or not set(requested).issubset(allowed_ids):raise RuleViolation(f"Choose exactly {required} legal permanent(s) to sacrifice")
+        chosen=[card for card in player["battlefield"] if card["instance_id"] in set(requested)]
+        if len(chosen)!=required:raise RuleViolation("One or more selected permanents are no longer available")
+        for card in chosen:_leave_battlefield(state,player,card,"graveyard")
+        state["pending_sacrifice"]=None;state["priority_player_id"]=state["active_player_id"];_log(state,f"{player['name']} sacrificed {required} permanent(s).")
     elif action_type == "adjust_life":
         target_player = _player(state, action.get("target_id") or player_id); amount = max(-100, min(100, int(action.get("amount") or 0))); target_player["life"] += amount; _log(state, f"{target_player['name']}'s life was adjusted by {amount:+d}.")
     elif action_type == "add_counter":
