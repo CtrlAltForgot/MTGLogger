@@ -181,6 +181,13 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
     if "choose_legendary" in by_type:
         action=by_type["choose_legendary"][0];choice=max(action["card_ids"],key=lambda card_id:((_card(state,"bot",card_id).get("mana_value") or 0),sum(_stats(state,_card(state,"bot",card_id)))))
         return {"type":"choose_legendary","card_ids":[choice]}
+    if "move_commander" in by_type or "keep_commander" in by_type:
+        move=by_type.get("move_commander",[])[0] if by_type.get("move_commander") else None
+        keep=by_type.get("keep_commander",[])[0] if by_type.get("keep_commander") else None
+        bot=next(player for player in state["players"] if player["id"]=="bot")
+        # Preserve graveyard recursion when the commander can immediately be recovered; otherwise avoid losing access to it.
+        recursion=any("return target creature card" in (card.get("oracle_text") or "").casefold() and "graveyard" in (card.get("oracle_text") or "").casefold() for card in bot["hand"])
+        return keep if difficulty=="expert" and keep and keep.get("zone")=="graveyard" and recursion else move or keep
     if "scry" in by_type or "surveil" in by_type:
         kind="surveil" if "surveil" in by_type else "scry";action=by_type[kind][0];cards={card["instance_id"]:card for card in action.get("cards",[])};bot=next(player for player in state["players"] if player["id"]=="bot");lands_in_hand=sum("Land" in card.get("type_line","") for card in bot["hand"])
         if difficulty=="beginner":bottom=[]

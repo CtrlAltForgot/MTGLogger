@@ -228,7 +228,7 @@ def test_private_game_priority_allows_instant_response_and_two_pass_resolution()
     assert any(item["name"]=="Guest Response" for item in next(player for player in state["players"] if player["id"]=="bot")["graveyard"])
 
 
-def test_commander_setup_tax_recast_and_automatic_command_zone_return():
+def test_commander_setup_tax_recast_and_owner_command_zone_choice():
     commander=card(300,"Test Commander","Legendary Creature — Wizard","", "3","3")
     commander_deck=[commander,card(301,"Island","Basic Land — Island",quantity=99)]
     opponent_deck=[card(302,"Other Commander","Legendary Creature — Soldier","","2","2"),card(303,"Plains","Basic Land — Plains",quantity=99)]
@@ -241,7 +241,9 @@ def test_commander_setup_tax_recast_and_automatic_command_zone_return():
     player=next(item for item in state["players"] if item["id"]=="player");commander_card=next(item for item in player["battlefield"] if item.get("commander"))
     removal={**card(304,"Self Removal","Instant"),"oracle_text":"Destroy target creature.","instance_id":"self-removal","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"].append(removal)
     state=perform_action(state,"player",{"type":"cast","card_id":"self-removal","target_id":commander_card["instance_id"]});state=perform_action(state,"player",{"type":"resolve"})
-    player=next(item for item in state["players"] if item["id"]=="player");assert player["command"] and player["commander_casts"]==1
+    player=next(item for item in state["players"] if item["id"]=="player");assert any(card["instance_id"]==commander_id for card in player["graveyard"])
+    choice=legal_actions(state,"player");assert {action["type"] for action in choice}>={"move_commander","keep_commander"}
+    state=perform_action(state,"player",{"type":"move_commander","card_id":commander_id});player=next(item for item in state["players"] if item["id"]=="player");assert player["command"] and player["commander_casts"]==1
     for index in range(2):
         land=next(item for item in player["library"] if "Land" in item["type_line"]);player["library"].remove(land);player["battlefield"].append(land)
     recast=next(action for action in legal_actions(state,"player") if action.get("card_id")==commander_id)
@@ -400,11 +402,33 @@ def test_life_and_discard_ward_costs_are_validated_and_paid():
 
 
 
-def test_countered_commander_spell_returns_to_command_zone():
+def test_countered_commander_spell_can_stay_in_graveyard_or_move_to_command_zone():
     first,second=decks();state=new_game(first,second,opponent_is_bot=False,player_format="Commander");state=perform_action(state,"player",{"type":"keep"});state=perform_action(state,"bot",{"type":"keep"});state["phase"]="precombat_main";player=next(p for p in state["players"] if p["id"]=="player");guest=next(p for p in state["players"] if p["id"]=="bot")
     commander={**card(722,"Test Commander","Legendary Creature — Wizard","","2","2"),"instance_id":"test-commander","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False,"commander":True};counter={**card(723,"Command Denial","Instant"),"oracle_text":"Counter target spell.","instance_id":"command-denial","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["command"].append(commander);guest["hand"].append(counter)
     state=perform_action(state,"player",{"type":"cast","card_id":"test-commander","source":"command"});spell_id=state["stack"][-1]["id"];state=perform_action(state,"bot",{"type":"cast","card_id":"command-denial","target_id":spell_id});state=perform_action(state,"player",{"type":"pass_priority"});state=perform_action(state,"bot",{"type":"pass_priority"});player=next(p for p in state["players"] if p["id"]=="player")
-    assert any(card["instance_id"]=="test-commander" for card in player["command"]) and not any(card["instance_id"]=="test-commander" for card in player["graveyard"])
+    assert any(card["instance_id"]=="test-commander" for card in player["graveyard"]) and not player["command"]
+    assert {action["type"] for action in legal_actions(state,"player")}>={"move_commander","keep_commander"}
+    kept=perform_action(state,"player",{"type":"keep_commander","card_id":"test-commander"});kept_player=next(p for p in kept["players"] if p["id"]=="player");assert any(card["instance_id"]=="test-commander" for card in kept_player["graveyard"])
+    moved=perform_action(state,"player",{"type":"move_commander","card_id":"test-commander"});moved_player=next(p for p in moved["players"] if p["id"]=="player");assert any(card["instance_id"]=="test-commander" for card in moved_player["command"]) and not any(card["instance_id"]=="test-commander" for card in moved_player["graveyard"])
+
+
+def test_bot_automatically_returns_a_dead_commander_to_the_command_zone():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
+    commander={**card(724,"Bot Commander","Legendary Creature — Warrior","","4","4"),"instance_id":"bot-commander","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False,"commander":True};bot["battlefield"].append(commander)
+    removal={**card(725,"Commander Doom","Sorcery"),"oracle_text":"Destroy target creature.","instance_id":"commander-doom","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"].append(removal)
+    state=perform_action(state,"player",{"type":"cast","card_id":"commander-doom","target_id":"bot-commander"});state=perform_action(state,"player",{"type":"resolve"})
+    state=run_bot(state,"expert",limit=5);bot=next(p for p in state["players"] if p["id"]=="bot")
+    assert any(card["instance_id"]=="bot-commander" for card in bot["command"])
+
+
+def test_commander_can_remain_in_graveyard_while_its_dies_trigger_uses_the_stack():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
+    commander={**card(726,"Last Gift Commander","Legendary Creature — Cleric","","2","2"),"oracle_text":"When Last Gift Commander dies, you gain 3 life.","instance_id":"last-gift","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False,"commander":True};bot["battlefield"].append(commander)
+    removal={**card(727,"Last Gift Doom","Sorcery"),"oracle_text":"Destroy target creature.","instance_id":"last-gift-doom","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"].append(removal);life=bot["life"]
+    state=perform_action(state,"player",{"type":"cast","card_id":"last-gift-doom","target_id":"last-gift"});state=perform_action(state,"player",{"type":"resolve"})
+    assert state["stack"][-1]["card"]["name"]=="Last Gift Commander trigger"
+    state=perform_action(state,"bot",{"type":"keep_commander","card_id":"last-gift"});state=perform_action(state,"player",{"type":"resolve"});bot=next(p for p in state["players"] if p["id"]=="bot")
+    assert bot["life"]==life+3 and any(card["instance_id"]=="last-gift" for card in bot["graveyard"])
 
 
 def test_defender_unblockable_hexproof_protection_and_indestructible_are_enforced():

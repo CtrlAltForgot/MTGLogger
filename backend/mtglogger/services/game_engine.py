@@ -328,7 +328,7 @@ def _new_player(player_id: str, name: str, deck: list[dict], is_bot: bool, forma
 def new_game(player_deck: list[dict], opponent_deck: list[dict], play_first: bool = True, opponent_is_bot: bool = True, player_format: str = "", opponent_format: str = "") -> dict:
     human_id, bot_id = "player", "bot"
     players = [_new_player(human_id, "You", player_deck, False, player_format), _new_player(bot_id, "Bot" if opponent_is_bot else "Guest", opponent_deck, opponent_is_bot, opponent_format)]
-    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "beginning_draw_pending":True,"first_turn_draw_skipped":False,"active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id, "players": players, "stack": [], "combat": {"attackers": [], "blocks": {}, "attack_targets": {},"block_orders":{},"damage_pending":False}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "pending_legendary": None,"pending_scry":None,"pending_damage_order":None,"pending_ward":None,"pending_trigger_targets":[], "log": []}
+    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "beginning_draw_pending":True,"first_turn_draw_skipped":False,"active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id, "players": players, "stack": [], "combat": {"attackers": [], "blocks": {}, "attack_targets": {},"block_orders":{},"damage_pending":False}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "pending_legendary": None,"pending_commander_zone":[],"pending_scry":None,"pending_damage_order":None,"pending_ward":None,"pending_trigger_targets":[], "log": []}
     for player in players:
         _draw(state, player, 7)
     _log(state, "Opening hands drawn. Choose whether to keep or mulligan.")
@@ -434,8 +434,8 @@ def _targets(state: dict, caster_id: str, card: dict) -> list[dict]:
 
 def _countered_spell_destination(state:dict,controller:dict,card:dict)->None:
     owner=_player(state,card.get("owner_id",controller["id"]));card["controller_id"]=owner["id"]
-    if card.get("commander"):owner["command"].append(card)
-    else:owner["graveyard"].append(card)
+    owner["graveyard"].append(card)
+    _queue_commander_zone_choice(state,owner,card,"graveyard")
 
 
 def _multiplayer(state: dict) -> bool:
@@ -443,7 +443,16 @@ def _multiplayer(state: dict) -> bool:
 
 
 def _pending_decision(state:dict)->bool:
-    return bool(state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_trigger_targets"))
+    return bool(state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_trigger_targets"))
+
+
+def _queue_commander_zone_choice(state:dict,owner:dict,card:dict,zone:str)->None:
+    if not card.get("commander") or zone=="command":return
+    pending=state.setdefault("pending_commander_zone",[])
+    if any(entry["card_id"]==card["instance_id"] for entry in pending):return
+    pending.append({"player_id":owner["id"],"card_id":card["instance_id"],"card_name":card["name"],"zone":zone})
+    state["priority_player_id"]=pending[0]["player_id"]
+    _log(state,f"{owner['name']} may move {card['name']} from {zone} to the command zone.")
 
 
 def _queue_ward(state:dict,caster:dict,target_id:str|None,stack_item:dict)->None:
@@ -484,6 +493,12 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
     if pending_legendary:
         if pending_legendary["player_id"]!=player_id:return []
         return [{"type":"choose_legendary","card_ids":pending_legendary["card_ids"],"amount":1},{"type":"concede"}]
+    pending_commanders=state.get("pending_commander_zone") or []
+    if pending_commanders:
+        pending=pending_commanders[0]
+        if pending["player_id"]!=player_id:return []
+        common={"card_id":pending["card_id"],"card_name":pending["card_name"],"zone":pending["zone"]}
+        return [{"type":"move_commander",**common},{"type":"keep_commander",**common},{"type":"concede"}]
     pending_scry=state.get("pending_scry")
     if pending_scry:
         if pending_scry["player_id"]!=player_id:return []
@@ -758,10 +773,8 @@ def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str) -
     _queue_triggers(state, "dies" if destination == "graveyard" else "leaves", card, owner)
     if card.get("token"): return
     zone_owner=_player(state,card.get("owner_id",owner["id"]));card["controller_id"]=zone_owner["id"]
-    if card.get("commander"):
-        zone_owner["command"].append(card)
-    else:
-        zone_owner[destination].append(card)
+    zone_owner[destination].append(card)
+    _queue_commander_zone_choice(state,zone_owner,card,destination)
 
 
 def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owner: dict) -> None:
@@ -1158,6 +1171,18 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         for card in list(player["battlefield"]):
             if card["instance_id"] in pending["card_ids"] and card["instance_id"]!=keep:_leave_battlefield(state,player,card,"graveyard")
         state["pending_legendary"]=None;state["priority_player_id"]=state["active_player_id"];_log(state,f"{player['name']} chose a legendary permanent to keep.")
+    elif action_type in {"move_commander","keep_commander"}:
+        pending_list=state.get("pending_commander_zone") or []
+        if not pending_list or pending_list[0]["player_id"]!=player_id or pending_list[0]["card_id"]!=action.get("card_id"):raise RuleViolation("There is no commander zone choice for that card")
+        pending=pending_list.pop(0);zone=pending["zone"];card=next((card for card in player.get(zone,[]) if card["instance_id"]==pending["card_id"]),None)
+        if not card:raise RuleViolation("That commander is no longer in the expected zone")
+        if action_type=="move_commander":
+            player[zone].remove(card);player["command"].append(card);_log(state,f"{player['name']} moved {card['name']} from {zone} to the command zone.")
+        else:_log(state,f"{player['name']} kept {card['name']} in {zone}.")
+        state["pending_commander_zone"]=pending_list
+        if pending_list:state["priority_player_id"]=pending_list[0]["player_id"]
+        elif state.get("pending_trigger_targets"):state["priority_player_id"]=state["pending_trigger_targets"][0]["controller_id"]
+        else:state["priority_player_id"]=state["active_player_id"]
     elif action_type in {"scry","surveil"}:
         pending=state.get("pending_scry") or {};top_ids=action.get("top_ids") or [];away_ids=(action.get("graveyard_ids") if action_type=="surveil" else action.get("bottom_ids")) or [];expected=pending.get("card_ids",[])
         if pending.get("player_id")!=player_id or pending.get("mode","scry")!=action_type or len(top_ids)+len(away_ids)!=len(expected) or len(set(top_ids+away_ids))!=len(expected) or set(top_ids+away_ids)!=set(expected):raise RuleViolation(f"Choose each {action_type}ed card exactly once")
