@@ -1,7 +1,7 @@
 import pytest
 
 from mtglogger.services.game_bot import _choose_blocks, choose_bot_action, run_bot
-from mtglogger.services.game_engine import RuleViolation, _add_counters, _add_saga_lore, _amass, _combat_damage, _counter_stack_item, _enter_battlefield, _face_down_ability, _has_keyword, _leave_graveyard, _put_into_exile, _queue_triggers, _set_tapped, _venture_undercity, _ward_details, legal_actions, new_game, perform_action, public_state
+from mtglogger.services.game_engine import RuleViolation, _add_counters, _add_saga_lore, _amass, _change_control, _combat_damage, _counter_stack_item, _enter_battlefield, _face_down_ability, _has_keyword, _leave_graveyard, _put_into_exile, _queue_triggers, _set_tapped, _venture_undercity, _ward_details, legal_actions, new_game, perform_action, public_state
 
 
 def card(index:int,name:str,type_line:str,mana_cost:str="",power:str|None=None,toughness:str|None=None,quantity:int=1):
@@ -2086,3 +2086,23 @@ def test_fixed_and_x_energy_activation_costs_gate_actions_and_track_payment():
     state=perform_action(state,"player",{"type":"activate","card_id":"energy-reader","ability_index":fixed_action["ability_index"]});player=next(p for p in state["players"] if p["id"]=="player");assert player["energy"]==3 and player["energy_paid_this_turn"]==2;state=perform_action(state,"player",{"type":"resolve"})
     with pytest.raises(RuleViolation):perform_action(state,"player",{"type":"activate","card_id":"energy-pump","ability_index":x_action["ability_index"],"x_value":4})
     x_action=next(action for action in legal_actions(state,"player") if action.get("card_id")=="energy-pump");state=perform_action(state,"player",{"type":"activate","card_id":"energy-pump","ability_index":x_action["ability_index"],"x_value":3});player=next(p for p in state["players"] if p["id"]=="player");assert player["energy"]==0 and player["energy_paid_this_turn"]==5
+
+
+def test_suspend_exiles_with_time_counters_counts_down_and_casts_for_free():
+    state=kept_game();state["phase"]="precombat_main";player=next(p for p in state["players"] if p["id"]=="player");island={**card(1660,"Island","Basic Land — Island"),"instance_id":"suspend-island","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};creature={**card(1661,"Future Drake","Creature — Drake","{4}{U}","4","4"),"oracle_text":"Flying\nSuspend 1—{U}","instance_id":"future-drake","owner_id":"player","controller_id":"player"};player["battlefield"].append(island);player["hand"].append(creature)
+    action=next(action for action in legal_actions(state,"player") if action["type"]=="suspend" and action["card_id"]=="future-drake");assert action["time_counters"]=="1" and action["mana_cost"]=="{U}"
+    state=perform_action(state,"player",action);player=next(p for p in state["players"] if p["id"]=="player");exiled=next(card for card in player["exile"] if card["instance_id"]=="future-drake");assert exiled["counters"]["time"]==1 and exiled["suspended"]
+    state["active_player_id"]="bot";state["priority_player_id"]="bot";state["phase"]="ending";state=perform_action(state,"bot",{"type":"advance_phase"});actions=legal_actions(state,"player");cast=next(action for action in actions if action.get("source")=="suspend");assert {action["type"] for action in actions}=={"cast","concede"}
+    state=perform_action(state,"player",cast);assert state["stack"][-1]["suspended_cast"] and not next(p for p in state["players"] if p["id"]=="player")["exile"]
+    state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot");drake=next(card for card in player["battlefield"] if card["instance_id"]=="future-drake");assert _has_keyword(drake,"Haste");_change_control(state,drake,bot);assert not _has_keyword(drake,"Haste")
+
+
+def test_suspend_free_cast_preserves_target_choice():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot");target={**card(1670,"Target Bear","Creature — Bear","","2","2"),"instance_id":"target-bear","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};spell={**card(1671,"Delayed Bolt","Sorcery","{4}{R}"),"oracle_text":"Suspend 1—{R}\nDelayed Bolt deals 3 damage to any target.","instance_id":"delayed-bolt","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{"time":0},"suspended":True,"suspended_ready":True};bot["battlefield"].append(target);player["exile"].append(spell);action=next(action for action in legal_actions(state,"player") if action.get("source")=="suspend");assert any(candidate["id"]=="target-bear" for candidate in action["targets"])
+    with pytest.raises(RuleViolation):perform_action(state,"player",{"type":"cast","card_id":"delayed-bolt","source":"suspend"})
+    state=perform_action(state,"player",{"type":"cast","card_id":"delayed-bolt","source":"suspend","target_id":"target-bear"});state=perform_action(state,"player",{"type":"resolve"});bot=next(p for p in state["players"] if p["id"]=="bot");assert any(card["instance_id"]=="target-bear" for card in bot["graveyard"])
+
+
+def test_bot_uses_suspend_when_it_cannot_cast_the_spell_normally():
+    state=kept_game();state["active_player_id"]="bot";state["priority_player_id"]="bot";state["phase"]="precombat_main";bot=next(p for p in state["players"] if p["id"]=="bot");mountain={**card(1680,"Mountain","Basic Land — Mountain"),"instance_id":"bot-suspend-land","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};spell={**card(1681,"Greater Gargadon","Creature — Beast","{9}{R}","9","7"),"oracle_text":"Suspend 10—{R}","instance_id":"gargadon","owner_id":"bot","controller_id":"bot"};bot["battlefield"].append(mountain);bot["hand"]=[spell];choice=choose_bot_action(state,"expert")
+    assert choice and choice["type"]=="suspend" and choice["card_id"]=="gargadon"

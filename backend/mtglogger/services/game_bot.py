@@ -306,6 +306,12 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
         return {"type":"order_blockers","block_orders":orders}
     if "play_land" in by_type:
         return by_type["play_land"][0]
+    if "suspend" in by_type:
+        choice=max(by_type["suspend"],key=lambda action:_threat_score(state,_card(state,"bot",action["card_id"])))
+        suspended_value=_threat_score(state,_card(state,"bot",choice["card_id"]));best_cast=max((_threat_score(state,_card(state,"bot",action["card_id"])) for action in by_type.get("cast",[])),default=-1)
+        if "cast" not in by_type or suspended_value>best_cast+3:
+            if choice.get("x_max") is not None:choice={**choice,"x_value":max(choice.get("x_min",1),choice["x_max"])}
+            return choice
     if "turn_face_up" in by_type:
         return max(by_type["turn_face_up"],key=lambda action:_threat_score(state,{**_card(state,"bot",action["card_id"]),**(_card(state,"bot",action["card_id"]).get("face_down_values") or {})}))
     if "crew" in by_type:
