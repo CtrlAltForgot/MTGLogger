@@ -626,6 +626,24 @@ def test_expert_bot_crews_a_vehicle_with_enough_power_before_combat():
     state=kept_game();state["active_player_id"]="bot";state["priority_player_id"]="bot";state["phase"]="precombat_main";bot=next(p for p in state["players"] if p["id"]=="bot");bot["hand"]=[];bot["land_plays_remaining"]=0;vehicle={**card(830,"Bot Vehicle","Artifact — Vehicle","","6","6"),"oracle_text":"Crew 3","instance_id":"bot-vehicle","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};crew=[{**card(831+i,f"Bot Pilot {i}","Creature — Pilot","","2","2"),"instance_id":f"bot-pilot-{i}","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False} for i in range(2)];bot["battlefield"]=[vehicle,*crew];choice=choose_bot_action(state,"expert");assert choice["type"]=="crew" and sum(next(card for card in crew if card["instance_id"]==card_id)["power"]=="2" for card_id in choice["cost_card_ids"])==2
 
 
+def test_convoke_pays_colored_and_generic_mana_and_taps_summoning_sick_creatures():
+    state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");player["battlefield"]=[]
+    plains={**card(850,"Plains","Basic Land — Plains"),"instance_id":"convoke-plains","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};white={**card(851,"White Recruit","Creature — Soldier","{W}","1","1"),"instance_id":"white-recruit","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":True};colorless={**card(852,"Myr Recruit","Artifact Creature — Myr","","1","1"),"instance_id":"myr-recruit","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":True}
+    spell={**card(853,"Conclave Guardian","Creature — Giant","{2}{W}","4","4"),"oracle_text":"Convoke","keywords":["Convoke"],"instance_id":"conclave-guardian","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"]=[plains,white,colorless];player["hand"]=[spell]
+    action=next(action for action in legal_actions(state,"player") if action.get("card_id")=="conclave-guardian" and action.get("convoke"));assert ["white-recruit","myr-recruit"] in action["cost_combinations"]
+    state=perform_action(state,"player",{**action,"cost_card_ids":["white-recruit","myr-recruit"]});player=next(p for p in state["players"] if p["id"]=="player");assert all(card["tapped"] for card in player["battlefield"]);assert state["stack"][-1]["card"]["name"]=="Conclave Guardian";assert "using convoke" in state["log"][-1]["message"]
+
+
+def test_convoke_colored_payment_validation_and_expert_bot_selection():
+    state=kept_game();state["active_player_id"]="bot";state["priority_player_id"]="bot";state["phase"]="precombat_main";bot=next(p for p in state["players"] if p["id"]=="bot");bot["hand"]=[];bot["battlefield"]=[];bot["land_plays_remaining"]=0
+    creatures=[]
+    for index,(name,cost) in enumerate((("White Helper","{W}"),("Black Helper","{B}"),("Myr Helper",""))):creatures.append({**card(860+index,name,"Creature — Helper",cost,"1","1"),"instance_id":name.casefold().replace(" ","-"),"owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":True})
+    spell={**card(864,"Bot Conclave","Creature — Giant","{2}{W}","4","4"),"oracle_text":"Convoke","keywords":["Convoke"],"instance_id":"bot-conclave","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};bot["battlefield"]=creatures;bot["hand"]=[spell]
+    action=next(action for action in legal_actions(state,"bot") if action.get("convoke"));assert all("white-helper" in group for group in action["cost_combinations"])
+    with pytest.raises(RuleViolation):perform_action(state,"bot",{**action,"cost_card_ids":["black-helper","myr-helper","white-helper","duplicate"]})
+    choice=choose_bot_action(state,"expert");assert choice["convoke"] and "white-helper" in choice["cost_card_ids"]
+
+
 def test_defender_unblockable_hexproof_protection_and_indestructible_are_enforced():
     state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
     def permanent(index,name,text="",keywords=None,owner="player"):

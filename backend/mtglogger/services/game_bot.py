@@ -69,6 +69,12 @@ def _choose_crew_cost(state:dict,action:dict)->list[str]:
     return min(choices,key=lambda choice:choice[:3])[3] if choices else []
 
 
+def _choose_convoke_cost(state:dict,action:dict)->list[str]:
+    combinations=action.get("cost_combinations") or []
+    if not combinations:return []
+    return min(combinations,key=lambda group:(sum(_threat_score(state,_card(state,"bot",card_id)) for card_id in group),len(group)))
+
+
 def _can_block(state:dict,attacker:dict,blocker:dict)->bool:
     return _can_block_pair(state,attacker,blocker)
 
@@ -284,7 +290,7 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
         else:
             choice = max(spells, key=lambda action: ((_card(state,"bot",action["card_id"]).get("mana_value") or 0)+(2 if action.get("kicked") else 0),len(_card(state,"bot",action["card_id"]).get("oracle_text") or "")))
         if choice.get("x_max") is not None:choice={**choice,"x_value":_choose_x(state,choice)}
-        if choice.get("cost_options"):choice={**choice,"cost_card_ids":_choose_ability_cost(state,choice)}
+        if choice.get("cost_options"):choice={**choice,"cost_card_ids":_choose_convoke_cost(state,choice) if choice.get("cost_kind")=="convoke" else _choose_ability_cost(state,choice)}
         if choice.get("target_steps"):choice={**choice,"target_ids":_choose_fight_targets(state,choice)}
         if choice.get("modes"):
             maximum=choice.get("mode_max",choice.get("mode_count",1));minimum=choice.get("mode_min",choice.get("mode_count",1));ranked=sorted(choice["modes"],key=lambda candidate:_mode_score(state,candidate),reverse=True)

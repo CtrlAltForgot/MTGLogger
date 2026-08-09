@@ -2,6 +2,7 @@ import random
 import re
 import uuid
 from copy import deepcopy
+from itertools import combinations
 
 
 PHASES = ("beginning", "precombat_main", "combat", "postcombat_main", "ending")
@@ -154,6 +155,10 @@ def _flashback_ability(card:dict)->dict|None:
 def _kicker_cost(card:dict)->str|None:
     match=re.search(r"(?:^|\n)Kicker\s+((?:\{[^}]+\})+)",card.get("oracle_text") or "",re.IGNORECASE)
     return match.group(1).upper() if match else None
+
+
+def _has_convoke(card:dict)->bool:
+    return _has_keyword(card,"Convoke")
 
 
 def _kicked_rules_card(card:dict,kicked:bool)->dict:
@@ -339,10 +344,12 @@ def _activated_cost_options(player:dict,source:dict,selection_cost:dict|None)->l
     return [card for card in player["battlefield"] if (not selection_cost.get("exclude_source") or card["instance_id"]!=source["instance_id"]) and (kind=="permanent" or kind in card.get("type_line","").casefold())]
 
 
-def _can_pay(player: dict, card: dict, extra_generic: int = 0, excluded_id: str | None = None,x_value:int=0) -> bool:
+def _can_pay(player: dict, card: dict, extra_generic: int = 0, excluded_id: str | None = None,x_value:int=0,excluded_ids:set[str]|None=None) -> bool:
+    excluded=set(excluded_ids or ())
+    if excluded_id:excluded.add(excluded_id)
     available = []
     for permanent in player["battlefield"]:
-        if permanent.get("instance_id")!=excluded_id and not permanent.get("tapped") and _mana_source(permanent) and not ("Creature" in permanent.get("type_line", "") and permanent.get("summoning_sick") and not _has_keyword(permanent,"Haste")):
+        if permanent.get("instance_id") not in excluded and not permanent.get("tapped") and _mana_source(permanent) and not ("Creature" in permanent.get("type_line", "") and permanent.get("summoning_sick") and not _has_keyword(permanent,"Haste")):
             available.append(_land_colors(permanent) or {"C"})
     colored,generic=_mana_requirements(card,extra_generic,x_value)
     for choices in colored:
@@ -353,9 +360,11 @@ def _can_pay(player: dict, card: dict, extra_generic: int = 0, excluded_id: str 
     return len(available) >= generic
 
 
-def _pay_mana(state:dict,player: dict, card: dict, extra_generic: int = 0, excluded_id: str | None = None,x_value:int=0) -> None:
+def _pay_mana(state:dict,player: dict, card: dict, extra_generic: int = 0, excluded_id: str | None = None,x_value:int=0,excluded_ids:set[str]|None=None) -> None:
+    excluded=set(excluded_ids or ())
+    if excluded_id:excluded.add(excluded_id)
     colored,generic=_mana_requirements(card,extra_generic,x_value)
-    lands = [permanent for permanent in player["battlefield"] if permanent.get("instance_id")!=excluded_id and not permanent.get("tapped") and _mana_source(permanent) and not ("Creature" in permanent.get("type_line", "") and permanent.get("summoning_sick") and not _has_keyword(permanent,"Haste"))]
+    lands = [permanent for permanent in player["battlefield"] if permanent.get("instance_id") not in excluded and not permanent.get("tapped") and _mana_source(permanent) and not ("Creature" in permanent.get("type_line", "") and permanent.get("summoning_sick") and not _has_keyword(permanent,"Haste"))]
     lands.sort(key=lambda permanent:any(kind in permanent.get("type_line","") for kind in ("Treasure","Gold")))
     chosen = []
     for choices in colored:
@@ -371,6 +380,39 @@ def _pay_mana(state:dict,player: dict, card: dict, extra_generic: int = 0, exclu
         if any(kind in land.get("type_line","") for kind in ("Treasure","Gold")):
             _leave_battlefield(state,player,land,"graveyard");_log(state,f"{player['name']} sacrificed {land['name']} for mana.")
         else:land["tapped"] = True
+
+
+def _convoke_residual(player:dict,card:dict,selected_ids:list[str],extra_generic:int=0,x_value:int=0)->dict|None:
+    """Return the mana cost left after every selected creature contributes once."""
+    if len(selected_ids)!=len(set(selected_ids)):return None
+    creatures=[]
+    for card_id in selected_ids:
+        creature=next((item for item in player["battlefield"] if item["instance_id"]==card_id and "Creature" in item.get("type_line","") and not item.get("tapped")),None)
+        if not creature:return None
+        creatures.append(creature)
+    colored,generic=_mana_requirements(card,extra_generic,x_value)
+    states={(tuple(tuple(sorted(choice)) for choice in colored),generic)}
+    for creature in creatures:
+        colors=_card_colors(creature);next_states=set()
+        for remaining,remaining_generic in states:
+            if remaining_generic>0:next_states.add((remaining,remaining_generic-1))
+            for index,choices in enumerate(remaining):
+                if colors&set(choices):next_states.add((remaining[:index]+remaining[index+1:],remaining_generic))
+        states=next_states
+        if not states:return None
+    for remaining,remaining_generic in states:
+        mana_cost="".join("{"+"/".join(choices)+"}" for choices in remaining)+(f"{{{remaining_generic}}}" if remaining_generic else "")
+        residual={"mana_cost":mana_cost}
+        if _can_pay(player,residual,excluded_ids=set(selected_ids)):return residual
+    return None
+
+
+def _convoke_combinations(player:dict,card:dict,extra_generic:int=0,x_value:int=0)->list[list[str]]:
+    options=[item["instance_id"] for item in player["battlefield"] if "Creature" in item.get("type_line","") and not item.get("tapped")]
+    for amount in range(1,len(options)+1):
+        valid=[list(group) for group in combinations(options,amount) if _convoke_residual(player,card,list(group),extra_generic,x_value) is not None]
+        if valid:return valid[:128]
+    return []
 
 
 def _predefined_token(owner:dict,kind:str,tapped:bool=False)->dict:
@@ -695,7 +737,9 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
         instant_speed = "Instant" in card.get("type_line", "") or _has_keyword(card, "Flash")
         total_tax=_commander_tax(player,card) if source=="command" else 0
         behold_options=[candidate for zone in (player["hand"],player["battlefield"]) for candidate in zone if flashback and flashback["behold_type"] in candidate.get("type_line","").casefold()]
-        if "Land" in card.get("type_line", "") or not ((active and main and not state["stack"]) or instant_speed) or not _can_pay(player,cost_card,total_tax) or (flashback and len(behold_options)<flashback["behold_amount"]): continue
+        normal_payable=_can_pay(player,cost_card,total_tax)
+        convoke_combinations=[] if _has_x_cost(cost_card) or (flashback and flashback["behold_amount"]) or not _has_convoke(card) else _convoke_combinations(player,cost_card,total_tax);convoke_min=len(convoke_combinations[0]) if convoke_combinations else None
+        if "Land" in card.get("type_line", "") or not ((active and main and not state["stack"]) or instant_speed) or (not normal_payable and convoke_min is None) or (flashback and len(behold_options)<flashback["behold_amount"]): continue
         cost_label=cost_card.get("mana_cost") or "{0}";action = {"type": "cast", "card_id": card["instance_id"], "source": source, "commander_tax": total_tax,"label":f"{'Flashback' if flashback else 'Cast'} {card['name']} · {cost_label}{f' + {{2}}×{player.get("commander_casts",0)} commander tax' if total_tax else ''}"}
         if flashback:action.update({"flashback":True,"cost_kind":"behold" if flashback["behold_amount"] else None,"cost_amount":flashback["behold_amount"],"cost_options":[candidate["instance_id"] for candidate in behold_options]})
         if _has_x_cost(cost_card):action.update({"x_min":0,"x_max":_maximum_x(player,cost_card,total_tax)})
@@ -717,10 +761,15 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
                 targeting_card=_spell_targeting_card(base_rules);targets = _targets(state, player_id, targeting_card)
                 if _target_kind(targeting_card) and not targets: continue
                 if targets: action["targets"] = targets
-        actions.append(action)
+        if normal_payable:actions.append(action)
+        if convoke_min is not None:
+            convoke_options=[candidate for candidate in player["battlefield"] if "Creature" in candidate.get("type_line","") and not candidate.get("tapped")]
+            colored,generic=_mana_requirements(cost_card,total_tax)
+            actions.append({**action,"convoke":True,"cost_kind":"convoke","cost_min_amount":convoke_min,"cost_max_amount":len(colored)+generic,"cost_options":[candidate["instance_id"] for candidate in convoke_options],"cost_combinations":convoke_combinations,"label":f"{action['label']} · Convoke"})
         if kicker_cost:
             kicked_cost_card={**cost_card,"mana_cost":f"{cost_card.get('mana_cost') or ''}{kicker_cost}"}
-            if _can_pay(player,kicked_cost_card,total_tax):
+            kicked_normal_payable=_can_pay(player,kicked_cost_card,total_tax);kicked_convoke_combinations=[] if _has_x_cost(kicked_cost_card) or not _has_convoke(card) else _convoke_combinations(player,kicked_cost_card,total_tax);kicked_convoke_min=len(kicked_convoke_combinations[0]) if kicked_convoke_combinations else None
+            if kicked_normal_payable or kicked_convoke_min is not None:
                 kicked={**action,"kicked":True,"kicker_cost":kicker_cost,"label":f"{action['label']} + kicker {kicker_cost}"}
                 if not modal_spec:
                     kicked.pop("targets",None);kicked.pop("target_steps",None);kicked_rules=_kicked_rules_card(card,True);kicked_fight=_fight_target_steps(state,player_id,kicked_rules)
@@ -732,7 +781,10 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
                         if _target_kind(kicked_targeting) and not kicked_targets:continue
                         if kicked_targets:kicked["targets"]=kicked_targets
                 if _has_x_cost(kicked_cost_card):kicked.update({"x_min":0,"x_max":_maximum_x(player,kicked_cost_card,total_tax)})
-                actions.append(kicked)
+                if kicked_normal_payable:actions.append(kicked)
+                if kicked_convoke_min is not None:
+                    convoke_options=[candidate for candidate in player["battlefield"] if "Creature" in candidate.get("type_line","") and not candidate.get("tapped")];colored,generic=_mana_requirements(kicked_cost_card,total_tax)
+                    actions.append({**kicked,"convoke":True,"cost_kind":"convoke","cost_min_amount":kicked_convoke_min,"cost_max_amount":len(colored)+generic,"cost_options":[candidate["instance_id"] for candidate in convoke_options],"cost_combinations":kicked_convoke_combinations,"label":f"{kicked['label']} · Convoke"})
     for card in player["hand"]:
         cycling=_cycling_ability(card)
         if cycling and _can_pay(player,{"mana_cost":cycling["mana_cost"]}):
@@ -1232,7 +1284,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
     elif action_type == "cast":
         requested_source=action.get("source");zone_name="graveyard" if requested_source=="flashback" else requested_source if requested_source in {"hand","command"} else next((zone for zone in ("hand","command") if any(card["instance_id"]==action.get("card_id") for card in player.get(zone,[]))),None)
         source="flashback" if zone_name=="graveyard" else zone_name;card=next((card for card in player.get(zone_name or "hand",[]) if card["instance_id"]==action.get("card_id")),None);flashback=_flashback_ability(card or {}) if source=="flashback" else None
-        requested_kicked=bool(action.get("kicked"));available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="cast" and entry["card_id"]==action.get("card_id") and entry.get("source")==source and bool(entry.get("kicked"))==requested_kicked),None)
+        requested_kicked=bool(action.get("kicked"));requested_convoke=bool(action.get("convoke"));available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="cast" and entry["card_id"]==action.get("card_id") and entry.get("source")==source and bool(entry.get("kicked"))==requested_kicked and bool(entry.get("convoke"))==requested_convoke),None)
         tax = _commander_tax(player, card) if card and source=="command" else 0
         if not card:raise RuleViolation("That spell cannot be cast")
         if not available:raise RuleViolation("That spell cannot be cast from that zone")
@@ -1241,12 +1293,16 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         x_value=int(action.get("x_value") or 0);x_max=_maximum_x(player,cost_card,tax)
         if (_has_x_cost(cost_card) and not 0<=x_value<=x_max) or (not _has_x_cost(cost_card) and action.get("x_value") is not None): raise RuleViolation("That spell cannot be cast with the chosen X value")
         selected_cost_ids=action.get("cost_card_ids") or [];required_cost=available.get("cost_amount",0);cost_options=set(available.get("cost_options",[]))
-        if len(selected_cost_ids)!=required_cost or len(set(selected_cost_ids))!=required_cost or not set(selected_cost_ids).issubset(cost_options):raise RuleViolation(f"Choose exactly {required_cost} cards or permanents for the additional cost")
+        if requested_convoke:
+            minimum=available.get("cost_min_amount",1);maximum=available.get("cost_max_amount",len(cost_options))
+            if not minimum<=len(selected_cost_ids)<=maximum or len(selected_cost_ids)!=len(set(selected_cost_ids)) or not set(selected_cost_ids).issubset(cost_options):raise RuleViolation(f"Choose between {minimum} and {maximum} untapped creatures for convoke")
+        elif len(selected_cost_ids)!=required_cost or len(set(selected_cost_ids))!=required_cost or not set(selected_cost_ids).issubset(cost_options):raise RuleViolation(f"Choose exactly {required_cost} cards or permanents for the additional cost")
         target_ids=action.get("target_ids") or [];target_steps=available.get("target_steps") or []
         if target_steps:
             if len(target_ids)!=len(target_steps) or any(target_id not in {target["id"] for target in target_steps[index]["targets"]} for index,target_id in enumerate(target_ids)) or any(step.get("distinct") and target_ids[index] in target_ids[:index] for index,step in enumerate(target_steps)):raise RuleViolation("Choose each legal fight target exactly once")
         elif target_ids:raise RuleViolation("That spell does not use multiple targets")
-        if not _can_pay(player,cost_card,tax,x_value=x_value):raise RuleViolation("That spell cannot be cast")
+        convoke_residual=_convoke_residual(player,cost_card,selected_cost_ids,tax,x_value) if requested_convoke else None
+        if (requested_convoke and convoke_residual is None) or (not requested_convoke and not _can_pay(player,cost_card,tax,x_value=x_value)):raise RuleViolation("That spell cannot be cast with the chosen payment")
         modal_spec=_modal_spec(card);modal_options=(modal_spec or {}).get("options",[]);chosen_modes=action.get("chosen_modes") or [];mode_targets=action.get("mode_targets") or []
         if modal_spec and len(chosen_modes)==1 and not mode_targets:mode_targets=[action.get("target_id")]
         if modal_spec:
@@ -1263,7 +1319,12 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         elif chosen_modes or mode_targets:raise RuleViolation("That spell has no modal choice")
         rules_card=_kicked_rules_card(_selected_mode_card(card,chosen_modes),requested_kicked);targeting_card=_spell_targeting_card(rules_card);targets = _targets(state, player_id, targeting_card); target_id = action.get("target_id")
         if not modal_spec and _target_kind(targeting_card) and target_id not in {target["id"] for target in targets}: raise RuleViolation("Choose a legal target")
-        _pay_mana(state,player,cost_card,tax,x_value=x_value);player[zone_name].remove(card)
+        if requested_convoke:
+            _pay_mana(state,player,convoke_residual or {"mana_cost":""},excluded_ids=set(selected_cost_ids))
+            for creature in player["battlefield"]:
+                if creature["instance_id"] in selected_cost_ids:creature["tapped"]=True
+        else:_pay_mana(state,player,cost_card,tax,x_value=x_value)
+        player[zone_name].remove(card)
         if card.get("commander"): player["commander_casts"] = player.get("commander_casts", 0) + 1
         effective_target=target_id or (mode_targets[0] if len(mode_targets)==1 else None);stack_item={"id": _id(), "card": card, "controller_id": player_id, "target_id": effective_target,"target_ids":target_ids,"mode_indices":chosen_modes,"mode_targets":mode_targets,"x_value":x_value,"flashback":bool(flashback),"kicked":requested_kicked};state["stack"].append(stack_item); state["consecutive_passes"] = 0; state["pending_phase_advance"] = False
         _queue_triggers(state,"cast",card,player)
@@ -1273,8 +1334,8 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         for ward_target in ward_targets:_queue_ward(state,player,ward_target,stack_item)
         if (_multiplayer(state) or not allow_direct_resolution) and not state.get("pending_ward") and not state.get("pending_trigger_targets"): state["priority_player_id"] = opponent(state, player_id)["id"]
         mode_label="; ".join(next(mode["label"] for mode in modal_options if mode["index"]==index) for index in chosen_modes)
-        behold_names=[next(candidate["name"] for zone in (player["hand"],player["battlefield"]) for candidate in zone if candidate["instance_id"]==card_id) for card_id in selected_cost_ids]
-        _log(state, f"{player['name']} cast {card['name']}{' using flashback' if flashback else ''}{' with kicker' if requested_kicked else ''}{f' with X={x_value}' if _has_x_cost(cost_card) else ''}{f' choosing {mode_label}' if mode_label else ''}{f' with {tax} commander tax' if tax else ''}{f' by beholding {', '.join(behold_names)}' if behold_names else ''}{' targeting '+next((target['name'] for target in targets if target['id']==target_id),'') if target_id else ''}.")
+        behold_names=[next(candidate["name"] for zone in (player["hand"],player["battlefield"]) for candidate in zone if candidate["instance_id"]==card_id) for card_id in selected_cost_ids] if available.get("cost_kind")=="behold" else []
+        _log(state, f"{player['name']} cast {card['name']}{' using flashback' if flashback else ''}{' with kicker' if requested_kicked else ''}{' using convoke' if requested_convoke else ''}{f' with X={x_value}' if _has_x_cost(cost_card) else ''}{f' choosing {mode_label}' if mode_label else ''}{f' with {tax} commander tax' if tax else ''}{f' by beholding {', '.join(behold_names)}' if behold_names else ''}{' targeting '+next((target['name'] for target in targets if target['id']==target_id),'') if target_id else ''}.")
     elif action_type == "cycle":
         card=next((card for card in player["hand"] if card["instance_id"]==action.get("card_id")),None);cycling=_cycling_ability(card or {})
         available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="cycle" and entry["card_id"]==action.get("card_id")),None)
