@@ -403,10 +403,10 @@ def _activated_abilities(card: dict) -> list[dict]:
         if counter_match:
             word=counter_match.group(1).casefold();amount={"a":1,"one":1,"two":2,"three":3,"four":4,"five":5}.get(word,int(word) if word.isdigit() else 1);counter_cost={"name":counter_match.group(2).replace("−","-"),"amount":amount}
         words={"a":1,"an":1,"one":1,"two":2,"three":3,"four":4,"five":5};selection_cost=None
-        discard_match=re.search(r"\bdiscard (a|one|two|three|four|five|\d+) cards?\b",cost,re.IGNORECASE)
+        discard_match=re.search(r"\bdiscard (a|an|one|two|three|four|five|\d+) (?:(nonland|land|creature|artifact|enchantment|planeswalker|instant|sorcery) )?cards?\b",cost,re.IGNORECASE)
         if discard_match:
-            word=discard_match.group(1).casefold();selection_cost={"kind":"discard","filter":"card","amount":words.get(word,int(word) if word.isdigit() else 1),"exclude_source":False}
-        sacrifice_match=None if self_sacrifice else re.search(r"\bsacrifice (another |a |an |one |two |three |two other |three other )?(creature|artifact|permanent)s?\b",cost,re.IGNORECASE)
+            word=discard_match.group(1).casefold();selection_cost={"kind":"discard","filter":discard_match.group(2).casefold() if discard_match.group(2) else "card","amount":words.get(word,int(word) if word.isdigit() else 1),"exclude_source":False}
+        sacrifice_match=None if self_sacrifice else re.search(r"\bsacrifice (another |a |an |one |two |three |two other |three other )?(artifact or creature|creature or artifact|nonland permanent|land|creature|artifact|enchantment|planeswalker|permanent|token)s?\b",cost,re.IGNORECASE)
         if sacrifice_match:
             count_word=(sacrifice_match.group(1) or "a").strip().casefold();selection_cost={"kind":"sacrifice","filter":sacrifice_match.group(2).casefold(),"amount":2 if count_word=="two other" else 3 if count_word=="three other" else words.get(count_word,1),"exclude_source":"other" in count_word or count_word=="another"}
         blight_match=re.search(r"\bblight (\d+)\b",cost,re.IGNORECASE)
@@ -435,9 +435,17 @@ def _loyalty_abilities(card:dict)->list[dict]:
 
 def _activated_cost_options(player:dict,source:dict,selection_cost:dict|None)->list[dict]:
     if not selection_cost:return []
-    if selection_cost["kind"]=="discard":return list(player["hand"])
     kind=selection_cost["filter"].casefold()
-    return [card for card in player["battlefield"] if (not selection_cost.get("exclude_source") or card["instance_id"]!=source["instance_id"]) and (kind=="permanent" or kind in card.get("type_line","").casefold())]
+    def matches(card:dict)->bool:
+        type_line=card.get("type_line","").casefold()
+        if kind in {"card","permanent"}:return True
+        if kind=="nonland":return "land" not in type_line
+        if kind=="nonland permanent":return "land" not in type_line
+        if kind=="token":return bool(card.get("token"))
+        if " or " in kind:return any(part in type_line for part in kind.split(" or "))
+        return kind in type_line
+    zone=player["hand"] if selection_cost["kind"]=="discard" else player["battlefield"]
+    return [card for card in zone if (not selection_cost.get("exclude_source") or card["instance_id"]!=source["instance_id"]) and matches(card)]
 
 
 def _can_pay(player: dict, card: dict, extra_generic: int = 0, excluded_id: str | None = None,x_value:int=0,excluded_ids:set[str]|None=None) -> bool:

@@ -1024,6 +1024,36 @@ def test_selectable_activated_costs_require_and_pay_exact_legal_choices():
     state=perform_action(state,"player",{"type":"resolve"});discard=next(action for action in legal_actions(state,"player") if action.get("card_id")=="choice-altar" and action["cost_kind"]=="discard");state=perform_action(state,"player",{"type":"activate","card_id":"choice-altar","ability_index":discard["ability_index"],"cost_card_ids":[discard_id]});player=next(p for p in state["players"] if p["id"]=="player");assert any(card["instance_id"]==discard_id for card in player["graveyard"])
 
 
+def test_constrained_discard_and_union_sacrifice_costs_filter_and_pay_exact_cards():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player")
+    engine={**card(925,"Flexible Engine","Artifact"),"oracle_text":"Sacrifice an artifact or creature: Draw a card.\nDiscard a land card: Draw a card.","instance_id":"flex-engine","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    creature={**card(926,"Union Creature","Creature — Citizen","","1","1"),"instance_id":"union-creature","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    enchantment={**card(927,"Wrong Offering","Enchantment"),"instance_id":"wrong-offering","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    player["battlefield"].extend([engine,creature,enchantment]);land={**card(928,"Hand Forest","Basic Land — Forest"),"instance_id":"hand-land","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};nonland={**card(929,"Wrong Discard","Creature — Wizard","","2","2"),"instance_id":"wrong-discard","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["hand"].extend([land,nonland])
+    actions=[action for action in legal_actions(state,"player") if action.get("card_id")=="flex-engine"]
+    sacrifice=next(action for action in actions if action["cost_kind"]=="sacrifice");discard=next(action for action in actions if action["cost_kind"]=="discard")
+    assert set(sacrifice["cost_options"])=={"flex-engine","union-creature"}
+    assert land["instance_id"] in discard["cost_options"] and nonland["instance_id"] not in discard["cost_options"]
+    assert all("land" in next(card for card in player["hand"] if card["instance_id"]==card_id)["type_line"].casefold() for card_id in discard["cost_options"])
+    for action,cost_id in ((sacrifice,"wrong-offering"),(discard,"wrong-discard")):
+        try:perform_action(state,"player",{"type":"activate","card_id":"flex-engine","ability_index":action["ability_index"],"cost_card_ids":[cost_id]})
+        except RuleViolation:pass
+        else:raise AssertionError("activation accepted a card outside its constrained cost")
+    state=perform_action(state,"player",{"type":"activate","card_id":"flex-engine","ability_index":discard["ability_index"],"cost_card_ids":[land["instance_id"]]});player=next(p for p in state["players"] if p["id"]=="player")
+    assert any(card["instance_id"]==land["instance_id"] for card in player["graveyard"])
+
+
+def test_token_and_nonland_permanent_sacrifice_costs_are_enforced():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player")
+    outlet={**card(929,"Token Outlet","Artifact"),"oracle_text":"Sacrifice a token: Draw a card.\nSacrifice a nonland permanent: Draw a card.","instance_id":"token-outlet","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    token={**card(930,"Food","Token Artifact — Food"),"instance_id":"food-token","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False,"token":True};land={**card(931,"Battlefield Land","Basic Land — Forest"),"instance_id":"battlefield-land","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    player["battlefield"].extend([outlet,token,land]);actions=[action for action in legal_actions(state,"player") if action.get("card_id")=="token-outlet"]
+    token_action=next(action for action in actions if action["cost_options"]==["food-token"]);nonland_action=next(action for action in actions if set(action["cost_options"])=={"token-outlet","food-token"})
+    assert "battlefield-land" not in nonland_action["cost_options"]
+    state=perform_action(state,"player",{"type":"activate","card_id":"token-outlet","ability_index":token_action["ability_index"],"cost_card_ids":["food-token"]});player=next(p for p in state["players"] if p["id"]=="player")
+    assert not any(card["instance_id"]=="food-token" for card in player["battlefield"]+player["graveyard"])
+
+
 def test_expert_bot_uses_profitable_costly_abilities_but_never_pays_lethal_life():
     state=kept_game();state["active_player_id"]="bot";state["priority_player_id"]="bot";state["phase"]="precombat_main";bot=next(p for p in state["players"] if p["id"]=="bot");bot["hand"]=[];bot["land_plays_remaining"]=0;bot["life"]=2
     fatal={**card(930,"Fatal Bargain","Artifact"),"oracle_text":"Pay 2 life: Draw a card.","instance_id":"fatal-bargain","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};relic={**card(931,"Scholar Relic","Artifact"),"oracle_text":"Sacrifice Scholar Relic: Draw three cards.","instance_id":"scholar-relic","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};bot["battlefield"].append(fatal)
