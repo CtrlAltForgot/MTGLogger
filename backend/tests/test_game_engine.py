@@ -3448,3 +3448,45 @@ def test_aven_warcraft_visibly_chooses_and_enforces_temporary_protection():
 def test_threshold_protection_is_absent_below_seven_and_teroh_grants_black_protection():
     inactive=_threshold_rules_card({"name":"Aven Warcraft","oracle_text":"Creatures you control get +0/+2 until end of turn.\nThreshold — If there are seven or more cards in your graveyard, choose a color. Creatures you control also gain protection from the chosen color until end of turn."},6);assert "choose a color" not in inactive["oracle_text"].casefold()
     state=kept_game();player=next(p for p in state["players"] if p["id"]=="player");player["graveyard"]=[{**card(4100+index,f"Vanguard Grave {index}","Sorcery"),"instance_id":f"vanguard-grave-{index}","owner_id":"player","controller_id":"player"} for index in range(7)];ally={**card(4110,"Vanguard Ally","Creature — Soldier","{1}{W}","2","2"),"instance_id":"vanguard-ally","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};teroh={**card(4111,"Teroh's Vanguard","Creature — Bird Soldier","{3}{W}","2","3"),"oracle_text":"Flash\nThreshold — As long as there are seven or more cards in your graveyard, this creature has \"When this creature enters, creatures you control gain protection from black until end of turn.\"","instance_id":"teroh-vanguard","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"]=[ally];_enter_battlefield(state,player,[teroh],"stack");assert state["stack"];state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");assert all("B" in permanent.get("temporary_protection_colors",[]) for permanent in player["battlefield"] if "Creature" in permanent["type_line"]) and state.get("pending_color_choice") is None
+
+
+def test_threshold_graveyard_returns_use_visible_trigger_and_payment_choices():
+    def runtime_card(index,name,type_line,mana_cost="",power=None,toughness=None):
+        return {**card(index,name,type_line,mana_cost,power,toughness),"instance_id":name.casefold().replace(" ","-"),"owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    def threshold_graveyard(start):
+        return [{**card(start+index,f"Threshold Return Grave {index}","Sorcery"),"instance_id":f"threshold-return-grave-{start}-{index}","owner_id":"player","controller_id":"player"} for index in range(7)]
+
+    state=kept_game();player=next(entry for entry in state["players"] if entry["id"]=="player")
+    hero=runtime_card(4120,"Reborn Hero","Creature — Human Soldier","{2}{W}","2","2");hero["oracle_text"]="Vigilance\nThreshold — As long as there are seven or more cards in your graveyard, this creature has \"When this creature dies, you may pay {W}{W}. If you do, return this card to the battlefield under your control.\""
+    player["graveyard"]=threshold_graveyard(4130);player["battlefield"]=[hero,runtime_card(4140,"Return Plains One","Basic Land — Plains"),runtime_card(4141,"Return Plains Two","Basic Land — Plains")];_sync_city_blessing(state)
+    _leave_battlefield(state,player,hero,"graveyard");actions=legal_actions(state,"player");assert {action["type"] for action in actions}>={"accept_trigger","skip_trigger"}
+    state=perform_action(state,"player",{"type":"accept_trigger"});state=perform_action(state,"player",{"type":"resolve"});assert state["pending_optional_payment"]["mana_cost"]=="{W}{W}"
+    state=perform_action(state,"player",{"type":"pay_optional_mana"});player=next(entry for entry in state["players"] if entry["id"]=="player");assert any(permanent["instance_id"]=="reborn-hero" for permanent in player["battlefield"])
+
+    state=kept_game();player=next(entry for entry in state["players"] if entry["id"]=="player")
+    soil=runtime_card(4150,"Decaying Soil","Enchantment","{1}{B}");soil["oracle_text"]="At the beginning of your upkeep, exile a card from your graveyard.\nThreshold — As long as there are seven or more cards in your graveyard, this enchantment has \"Whenever a nontoken creature is put into your graveyard from the battlefield, you may pay {1}. If you do, return that card to your hand.\""
+    victim=runtime_card(4151,"Soil Victim","Creature — Rat","{1}{B}","1","1");player["graveyard"]=threshold_graveyard(4160);player["battlefield"]=[soil,victim,runtime_card(4170,"Soil Swamp","Basic Land — Swamp")];_sync_city_blessing(state)
+    _leave_battlefield(state,player,victim,"graveyard");actions=legal_actions(state,"player");assert {action["type"] for action in actions}>={"accept_trigger","skip_trigger"}
+    state=perform_action(state,"player",{"type":"accept_trigger"});state=perform_action(state,"player",{"type":"resolve"});assert state["pending_optional_payment"]["mana_cost"]=="{1}"
+    state=perform_action(state,"player",{"type":"pay_optional_mana"});player=next(entry for entry in state["players"] if entry["id"]=="player");assert any(entry["instance_id"]=="soil-victim" for entry in player["hand"])
+
+
+def test_persistent_marshstalker_returns_tapped_and_attacking_after_two_visible_choices():
+    state=kept_game();state["phase"]="combat";player=next(entry for entry in state["players"] if entry["id"]=="player")
+    rat={**card(4180,"Attacking Rat","Creature — Rat","{B}","1","1"),"instance_id":"attacking-rat","owner_id":"player","controller_id":"player","tapped":True,"damage":0,"counters":{},"summoning_sick":False}
+    marshstalker={**card(4181,"Persistent Marshstalker","Creature — Rat Berserker","{1}{B}","2","1"),"oracle_text":"This creature gets +1/+0 for each other Rat you control.\nThreshold — Whenever you attack with one or more Rats, if there are seven or more cards in your graveyard, you may pay {2}{B}. If you do, return this card from your graveyard to the battlefield tapped and attacking.","instance_id":"persistent-marshstalker","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    graves=[{**card(4190+index,f"Marsh Grave {index}","Sorcery"),"instance_id":f"marsh-grave-{index}","owner_id":"player","controller_id":"player"} for index in range(6)]
+    lands=[{**card(4200+index,f"Marsh Swamp {index}","Basic Land — Swamp"),"instance_id":f"marsh-swamp-{index}","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False} for index in range(3)]
+    player["graveyard"]=[marshstalker,*graves];player["battlefield"]=[rat,*lands];state["combat"]["attackers"]=[rat["instance_id"]];state["combat"]["attack_targets"]={rat["instance_id"]:"bot"}
+    _queue_triggers(state,"attackers_declared",None,player);actions=legal_actions(state,"player");assert {action["type"] for action in actions}>={"accept_trigger","skip_trigger"}
+    state=perform_action(state,"player",{"type":"accept_trigger"});state=perform_action(state,"player",{"type":"resolve"});assert state["pending_optional_payment"]["mana_cost"]=="{2}{B}"
+    state=perform_action(state,"player",{"type":"pay_optional_mana"});player=next(entry for entry in state["players"] if entry["id"]=="player");returned=next(permanent for permanent in player["battlefield"] if permanent["instance_id"]=="persistent-marshstalker");assert returned["tapped"] and returned["instance_id"] in state["combat"]["attackers"] and state["combat"]["attack_targets"][returned["instance_id"]]=="bot"
+
+
+def test_boneshard_slasher_threshold_target_trigger_sacrifices_itself():
+    def targeted_state(grave_count):
+        state=kept_game();player=next(entry for entry in state["players"] if entry["id"]=="player");bot=next(entry for entry in state["players"] if entry["id"]=="bot")
+        slasher={**card(4210,"Boneshard Slasher","Creature — Horror","{1}{B}","1","1"),"oracle_text":"Flying\nThreshold — As long as there are seven or more cards in your graveyard, this creature gets +2/+2 and has \"When this creature becomes the target of a spell or ability, sacrifice it.\"","instance_id":"boneshard-slasher","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+        bot["graveyard"]=[{**card(4220+index,f"Slasher Grave {index}","Sorcery"),"instance_id":f"slasher-grave-{index}","owner_id":"bot","controller_id":"bot"} for index in range(grave_count)];bot["battlefield"]=[slasher];spell={**card(4230,"Targeting Spell","Instant","{U}"),"oracle_text":"Tap target creature.","instance_id":"targeting-spell","owner_id":"player","controller_id":"player"};stack_item={"id":"targeting-stack","kind":"spell","card":spell,"controller_id":"player","target_id":slasher["instance_id"]};state["stack"]=[stack_item];game_engine._queue_ward(state,player,slasher["instance_id"],stack_item);return state
+    state=targeted_state(6);assert len(state["stack"])==1
+    state=targeted_state(7);assert len(state["stack"])==2 and state["stack"][-1]["kind"]=="trigger";state=perform_action(state,"player",{"type":"resolve"});bot=next(entry for entry in state["players"] if entry["id"]=="bot");assert not bot["battlefield"] and any(card["instance_id"]=="boneshard-slasher" for card in bot["graveyard"])

@@ -1995,6 +1995,7 @@ def _queue_ward(state:dict,caster:dict,target_id:str|None,stack_item:dict)->None
     if not target_id:return
     target_owner=next((owner for owner in state["players"] if any(card["instance_id"]==target_id for card in owner["battlefield"])),None)
     target=next((card for owner in state["players"] for card in owner["battlefield"] if card["instance_id"]==target_id),None);details=_ward_details(target or {})
+    if target and target_owner:_queue_triggers(state,"targeted",target,target_owner)
     if target and target_owner and target_owner["id"]!=caster["id"] and details:
         entry={"player_id":caster["id"],"stack_id":stack_item["id"],"source_name":target["name"],**details}
         if state.get("pending_ward"):state["pending_ward"].setdefault("remaining",[]).append(entry)
@@ -2798,6 +2799,8 @@ def _resolve_spell(state: dict) -> None:
             owner=next(owner for owner in state["players"] if source_permanent in owner["battlefield"]);_leave_battlefield(state,owner,source_permanent,"graveyard");_log(state,f"{source_permanent['name']} was sacrificed because it did not escape.")
         else:_log(state,f"{source_permanent['name']} remained because it escaped.")
         return
+    if item.get("kind")=="trigger" and source_permanent and re.fullmatch(r"sacrifice it\.?[\"”]?",(card.get("oracle_text") or "").strip(),re.IGNORECASE):
+        _sacrifice_permanents(state,next(owner for owner in state["players"] if source_permanent in owner["battlefield"]),[source_permanent]);_log(state,f"{source_permanent['name']} was sacrificed by its triggered ability.");return
     if target_ids and fight_steps and not valid_fight_ids or target_ids and not fight_steps and not valid_multi_ids:
         if item.get("kind","spell")=="spell":_countered_spell_destination(state,caster,card,item.get("flashback",False))
         _finish_saga_final_chapter(state,item)
@@ -2845,7 +2848,7 @@ def _resolve_spell(state: dict) -> None:
         if choices:state["pending_revealed_discard"]={"player_id":caster["id"],"opponent_id":target_player["id"],"opponent_name":target_player["name"],"source_name":card["name"],"cards":choices};state["priority_player_id"]=caster["id"];_log(state,f"{target_player['name']} revealed their hand; {caster['name']} must choose an instant or sorcery to discard.")
         else:_log(state,f"{target_player['name']} revealed no instant or sorcery cards.")
         return
-    event_permanent=next((permanent for player in state["players"] for permanent in player["battlefield"] if permanent["instance_id"]==item.get("event_card_id")),None);event_controller=_player(state,item.get("event_owner_id")) if item.get("event_owner_id") else _player(state,event_permanent.get("controller_id")) if event_permanent else None;source_graveyard=next((graveyard_card for graveyard_card in caster["graveyard"] if graveyard_card["instance_id"]==item.get("source_id")),None)
+    event_permanent=next((permanent for player in state["players"] for permanent in player["battlefield"] if permanent["instance_id"]==item.get("event_card_id")),None);event_graveyard=next((graveyard_card for player in state["players"] for graveyard_card in player["graveyard"] if graveyard_card["instance_id"]==item.get("event_card_id")),None);event_controller=_player(state,item.get("event_owner_id")) if item.get("event_owner_id") else _player(state,event_permanent.get("controller_id")) if event_permanent else None;source_graveyard=next((graveyard_card for graveyard_card in caster["graveyard"] if graveyard_card["instance_id"]==item.get("source_id")),None)
     if source_permanent and "sacrifice it unless you exile a card from your graveyard" in effect_text:
         choices=[candidate["instance_id"] for candidate in caster["graveyard"]]
         if choices:
@@ -2967,8 +2970,10 @@ def _resolve_spell(state: dict) -> None:
     if source_graveyard and "you may cast it from your graveyard this turn" in effect_text:
         if state.get("active_player_id")==caster["id"]:source_graveyard["graveyard_cast_until_turn"]=state["turn"]
         return
-    if source_graveyard and re.search(r"(?:you may )?return this card from your graveyard to the battlefield",effect_text):
+    if source_graveyard and re.search(r"(?:you may )?return this card(?: from your graveyard)? to the battlefield",effect_text):
         _leave_graveyard(state,caster,[source_graveyard]);source_graveyard["controller_id"]=caster["id"];source_graveyard["summoning_sick"]=True;_enter_battlefield(state,caster,[source_graveyard],"graveyard");_log(state,f"{source_graveyard['name']} returned from {caster['name']}'s graveyard.");return
+    if event_graveyard and "return that card to your hand" in effect_text:
+        graveyard_owner=next(owner for owner in state["players"] if event_graveyard in owner["graveyard"]);_leave_graveyard(state,graveyard_owner,[event_graveyard]);caster["hand"].append(event_graveyard);_log(state,f"{event_graveyard['name']} returned to {caster['name']}'s hand.");return
     if "exile cards from the top of your library until you exile a nonland card" in effect_text:
         exiled=[];castable_card=None
         while caster["library"]:
@@ -3834,6 +3839,8 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
     sources = list(sources_override) if sources_override is not None else [(owner, permanent) for owner in ordered_owners for permanent in owner["battlefield"]]
     if sources_override is None and event=="enters" and event_card and "Land" in event_card.get("type_line",""):
         sources.extend((owner,card) for owner in ordered_owners for card in owner["graveyard"] if re.search(r"landfall\s*[—-].*whenever a land[^.]+enters[^,]*,\s*(?:you may return this card from your graveyard to the battlefield|[^.]*you may pay (?:\{[^}]+\})+\. if you do, return this card from your graveyard to the battlefield|if this card is in your graveyard and it(?:'s| is) your turn, you may cast it from your graveyard this turn)",(card.get("oracle_text") or "").replace("\n"," "),re.IGNORECASE) and ("it's your turn" not in (card.get("oracle_text") or "").casefold() or state.get("active_player_id")==owner["id"]))
+    if sources_override is None and event=="attackers_declared":
+        sources.extend((owner,card) for owner in ordered_owners for card in owner["graveyard"] if "whenever you attack with one or more rats" in (card.get("oracle_text") or "").casefold())
     if event=="upkeep":
         for owner,permanent in sources:
             if permanent.pop("transform_next_upkeep",False):_transform(state,permanent)
@@ -3841,7 +3848,10 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
         if not any(source is event_card for _,source in sources):
             insert_at=max((index+1 for index,(owner,_) in enumerate(sources) if owner["id"]==event_owner["id"]),default=len(sources));sources.insert(insert_at,(event_owner,event_card))
     for owner, source in sources:
+        previous_graveyard_count=source.get("controller_graveyard_count");had_graveyard_count="controller_graveyard_count" in source;source["controller_graveyard_count"]=len(owner["graveyard"])
         text = "\n".join([_active_level_text(source),*(source.get("temporary_backup_rules") or [])])
+        if had_graveyard_count:source["controller_graveyard_count"]=previous_graveyard_count
+        else:source.pop("controller_graveyard_count",None)
         trigger_text=re.sub(r"\bU\.S\.S\.\s+","USS ",text,flags=re.IGNORECASE);raw_clauses = re.split(r"(?<=[.!])\s+|\n", trigger_text);clauses=[]
         for clause in raw_clauses:
             modal_continuation=bool(clauses and (clause.strip().startswith(("•","-")) or clauses[-1].lstrip().startswith(("•","-")) or re.search(r"\n[•-]\s",clauses[-1]) and not re.match(r"(?:when(?:ever)?\b|at the beginning\b|[+−-]?\d+\s*:|\{[^}]+\}[^:]*:)",clause.strip(),re.IGNORECASE)))
@@ -3890,10 +3900,11 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 is_creature="creature" in event_card.get("type_line","").casefold();same_controller=event_card.get("controller_id")==source.get("controller_id",owner["id"]);self_dies=source is event_card and re.search(r"when (?:~|this creature|[^,]+) dies",lower) is not None
                 another=source is not event_card and "whenever another creature dies" in lower
                 controlled=is_creature and same_controller and re.search(r"whenever (?:another |a )?creature you control dies",lower) is not None and ("another creature" not in lower or source is not event_card)
+                graveyard_entry=is_creature and not event_card.get("token") and same_controller and re.search(r"whenever a nontoken creature is put into your graveyard from the battlefield",lower) is not None
                 opposing=is_creature and not same_controller and re.search(r"whenever (?:another |a )?creature an opponent controls dies",lower) is not None
                 any_creature=is_creature and re.search(r"whenever a creature dies",lower) is not None
                 one_or_more=is_creature and source is not event_card and "whenever one or more other creatures die" in lower;dedupe_key=f"dies:{source.get('instance_id')}"
-                matches=self_dies or another or controlled or opposing or any_creature or (one_or_more and (dedupe is None or dedupe_key not in dedupe))
+                matches=self_dies or another or controlled or graveyard_entry or opposing or any_creature or (one_or_more and (dedupe is None or dedupe_key not in dedupe))
                 if matches and one_or_more and dedupe is not None:dedupe.add(dedupe_key)
             elif event == "sacrifice" and event_card:
                 under_control=event_card.get("controller_id")==source.get("controller_id",owner["id"]);type_line=event_card.get("type_line","").casefold();is_token=bool(event_card.get("token"));one_or_more="one or more" in lower;dedupe_key=f"sacrifice:{source.get('instance_id')}"
@@ -4010,6 +4021,8 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 controlled=same_controller and re.search(r"whenever (?:a|another) (?:creature|permanent) you control is turned face up",lower) is not None
                 global_event=re.search(r"whenever (?:a|another) (?:creature|permanent) is turned face up",lower) is not None
                 matches=self_event or controlled or global_event
+            elif event=="targeted" and event_card:
+                matches=source is event_card and re.search(r"when this creature becomes the target of a spell or ability",lower) is not None
             elif event == "leaves" and event_card:
                 matches=source is not event_card and owner["id"]==event_owner["id"] and "Creature" in event_card.get("type_line","") and "when another creature you control leaves the battlefield" in lower
             elif event == "upkeep":
@@ -4047,6 +4060,8 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                     matches = True
                 elif controlled_attackers and "whenever a creature you control attacks" in lower:
                     matches = True; trigger_count = len(controlled_attackers)
+                elif any(re.search(r"\bRat\b",card.get("type_line",""),re.IGNORECASE) for card in controlled_attackers) and "whenever you attack with one or more rats" in lower:
+                    matches = True
                 elif controlled_attackers and re.search(r"whenever you attack\b",lower):
                     matches = True
             elif event == "blockers_declared":
@@ -4431,12 +4446,23 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         state["pending_optional_payment"]=None
         if action_type=="pay_optional_mana":
             _pay_mana(state,player,{"mana_cost":pending["mana_cost"]});continuation=pending.get("continuation") or ""
+            returning_self=next((card for card in player["graveyard"] if card["instance_id"]==pending.get("source_id")),None)
+            if returning_self and re.search(r"return this card(?: from your graveyard)? to the battlefield",continuation,re.IGNORECASE):
+                attacking="tapped and attacking" in continuation.casefold();_leave_graveyard(state,player,[returning_self]);returning_self["controller_id"]=player_id;returning_self["summoning_sick"]=True;returning_self["tapped"]=attacking;_enter_battlefield(state,player,[returning_self],"graveyard")
+                if attacking and state.get("phase")=="combat":
+                    existing=state.get("combat",{}).get("attackers",[]);defender=next((state["combat"].get("attack_targets",{}).get(attacker_id) for attacker_id in existing if state["combat"].get("attack_targets",{}).get(attacker_id)),opponent(state,player_id)["id"]);state["combat"]["attackers"].append(returning_self["instance_id"]);state["combat"]["attack_targets"][returning_self["instance_id"]]=defender
+                _log(state,f"{player['name']} paid {pending['mana_cost']} and returned {returning_self['name']} to the battlefield{' tapped and attacking' if attacking else ''}.");state["priority_player_id"]=state["active_player_id"]
+                _update_speed_for_life_loss(state,life_before);_state_based_actions(state);_check_winner(state);state["version"]+=1;return state
+            returning_event=next((card for owner in state["players"] for card in owner["graveyard"] if card["instance_id"]==pending.get("event_card_id")),None)
+            if returning_event and re.search(r"return that card to your hand",continuation,re.IGNORECASE):
+                graveyard_owner=next(owner for owner in state["players"] if returning_event in owner["graveyard"]);_leave_graveyard(state,graveyard_owner,[returning_event]);player["hand"].append(returning_event);_log(state,f"{player['name']} paid {pending['mana_cost']} and returned {returning_event['name']} to their hand.");state["priority_player_id"]=state["active_player_id"]
+                _update_speed_for_life_loss(state,life_before);_state_based_actions(state);_check_winner(state);state["version"]+=1;return state
             if continuation.casefold().startswith("copy it"):
                 original=next((stack_item for stack_item in state["stack"] if stack_item.get("card",{}).get("instance_id")==pending.get("event_card_id") and stack_item.get("kind","spell")=="spell"),None)
                 if original:_copy_stack_item(state,player,original);_log(state,f"{player['name']} paid {pending['mana_cost']} and copied {original['card']['name']}.")
                 else:_log(state,f"{player['name']} paid {pending['mana_cost']}, but the spell was no longer on the stack.")
                 state["priority_player_id"]=state["active_player_id"];_update_speed_for_life_loss(state,life_before);_state_based_actions(state);_check_winner(state);state["version"]+=1;return state
-            ability_card={"name":f"{pending['source_name']} paid effect","oracle_text":continuation,"type_line":"Ability","mana_cost":""};trigger={"id":_id(),"kind":"trigger","card":ability_card,"controller_id":player_id,"target_id":None,"source_id":pending.get("source_id")};targets=_targets(state,player_id,ability_card)
+            ability_card={"name":f"{pending['source_name']} paid effect","oracle_text":continuation,"type_line":"Ability","mana_cost":""};trigger={"id":_id(),"kind":"trigger","card":ability_card,"controller_id":player_id,"target_id":None,"source_id":pending.get("source_id"),"event_card_id":pending.get("event_card_id")};targets=_targets(state,player_id,ability_card)
             if _target_kind(ability_card) and targets:state.setdefault("pending_trigger_targets",[]).append({"controller_id":player_id,"source_name":pending["source_name"],"trigger":trigger,"card":ability_card})
             elif not _target_kind(ability_card):state["stack"].append(trigger);_resolve_spell(state)
             else:_log(state,f"{pending['source_name']}'s paid effect had no legal target.")
