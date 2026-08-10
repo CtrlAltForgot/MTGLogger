@@ -244,6 +244,7 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
             if cast.get("targets"):cast={**cast,"target_id":_choose_target(state,cast)}
             return cast
         return by_type.get("decline_madness",[None])[0]
+    if "decline_rebound" in by_type and "cast" not in by_type:return by_type["decline_rebound"][0]
     if "cast_discovered" in by_type or "hand_discovered" in by_type or "decline_discovery" in by_type:
         cast=by_type.get("cast_discovered",[None])[0]
         if cast:

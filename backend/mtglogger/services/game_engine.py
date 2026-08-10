@@ -1372,7 +1372,7 @@ def _multiplayer(state: dict) -> bool:
 def _pending_decision(state:dict)->bool:
     if state.get("pending_explore"):return True
     if state.get("pending_connive"):return True
-    return bool(state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_discovery") or state.get("pending_madness") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
+    return bool(state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_discovery") or state.get("pending_madness") or state.get("pending_rebound") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
 
 
 def _queue_commander_zone_choice(state:dict,owner:dict,card:dict,zone:str)->None:
@@ -1414,6 +1414,26 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
     if pending_escape_counter:
         if pending_escape_counter["player_id"]!=player_id:return []
         common={"card_id":pending_escape_counter["card_id"],"card_name":pending_escape_counter["card_name"]};return [{"type":"choose_escape_counter","counter_name":"+1/+1","label":"Choose a +1/+1 counter",**common},{"type":"choose_escape_counter","counter_name":"flying","label":"Choose a flying counter",**common},{"type":"concede"}]
+    pending_rebound=state.get("pending_rebound")
+    if pending_rebound:
+        if pending_rebound["player_id"]!=player_id:return []
+        card=next((candidate for candidate in player["exile"] if candidate["instance_id"]==pending_rebound["card_id"]),None);actions=[{"type":"decline_rebound","card_id":pending_rebound["card_id"],"card_name":pending_rebound["card_name"],"label":f"Leave {pending_rebound['card_name']} in exile"},{"type":"concede"}]
+        if not card:return actions
+        action={"type":"cast","card_id":card["instance_id"],"card_name":card["name"],"source":"rebound","label":f"Cast {card['name']} from Rebound without paying its mana cost"};modal_spec=_modal_spec(card)
+        if modal_spec:
+            modes=[]
+            for option in modal_spec["options"]:
+                targets=_targets(state,player_id,_spell_targeting_card({**card,"oracle_text":option["label"]}))
+                if _target_kind({**card,"oracle_text":option["label"]}) and not targets:continue
+                modes.append({**option,"targets":targets})
+            if len(modes)>=modal_spec["min_modes"]:action.update({"mode_count":modal_spec["min_modes"],"mode_min":modal_spec["min_modes"],"mode_max":min(modal_spec["max_modes"],len(modes)),"mode_repeatable":modal_spec["repeatable"],"mode_distinct_targets":modal_spec["distinct_targets"],"modes":modes})
+            else:action=None
+        else:
+            targeting_card=_spell_targeting_card(card);targets=_targets(state,player_id,targeting_card)
+            if _target_kind(targeting_card) and not targets:action=None
+            elif targets:action["targets"]=targets
+        if action:actions.insert(0,action)
+        return actions
     pending_discard=state.get("pending_discard")
     if pending_discard:
         if pending_discard["player_id"] != player_id:return []
@@ -1797,6 +1817,10 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
 def _resolve_spell(state: dict) -> None:
     item = state["stack"].pop()
     card, caster = item["card"], _player(state, item["controller_id"])
+    if item.get("kind")=="rebound_trigger":
+        candidate=next((candidate for candidate in caster["exile"] if candidate["instance_id"]==item.get("source_id") and candidate.get("rebound_triggered")),None)
+        if not candidate:_log(state,f"{card['name']} resolved, but the Rebound card was no longer in exile.");return
+        state["pending_rebound"]={"player_id":caster["id"],"card_id":candidate["instance_id"],"card_name":candidate["name"]};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} may cast {candidate['name']} from Rebound.");return
     if item.get("kind")=="cascade":
         _start_discovery(state,caster,int(item.get("cascade_value") or 0),"cascade",card["name"]);return
     if item.get("kind")=="madness_trigger":
@@ -1837,7 +1861,12 @@ def _resolve_spell(state: dict) -> None:
         options={option["index"]:option for option in _modal_options(card)};targets=item.get("mode_targets") or []
         for position,index in enumerate(item["mode_indices"]):
             option=options[index];mode_card=_x_rules_card({**card,"name":f"{card['name']} — mode {position+1}","oracle_text":option["label"]},item.get("x_value"));state["stack"].append({"id":_id(),"kind":"modal_effect","card":mode_card,"controller_id":caster["id"],"target_id":targets[position] if position<len(targets) else None,"x_value":item.get("x_value")});_resolve_spell(state)
-        (caster["hand"].append(card) if item.get("buyback") else _put_into_exile(state,caster,[card],"stack",caster["id"]) if item.get("flashback") else caster["graveyard"].append(card));_log(state,f"{card['name']} resolved with {len(item['mode_indices'])} modes.");return
+        if item.get("cast_source_zone")=="hand" and _has_keyword(card,"Rebound"):
+            card["rebound_pending"]=True;card["rebound_after_turn"]=state["turn"];_put_into_exile(state,caster,[card],"rebound",caster["id"])
+        elif item.get("buyback"):caster["hand"].append(card)
+        elif item.get("flashback"):_put_into_exile(state,caster,[card],"stack",caster["id"])
+        else:caster["graveyard"].append(card)
+        _log(state,f"{card['name']} resolved with {len(item['mode_indices'])} modes.");return
     rules_card=_selected_mode_card(card,item.get("mode_indices")) if item.get("kind","spell")=="spell" else card
     if item.get("kind","spell")=="spell":rules_card=_kicked_rules_card(rules_card,bool(item.get("kicked")))
     rules_card=_x_rules_card(rules_card,item.get("x_value"));targeting_card=_spell_targeting_card(rules_card) if item.get("kind","spell")=="spell" else rules_card;target_kind=_target_kind(targeting_card);target_id=item.get("target_id")
@@ -2119,7 +2148,10 @@ def _resolve_spell(state: dict) -> None:
             _leave_exile(state,zone_owner,[source_permanent])
             source_permanent["controller_id"]=caster["id"];source_permanent["counters"]={};source_permanent["summoning_sick"]=True;source_permanent["tapped"]=False;_set_card_face(source_permanent,1);_enter_battlefield(state,caster,[source_permanent],"exile");saga_transformed=True;_log(state,f"{source_permanent['name']} returned transformed under {caster['name']}'s control.")
     entered = False
-    if is_permanent_spell and item.get("buyback"):
+    rebound_from_hand=item.get("kind","spell")=="spell" and item.get("cast_source_zone")=="hand" and _has_keyword(card,"Rebound")
+    if is_permanent_spell and rebound_from_hand:
+        card["rebound_pending"]=True;card["rebound_after_turn"]=state["turn"];_put_into_exile(state,caster,[card],"rebound",caster["id"]);_log(state,f"{card['name']} was exiled through Rebound as it resolved.")
+    elif is_permanent_spell and item.get("buyback"):
         caster["hand"].append(card);_log(state,f"{card['name']} returned to {caster['name']}'s hand through buyback.")
     elif is_permanent_spell:
         card["was_kicked"]=bool(item.get("kicked"))
@@ -2137,7 +2169,9 @@ def _resolve_spell(state: dict) -> None:
         if "Aura" in card.get("type_line","") and (target or target_player):_attach(state,card,target or target_player)
         entered = True
     elif item.get("kind", "spell") == "spell":
-        if item.get("buyback"):caster["hand"].append(card)
+        if rebound_from_hand:
+            card["rebound_pending"]=True;card["rebound_after_turn"]=state["turn"];_put_into_exile(state,caster,[card],"rebound",caster["id"])
+        elif item.get("buyback"):caster["hand"].append(card)
         elif item.get("flashback"):_put_into_exile(state,caster,[card],"stack",caster["id"])
         else:caster["graveyard"].append(card)
     _log(state, f"{card['name']} resolved.")
@@ -2745,6 +2779,8 @@ def _begin_next_turn(state:dict)->None:
         if not suspended.get("suspended") or suspended.get("counters",{}).get("time",0)<=0:continue
         _remove_counters(suspended,"time",1);remaining=suspended.get("counters",{}).get("time",0);_log(state,f"A time counter was removed from {suspended['name']}; {remaining} remain.")
         if remaining==0:suspended["suspended_ready"]=True;state["priority_player_id"]=active["id"]
+    for rebound_card in [card for card in active["exile"] if card.get("rebound_pending") and state["turn"]>card.get("rebound_after_turn",state["turn"])]:
+        rebound_card.pop("rebound_pending",None);rebound_card["rebound_triggered"]=True;ability_card={**rebound_card,"name":f"{rebound_card['name']} — Rebound","type_line":"Ability","mana_cost":"","oracle_text":f"You may cast {rebound_card['name']} from exile without paying its mana cost."};state["stack"].append({"id":_id(),"kind":"rebound_trigger","card":ability_card,"controller_id":active["id"],"source_id":rebound_card["instance_id"]});_log(state,f"{rebound_card['name']}'s Rebound ability triggered.")
     _queue_triggers(state,"upkeep",None,active)
     if state.get("initiative_id")==active["id"]:_venture_undercity(state,active)
 
@@ -2817,6 +2853,10 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         pending=state.get("pending_escape_counter") or {};permanent=next((card for card in player["battlefield"] if card["instance_id"]==pending.get("card_id")),None);counter_name=action.get("counter_name")
         if pending.get("player_id")!=player_id or not permanent or counter_name not in {"+1/+1","flying"}:raise RuleViolation("That escape counter choice is no longer available")
         state["pending_escape_counter"]=None;_add_counters(state,permanent,counter_name,1,player_id,"escape");state["priority_player_id"]=state["active_player_id"];_log(state,f"{player['name']} put a {counter_name} counter on {permanent['name']} as it escaped.")
+    elif action_type=="decline_rebound":
+        pending=state.get("pending_rebound") or {};card=next((candidate for candidate in player["exile"] if candidate["instance_id"]==pending.get("card_id")),None)
+        if pending.get("player_id")!=player_id or not card:raise RuleViolation("That Rebound choice is no longer available")
+        state["pending_rebound"]=None;card.pop("rebound_triggered",None);card.pop("rebound_after_turn",None);state["priority_player_id"]=state["active_player_id"];_log(state,f"{player['name']} declined to cast {card['name']} from Rebound.")
     elif action_type in {"cast_madness","decline_madness"}:
         pending=state.get("pending_madness") or {};candidate=next((card for card in player["exile"] if card["instance_id"]==pending.get("card_id")),None);ability=_madness_ability(candidate or {})
         if pending.get("player_id")!=player_id or not candidate or not ability:raise RuleViolation("That madness choice is no longer available")
@@ -2933,13 +2973,13 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if (_multiplayer(state) or not allow_direct_resolution) and not state.get("pending_ward"):state["priority_player_id"]=opponent(state,player_id)["id"]
         _log(state,f"{player['name']} channeled {card['name']}{f' with X={x_value}' if has_x else ''}.")
     elif action_type == "cast":
-        requested_source=action.get("source");zone_name="graveyard" if requested_source in {"flashback","escape"} else "exile" if requested_source in {"airbend","suspend","foretell","plot"} else requested_source if requested_source in {"hand","command"} else next((zone for zone in ("hand","command") if any(card["instance_id"]==action.get("card_id") for card in player.get(zone,[]))),None)
-        source=requested_source if zone_name=="graveyard" and requested_source in {"flashback","escape"} else requested_source if zone_name=="exile" and requested_source in {"airbend","suspend","foretell","plot"} else zone_name;card=next((card for card in player.get(zone_name or "hand",[]) if card["instance_id"]==action.get("card_id")),None);flashback=_flashback_ability(card or {}) if source=="flashback" else None;escape=_escape_ability(card or {}) if source=="escape" else None
+        requested_source=action.get("source");zone_name="graveyard" if requested_source in {"flashback","escape"} else "exile" if requested_source in {"airbend","suspend","foretell","plot","rebound"} else requested_source if requested_source in {"hand","command"} else next((zone for zone in ("hand","command") if any(card["instance_id"]==action.get("card_id") for card in player.get(zone,[]))),None)
+        source=requested_source if zone_name=="graveyard" and requested_source in {"flashback","escape"} else requested_source if zone_name=="exile" and requested_source in {"airbend","suspend","foretell","plot","rebound"} else zone_name;card=next((card for card in player.get(zone_name or "hand",[]) if card["instance_id"]==action.get("card_id")),None);flashback=_flashback_ability(card or {}) if source=="flashback" else None;escape=_escape_ability(card or {}) if source=="escape" else None
         requested_kicked=bool(action.get("kicked"));requested_buyback=bool(action.get("buyback"));requested_convoke=bool(action.get("convoke"));requested_waterbend=bool(action.get("waterbend"));requested_blight=bool(action.get("blighted") or (action.get("cost_card_ids") and _optional_blight_cost(card or {})));available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="cast" and entry["card_id"]==action.get("card_id") and entry.get("source")==source and bool(entry.get("kicked"))==requested_kicked and bool(entry.get("buyback"))==requested_buyback and bool(entry.get("convoke"))==requested_convoke and bool(entry.get("waterbend"))==requested_waterbend and bool(entry.get("blighted"))==requested_blight),None)
         tax = _commander_tax(player, card) if card and source=="command" else 0;affinity_reduction=_affinity_reduction(player,card or {});buyback=_buyback_ability(card or {}) if requested_buyback else None;generic_adjustment=tax-affinity_reduction-int(available.get("buyback_reduction",0) if available else 0)
         if not card:raise RuleViolation("That spell cannot be cast")
         if not available:raise RuleViolation("That spell cannot be cast from that zone")
-        cost_card={**card,"mana_cost":_foretell_cost(card) or ""} if source=="foretell" else {**card,"mana_cost":"{0}"} if source in {"suspend","plot"} else {**card,"mana_cost":"{2}"} if source=="airbend" else {**card,"mana_cost":flashback["mana_cost"]} if flashback else {**card,"mana_cost":escape["mana_cost"]} if escape else card
+        cost_card={**card,"mana_cost":_foretell_cost(card) or ""} if source=="foretell" else {**card,"mana_cost":"{0}"} if source in {"suspend","plot","rebound"} else {**card,"mana_cost":"{2}"} if source=="airbend" else {**card,"mana_cost":flashback["mana_cost"]} if flashback else {**card,"mana_cost":escape["mana_cost"]} if escape else card
         if requested_kicked:cost_card={**cost_card,"mana_cost":f"{cost_card.get('mana_cost') or ''}{_kicker_cost(card) or ''}"}
         if buyback:cost_card={**cost_card,"mana_cost":f"{cost_card.get('mana_cost') or ''}{buyback['mana_cost']}"}
         waterbend_symbol=_spell_waterbend_symbol(card);x_value=int(action.get("x_value") or 0);has_x=_has_x_cost(cost_card) or waterbend_symbol=="X";x_max=available.get("x_max",_maximum_x(player,cost_card,generic_adjustment))
@@ -3011,9 +3051,10 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         elif zone_name=="exile":_leave_exile(state,player,[card])
         else:player[zone_name].remove(card)
         cost_triggers=state["stack"][stack_before_cost:];del state["stack"][stack_before_cost:]
-        card.pop("airbent",None);card.pop("suspended_ready",None);card.pop("suspended",None);card.pop("foretold",None);card.pop("foretold_turn",None);card.pop("plotted",None);card.pop("plotted_turn",None)
+        if source=="rebound":state["pending_rebound"]=None
+        card.pop("rebound_triggered",None);card.pop("rebound_after_turn",None);card.pop("airbent",None);card.pop("suspended_ready",None);card.pop("suspended",None);card.pop("foretold",None);card.pop("foretold_turn",None);card.pop("plotted",None);card.pop("plotted_turn",None)
         if card.get("commander"): player["commander_casts"] = player.get("commander_casts", 0) + 1
-        effective_target=target_id or (mode_targets[0] if len(mode_targets)==1 else None);stack_item={"id": _id(), "card": card, "controller_id": player_id, "target_id": effective_target,"target_ids":target_ids,"mode_indices":chosen_modes,"mode_targets":mode_targets,"x_value":x_value,"flashback":bool(flashback),"buyback":requested_buyback,"escaped":bool(escape),"escape_counters":escape["counters"] if escape else 0,"escape_counter_choice":escape["counter_choice"] if escape else False,"suspended_cast":source=="suspend","kicked":requested_kicked,"blighted":requested_blight,"cast_source_zone":"graveyard" if source in {"flashback","escape"} else "exile" if source in {"airbend","suspend","foretell","plot"} else source};state["stack"].append(stack_item);state["stack"].extend(cost_triggers); state["consecutive_passes"] = 0; state["pending_phase_advance"] = False
+        effective_target=target_id or (mode_targets[0] if len(mode_targets)==1 else None);stack_item={"id": _id(), "card": card, "controller_id": player_id, "target_id": effective_target,"target_ids":target_ids,"mode_indices":chosen_modes,"mode_targets":mode_targets,"x_value":x_value,"flashback":bool(flashback),"buyback":requested_buyback,"rebound_cast":source=="rebound","escaped":bool(escape),"escape_counters":escape["counters"] if escape else 0,"escape_counter_choice":escape["counter_choice"] if escape else False,"suspended_cast":source=="suspend","kicked":requested_kicked,"blighted":requested_blight,"cast_source_zone":"graveyard" if source in {"flashback","escape"} else "exile" if source in {"airbend","suspend","foretell","plot","rebound"} else source};state["stack"].append(stack_item);state["stack"].extend(cost_triggers); state["consecutive_passes"] = 0; state["pending_phase_advance"] = False
         if requested_waterbend:_queue_triggers(state,"waterbend",card,player)
         _record_spell_cast(state,player);card["cast_source_zone"]="graveyard" if source in {"flashback","escape"} else "exile" if source in {"airbend","suspend","foretell","plot"} else source
         _queue_triggers(state,"cast",card,player);_queue_cascade_triggers(state,player,card);card.pop("cast_source_zone",None)
