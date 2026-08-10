@@ -292,6 +292,9 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
     if "choose_trigger_target" in by_type:
         action=by_type["choose_trigger_target"][0]
         return {"type":"choose_trigger_target","target_id":_choose_target(state,action)}
+    if "choose_trigger_mode" in by_type:
+        action=by_type["choose_trigger_mode"][0];modes=action.get("modes") or []
+        return {"type":"choose_trigger_mode","mode_index":modes[0]["index"]}
     if "choose_trigger_targets" in by_type:
         action=by_type["choose_trigger_targets"][0];return {"type":"choose_trigger_targets","target_ids":_choose_fight_targets(state,action)}
     if "skip_trigger" in by_type:return by_type["skip_trigger"][0]

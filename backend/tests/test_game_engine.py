@@ -1243,6 +1243,16 @@ def test_landfall_shared_equipped_and_keyword_stat_bonuses():
     assert (ally["temporary_power"],ally["temporary_toughness"])==(3,3) and {"vigilance","haste"}<=set(ally["temporary_keywords"])
 
 
+def test_modal_landfall_trigger_preserves_and_resolves_player_choice():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player");retreat={**card(837,"Felidar Retreat","Enchantment"),"oracle_text":"Landfall — Whenever a land you control enters, choose one —\n• Create a 2/2 white Cat Beast creature token.\n• Put a +1/+1 counter on each creature you control. Those creatures gain vigilance until end of turn.","instance_id":"felidar-retreat","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};ally={**card(838,"Retreat Ally","Creature — Cat","","2","2"),"instance_id":"retreat-ally","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].extend([retreat,ally])
+    def landfall(index:int)->None:
+        nonlocal state,player
+        land={**card(839+index,f"Retreat Land {index}","Basic Land — Plains"),"instance_id":f"retreat-land-{index}","owner_id":"player","controller_id":"player"};_enter_battlefield(state,player,[land],"hand")
+    landfall(0);action=legal_actions(state,"player")[0];assert action["type"]=="choose_trigger_mode" and [mode["index"] for mode in action["modes"]]==[0,1]
+    state=perform_action(state,"player",{"type":"choose_trigger_mode","mode_index":0});state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");assert sum(card.get("token",False) and "Cat Beast" in card["type_line"] for card in player["battlefield"])==1
+    landfall(1);state=perform_action(state,"player",{"type":"choose_trigger_mode","mode_index":1});state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");ally=next(card for card in player["battlefield"] if card["instance_id"]=="retreat-ally");assert ally["counters"]["+1/+1"]==1 and "vigilance" in ally["temporary_keywords"]
+
+
 def test_attack_triggers_count_attackers_once_or_individually_and_choose_targets():
     state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
     banner={**card(830,"Battle Banner","Enchantment"),"oracle_text":"Whenever one or more creatures you control attack, you gain 1 life.","instance_id":"battle-banner","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False}

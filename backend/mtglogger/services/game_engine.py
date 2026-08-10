@@ -1950,6 +1950,7 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
     if pending_triggers:
         pending=pending_triggers[0]
         if pending["controller_id"]!=player_id:return []
+        if pending.get("mode_options"):return [{"type":"choose_trigger_mode","modes":pending["mode_options"],"label":pending["card"]["oracle_text"],"source_name":pending["source_name"]},{"type":"concede"}]
         if pending.get("target_steps"):return [{"type":"choose_trigger_targets","target_steps":pending["target_steps"],"label":pending["card"]["oracle_text"],"source_name":pending["source_name"]},{"type":"concede"}]
         targets=_targets(state,player_id,pending["card"])
         actions=[{"type":"choose_trigger_target","targets":targets,"label":pending["card"]["oracle_text"],"source_name":pending["source_name"]}] if targets else []
@@ -2696,6 +2697,11 @@ def _resolve_spell(state: dict) -> None:
             if own_only and owner["id"]!=caster["id"] or opponents_only and owner["id"]==caster["id"]:continue
             for permanent in owner["battlefield"]:
                 if "Creature" in permanent.get("type_line","") and not (other_only and permanent is source_permanent):permanent["temporary_power"]=permanent.get("temporary_power",0)+int(global_stats.group(1));permanent["temporary_toughness"]=permanent.get("temporary_toughness",0)+int(global_stats.group(2));permanent["temporary_keywords"]=sorted(set(permanent.get("temporary_keywords",[]))|gained)
+    team_keywords=re.search(r"(?:those creatures|creatures you control) gain ([^.]+?) until end of turn",effect_text)
+    if team_keywords:
+        supported=("flying","first strike","double strike","deathtouch","haste","hexproof","indestructible","lifelink","menace","reach","trample","vigilance");gained={keyword for keyword in supported if re.search(rf"\b{re.escape(keyword)}\b",team_keywords.group(1))}
+        for permanent in caster["battlefield"]:
+            if "Creature" in permanent.get("type_line",""):permanent["temporary_keywords"]=sorted(set(permanent.get("temporary_keywords",[]))|gained)
     team_counters=re.search(r"put (a|one|two|three|four|\d+) ([+\-]\d+/[+\-]\d+) counters? on each creature you control",effect_text)
     if team_counters:
         words={"a":1,"one":1,"two":2,"three":3,"four":4};amount=words.get(team_counters.group(1),int(team_counters.group(1)) if team_counters.group(1).isdigit() else 1)
@@ -3064,8 +3070,10 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
         text = "\n".join([source.get("oracle_text") or "",*(source.get("temporary_backup_rules") or [])])
         raw_clauses = re.split(r"(?<=[.!])\s+|\n", text);clauses=[]
         for clause in raw_clauses:
-            continuation=bool(clauses and (re.match(r"(?:then if|if you do|if you have the city's blessing),?\b",clause.strip(),re.IGNORECASE) or re.match(r"if that land is (?:a |an )?[a-z]+,",clause.strip(),re.IGNORECASE) or re.match(r"if (?:this is|it(?:'s| is)) the (?:first|second|third|fourth) time(?: this ability has resolved)?(?: this turn)?,",clause.strip(),re.IGNORECASE) or ("create x 1/1 red elemental creature tokens" in clauses[-1].casefold() and re.match(r"at the beginning of the next end step, exile those tokens",clause.strip(),re.IGNORECASE)) or ("reveal the top card of your library and put that card into your hand" in clauses[-1].casefold() and re.match(r"each opponent loses x life\b",clause.strip(),re.IGNORECASE))))
-            if continuation:clauses[-1]=f"{clauses[-1]} {clause.strip()}"
+            modal_continuation=bool(clauses and (clause.strip().startswith(("•","-")) or clauses[-1].lstrip().startswith(("•","-")) or re.search(r"\n[•-]\s",clauses[-1]) and not re.match(r"(?:when(?:ever)?\b|at the beginning\b|[+−-]?\d+\s*:|\{[^}]+\}[^:]*:)",clause.strip(),re.IGNORECASE)))
+            continuation=bool(clauses and (modal_continuation or re.match(r"(?:then if|if you do|if you have the city's blessing),?\b",clause.strip(),re.IGNORECASE) or re.match(r"if that land is (?:a |an )?[a-z]+,",clause.strip(),re.IGNORECASE) or re.match(r"if (?:this is|it(?:'s| is)) the (?:first|second|third|fourth) time(?: this ability has resolved)?(?: this turn)?,",clause.strip(),re.IGNORECASE) or ("create x 1/1 red elemental creature tokens" in clauses[-1].casefold() and re.match(r"at the beginning of the next end step, exile those tokens",clause.strip(),re.IGNORECASE)) or ("reveal the top card of your library and put that card into your hand" in clauses[-1].casefold() and re.match(r"each opponent loses x life\b",clause.strip(),re.IGNORECASE))))
+            if continuation:
+                separator="\n" if modal_continuation else " ";clauses[-1]=f"{clauses[-1]}{separator}{clause.strip()}"
             else:clauses.append(clause)
         for clause in clauses:
             lower = clause.casefold(); matches = False
@@ -3335,7 +3343,10 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 if event_card and event in {"enters","exile","tapped","untapped","counter_added","turned_face_up","dies","discard","graveyard_leave","damage","combat_damage_player","cumulative_unpaid"}:
                     trigger["event_card_id"]=event_card.get("instance_id");trigger["event_owner_id"]=event_owner.get("id")
                     if event=="enters":trigger["event_card_type_line"]=event_card.get("type_line","")
-                if fight_steps:
+                modal_options=_modal_options(ability_card)
+                if modal_options:
+                    state.setdefault("pending_trigger_targets",[]).append({"controller_id":owner["id"],"source_name":source["name"],"trigger":trigger,"card":ability_card,"mode_options":modal_options});state["priority_player_id"]=state["pending_trigger_targets"][0]["controller_id"]
+                elif fight_steps:
                     if all(step["targets"] for step in fight_steps):state.setdefault("pending_trigger_targets",[]).append({"controller_id":owner["id"],"source_name":source["name"],"trigger":trigger,"card":ability_card,"target_steps":fight_steps});state["priority_player_id"]=state["pending_trigger_targets"][0]["controller_id"]
                     else:_log(state,f"{source['name']}'s fight trigger had no legal targets and was removed.")
                 elif _target_kind(ability_card):
@@ -4184,11 +4195,19 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         else:
             state["pending_transform"]=None;_log(state,f"{player['name']} chose not to transform {pending['source_name']}.")
         state["priority_player_id"]=state["active_player_id"]
-    elif action_type in {"choose_trigger_target","choose_trigger_targets","skip_trigger"}:
+    elif action_type in {"choose_trigger_mode","choose_trigger_target","choose_trigger_targets","skip_trigger"}:
         pending_list=state.get("pending_trigger_targets") or []
         if not pending_list or pending_list[0]["controller_id"]!=player_id:raise RuleViolation("There is no triggered target decision for this player")
         pending=pending_list.pop(0);targets=_targets(state,player_id,pending["card"]);target_id=action.get("target_id")
-        if action_type=="choose_trigger_targets":
+        if action_type=="choose_trigger_mode":
+            mode_index=action.get("mode_index");options={option["index"]:option for option in pending.get("mode_options",[])}
+            if mode_index not in options:raise RuleViolation("Choose a legal mode for the triggered ability")
+            chosen={**pending["card"],"oracle_text":options[mode_index]["label"]};trigger=pending["trigger"];trigger["card"]=chosen;chosen_targets=_targets(state,player_id,chosen)
+            if _target_kind(chosen):
+                if not chosen_targets:_log(state,f"{pending['source_name']}'s chosen mode had no legal target and was removed.")
+                else:pending_list.insert(0,{**pending,"trigger":trigger,"card":chosen,"mode_options":[]})
+            else:state["stack"].append(trigger);_log(state,f"{player['name']} chose {options[mode_index]['label']} for {pending['source_name']}'s trigger.")
+        elif action_type=="choose_trigger_targets":
             steps=pending.get("target_steps") or [];target_ids=action.get("target_ids") or []
             if len(target_ids)!=len(steps) or any(target_value not in {target["id"] for target in steps[position]["targets"]} for position,target_value in enumerate(target_ids)) or any(step.get("distinct") and target_ids[position] in target_ids[:position] for position,step in enumerate(steps)):raise RuleViolation("Choose legal targets for the fight trigger")
             trigger=pending["trigger"];trigger["target_ids"]=target_ids;state["stack"].append(trigger);_log(state,f"{player['name']} chose the fighters for {pending['source_name']}'s trigger.")
