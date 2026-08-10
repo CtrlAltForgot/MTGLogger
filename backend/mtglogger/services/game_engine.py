@@ -2694,6 +2694,7 @@ def _resolve_spell(state: dict) -> None:
     effect_text=re.sub(r"create a (tapped \d+/\d+ [^.]+? creature token) for each multicolored permanent you control",lambda match:f"create {multicolored_count} {match.group(1)}",effect_text,flags=re.IGNORECASE)
     effect_text=re.sub(r"draw a card for each multicolored permanent you control",f"draw {multicolored_count} cards",effect_text,flags=re.IGNORECASE)
     effect_text=re.sub(r"deals damage equal to the number of artifacts you control",f"deals {artifact_count} damage",effect_text,flags=re.IGNORECASE)
+    effect_text=re.sub(r"draw cards equal to the sacrificed creature's power",f"draw {int(item.get('sacrificed_power',0))} cards",effect_text,flags=re.IGNORECASE)
     effect_text=re.sub(r"\bto up to one target\b","to target",effect_text,flags=re.IGNORECASE)
     if source_permanent and re.search(r"deals damage equal to (?:its|his|her) power",effect_text):effect_text=re.sub(r"deals damage equal to (?:its|his|her) power",f"deals {_parse_stats(source_permanent,state)[0]} damage",effect_text)
     if "copy target spell you control" in effect_text:
@@ -2966,6 +2967,8 @@ def _resolve_spell(state: dict) -> None:
     elif draw_match and not ordered_scry_draw:
         word = draw_match.group(0).split()[1]
         _draw(state, caster, {"a": 1, "one": 1, "two": 2, "three": 3, "four": 4}.get(word,int(word) if word.isdigit() else 0))
+    if "you may play an additional land this turn" in effect_text:
+        _ensure_land_play_tracking(caster);caster["land_plays_remaining"]=int(caster.get("land_plays_remaining",0))+1;_log(state,f"{caster['name']} may play one additional land this turn.")
     life_match = re.search(r"you gain (\d+) life", effect_text)
     if life_match:
         _gain_life(state,caster,int(life_match.group(1)))
@@ -3207,6 +3210,9 @@ def _resolve_spell(state: dict) -> None:
             source_target=state["combat"].get("attack_targets",{}).get(item.get("source_id"),other["id"])
             for token in created:state["combat"]["attackers"].append(token["instance_id"]);state["combat"]["attack_targets"][token["instance_id"]]=source_target
         _enter_battlefield(state,caster,created,"token")
+        if global_stats:
+            supported=("flying","first strike","double strike","deathtouch","haste","hexproof","indestructible","lifelink","menace","reach","trample","vigilance");gained={keyword for keyword in supported if global_stats.group(3) and re.search(rf"\b{re.escape(keyword)}\b",global_stats.group(3))}
+            for token in created:token["temporary_power"]=token.get("temporary_power",0)+int(global_stats.group(1));token["temporary_toughness"]=token.get("temporary_toughness",0)+int(global_stats.group(2));token["temporary_keywords"]=sorted(set(token.get("temporary_keywords",[]))|gained)
         _log(state, f"{caster['name']} created {amount} token(s){' tapped and attacking' if attacking else ''}.")
     predefined_matches=list(re.finditer(r"create (a|one|two|three|four|five|\d+) (tapped )?(clue|food|treasure|blood|gold) tokens?",effect_text,re.IGNORECASE))
     for predefined in predefined_matches:
@@ -3706,7 +3712,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 if matches and one_or_more and dedupe is not None:dedupe.add(dedupe_key)
             elif event == "sacrifice" and event_card:
                 under_control=event_card.get("controller_id")==source.get("controller_id",owner["id"]);type_line=event_card.get("type_line","").casefold();is_token=bool(event_card.get("token"));one_or_more="one or more" in lower;dedupe_key=f"sacrifice:{source.get('instance_id')}"
-                kind_match=(("permanent" in lower and not ("nonland permanent" in lower and "land" in type_line)) or ("artifact" in lower and "artifact" in type_line) or ("creature" in lower and "creature" in type_line) or ("token" in lower and is_token))
+                kind_match=(("permanent" in lower and not ("nonland permanent" in lower and "land" in type_line)) or ("artifact" in lower and "artifact" in type_line) or ("creature" in lower and "creature" in type_line) or ("land" in lower and "land" in type_line) or ("token" in lower and is_token))
                 yours=under_control and re.search(r"whenever you sacrifice (?:a|an|another|one or more)",lower) is not None
                 opponent_sacrifice=not under_control and re.search(r"whenever an opponent sacrifices (?:a|an|one or more)",lower) is not None
                 any_player=re.search(r"whenever a player sacrifices (?:a|an|one or more)",lower) is not None
@@ -4717,7 +4723,8 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if ability.get("restrictions",{}).get("once_each_turn") or ability.get("restrictions",{}).get("once"):
             permanent.setdefault("activated_ability_usage",{})[str(index)]={"turn":state["turn"],"ever":True}
         cost_triggers=state["stack"][stack_before_cost:];del state["stack"][stack_before_cost:]
-        stack_item={"id":_id(),"kind":"ability","card":ability["card"],"controller_id":player_id,"target_id":target_id,"target_ids":target_ids,"source_id":permanent["instance_id"],"x_value":x_value};state["stack"].append(stack_item);state["stack"].extend(cost_triggers);state["consecutive_passes"]=0;state["pending_phase_advance"]=False
+        sacrificed_power=max((_parse_stats(card,state)[0] for card in selected_cost_cards if "Creature" in card.get("type_line","")),default=0) if "sacrificed creature's power" in ability["effect"].casefold() else 0
+        stack_item={"id":_id(),"kind":"ability","card":ability["card"],"controller_id":player_id,"target_id":target_id,"target_ids":target_ids,"source_id":permanent["instance_id"],"x_value":x_value,"sacrificed_power":sacrificed_power};state["stack"].append(stack_item);state["stack"].extend(cost_triggers);state["consecutive_passes"]=0;state["pending_phase_advance"]=False
         if waterbend_symbol:_queue_triggers(state,"waterbend",permanent,player)
         for ward_target in ([target_id] if target_id else [])+target_ids:_queue_ward(state,player,ward_target,stack_item)
         sacrifice_cards=[permanent] if ability["self_sacrifice"] else []
