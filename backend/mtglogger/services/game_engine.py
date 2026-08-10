@@ -2427,6 +2427,8 @@ def _resolve_spell(state: dict) -> None:
         usage=state.setdefault("trigger_resolution_usage",{});key=f"{item.get('source_id')}:{card.get('oracle_text','')}";record=usage.get(key,{})
         count=(record.get("count",0)+1) if record.get("turn")==state.get("turn") else 1
         usage[key]={"turn":state.get("turn"),"count":count};effect_text=_resolution_order_effect(effect_text,count)
+    if item.get("kind")=="trigger" and "if that land is" in effect_text:
+        effect_text=_entered_land_subtype_effect(effect_text,item.get("event_card_type_line",""))
     other = opponent(state, caster["id"])
     target_player = next((player for player in state["players"] if player["id"] == target_id), None)
     target_owner = next((player for player in state["players"] if any(permanent["instance_id"] == target_id for permanent in player["battlefield"])), None)
@@ -3028,6 +3030,19 @@ def _resolution_order_effect(text:str,count:int)->str:
     return " ".join(selected)
 
 
+def _entered_land_subtype_effect(text:str,type_line:str)->str:
+    """Select follow-up or replacement clauses based on the entering land's subtype."""
+    selected=[];subtypes=type_line.casefold()
+    for sentence in re.split(r"(?<=[.!])\s+",text.strip()):
+        conditional=re.match(r"if that land is (?:a |an )?([a-z]+),\s*(.+)",sentence,re.IGNORECASE)
+        if not conditional:selected.append(sentence);continue
+        if re.search(rf"\b{re.escape(conditional.group(1).casefold())}\b",subtypes):
+            body=conditional.group(2)
+            if body.casefold().endswith(" instead."):selected=[];body=re.sub(r"\s+instead(?=\.$)","",body,flags=re.IGNORECASE)
+            selected.append(body)
+    return " ".join(selected)
+
+
 def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owner: dict, dedupe:set[str]|None=None, sources_override:list[tuple[dict,dict]]|None=None) -> None:
     if event in {"earthbend","waterbend","firebend","airbend"}:
         event_owner["bent_this_turn"]=sorted(set(event_owner.get("bent_this_turn",[]))|{event})
@@ -3043,7 +3058,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
         text = "\n".join([source.get("oracle_text") or "",*(source.get("temporary_backup_rules") or [])])
         raw_clauses = re.split(r"(?<=[.!])\s+|\n", text);clauses=[]
         for clause in raw_clauses:
-            continuation=bool(clauses and (re.match(r"(?:then if|if you do|if you have the city's blessing),?\b",clause.strip(),re.IGNORECASE) or re.match(r"if (?:this is|it(?:'s| is)) the (?:first|second|third|fourth) time(?: this ability has resolved)?(?: this turn)?,",clause.strip(),re.IGNORECASE) or ("create x 1/1 red elemental creature tokens" in clauses[-1].casefold() and re.match(r"at the beginning of the next end step, exile those tokens",clause.strip(),re.IGNORECASE)) or ("reveal the top card of your library and put that card into your hand" in clauses[-1].casefold() and re.match(r"each opponent loses x life\b",clause.strip(),re.IGNORECASE))))
+            continuation=bool(clauses and (re.match(r"(?:then if|if you do|if you have the city's blessing),?\b",clause.strip(),re.IGNORECASE) or re.match(r"if that land is (?:a |an )?[a-z]+,",clause.strip(),re.IGNORECASE) or re.match(r"if (?:this is|it(?:'s| is)) the (?:first|second|third|fourth) time(?: this ability has resolved)?(?: this turn)?,",clause.strip(),re.IGNORECASE) or ("create x 1/1 red elemental creature tokens" in clauses[-1].casefold() and re.match(r"at the beginning of the next end step, exile those tokens",clause.strip(),re.IGNORECASE)) or ("reveal the top card of your library and put that card into your hand" in clauses[-1].casefold() and re.match(r"each opponent loses x life\b",clause.strip(),re.IGNORECASE))))
             if continuation:clauses[-1]=f"{clauses[-1]} {clause.strip()}"
             else:clauses.append(clause)
         for clause in clauses:
@@ -3311,7 +3326,9 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
             for _ in range(trigger_count):
                 trigger={"id":_id(),"kind":"trigger","card":ability_card,"controller_id":owner["id"],"target_id":None,"source_id":source["instance_id"]}
                 if event=="mutates":trigger["x_value"]=event_card.get("mutate_count",1)
-                if event_card and event in {"enters","exile","tapped","untapped","counter_added","turned_face_up","dies","discard","graveyard_leave","damage","combat_damage_player","cumulative_unpaid"}:trigger["event_card_id"]=event_card.get("instance_id");trigger["event_owner_id"]=event_owner.get("id")
+                if event_card and event in {"enters","exile","tapped","untapped","counter_added","turned_face_up","dies","discard","graveyard_leave","damage","combat_damage_player","cumulative_unpaid"}:
+                    trigger["event_card_id"]=event_card.get("instance_id");trigger["event_owner_id"]=event_owner.get("id")
+                    if event=="enters":trigger["event_card_type_line"]=event_card.get("type_line","")
                 if fight_steps:
                     if all(step["targets"] for step in fight_steps):state.setdefault("pending_trigger_targets",[]).append({"controller_id":owner["id"],"source_name":source["name"],"trigger":trigger,"card":ability_card,"target_steps":fight_steps});state["priority_player_id"]=state["pending_trigger_targets"][0]["controller_id"]
                     else:_log(state,f"{source['name']}'s fight trigger had no legal targets and was removed.")

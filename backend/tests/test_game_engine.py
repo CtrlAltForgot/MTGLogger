@@ -1,7 +1,7 @@
 import pytest
 
 from mtglogger.services.game_bot import _choose_blocks, choose_bot_action, run_bot
-from mtglogger.services.game_engine import RuleViolation, _add_counters, _add_saga_lore, _amass, _begin_next_turn, _can_block_pair, _change_control, _combat_damage, _connive, _counter_stack_item, _enter_battlefield, _explore, _face_down_ability, _has_keyword, _leave_battlefield, _leave_graveyard, _merge_mutate, _parse_stats, _put_into_exile, _queue_triggers, _resolution_order_effect, _set_day_night, _set_tapped, _venture_undercity, _ward_details, legal_actions, new_game, perform_action, public_state
+from mtglogger.services.game_engine import RuleViolation, _add_counters, _add_saga_lore, _amass, _begin_next_turn, _can_block_pair, _change_control, _combat_damage, _connive, _counter_stack_item, _enter_battlefield, _entered_land_subtype_effect, _explore, _face_down_ability, _has_keyword, _leave_battlefield, _leave_graveyard, _merge_mutate, _parse_stats, _put_into_exile, _queue_triggers, _resolution_order_effect, _set_day_night, _set_tapped, _venture_undercity, _ward_details, legal_actions, new_game, perform_action, public_state
 
 
 def card(index:int,name:str,type_line:str,mana_cost:str="",power:str|None=None,toughness:str|None=None,quantity:int=1):
@@ -1218,6 +1218,16 @@ def test_landfall_resolution_order_selects_omnath_and_instead_clauses():
     assert _resolution_order_effect(omnath,3)=="Omnath deals 4 damage to each opponent."
     scythe="Put a +1/+1 counter on target creature you control. If this is the second time this ability has resolved this turn, double the number of +1/+1 counters on that creature instead."
     assert _resolution_order_effect(scythe,2)=="double the number of +1/+1 counters on that creature."
+
+
+def test_landfall_entered_land_subtype_selects_replacement_effect():
+    effect="Put a +1/+1 counter on this creature. If that land is a Forest, put two +1/+1 counters on this creature instead."
+    assert _entered_land_subtype_effect(effect,"Basic Land — Plains")=="Put a +1/+1 counter on this creature."
+    assert _entered_land_subtype_effect(effect,"Basic Land — Forest")=="put two +1/+1 counters on this creature."
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player");hydra={**card(829,"Oran-Rief Hydra","Creature — Hydra","","5","5"),"oracle_text":"Trample\nLandfall — Whenever a land you control enters, put a +1/+1 counter on this creature. If that land is a Forest, put two +1/+1 counters on this creature instead.","instance_id":"oran-rief-hydra","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].append(hydra)
+    for index,type_line in enumerate(("Basic Land — Plains","Basic Land — Forest")):
+        land={**card(830+index,f"Subtype Land {index}",type_line),"instance_id":f"subtype-land-{index}","owner_id":"player","controller_id":"player"};_enter_battlefield(state,player,[land],"hand");state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");hydra=next(card for card in player["battlefield"] if card["instance_id"]=="oran-rief-hydra")
+    assert hydra["counters"]["+1/+1"]==3
 
 
 def test_attack_triggers_count_attackers_once_or_individually_and_choose_targets():
