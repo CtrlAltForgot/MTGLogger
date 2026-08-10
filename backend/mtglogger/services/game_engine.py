@@ -299,6 +299,10 @@ def _active_delirium_text(card:dict,text:str)->str:
     for line in text.splitlines():
         if re.match(r"^\s*Delirium\s*[—-]",line,re.IGNORECASE):
             body=re.sub(r"^\s*Delirium\s*[—-]\s*","",line,flags=re.IGNORECASE)
+            if re.search(r"when this creature enters, choose one\. if there are four or more card types among cards in your graveyard, choose both instead",body,re.IGNORECASE):
+                visible.append(re.sub(r"choose one\. if there are four or more card types among cards in your graveyard, choose both instead","choose two" if active else "choose one",body,flags=re.IGNORECASE));continue
+            if re.search(r"choose one\. if there are four or more card types among cards in your graveyard, choose one or more instead",body,re.IGNORECASE):
+                visible.append(re.sub(r"choose one\. if there are four or more card types among cards in your graveyard, choose one or more instead","choose one or more" if active else "choose one",body,flags=re.IGNORECASE));continue
             if "can't attack or block unless there are four or more card types among cards in your graveyard" in body.casefold():
                 if not active:visible.append(body)
                 continue
@@ -2235,7 +2239,7 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
     if pending_search:
         if pending_search["player_id"]!=player_id:return []
         cards_by_id={card["instance_id"]:card for card in player["library"]};cards=[cards_by_id[card_id] for card_id in pending_search["card_ids"] if card_id in cards_by_id]
-        return [{"type":"search_library","card_ids":pending_search["card_ids"],"cards":cards,"min_amount":pending_search["min_amount"],"max_amount":pending_search["max_amount"],"destination":pending_search["destination"],"tapped":pending_search["tapped"],"label":pending_search["label"],"different_names":pending_search.get("different_names",False),"shared_land_type":pending_search.get("shared_land_type",False)},{"type":"concede"}]
+        return [{"type":"search_library","card_ids":pending_search["card_ids"],"cards":cards,"min_amount":pending_search["min_amount"],"max_amount":pending_search["max_amount"],"destination":pending_search.get("destination","hand"),"tapped":pending_search.get("tapped",False),"label":pending_search.get("label",f"Choose for {pending_search.get('source_name','this effect')}"),"different_names":pending_search.get("different_names",False),"shared_land_type":pending_search.get("shared_land_type",False)},{"type":"concede"}]
     pending_scry=state.get("pending_scry")
     if pending_scry:
         if pending_scry["player_id"]!=player_id:return []
@@ -2465,7 +2469,7 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
         if _has_x_cost(cost_card):action.update({"x_min":0,"x_max":_maximum_x(player,cost_card,generic_adjustment)})
         elif waterbend_symbol=="X":
             by_x={value:_waterbend_combinations(player,waterbend_base_card,value) for value in range(0,(waterbend_x_max or 0)+1)};action.update({"x_min":1 if "x can't be 0" in (card.get("oracle_text") or "").casefold() else 0,"x_max":waterbend_x_max,"cost_combinations_by_x":by_x})
-        modal_spec=_modal_spec(card);modal_options=(modal_spec or {}).get("options",[])
+        modal_rules=_delirium_rules_card(_threshold_rules_card(card,len(player["graveyard"])),player);modal_spec=_modal_spec(modal_rules);modal_options=(modal_spec or {}).get("options",[])
         if modal_spec:
             modes=[]
             for option in modal_options:
@@ -2848,7 +2852,7 @@ def _resolve_spell(state: dict) -> None:
         caster["graveyard"].append(card)
         _log(state,f"{card['name']} resolved overloaded, affecting {len(targets)} object(s).");return
     if item.get("kind","spell")=="spell" and len(item.get("mode_indices") or [])>1:
-        options={option["index"]:option for option in _modal_options(card)};targets=item.get("mode_targets") or []
+        projected_modal=_delirium_rules_card(_threshold_rules_card(card,len(caster["graveyard"])),caster);options={option["index"]:option for option in _modal_options(projected_modal)};targets=item.get("mode_targets") or []
         for position,index in enumerate(item["mode_indices"]):
             option=options[index];mode_card=_x_rules_card({**card,"name":f"{card['name']} — mode {position+1}","oracle_text":option["label"]},item.get("x_value"));state["stack"].append({"id":_id(),"kind":"modal_effect","card":mode_card,"controller_id":caster["id"],"target_id":targets[position] if position<len(targets) else None,"x_value":item.get("x_value")});_resolve_spell(state)
         if item.get("cast_source_zone")=="hand" and _has_keyword(card,"Rebound"):
@@ -2857,9 +2861,9 @@ def _resolve_spell(state: dict) -> None:
         elif item.get("flashback"):_put_into_exile(state,caster,[card],"stack",caster["id"])
         else:caster["graveyard"].append(card)
         _log(state,f"{card['name']} resolved with {len(item['mode_indices'])} modes.");return
-    rules_card=_selected_mode_card(card,item.get("mode_indices")) if item.get("kind","spell")=="spell" else card
+    projected_card=_delirium_rules_card(_threshold_rules_card(card,len(caster["graveyard"])),caster)
+    rules_card=_selected_mode_card(projected_card,item.get("mode_indices")) if item.get("kind","spell")=="spell" else projected_card
     if item.get("kind","spell")=="spell":rules_card=_kicked_rules_card(rules_card,bool(item.get("kicked")))
-    rules_card=_delirium_rules_card(_threshold_rules_card(rules_card,len(caster["graveyard"])),caster)
     rules_card=_city_blessing_rules_card(rules_card,bool(caster.get("city_blessing")))
     if item.get("blessing_top"):rules_card={**rules_card,"oracle_text":re.sub(r"return target ([^.]+?) to its owner's hand\.\s*if you have the city's blessing, you may put that permanent on top of its owner's library instead\.",r"Put target \1 on top of its owner's library.",rules_card.get("oracle_text") or "",flags=re.IGNORECASE)}
     rules_card=_x_rules_card(rules_card,item.get("x_value"));targeting_card=_spell_targeting_card(rules_card) if item.get("kind","spell")=="spell" else rules_card
@@ -3141,7 +3145,11 @@ def _resolve_spell(state: dict) -> None:
     rad_match=re.search(r"you may get (a|one|two|three|four|five|\d+) rad counters?",effect_text)
     if rad_match:
         word=rad_match.group(1).casefold();amount={"a":1,"one":1,"two":2,"three":3,"four":4,"five":5}.get(word,int(word) if word.isdigit() else 1);state["pending_rad_choice"]={"player_id":caster["id"],"source_name":source_name,"amount":amount};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} may get {amount} rad counter(s) from {source_name}.");return
-    if "look at the top card of your library" in effect_text:
+    top_group=re.search(r"look at the top (two|three|four|five|\d+) cards of your library\. put one of them into your hand and the rest on the bottom of your library in a random order",effect_text)
+    if top_group:
+        words={"two":2,"three":3,"four":4,"five":5};amount=words.get(top_group.group(1),int(top_group.group(1)) if top_group.group(1).isdigit() else 0);cards=caster["library"][-min(amount,len(caster["library"])):]
+        if cards:state["pending_library_search"]={"player_id":caster["id"],"source_name":source_name,"card_ids":[candidate["instance_id"] for candidate in cards],"min_amount":1,"max_amount":1,"destination":"hand","look_bottom_unchosen":True};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} must choose one of the top {len(cards)} cards for {source_name}.")
+    elif "look at the top card of your library" in effect_text:
         if caster["library"]:
             top=caster["library"][-1];creature="Creature" in top.get("type_line","");state["pending_top_card_choice"]={"player_id":caster["id"],"source_name":source_name,"card_id":top["instance_id"],"card":deepcopy(top),"allow_hand":creature and "if it's a creature card" in effect_text,"allow_graveyard":"put it into your graveyard" in effect_text};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} looked at the top card of their library for {source_name}.")
         return
@@ -4261,7 +4269,14 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                     trigger["event_card_id"]=event_card.get("instance_id");trigger["event_owner_id"]=event_owner.get("id")
                     if event=="enters":trigger["event_card_type_line"]=event_card.get("type_line","")
                 modal_options=_modal_options(ability_card)
-                if modal_options:
+                modal_spec=_modal_spec(ability_card);mandatory_all=bool(modal_spec and len(modal_options)>1 and modal_spec["min_modes"]==modal_spec["max_modes"]==len(modal_options))
+                if mandatory_all:
+                    combined={**ability_card,"oracle_text":" ".join(option["label"] for option in modal_options)};trigger["card"]=combined;combined_targets=_targets(state,owner["id"],combined)
+                    if _target_kind(combined):
+                        if combined_targets:state.setdefault("pending_trigger_targets",[]).append({"controller_id":owner["id"],"source_name":source["name"],"trigger":trigger,"card":combined});state["priority_player_id"]=state["pending_trigger_targets"][0]["controller_id"]
+                        else:_log(state,f"{source['name']}'s trigger had no legal target and was removed.")
+                    else:state["stack"].append(trigger)
+                elif modal_options:
                     state.setdefault("pending_trigger_targets",[]).append({"controller_id":owner["id"],"source_name":source["name"],"trigger":trigger,"card":ability_card,"mode_options":modal_options});state["priority_player_id"]=state["pending_trigger_targets"][0]["controller_id"]
                 elif dynamic_steps:
                     state.setdefault("pending_trigger_targets",[]).append({"controller_id":owner["id"],"source_name":source["name"],"trigger":trigger,"card":ability_card,"target_steps":dynamic_steps,"min_targets":dynamic_min});state["priority_player_id"]=state["pending_trigger_targets"][0]["controller_id"]
@@ -4850,7 +4865,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         elif target_ids:raise RuleViolation("That spell does not use multiple targets")
         convoke_residual=_convoke_residual(player,cost_card,selected_cost_ids,generic_adjustment,x_value) if requested_convoke else None;waterbend_amount=x_value if waterbend_symbol=="X" else int(waterbend_symbol or 0);waterbend_base={**cost_card,"mana_cost":f"{cost_card.get('mana_cost') or ''}{f'{{{generic_adjustment}}}' if generic_adjustment>0 else ''}"};waterbend_residual=_waterbend_residual(player,waterbend_base,waterbend_amount,selected_cost_ids,x_value=x_value if _has_x_cost(cost_card) else 0) if requested_waterbend else None
         if (requested_waterbend and waterbend_residual is None) or (requested_convoke and convoke_residual is None) or (not requested_waterbend and not requested_convoke and not _can_pay(player,cost_card,generic_adjustment-(len(selected_cost_ids) if requested_delve else 0),x_value=x_value)):raise RuleViolation("That spell cannot be cast with the chosen payment")
-        modal_spec=_modal_spec(card);modal_options=(modal_spec or {}).get("options",[]);chosen_modes=action.get("chosen_modes") or [];mode_targets=action.get("mode_targets") or []
+        modal_rules=_delirium_rules_card(_threshold_rules_card(card,len(player["graveyard"])),player);modal_spec=_modal_spec(modal_rules);modal_options=(modal_spec or {}).get("options",[]);chosen_modes=action.get("chosen_modes") or [];mode_targets=action.get("mode_targets") or []
         if requested_entwined and modal_spec:modal_spec={**modal_spec,"min_modes":len(modal_options),"max_modes":len(modal_options)}
         if requested_blight and modal_spec and "if this spell's additional cost was paid, choose both instead" in (card.get("oracle_text") or "").casefold():modal_spec={**modal_spec,"min_modes":2,"max_modes":2}
         if modal_spec and len(chosen_modes)==1 and not mode_targets:mode_targets=[action.get("target_id")]
@@ -5338,13 +5353,16 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
             subtype_sets=[set(re.split(r"\s+",card.get("type_line","").split("—",1)[-1].casefold())) for card in chosen]
             if not set.intersection(*subtype_sets):raise RuleViolation("Choose lands that share a land type")
         for card in chosen:player["library"].remove(card)
-        random.SystemRandom().shuffle(player["library"]);destination=pending.get("destination","hand")
+        if pending.get("look_bottom_unchosen"):
+            unchosen=[card for card in player["library"] if card["instance_id"] in allowed_ids];player["library"]=[card for card in player["library"] if card["instance_id"] not in allowed_ids];random.SystemRandom().shuffle(unchosen);player["library"][0:0]=unchosen
+        else:random.SystemRandom().shuffle(player["library"])
+        destination=pending.get("destination","hand")
         for card in chosen:
             if destination=="battlefield":
                 card["controller_id"]=player_id;card["tapped"]=bool(pending.get("tapped"));card["summoning_sick"]=True;_enter_battlefield(state,player,[card],"library")
             elif destination=="library_top":player["library"].append(card)
             else:player["hand"].append(card)
-        state["pending_library_search"]=None;state["priority_player_id"]=(state.get("pending_trigger_targets") or [{"controller_id":state["active_player_id"]}])[0]["controller_id"];_log(state,f"{player['name']} found {len(chosen)} card(s), moved them to {destination.replace('_',' ')}, and shuffled.")
+        state["pending_library_search"]=None;state["priority_player_id"]=(state.get("pending_trigger_targets") or [{"controller_id":state["active_player_id"]}])[0]["controller_id"];_log(state,f"{player['name']} chose {len(chosen)} card(s) for {destination.replace('_',' ')} and {'put the rest on the bottom' if pending.get('look_bottom_unchosen') else 'shuffled'}.")
     elif action_type in {"scry","surveil"}:
         pending=state.get("pending_scry") or {};top_ids=action.get("top_ids") or [];away_ids=(action.get("graveyard_ids") if action_type=="surveil" else action.get("bottom_ids")) or [];expected=pending.get("card_ids",[])
         if pending.get("player_id")!=player_id or pending.get("mode","scry")!=action_type or len(top_ids)+len(away_ids)!=len(expected) or len(set(top_ids+away_ids))!=len(expected) or set(top_ids+away_ids)!=set(expected):raise RuleViolation(f"Choose each {action_type}ed card exactly once")
