@@ -2323,6 +2323,7 @@ def _pending_decision(state:dict)->bool:
     if state.get("pending_zone_choice"):return True
     if state.get("pending_counter_choice"):return True
     if state.get("pending_color_choice"):return True
+    if state.get("pending_catalyst"):return True
     return bool(state.get("pending_miracle") or state.get("pending_impulsivity") or state.get("pending_library_placement") or state.get("pending_sticktwister") or state.get("pending_eumidian_choice") or state.get("pending_rad_choice") or state.get("pending_tap_choice") or state.get("pending_top_card_choice") or state.get("pending_revealed_discard") or state.get("pending_same_name_search") or state.get("pending_winter_exile") or state.get("pending_optional_discard") or state.get("pending_optional_payment") or state.get("pending_tilonalli") or state.get("pending_creature_type") or state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_populate") or state.get("pending_bolster") or state.get("pending_discovery") or state.get("pending_madness") or state.get("pending_rebound") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
 
 
@@ -2655,6 +2656,14 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
         if candidate:
             targeting_card=_spell_targeting_card(candidate);targets=_targets(state,player_id,targeting_card);required=bool(_target_kind(targeting_card))
             if not _modal_spec(candidate) and (not required or targets):actions.insert(0,{"type":"cast_impulsivity","label":f"Cast {candidate['name']} without paying its mana cost",**common,**({"targets":targets} if targets else {})})
+        return actions
+    pending_catalyst=state.get("pending_catalyst")
+    if pending_catalyst:
+        if pending_catalyst["player_id"]!=player_id:return []
+        candidate=next((card for card in player["exile"] if card["instance_id"]==pending_catalyst["card_id"]),None);common={"card_id":pending_catalyst["card_id"],"card":candidate,"source_name":pending_catalyst["source_name"]};actions=[{"type":"decline_catalyst","label":f"Don't cast {candidate['name'] if candidate else 'the selected card'}",**common},{"type":"concede"}]
+        if candidate:
+            targeting_card=_spell_targeting_card(candidate);targets=_targets(state,player_id,targeting_card);required=bool(_target_kind(targeting_card))
+            if not _modal_spec(candidate) and (not required or targets):actions.insert(0,{"type":"cast_catalyst","label":f"Cast {candidate['name']} without paying its mana cost",**common,**({"targets":targets} if targets else {})})
         return actions
     pending_zethi=state.get("pending_zethi_copies")
     if pending_zethi:
@@ -3431,6 +3440,10 @@ def _resolve_spell(state: dict) -> None:
         _log(state,f"{source_permanent['name']} dealt {amount} damage to the defender it is attacking.");return
     if "instant and sorcery spells you cast this turn cost {1} less to cast" in effect_text:
         caster["instant_sorcery_reduction_turn"]=state["turn"];caster["instant_sorcery_reduction"]=caster.get("instant_sorcery_reduction",0)+1;_log(state,f"{caster['name']}'s instant and sorcery spells cost {{1}} less this turn.");return
+    if source_permanent and "choose an exiled card used to craft" in effect_text and "at random" in effect_text and "cast that card without paying its mana cost" in effect_text:
+        crafted_ids=set(source_permanent.get("crafted_with_ids") or []);candidates=[candidate for candidate in caster["exile"] if candidate["instance_id"] in crafted_ids]
+        if not candidates:_log(state,f"{source_permanent['name']} had no crafted card remaining in exile to choose.");return
+        chosen=random.SystemRandom().choice(candidates);state["pending_catalyst"]={"player_id":caster["id"],"source_name":source_permanent["name"],"card_id":chosen["instance_id"]};state["priority_player_id"]=caster["id"];_log(state,f"{source_permanent['name']} randomly chose {chosen['name']}; {caster['name']} may cast it without paying its mana cost.");return
     if source_permanent and "draw a card for each artifact you control, then put this artifact into its owner's library third from the top" in effect_text:
         amount=sum("Artifact" in permanent.get("type_line","") for permanent in caster["battlefield"]);source_name=source_permanent["name"];_draw(state,caster,amount);source_owner=next(owner for owner in state["players"] if source_permanent in owner["battlefield"]);zone_owner=_player(state,source_permanent.get("owner_id",source_owner["id"]));_leave_battlefield(state,source_owner,source_permanent,"library");zone_owner["library"].remove(source_permanent);zone_owner["library"].insert(max(0,len(zone_owner["library"])-2),source_permanent);_log(state,f"{caster['name']} drew {amount} card(s), then put {source_name} third from the top of its owner's library.");return
     if "each opponent may sacrifice a nonland permanent of their choice or discard a card" in effect_text and "each opponent who didn't sacrifice a permanent or discard a card this way" in effect_text:
@@ -5684,6 +5697,17 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
             _leave_graveyard(state,owner,[candidate]);stack_item={"id":_id(),"kind":"spell","card":candidate,"controller_id":player_id,"target_id":target_id,"target_ids":[],"mode_indices":[],"mode_targets":[],"x_value":0,"free_cast":True,"flashback":True,"cast_source_zone":"graveyard"};state["stack"].append(stack_item);_record_spell_cast(state,player);candidate["cast_source_zone"]="graveyard";_queue_triggers(state,"cast",candidate,player);_queue_cascade_triggers(state,player,candidate);_queue_storm_trigger(state,player,candidate,stack_item);candidate.pop("cast_source_zone",None);_queue_ward(state,player,target_id,stack_item);state["consecutive_passes"]=0;state["pending_phase_advance"]=False
             if (_multiplayer(state) or not allow_direct_resolution) and not state.get("pending_ward") and not state.get("pending_trigger_targets"):state["priority_player_id"]=opponent(state,player_id)["id"]
             _log(state,f"{player['name']} cast {candidate['name']} from a graveyard without paying its mana cost; it will be exiled instead of returning to a graveyard.")
+    elif action_type in {"cast_catalyst","decline_catalyst"}:
+        pending=state.get("pending_catalyst") or {};candidate=next((card for card in player["exile"] if card["instance_id"]==pending.get("card_id")),None)
+        if pending.get("player_id")!=player_id or not candidate:raise RuleViolation("That Cosmium Catalyst choice is no longer available")
+        state["pending_catalyst"]=None
+        if action_type=="decline_catalyst":state["priority_player_id"]=state["active_player_id"];_log(state,f"{player['name']} left {candidate['name']} in exile instead of casting it with {pending['source_name']}.")
+        else:
+            targeting_card=_spell_targeting_card(candidate);targets=_targets(state,player_id,targeting_card);target_id=action.get("target_id")
+            if _target_kind(targeting_card) and target_id not in {target["id"] for target in targets}:raise RuleViolation("Choose a legal target for the spell selected by Cosmium Catalyst")
+            _leave_exile(state,player,[candidate]);stack_item={"id":_id(),"kind":"spell","card":candidate,"controller_id":player_id,"target_id":target_id,"target_ids":[],"mode_indices":[],"mode_targets":[],"x_value":0,"free_cast":True,"cast_source_zone":"exile"};state["stack"].append(stack_item);_record_spell_cast(state,player);candidate["cast_source_zone"]="exile";_queue_triggers(state,"cast",candidate,player);_queue_cascade_triggers(state,player,candidate);_queue_storm_trigger(state,player,candidate,stack_item);candidate.pop("cast_source_zone",None);_queue_ward(state,player,target_id,stack_item);state["consecutive_passes"]=0;state["pending_phase_advance"]=False
+            if (_multiplayer(state) or not allow_direct_resolution) and not state.get("pending_ward") and not state.get("pending_trigger_targets"):state["priority_player_id"]=opponent(state,player_id)["id"]
+            _log(state,f"{player['name']} cast {candidate['name']} from exile with {pending['source_name']} without paying its mana cost.")
     elif action_type in {"cast_madness","decline_madness"}:
         pending=state.get("pending_madness") or {};candidate=next((card for card in player["exile"] if card["instance_id"]==pending.get("card_id")),None);ability=_madness_ability(candidate or {})
         if pending.get("player_id")!=player_id or not candidate or not ability:raise RuleViolation("That madness choice is no longer available")

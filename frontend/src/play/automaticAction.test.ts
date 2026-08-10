@@ -25,6 +25,7 @@ describe('automatic game actions',()=>{
     expect(automaticGameAction([action('accept_trigger'),action('skip_trigger')])).toBeUndefined()
     expect(automaticGameAction([action('choose_color',{label:'Red'})])).toBeUndefined()
     expect(automaticGameAction([action('place_target_top'),action('place_target_bottom')])).toBeUndefined()
+    expect(automaticGameAction([action('cast_catalyst'),action('decline_catalyst')])).toBeUndefined()
   })
 
   it('leaves readable time before every automatic transition',()=>{
