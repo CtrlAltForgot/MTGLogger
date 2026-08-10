@@ -165,8 +165,8 @@ def _continuous_stats(state:dict|None,card:dict)->tuple[int,int]:
             chosen_type=(source.get("chosen_creature_type") or "").casefold()
             if chosen_type and controller==source.get("controller_id",owner["id"]) and re.search(rf"\b{re.escape(chosen_type)}\b",type_line) and "creatures you control of the chosen type get +1/+1" in (source.get("oracle_text") or "").casefold():power+=1;toughness+=1
             if source.get("attached_to")==card.get("instance_id"):
-                attachment_text=(source.get("oracle_text") or "").casefold();attachment_match=re.search(r"(?:equipped|enchanted) creature gets ([+-]\d+)/([+-]\d+)(?! until end of turn)",attachment_text)
-                if attachment_match:power+=int(attachment_match.group(1));toughness+=int(attachment_match.group(2))
+                attachment_text=_active_level_text(source).casefold()
+                for attachment_match in re.finditer(r"(?:equipped|enchanted) creature gets (?:an additional )?([+-]\d+)/([+-]\d+)(?! until end of turn)",attachment_text):power+=int(attachment_match.group(1));toughness+=int(attachment_match.group(2))
             clauses=re.split(r"(?<=[.!])\s+|\n",_active_level_text(source))
             for clause in clauses:
                 lower=clause.casefold()
@@ -183,6 +183,10 @@ def _continuous_stats(state:dict|None,card:dict)->tuple[int,int]:
                     power+=int(match.group(4));toughness+=int(match.group(5))
                 subtype_bonus=None if "for each +1/+1 counter" in lower else re.search(r"\b(other )?([A-Za-z][A-Za-z'-]+)s you control get ([+-]\d+)/([+-]\d+)",clause,re.IGNORECASE)
                 if subtype_bonus and subtype_bonus.group(2).casefold() not in {"creature","artifact","enchantment","permanent","token"} and controller==source.get("controller_id",owner["id"]) and (not subtype_bonus.group(1) or source.get("instance_id")!=card.get("instance_id")) and re.search(rf"\b{re.escape(subtype_bonus.group(2))}\b",type_line,re.IGNORECASE):power+=int(subtype_bonus.group(3));toughness+=int(subtype_bonus.group(4))
+                global_subtype=re.search(r"\ball ([A-Za-z][A-Za-z'-]+)s get ([+-]\d+)/([+-]\d+)",clause,re.IGNORECASE)
+                if global_subtype and re.search(rf"\b{re.escape(global_subtype.group(1))}\b",type_line,re.IGNORECASE):power+=int(global_subtype.group(2));toughness+=int(global_subtype.group(3))
+                color_bonus=re.search(r"\b(white|blue|black|red|green) creatures get (?:an additional )?([+-]\d+)/([+-]\d+)",clause,re.IGNORECASE);color_symbols={"white":"W","blue":"U","black":"B","red":"R","green":"G"}
+                if color_bonus and color_symbols[color_bonus.group(1).casefold()] in set(card.get("colors") or []):power+=int(color_bonus.group(2));toughness+=int(color_bonus.group(3))
             if controller==source.get("controller_id",owner["id"]) and "gets +1/+0 for each time it has attacked this turn" in (source.get("oracle_text") or "").casefold():power+=int(card.get("attacks_this_turn",0))
             if controller==source.get("controller_id",owner["id"]) and source is not card and re.search(r"\bElf\b",card.get("type_line","")) and "other elf creatures you control get +1/+1 for each +1/+1 counter on this creature" in (source.get("oracle_text") or "").casefold():power+=source.get("counters",{}).get("+1/+1",0);toughness+=source.get("counters",{}).get("+1/+1",0)
             if controller==source.get("controller_id",owner["id"]) and source is not card and "other creatures you control get +x/+0, where x is your speed" in _active_level_text(source).casefold():power+=int(owner.get("speed",0))
@@ -198,6 +202,7 @@ def _sync_city_blessing(state:dict)->None:
     for owner in state["players"]:
         for card in owner["battlefield"]:
             controller_id=card.get("controller_id",owner["id"]);controller=_player(state,controller_id);card["controller_city_blessing"]=controller_id in blessed;card["controller_creature_count"]=sum("Creature" in permanent.get("type_line","") for permanent in controller["battlefield"]);card["controller_artifact_count"]=sum("Artifact" in permanent.get("type_line","") for permanent in controller["battlefield"]);card["controller_basic_land_count"]=sum("Basic" in permanent.get("type_line","") and "Land" in permanent.get("type_line","") for permanent in controller["battlefield"]);granted=[]
+            card["controller_graveyard_count"]=len(controller["graveyard"])
             for source_owner in state["players"]:
                 for source in source_owner["battlefield"]:
                     chosen=(source.get("chosen_creature_type") or "").casefold()
@@ -218,6 +223,14 @@ def _sync_city_blessing(state:dict)->None:
                         for keyword in ("trample","vigilance"):
                             if f"land creatures you control have {keyword}" in text:granted.append(keyword.title())
             card["continuous_keywords"]=sorted(set(granted))
+    for source_owner in state["players"]:
+        for source in source_owner["battlefield"]:
+            target=next((card for owner in state["players"] for card in owner["battlefield"] if card["instance_id"]==source.get("attached_to")),None)
+            if not target:continue
+            active_rules=_active_level_text(source);target.setdefault("attachment_rules",{})[source["instance_id"]]=active_rules
+            keywords=_attachment_keywords({**source,"oracle_text":active_rules})
+            if keywords:target.setdefault("attachment_keywords",{})[source["instance_id"]]=keywords
+            else:target.get("attachment_keywords",{}).pop(source["instance_id"],None)
 
 
 def _creature_subtypes(player:dict)->list[str]:
@@ -260,9 +273,24 @@ def _level_sections(card:dict)->tuple[list[str],list[tuple[int,int|None,list[str
 
 def _active_level_text(card:dict)->str:
     preamble,sections=_level_sections(card)
-    if not sections:return _active_speed_text(card,_active_station_text(card,card.get("oracle_text") or ""))
+    if not sections:return _active_speed_text(card,_active_threshold_text(card,_active_station_text(card,card.get("oracle_text") or "")))
     level=int(card.get("counters",{}).get("level",0));active=next((lines for minimum,maximum,lines in sections if level>=minimum and (maximum is None or level<=maximum)),[])
-    return _active_speed_text(card,_active_station_text(card,"\n".join([*preamble,*active])))
+    return _active_speed_text(card,_active_threshold_text(card,_active_station_text(card,"\n".join([*preamble,*active]))))
+
+
+def _active_threshold_text(card:dict,text:str)->str:
+    """Expose Threshold clauses only while that card's controller has seven cards in their graveyard."""
+    active=int(card.get("controller_graveyard_count",0))>=7;visible=[]
+    for line in text.splitlines():
+        if re.match(r"^\s*Threshold\s*[—-]",line,re.IGNORECASE):
+            if active:
+                body=re.sub(r"^\s*Threshold\s*[—-]\s*","",line,flags=re.IGNORECASE)
+                body=re.sub(r"^as long as there are seven or more cards in your graveyard,\s*","",body,flags=re.IGNORECASE)
+                body=re.sub(r"^if there are seven or more cards in your graveyard,\s*","",body,flags=re.IGNORECASE)
+                body=re.sub(r"\s+as long as there are seven or more cards in your graveyard","",body,flags=re.IGNORECASE)
+                visible.append(body)
+        else:visible.append(line)
+    return "\n".join(visible)
 
 
 def _station_sections(text:str)->tuple[list[str],list[tuple[int,list[str]]]]:
@@ -514,6 +542,8 @@ def _has_keyword(card: dict, keyword: str) -> bool:
     if level_sections and any(re.search(rf"\b{re.escape(keyword)}\b","\n".join(lines),re.IGNORECASE) for _,_,lines in level_sections):printed.discard(keyword.casefold())
     lower_keyword=keyword.casefold();raw_text=card.get("oracle_text") or "";speed_conditional=[line for line in raw_text.splitlines() if re.match(r"^\s*Max speed\s*[—-]",line,re.IGNORECASE)];text=_active_level_text(card).casefold();conditional=[clause for clause in re.split(r"(?<=[.!])\s+|\n",text) if "as long as this creature is monstrous" in clause];blessing_conditional=[clause for clause in re.split(r"(?<=[.!])\s+|\n",text) if "city's blessing" in clause];unconditional="\n".join(clause for clause in re.split(r"(?<=[.!])\s+|\n",text) if clause not in conditional and clause not in blessing_conditional)
     if int(card.get("controller_speed",0))<4 and any(re.search(rf"\b{re.escape(lower_keyword)}\b",line,re.IGNORECASE) for line in speed_conditional):printed.discard(lower_keyword)
+    threshold_conditional=[line for line in raw_text.splitlines() if re.match(r"^\s*Threshold\s*[—-]",line,re.IGNORECASE)]
+    if int(card.get("controller_graveyard_count",0))<7 and any(re.search(rf"\b{re.escape(lower_keyword)}\b",line,re.IGNORECASE) for line in threshold_conditional):printed.discard(lower_keyword)
     charge=int(card.get("counters",{}).get("charge",0));_,station_sections=_station_sections(raw_text);inactive_station=[line for minimum,lines in station_sections if charge<minimum for line in lines]
     if any(re.search(rf"\b{re.escape(lower_keyword)}\b",line,re.IGNORECASE) for line in inactive_station):printed.discard(lower_keyword)
     if any(re.search(rf"\b{re.escape(lower_keyword)}\b",clause) for clause in blessing_conditional):printed.discard(lower_keyword)
@@ -524,7 +554,7 @@ def _has_keyword(card: dict, keyword: str) -> bool:
 
 
 def _attachment_keywords(card:dict)->list[str]:
-    text=(card.get("oracle_text") or "").casefold();supported=("defender","flying","first strike","double strike","deathtouch","haste","hexproof","indestructible","lifelink","menace","reach","trample","vigilance")
+    text=(card.get("oracle_text") or "").casefold();supported=("defender","flying","first strike","double strike","deathtouch","haste","hexproof","indestructible","lifelink","menace","reach","shroud","trample","vigilance")
     clauses=[clause for clause in re.split(r"(?<=[.!])\s+|\n",text) if re.search(r"(?:equipped|enchanted) creature .*?\b(?:has|gains?)\b",clause)]
     return [keyword for keyword in supported if any(re.search(rf"\b{re.escape(keyword)}\b",clause) for clause in clauses)]
 
@@ -1164,6 +1194,12 @@ def _activated_abilities(card: dict) -> list[dict]:
         discard_match=re.search(r"\bdiscard (a|an|one|two|three|four|five|X|\d+) (?:(nonland|land|creature|artifact|enchantment|planeswalker|instant|sorcery) )?cards?\b",cost,re.IGNORECASE)
         if discard_match:
             word=discard_match.group(1).casefold();selection_costs.append({"kind":"discard","filter":discard_match.group(2).casefold() if discard_match.group(2) else "card","amount":"X" if word=="x" else words.get(word,int(word) if word.isdigit() else 1),"exclude_source":False})
+        graveyard_exile=re.search(r"\bexile (a|an|one|two|three|four|five|X|\d+) (?:(nonland|land|creature|artifact|enchantment|planeswalker|instant|sorcery) )?cards? from your graveyard\b",cost,re.IGNORECASE)
+        if graveyard_exile:
+            word=graveyard_exile.group(1).casefold();selection_costs.append({"kind":"exile_graveyard","filter":graveyard_exile.group(2).casefold() if graveyard_exile.group(2) else "card","amount":"X" if word=="x" else words.get(word,int(word) if word.isdigit() else 1),"exclude_source":False})
+        graveyard_bottom=re.search(r"\bput (a|an|one|two|three|four|five|X|\d+) (?:(nonland|land|creature|artifact|enchantment|planeswalker|instant|sorcery) )?cards? from your graveyard on the bottom of your library\b",cost,re.IGNORECASE)
+        if graveyard_bottom:
+            word=graveyard_bottom.group(1).casefold();selection_costs.append({"kind":"bottom_graveyard","filter":graveyard_bottom.group(2).casefold() if graveyard_bottom.group(2) else "card","amount":"X" if word=="x" else words.get(word,int(word) if word.isdigit() else 1),"exclude_source":False})
         sacrifice_match=None if self_sacrifice else re.search(r"\bsacrifice (another |a |an |one |two |three |X |two other |three other )?(artifact or creature|creature or artifact|creature or vehicle|nonland permanent|land|creature|artifact|enchantment|planeswalker|permanent|token)s?\b",cost,re.IGNORECASE)
         if sacrifice_match:
             count_word=(sacrifice_match.group(1) or "a").strip().casefold();selection_costs.append({"kind":"sacrifice","filter":sacrifice_match.group(2).casefold(),"amount":"X" if count_word=="x" else 2 if count_word=="two other" else 3 if count_word=="three other" else words.get(count_word,1),"exclude_source":"other" in count_word or count_word=="another"})
@@ -1238,7 +1274,7 @@ def _activated_cost_options(player:dict,source:dict,selection_cost:dict|None)->l
         if kind=="token":return bool(card.get("token"))
         if " or " in kind:return any(part in type_line for part in kind.split(" or "))
         return kind in type_line
-    zone=player["hand"] if selection_cost["kind"]=="discard" else player["battlefield"]
+    zone=player["hand"] if selection_cost["kind"]=="discard" else player["graveyard"] if selection_cost["kind"] in {"exile_graveyard","bottom_graveyard"} else player["battlefield"]
     return [card for card in zone if (not selection_cost.get("exclude_source") or card["instance_id"]!=source["instance_id"]) and matches(card)]
 
 
@@ -1576,6 +1612,37 @@ def _city_blessing_rules_card(card:dict,blessed:bool)->dict:
     text=re.sub(r"Each opponent sacrifices a creature of their choice\.\s*If you have the city's blessing, instead each opponent sacrifices half the creatures they control of their choice, rounded up\.","Each opponent sacrifices half the creatures they control, rounded up.",text,flags=re.IGNORECASE)
     text=re.sub(r"Each player draws a card\.\s*If you have the city's blessing, instead only you draw a card\.","Draw a card.",text,flags=re.IGNORECASE)
     text=re.sub(r"put a \+1/\+1 counter on each creature you control\.\s*If you have the city's blessing, put two \+1/\+1 counters on each creature you control instead\.","put two +1/+1 counters on each creature you control.",text,flags=re.IGNORECASE)
+    return {**card,"oracle_text":text}
+
+
+def _threshold_rules_card(card:dict,graveyard_count:int)->dict:
+    """Hide inactive Threshold effects and apply the exact stronger spell replacements."""
+    text=card.get("oracle_text") or "";active=graveyard_count>=7;lines=[]
+    for line in text.splitlines():
+        if re.match(r"^\s*Threshold\s*[—-]",line,re.IGNORECASE):
+            if active:lines.append(re.sub(r"^\s*Threshold\s*[—-]\s*","",line,flags=re.IGNORECASE))
+        else:lines.append(line)
+    text="\n".join(lines)
+    if not active:return {**card,"oracle_text":text}
+    name=(card.get("name") or "").casefold()
+    replacements={
+        "cabal ritual":"Add {B}{B}{B}{B}{B}.",
+        "far wanderings":"Search your library for up to three basic land cards, put them onto the battlefield tapped, then shuffle.",
+        "grizzly fate":"Create four 2/2 green Bear creature tokens.",
+        "kirtar's wrath":"Destroy all creatures. They can't be regenerated. Create two 1/1 white Spirit creature tokens with flying.",
+        "thermal blast":"Thermal Blast deals 5 damage to target creature.",
+        "stitch together":"Return target creature card from your graveyard to the battlefield.",
+        "toxic stench":"Destroy target nonblack creature. It can't be regenerated.",
+        "shower of coals":"Shower of Coals deals 4 damage to each of up to three targets.",
+        "epicenter":"Each player sacrifices all lands they control.",
+        "cleansing meditation":"Destroy all enchantments, then return all cards in your graveyard destroyed this way to the battlefield.",
+        "rancid earth":"Destroy target land. Rancid Earth deals 1 damage to each creature and each player.",
+        "lightning surge":"Lightning Surge deals 6 damage to any target. The damage can't be prevented.",
+        "kamahl's sledge":"Kamahl's Sledge deals 4 damage to target creature and 4 damage to that creature's controller.",
+    }
+    if name in replacements:
+        suffix="\n"+"\n".join(line for line in lines if re.match(r"^(?:Flashback|Buyback|Kicker|Cycling)\b",line,re.IGNORECASE))
+        text=replacements[name]+(suffix if suffix.strip() else "")
     return {**card,"oracle_text":text}
 
 
@@ -2679,6 +2746,7 @@ def _resolve_spell(state: dict) -> None:
         _log(state,f"{card['name']} resolved with {len(item['mode_indices'])} modes.");return
     rules_card=_selected_mode_card(card,item.get("mode_indices")) if item.get("kind","spell")=="spell" else card
     if item.get("kind","spell")=="spell":rules_card=_kicked_rules_card(rules_card,bool(item.get("kicked")))
+    rules_card=_threshold_rules_card(rules_card,len(caster["graveyard"]))
     rules_card=_city_blessing_rules_card(rules_card,bool(caster.get("city_blessing")))
     if item.get("blessing_top"):rules_card={**rules_card,"oracle_text":re.sub(r"return target ([^.]+?) to its owner's hand\.\s*if you have the city's blessing, you may put that permanent on top of its owner's library instead\.",r"Put target \1 on top of its owner's library.",rules_card.get("oracle_text") or "",flags=re.IGNORECASE)}
     rules_card=_x_rules_card(rules_card,item.get("x_value"));targeting_card=_spell_targeting_card(rules_card) if item.get("kind","spell")=="spell" else rules_card;target_kind=_target_kind(targeting_card);target_id=item.get("target_id")
@@ -4735,7 +4803,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
             valid_groups={tuple(sorted(group)) for group in available.get("cost_combinations",[])}
             if tuple(sorted(selected_cost_ids)) not in valid_groups:raise RuleViolation("Choose one complete legal payment for every activation cost")
         elif len(selected_cost_ids)!=required_cost or len(set(selected_cost_ids))!=required_cost or not set(selected_cost_ids).issubset(cost_options):raise RuleViolation(f"Choose exactly {required_cost} legal card(s) for the activation cost")
-        selected_cost_cards=[card for zone in (player["hand"],player["battlefield"]) for card in zone if card["instance_id"] in set(selected_cost_ids)]
+        selected_cost_cards=[card for zone in (player["hand"],player["battlefield"],player["graveyard"]) for card in zone if card["instance_id"] in set(selected_cost_ids)]
         if len(selected_cost_cards)!=(len(selected_cost_ids) if waterbend_symbol or available.get("selection_x") else required_cost):raise RuleViolation("One or more activation cost cards are no longer available")
         stack_before_cost=len(state["stack"])
         if waterbend_symbol:
@@ -4762,12 +4830,20 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         sacrifice_cards=[permanent] if ability["self_sacrifice"] else []
         discard_ids={card_id for requirement in available.get("cost_requirements",[]) if requirement["kind"]=="discard" for card_id in requirement["options"]}
         sacrifice_ids={card_id for requirement in available.get("cost_requirements",[]) if requirement["kind"]=="sacrifice" for card_id in requirement["options"]}
+        exile_graveyard_ids={card_id for requirement in available.get("cost_requirements",[]) if requirement["kind"]=="exile_graveyard" for card_id in requirement["options"]}
+        bottom_graveyard_ids={card_id for requirement in available.get("cost_requirements",[]) if requirement["kind"]=="bottom_graveyard" for card_id in requirement["options"]}
         discard_cards=[]
         for card in list(selected_cost_cards):
             if card["instance_id"] in discard_ids and card in player["hand"]:discard_cards.append(card)
             elif card["instance_id"] in sacrifice_ids and card in player["battlefield"]:sacrifice_cards.append(card)
         _discard_cards(state,player,discard_cards)
         _sacrifice_permanents(state,player,list({card["instance_id"]:card for card in sacrifice_cards}.values()))
+        exiled=[card for card in selected_cost_cards if card["instance_id"] in exile_graveyard_ids and card in player["graveyard"]]
+        if exiled:_leave_graveyard(state,player,exiled);_put_into_exile(state,player,exiled,"activation_cost",player_id)
+        bottomed=[card for card in selected_cost_cards if card["instance_id"] in bottom_graveyard_ids and card in player["graveyard"]]
+        if bottomed:
+            _leave_graveyard(state,player,bottomed)
+            for card in reversed(bottomed):player["library"].insert(0,card)
         if ability.get("self_bottom") and permanent in player["battlefield"]:
             _leave_battlefield(state,player,permanent,"library");owner=_player(state,permanent.get("owner_id",player["id"]));owner["library"].remove(permanent);owner["library"].insert(0,permanent)
         if (_multiplayer(state) or not allow_direct_resolution) and not state.get("pending_ward") and not state.get("pending_trigger_targets"):state["priority_player_id"]=opponent(state,player_id)["id"]
