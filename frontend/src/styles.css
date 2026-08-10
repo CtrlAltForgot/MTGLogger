@@ -89,6 +89,20 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .play-shell { width:100%; height:calc(100dvh - 64px); min-height:560px; display:flex; flex-direction:column; overflow:hidden; background:#080c0c; }
 .play-gamebar { flex:0 0 50px; min-width:0; padding:5px clamp(8px,1.4vw,22px); border-bottom:1px solid rgba(255,255,255,.08); background:linear-gradient(180deg,#171a1c,#0e1112); }
 .play-game-title { flex:1; min-width:80px; display:flex; flex-direction:column; line-height:1.05; }
+.play-game-title .MuiTypography-root,
+.phase-track,
+.player-hud,
+.action-prompt .MuiTypography-overline,
+.table-notice .MuiTypography-root,
+.card-inspector .MuiTypography-root,
+.play-actions .MuiButton-root,
+.command-zone > .MuiTypography-root {
+  font-family: Beleren, Georgia, serif !important;
+}
+.play-game-title .MuiTypography-root:first-child { letter-spacing:.025em; }
+.phase-track,.action-prompt .MuiTypography-overline { letter-spacing:.085em; }
+.player-hud > .MuiTypography-h4 { font-variant-numeric:lining-nums tabular-nums; }
+.play-actions .MuiButton-root { letter-spacing:.018em; }
 .play-shell > .MuiAlert-root { flex:0 0 auto; margin:6px clamp(8px,1.4vw,22px) 0; }
 .play-table { position:relative; flex:1 1 auto; width:100%; min-height:0; overflow:hidden; padding:0 clamp(92px,7vw,142px); border:0 !important; border-radius:0 !important; background:radial-gradient(ellipse at 50% 48%,rgba(53,92,79,.86),rgba(20,42,38,.96) 55%,#071211 100%),linear-gradient(120deg,#173a31,#0d211d) !important; box-shadow:inset 0 0 110px rgba(0,0,0,.72) !important; isolation:isolate; }
 .play-table::before { content:""; position:absolute; inset:0; z-index:-1; pointer-events:none; opacity:.38; background-image:linear-gradient(90deg,transparent 49.9%,rgba(233,210,157,.13) 50%,transparent 50.1%),repeating-linear-gradient(28deg,transparent 0 34px,rgba(255,255,255,.018) 35px 36px); }
@@ -105,6 +119,7 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .play-card img { width:100%; height:100%; object-fit:cover; display:block; }
 .token-face { width:100%; height:100%; display:grid; place-content:center; justify-items:center; gap:5px; padding:7px; text-align:center; border:2px solid rgba(255,224,153,.72); border-radius:7px; color:#fff2cf; background:radial-gradient(circle at 50% 34%,rgba(255,211,111,.28),transparent 35%),linear-gradient(145deg,#44331d,#17120c 62%,#080706); box-shadow:inset 0 0 0 3px rgba(0,0,0,.4); }
 .token-face .MuiSvgIcon-root { color:#ffd778; }
+.token-face .MuiTypography-root { font-family:Beleren,Georgia,serif !important; }
 .token-face .MuiTypography-caption { font-size:.55rem; line-height:1.05; opacity:.78; }
 .play-card:hover { transform:translateY(-14px) scale(1.32); z-index:20; }
 .play-card.is-tapped { transform:rotate(90deg) scale(.82); margin-inline:3px -5px; }
