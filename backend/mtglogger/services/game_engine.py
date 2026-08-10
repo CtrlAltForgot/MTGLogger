@@ -2425,6 +2425,7 @@ def _resolve_spell(state: dict) -> None:
     text = (rules_card.get("oracle_text") or "").casefold()
     is_permanent_spell = item.get("kind", "spell") in {"spell","storm_copy"} and any(kind in card.get("type_line", "") for kind in ("Creature", "Artifact", "Enchantment", "Planeswalker", "Battle"))
     effect_text = "" if is_permanent_spell and re.search(r"\b(?:when|whenever|at the beginning)\b", text) else text
+    if "if you had a land enter" in effect_text:effect_text=_landfall_spell_effect(effect_text,caster.get("land_entered_turn")==state.get("turn"))
     if item.get("kind")=="trigger" and re.search(r"\b(?:first|second|third|fourth) time(?: this ability has resolved)? this turn\b",effect_text):
         usage=state.setdefault("trigger_resolution_usage",{});key=f"{item.get('source_id')}:{card.get('oracle_text','')}";record=usage.get(key,{})
         count=(record.get("count",0)+1) if record.get("turn")==state.get("turn") else 1
@@ -2573,6 +2574,8 @@ def _resolve_spell(state: dict) -> None:
     life_match = re.search(r"you gain (\d+) life", effect_text)
     if life_match:
         _gain_life(state,caster,int(life_match.group(1)))
+    target_life_match=re.search(r"(?:target|that) player gains? (\d+) life",effect_text)
+    if target_player and target_life_match:_gain_life(state,target_player,int(target_life_match.group(1)))
     damage_match = re.search(r"deals (\d+) damage to (?:target opponent|each opponent)", effect_text)
     if damage_match:
         amount=int(damage_match.group(1))
@@ -2619,7 +2622,7 @@ def _resolve_spell(state: dict) -> None:
             for permanent in owner["battlefield"]:
                 if "Creature" not in permanent.get("type_line","") or ("other creatures" in global_no_blocks.group(0) and target and permanent["instance_id"]==target["instance_id"]) or ("without flying" in global_no_blocks.group(0) and _has_keyword(permanent,"Flying")):continue
                 permanent["cant_block_until_turn"]=state["turn"]
-    stats_match = re.search(r"target creature[^.]* gets ([+-]\d+)/([+-]\d+) until end of turn", effect_text)
+    stats_match = re.search(r"(?:target|that) creature[^.]* gets ([+-]\d+)/([+-]\d+) until end of turn", effect_text)
     if target and stats_match:
         target["temporary_power"] = target.get("temporary_power", 0) + int(stats_match.group(1))
         target["temporary_toughness"] = target.get("temporary_toughness", 0) + int(stats_match.group(2))
@@ -2956,6 +2959,7 @@ def _enter_battlefield(state:dict,controller:dict,cards:list[dict],origin:str="e
         card["controller_id"]=controller["id"];card["entered_turn"]=state["turn"];card["entry_event_origin"]=origin;card["entry_event_was_cast"]=was_cast;card["entry_event_played"]=played;card["entry_event_batch_size"]=batch_size
         if _echo_cost(card):card["echo_due_controller_id"]=controller["id"]
         controller["battlefield"].append(card)
+        if "Land" in card.get("type_line",""):controller["land_entered_turn"]=state["turn"]
         if "as this enchantment enters, choose a creature type" in (card.get("oracle_text") or "").casefold() and not card.get("chosen_creature_type"):
             state.setdefault("pending_creature_type",[]).append({"player_id":controller["id"],"card_id":card["instance_id"],"card_name":card["name"]});state["priority_player_id"]=controller["id"]
     if any("you may play an additional land on each of your turns" in (card.get("oracle_text") or "").casefold() for card in entering):_refresh_land_plays(state,controller)
@@ -3112,6 +3116,19 @@ def _land_threshold_effect(text:str,player:dict)->str:
         amount=words.get(conditional.group(1).casefold(),int(conditional.group(1)) if conditional.group(1).isdigit() else 0);count=len({land.get("name","") for land in lands}) if conditional.group(2) else len(lands)
         if count>=amount:
             body=conditional.group(3)
+            if body.casefold().endswith(" instead."):selected=[];body=re.sub(r"\s+instead(?=\.$)","",body,flags=re.IGNORECASE)
+            selected.append(body)
+    return " ".join(selected)
+
+
+def _landfall_spell_effect(text:str,land_entered:bool)->str:
+    """Apply spell ability-word clauses that replace a preceding effect after landfall."""
+    selected=[]
+    for sentence in re.split(r"(?<=[.!])\s+|\n",text.strip()):
+        conditional=re.match(r"landfall\s*[—-]\s*if you had a land enter(?: the battlefield)? under your control this turn,\s*(.+)",sentence,re.IGNORECASE)
+        if not conditional:selected.append(sentence);continue
+        if land_entered:
+            body=conditional.group(1)
             if body.casefold().endswith(" instead."):selected=[];body=re.sub(r"\s+instead(?=\.$)","",body,flags=re.IGNORECASE)
             selected.append(body)
     return " ".join(selected)
