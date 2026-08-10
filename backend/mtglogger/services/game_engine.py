@@ -787,7 +787,7 @@ def _cumulative_upkeep_cost(card:dict)->dict|None:
 
 
 def _mutate_original(card:dict)->dict:
-    runtime={"tapped","damage","counters","summoning_sick","temporary_power","temporary_toughness","temporary_base_power","temporary_base_toughness","temporary_keywords","temporary_removed_keywords","attachment_keywords","attached_to","mutate_pile","mutate_count","mutate_top_component_id","effective_power","effective_toughness","entry_trigger_turns","activated_ability_usage","station_graveyard_cast_turn"}
+    runtime={"tapped","damage","counters","summoning_sick","temporary_power","temporary_toughness","temporary_base_power","temporary_base_toughness","temporary_keywords","temporary_removed_keywords","temporary_protection_colors","attachment_keywords","attached_to","mutate_pile","mutate_count","mutate_top_component_id","effective_power","effective_toughness","entry_trigger_turns","activated_ability_usage","station_graveyard_cast_turn"}
     return {key:deepcopy(value) for key,value in card.items() if key not in runtime}
 
 
@@ -1018,6 +1018,7 @@ def _protection_text_matches(text:str,source:dict)->bool:
 
 
 def _protected_from(card: dict, source: dict) -> bool:
+    if set(card.get("temporary_protection_colors",[]))&_card_colors(source):return True
     text = "\n".join([card.get("oracle_text") or "",*card.get("attachment_rules",{}).values()]).casefold()
     return _protection_text_matches(text,source)
 
@@ -1644,6 +1645,7 @@ def _threshold_rules_card(card:dict,graveyard_count:int)->dict:
         "rancid earth":"Destroy target land. Rancid Earth deals 1 damage to each creature and each player.",
         "lightning surge":"Lightning Surge deals 6 damage to any target. The damage can't be prevented.",
         "kamahl's sledge":"Kamahl's Sledge deals 4 damage to target creature and 4 damage to that creature's controller.",
+        "aven warcraft":"Creatures you control get +0/+2 until end of turn. Choose a color. Creatures you control gain protection from the chosen color until end of turn.",
     }
     if name in replacements:
         suffix="\n"+"\n".join(line for line in lines if re.match(r"^(?:Flashback|Buyback|Kicker|Cycling)\b",line,re.IGNORECASE))
@@ -1972,6 +1974,7 @@ def _pending_decision(state:dict)->bool:
     if state.get("pending_counter_payment"):return True
     if state.get("pending_zone_choice"):return True
     if state.get("pending_counter_choice"):return True
+    if state.get("pending_color_choice"):return True
     return bool(state.get("pending_rad_choice") or state.get("pending_top_card_choice") or state.get("pending_revealed_discard") or state.get("pending_optional_discard") or state.get("pending_optional_payment") or state.get("pending_tilonalli") or state.get("pending_creature_type") or state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_populate") or state.get("pending_bolster") or state.get("pending_discovery") or state.get("pending_madness") or state.get("pending_rebound") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
 
 
@@ -2124,6 +2127,11 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
         if pending_counter_choice["player_id"]!=player_id:return []
         common={"source_name":pending_counter_choice["source_name"],"target_id":pending_counter_choice["target_id"]}
         return [{"type":"choose_counter_effect","counter_name":"+1/+1","amount":1,"label":"Put a +1/+1 counter",**common},{"type":"choose_counter_effect","counter_name":"charge","amount":2,"label":"Put two charge counters",**common},{"type":"concede"}]
+    pending_color=state.get("pending_color_choice")
+    if pending_color:
+        if pending_color["player_id"]!=player_id:return []
+        names={"W":"White","U":"Blue","B":"Black","R":"Red","G":"Green"}
+        return [{"type":"choose_color","color":color,"source_name":pending_color["source_name"],"label":name} for color,name in names.items()]+[{"type":"concede"}]
     pending_zone=state.get("pending_zone_choice")
     if pending_zone:
         if pending_zone["player_id"]!=player_id:return []
@@ -3350,6 +3358,16 @@ def _resolve_spell(state: dict) -> None:
         supported=("flying","first strike","double strike","deathtouch","haste","hexproof","indestructible","lifelink","menace","reach","trample","vigilance");gained={keyword for keyword in supported if re.search(rf"\b{re.escape(keyword)}\b",team_keywords.group(1))}
         for permanent in caster["battlefield"]:
             if "Creature" in permanent.get("type_line",""):permanent["temporary_keywords"]=sorted(set(permanent.get("temporary_keywords",[]))|gained)
+    protection_color=re.search(r"creatures you control gain protection from (white|blue|black|red|green) until end of turn",effect_text)
+    if protection_color:
+        color={"white":"W","blue":"U","black":"B","red":"R","green":"G"}[protection_color.group(1)]
+        for permanent in caster["battlefield"]:
+            if "Creature" in permanent.get("type_line",""):permanent["temporary_protection_colors"]=sorted(set(permanent.get("temporary_protection_colors",[]))|{color})
+        _log(state,f"{caster['name']}'s creatures gained protection from {protection_color.group(1)} until end of turn.")
+    if "choose a color" in effect_text and "protection from the chosen color until end of turn" in effect_text:
+        creatures=[permanent["instance_id"] for permanent in caster["battlefield"] if "Creature" in permanent.get("type_line","")]
+        state["pending_color_choice"]={"player_id":caster["id"],"source_name":source_name,"card_ids":creatures};state["priority_player_id"]=caster["id"]
+        _log(state,f"{caster['name']} must choose a color for {source_name}.")
     team_counters=re.search(r"put (a|one|two|three|four|\d+) ([+\-]\d+/[+\-]\d+) counters? on each creature you control",effect_text)
     if team_counters:
         words={"a":1,"one":1,"two":2,"three":3,"four":4};amount=words.get(team_counters.group(1),int(team_counters.group(1)) if team_counters.group(1).isdigit() else 1)
@@ -3503,7 +3521,7 @@ def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str, t
             else:zone_owner[destination].append(component)
             _queue_commander_zone_choice(state,zone_owner,component,destination)
         return
-    card["damage"] = 0; card["tapped"] = False;card.pop("escaped",None);card.pop("evoked",None);card.pop("echo_due_controller_id",None);card.pop("dashed",None);card.pop("dash_return_triggered",None);card.pop("deathtouch_damage",None);card.pop("crewed_turn",None);card.pop("temporary_control_return_to",None);card.pop("control_while_source_id",None);card.pop("control_return_to_id",None);card.pop("activated_ability_usage",None);card.pop("temporary_power",None);card.pop("temporary_toughness",None);card.pop("temporary_base_power",None);card.pop("temporary_base_toughness",None);card.pop("temporary_keywords",None);card.pop("temporary_removed_keywords",None);card.pop("temporary_backup_rules",None);card.pop("unearthed",None);card.pop("unearth_controller_id",None);card.pop("unearth_end_triggered",None);card.pop("populate_sacrifice_turn",None);card.pop("monstrous",None);card.pop("monstrosity_value",None)
+    card["damage"] = 0; card["tapped"] = False;card.pop("escaped",None);card.pop("evoked",None);card.pop("echo_due_controller_id",None);card.pop("dashed",None);card.pop("dash_return_triggered",None);card.pop("deathtouch_damage",None);card.pop("crewed_turn",None);card.pop("temporary_control_return_to",None);card.pop("control_while_source_id",None);card.pop("control_return_to_id",None);card.pop("activated_ability_usage",None);card.pop("temporary_power",None);card.pop("temporary_toughness",None);card.pop("temporary_base_power",None);card.pop("temporary_base_toughness",None);card.pop("temporary_keywords",None);card.pop("temporary_removed_keywords",None);card.pop("temporary_backup_rules",None);card.pop("temporary_protection_colors",None);card.pop("unearthed",None);card.pop("unearth_controller_id",None);card.pop("unearth_end_triggered",None);card.pop("populate_sacrifice_turn",None);card.pop("monstrous",None);card.pop("monstrosity_value",None)
     if card.get("face_down"):
         values=card.pop("face_down_values",{})
         for key,value in values.items():card[key]=value
@@ -4274,7 +4292,7 @@ def _begin_next_turn(state:dict)->None:
         owner["firebending_mana"]=0;owner["any_color_mana"]=0;owner["bent_this_turn"]=[];owner["energy_paid_this_turn"]=0
         for permanent in owner["battlefield"]:
             if permanent.get("temporary_type_line") is not None:permanent["type_line"]=permanent.pop("temporary_type_line")
-            permanent.pop("temporary_power",None);permanent.pop("temporary_toughness",None);permanent.pop("temporary_base_power",None);permanent.pop("temporary_base_toughness",None);permanent.pop("temporary_keywords",None);permanent.pop("temporary_removed_keywords",None);permanent.pop("temporary_backup_rules",None);permanent.pop("cant_attack_until_turn",None);permanent.pop("cant_block_until_turn",None);permanent.pop("must_block_source_ids",None);permanent.pop("attacks_this_turn",None);permanent.pop("regeneration_shields",None);permanent.pop("deathtouch_damage",None);permanent.pop("crewed_turn",None);permanent["damage"]=0
+            permanent.pop("temporary_power",None);permanent.pop("temporary_toughness",None);permanent.pop("temporary_base_power",None);permanent.pop("temporary_base_toughness",None);permanent.pop("temporary_keywords",None);permanent.pop("temporary_removed_keywords",None);permanent.pop("temporary_backup_rules",None);permanent.pop("temporary_protection_colors",None);permanent.pop("cant_attack_until_turn",None);permanent.pop("cant_block_until_turn",None);permanent.pop("must_block_source_ids",None);permanent.pop("attacks_this_turn",None);permanent.pop("regeneration_shields",None);permanent.pop("deathtouch_damage",None);permanent.pop("crewed_turn",None);permanent["damage"]=0
             if permanent.get("goaded_until_turn",0)<state["turn"]:permanent.pop("goaded_until_turn",None);permanent.pop("goaded_by",None)
             if permanent.get("hexproof_until_turn",0)<state["turn"]:permanent.pop("hexproof_until_turn",None)
             if permanent.get("base_type_line") is not None:permanent["type_line"]=permanent.pop("base_type_line")
@@ -5203,6 +5221,15 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         target=next((card for owner in state["players"] for card in owner["battlefield"] if card["instance_id"]==pending["target_id"]),None)
         if target:_add_counters(state,target,action["counter_name"],1 if action["counter_name"]=="+1/+1" else 2,player_id,"effect");_log(state,f"{player['name']} put {'a +1/+1 counter' if action['counter_name']=='+1/+1' else 'two charge counters'} on {target['name']}.")
         state["pending_counter_choice"]=None;state["priority_player_id"]=state["active_player_id"]
+    elif action_type=="choose_color":
+        pending=state.get("pending_color_choice") or {};color=action.get("color");names={"W":"white","U":"blue","B":"black","R":"red","G":"green"}
+        if pending.get("player_id")!=player_id or color not in names:raise RuleViolation("Choose white, blue, black, red, or green")
+        eligible=set(pending.get("card_ids",[]));affected=[]
+        for permanent in player["battlefield"]:
+            if permanent["instance_id"] in eligible and "Creature" in permanent.get("type_line",""):
+                permanent["temporary_protection_colors"]=sorted(set(permanent.get("temporary_protection_colors",[]))|{color});affected.append(permanent)
+        state["pending_color_choice"]=None;state["priority_player_id"]=state["active_player_id"]
+        _log(state,f"{player['name']} chose {names[color]}; {len(affected)} creature(s) gained protection from {names[color]} until end of turn.")
     elif action_type in {"choose_zone_card","decline_zone_choice"}:
         pending=state.get("pending_zone_choice") or {}
         if pending.get("player_id")!=player_id:raise RuleViolation("There is no zone choice for this player")
