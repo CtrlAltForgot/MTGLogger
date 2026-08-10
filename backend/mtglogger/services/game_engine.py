@@ -548,6 +548,11 @@ def _kicker_cost(card:dict)->str|None:
     return match.group(1).upper() if match else None
 
 
+def _multikicker_cost(card:dict)->str|None:
+    match=re.search(r"(?:^|\n)Multikicker\s+((?:\{[^}]+\})+)",card.get("oracle_text") or "",re.IGNORECASE)
+    return match.group(1).upper() if match else None
+
+
 def _overload_cost(card:dict)->str|None:
     match=re.search(r"(?:^|\n)Overload\s+((?:\{[^}]+\})+)",card.get("oracle_text") or "",re.IGNORECASE)
     return match.group(1).upper() if match else None
@@ -1344,7 +1349,8 @@ def _queue_cascade_triggers(state:dict,player:dict,card:dict)->None:
 
 def _queue_storm_trigger(state:dict,player:dict,card:dict,stack_item:dict)->None:
     rules=(card.get("oracle_text") or "").split("(",1)[0]
-    if not re.search(r"(?:^|\n)Storm\b",rules,re.IGNORECASE) and not (_has_keyword(card,"Storm") and not re.search(r"\b(?:Gravestorm|Channelstorm)\b",rules,re.IGNORECASE)):return
+    listed_storm=any(keyword.casefold()=="storm" for keyword in card.get("keywords",[]))
+    if not re.search(r"(?:^|\n)Storm\b",rules,re.IGNORECASE) and not (listed_storm and not re.search(r"\b(?:Gravestorm|Channelstorm)\b",rules,re.IGNORECASE)):return
     count=max(0,player.get("spells_cast_this_turn",0)-1);ability={"name":f"{card['name']} — Storm","oracle_text":"Copy this spell for each spell cast before it this turn.","source_type_line":card.get("type_line",""),"source_mana_cost":card.get("mana_cost",""),"type_line":"Ability","mana_cost":""}
     state["stack"].append({"id":_id(),"kind":"storm_trigger","card":ability,"controller_id":player["id"],"target_id":None,"source_id":card["instance_id"],"storm_count":count,"copy_item":deepcopy(stack_item)});_log(state,f"{card['name']}'s storm ability triggered with storm count {count}.")
 
@@ -1566,12 +1572,15 @@ def _target_kind(card: dict) -> str | None:
     if re.search(r"\bairbend (?:up to one )?target creature\b",text):return "creature"
     if re.search(r"\bearthbend\s+(?:\d+|x)\b",text):return "land"
     if re.search(r"\btarget land you control become a \d+/\d+",text):return "land"
+    if "choose any target, then choose another target for each time" in text:return "any"
+    if "choose target creature, then choose another target creature for each time" in text:return "creature"
     if re.search(r"target creature card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_creature"
     if re.search(r"target (?:nonland permanent |nonland )?card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_card"
     if "target face-down permanent you control" in text:return "permanent"
     if re.search(r"target player mills?", text): return "player"
     if re.search(r"target player sacrifices?",text):return "player"
     if re.search(r"target player discards?",text):return "player"
+    if re.search(r"deals? (?:\d+|x)?\s*damage[^.]*to target player or planeswalker",text):return "player_or_planeswalker"
     if re.search(r"(?:target player gains?|target player loses|goad each creature target player controls)",text):return "player"
     if re.search(r"deals (?:\d+|x) damage to target (?:opponent|player)",text):return "player"
     if re.search(r"(?:destroy|exile|gain control of) target (?:artifact, creature, enchantment, planeswalker|nonland permanent|permanent)", text): return "permanent"
@@ -1639,9 +1648,9 @@ def _targets(state: dict, caster_id: str, card: dict, ignore_target_protection:b
         return [{"id":graveyard_card["instance_id"],"name":graveyard_card["name"],"kind":"card","controller_id":owner["id"]} for owner in state["players"] if not own_only or owner["id"]==caster_id for graveyard_card in owner["graveyard"] if (kind=="graveyard_card" or "Creature" in graveyard_card.get("type_line","")) and (not nonland_permanent or ("Land" not in graveyard_card.get("type_line","") and any(card_type in graveyard_card.get("type_line","") for card_type in ("Artifact","Battle","Creature","Enchantment","Planeswalker")))) and (not instant_or_sorcery or any(kind_name in graveyard_card.get("type_line","") for kind_name in ("Instant","Sorcery"))) and (soulshift is None or (re.search(r"\bSpirit\b",graveyard_card.get("type_line",""),re.IGNORECASE) and float(graveyard_card.get("mana_value") or 0)<=float(soulshift)))]
     for player in state["players"]:
         aura_types=_aura_allowed_types(card)
-        if (kind in {"any", "player"} or (kind=="permanent" and "player" in aura_types)) and not ("target opponent" in text and player["id"]==caster_id) and not _player_protected_from(state,player,card): targets.append({"id": player["id"], "name": player["name"], "kind": "player", "controller_id": player["id"]})
+        if (kind in {"any", "player","player_or_planeswalker"} or (kind=="permanent" and "player" in aura_types)) and not ("target opponent" in text and player["id"]==caster_id) and not _player_protected_from(state,player,card): targets.append({"id": player["id"], "name": player["name"], "kind": "player", "controller_id": player["id"]})
         for permanent in player["battlefield"]:
-            if kind in {"any", "permanent"} or (kind=="creature_or_spell" and "Creature" in permanent.get("type_line","")) or (kind in {"creature","artifact","enchantment","land","planeswalker"} and kind in permanent.get("type_line", "").casefold()):
+            if kind in {"any", "permanent"} or (kind=="player_or_planeswalker" and "Planeswalker" in permanent.get("type_line","")) or (kind=="creature_or_spell" and "Creature" in permanent.get("type_line","")) or (kind in {"creature","artifact","enchantment","land","planeswalker"} and kind in permanent.get("type_line", "").casefold()):
                 aura_types=_aura_allowed_types(card)
                 if "Aura" in card.get("type_line","") and aura_types and not any(allowed in permanent.get("type_line","").casefold() for allowed in aura_types if allowed!="player"):continue
                 if own_target_only and player["id"] != caster_id: continue
@@ -2115,6 +2124,16 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
                 if _target_kind(targeting_card) and not targets: continue
                 if targets: action["targets"] = targets
         if normal_payable:actions.append(action)
+        multikicker_cost=_multikicker_cost(card) if source in {"hand","command"} else None
+        if multikicker_cost:
+            for count in range(1,21):
+                repeated_cost={**cost_card,"mana_cost":f"{cost_card.get('mana_cost') or ''}{multikicker_cost*count}"}
+                if not _can_pay(player,repeated_cost,generic_adjustment,x_value=0):break
+                variant={**action,"multikicker_count":count,"multikicker_cost":multikicker_cost,"label":f"{action['label']} + multikicker {multikicker_cost} ×{count}"}
+                if _has_x_cost(repeated_cost):variant.update({"x_min":0,"x_max":_maximum_x(player,repeated_cost,generic_adjustment)})
+                if re.search(r"choose (?:any )?target, then choose another target for each time",card.get("oracle_text") or "",re.IGNORECASE) or re.search(r"choose target creature, then choose another target creature for each time",card.get("oracle_text") or "",re.IGNORECASE):
+                    candidates=variant.pop("targets",[]);variant["target_steps"]=[{"label":f"Choose target {position+1}","targets":candidates,"distinct":True} for position in range(count+1)]
+                actions.append(variant)
         entwine=_entwine_ability(card) if modal_spec and source in {"hand","command"} else None
         if entwine and len(action.get("modes",[]))==len(modal_options):
             entwine_lands=[candidate for candidate in player["battlefield"] if "Land" in candidate.get("type_line","")]
@@ -2467,22 +2486,26 @@ def _resolve_spell(state: dict) -> None:
     if item.get("blessing_top"):rules_card={**rules_card,"oracle_text":re.sub(r"return target ([^.]+?) to its owner's hand\.\s*if you have the city's blessing, you may put that permanent on top of its owner's library instead\.",r"Put target \1 on top of its owner's library.",rules_card.get("oracle_text") or "",flags=re.IGNORECASE)}
     rules_card=_x_rules_card(rules_card,item.get("x_value"));targeting_card=_spell_targeting_card(rules_card) if item.get("kind","spell")=="spell" else rules_card;target_kind=_target_kind(targeting_card);target_id=item.get("target_id")
     source_permanent=next((permanent for player in state["players"] for permanent in player["battlefield"] if permanent["instance_id"]==item.get("source_id")),None);target_ids=item.get("target_ids") or [];fight_steps=_fight_target_steps(state,caster["id"],rules_card,source_permanent);valid_fight_ids=[target_value for position,target_value in enumerate(target_ids) if position<len(fight_steps) and target_value in {target["id"] for target in fight_steps[position]["targets"]}]
+    valid_multi_ids=[target_value for target_value in target_ids if target_value in {target["id"] for target in _targets(state,caster["id"],targeting_card)}] if target_ids and not fight_steps else []
     if item.get("kind")=="trigger" and source_permanent and "sacrifice it unless it escaped" in (card.get("oracle_text") or "").casefold():
         if not source_permanent.get("escaped"):
             owner=next(owner for owner in state["players"] if source_permanent in owner["battlefield"]);_leave_battlefield(state,owner,source_permanent,"graveyard");_log(state,f"{source_permanent['name']} was sacrificed because it did not escape.")
         else:_log(state,f"{source_permanent['name']} remained because it escaped.")
         return
-    if target_ids and not valid_fight_ids:
+    if target_ids and fight_steps and not valid_fight_ids or target_ids and not fight_steps and not valid_multi_ids:
         if item.get("kind","spell")=="spell":_countered_spell_destination(state,caster,card,item.get("flashback",False))
         _finish_saga_final_chapter(state,item)
         _log(state,f"{card['name']} was countered because all of its fight targets were no longer legal.");return
-    if item.get("kind")!="overload_effect" and target_kind and target_id not in {target["id"] for target in _targets(state,caster["id"],targeting_card)}:
+    if item.get("kind")!="overload_effect" and target_kind and not target_ids and target_id not in {target["id"] for target in _targets(state,caster["id"],targeting_card)}:
         if item.get("kind","spell")=="spell":_countered_spell_destination(state,caster,card,item.get("flashback",False))
         _finish_saga_final_chapter(state,item)
         _log(state,f"{card['name']} was countered because its target was no longer legal.");return
     text = (rules_card.get("oracle_text") or "").casefold()
+    if valid_multi_ids:target_ids=valid_multi_ids
     is_permanent_spell = item.get("kind", "spell") in {"spell","storm_copy"} and any(kind in card.get("type_line", "") for kind in ("Creature", "Artifact", "Enchantment", "Planeswalker", "Battle"))
     effect_text = "" if is_permanent_spell and re.search(r"\b(?:when|whenever|at the beginning)\b", text) else text
+    times_kicked=int(item.get("multikicker_count") or (source_permanent or {}).get("times_kicked",0))
+    if times_kicked:effect_text=_multikicker_effect(effect_text,times_kicked)
     if "if you had a land enter" in effect_text:effect_text=_landfall_spell_effect(effect_text,caster.get("land_entered_turn")==state.get("turn"))
     if item.get("kind")=="trigger" and re.search(r"\b(?:first|second|third|fourth) time(?: this ability has resolved)? this turn\b",effect_text):
         usage=state.setdefault("trigger_resolution_usage",{});key=f"{item.get('source_id')}:{card.get('oracle_text','')}";record=usage.get(key,{})
@@ -2500,6 +2523,18 @@ def _resolve_spell(state: dict) -> None:
     target_stack_item = next((entry for entry in state["stack"] if entry["id"] == target_id), None)
     graveyard_owner=next((player for player in state["players"] if any(graveyard_card["instance_id"]==target_id for graveyard_card in player["graveyard"])),None)
     graveyard_target=next((graveyard_card for player in state["players"] for graveyard_card in player["graveyard"] if graveyard_card["instance_id"]==target_id),None)
+    multi_damage=re.search(r"deals (\d+) damage to each of them",effect_text)
+    if multi_damage:
+        for multi_target_id in target_ids:
+            target_player_entry=next((candidate for candidate in state["players"] if candidate["id"]==multi_target_id),None);target_permanent=next((candidate for owner in state["players"] for candidate in owner["battlefield"] if candidate["instance_id"]==multi_target_id),None)
+            if target_player_entry:_damage_player(state,target_player_entry,int(multi_damage.group(1)),source_permanent or card)
+            elif target_permanent:_damage_permanent(state,target_permanent,int(multi_damage.group(1)),source_permanent or card)
+        _log(state,f"{card['name']} dealt {multi_damage.group(1)} damage to {len(target_ids)} target(s).")
+    multi_counters=re.search(r"put (\d+) \+1/\+1 counters on each of them",effect_text)
+    if multi_counters:
+        for multi_target_id in target_ids:
+            target_permanent=next((candidate for owner in state["players"] for candidate in owner["battlefield"] if candidate["instance_id"]==multi_target_id),None)
+            if target_permanent:_add_counters(state,target_permanent,"+1/+1",int(multi_counters.group(1)),caster["id"],"multikicker")
     if "add one mana of any color" in effect_text:caster["any_color_mana"]=caster.get("any_color_mana",0)+1;_log(state,f"{caster['name']} added one mana of any color.")
     if re.search(r"reveal cards from the top of your library until you reveal an elf or elemental card",effect_text):
         revealed=[];found=None
@@ -2701,7 +2736,7 @@ def _resolve_spell(state: dict) -> None:
     if lose_life: other["life"] -= int(lose_life.group(1))
     you_lose = re.search(r"you lose (\d+) life", effect_text)
     if you_lose: caster["life"] -= int(you_lose.group(1))
-    targeted_damage = re.search(r"deals (\d+) damage to (?:any target|target creature|target opponent|target player)", effect_text)
+    targeted_damage = re.search(r"deals (\d+) damage to (?:any target|target creature|target opponent|target player(?: or planeswalker)?)", effect_text)
     if targeted_damage and (target_player or target):
         amount = int(targeted_damage.group(1))
         if target_player:
@@ -2926,6 +2961,7 @@ def _resolve_spell(state: dict) -> None:
             card["token"]=True
             if "isn't legendary if it's a token" in (card.get("oracle_text") or "").casefold():card["type_line"]=re.sub(r"\bLegendary\s+","",card.get("type_line","")).strip()
         card["was_kicked"]=bool(item.get("kicked"))
+        card["times_kicked"]=int(item.get("multikicker_count") or 0)
         card["escaped"]=bool(item.get("escaped"))
         if item.get("suspended_cast"):card["suspend_haste"]=True
         if item.get("dashed"):card["dashed"]=True;card.setdefault("temporary_keywords",[]).append("Haste")
@@ -2944,8 +2980,10 @@ def _resolve_spell(state: dict) -> None:
                 card["keywords"]=sorted(set(card.get("keywords",[]))|set(inherited))
         if item.get("evoked"):
             card["evoked"]=True;state["stack"].append({"id":_id(),"kind":"evoke_sacrifice","card":{"name":f"{card['name']} — Evoke","oracle_text":"Sacrifice this permanent.","type_line":"Ability","mana_cost":""},"controller_id":caster["id"],"target_id":None,"source_id":card["instance_id"]});_log(state,f"{card['name']}'s evoke sacrifice triggered.")
-        if enters_counters and not (item.get("escaped") and "escapes with" in text and "instead" in text):
+        if enters_counters and not (card["times_kicked"] and "for each time" in text[enters_counters.start():enters_counters.end()+80]) and not (item.get("escaped") and "escapes with" in text and "instead" in text):
             counter_words={"a":1,"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10,"twelve":12};counter_amount=int(enters_counters.group(1)) if enters_counters.group(1).isdigit() else counter_words[enters_counters.group(1).casefold()];_add_counters(state,card,enters_counters.group(2).replace("−","-"),counter_amount,caster["id"],"enters")
+        if card["times_kicked"] and re.search(r"enters with a \+1/\+1 counter on (?:it|him) for each time (?:it|he) was kicked",text):_add_counters(state,card,"+1/+1",card["times_kicked"],caster["id"],"multikicker")
+        if card["times_kicked"] and re.search(r"enters with a charge counter on it for each time it was kicked",text):_add_counters(state,card,"charge",card["times_kicked"],caster["id"],"multikicker")
         if item.get("escaped") and item.get("escape_counters"):_add_counters(state,card,"+1/+1",int(item["escape_counters"]),caster["id"],"escape")
         if item.get("escaped") and item.get("escape_counter_choice"):
             state["pending_escape_counter"]={"player_id":caster["id"],"card_id":card["instance_id"],"card_name":card["name"]};state["priority_player_id"]=caster["id"]
@@ -3290,6 +3328,17 @@ def _landfall_spell_effect(text:str,land_entered:bool)->str:
             if body.casefold().endswith(" instead."):selected=[];body=re.sub(r"\s+instead(?=\.$)","",body,flags=re.IGNORECASE)
             selected.append(body)
     return " ".join(selected)
+
+
+def _multikicker_effect(text:str,count:int)->str:
+    text=re.sub(r"\bthe number of times (?:this (?:spell|creature|artifact|enchantment)|[A-Za-z][A-Za-z ',’-]+) was kicked\b",str(count),text,flags=re.IGNORECASE)
+    text=re.sub(r"gain (\d+) life for each time (?:this creature|[^.]+?) was kicked",lambda match:f"gain {int(match.group(1))*count} life",text,flags=re.IGNORECASE)
+    text=re.sub(r"create a (\d+)/(\d+) ([^.]+?) creature token for each time (?:this creature|[^.]+?) was kicked",lambda match:f"create {count} {match.group(1)}/{match.group(2)} {match.group(3)} creature tokens",text,flags=re.IGNORECASE)
+    text=re.sub(r"draw a card for each time [^.]+? was kicked",f"draw {count} cards",text,flags=re.IGNORECASE)
+    text=re.sub(r"discards? a card for each time (?:this creature|[^.]+?) was kicked",f"discards {count} cards",text,flags=re.IGNORECASE)
+    text=re.sub(rf"deals damage to target player or planeswalker equal to twice (?:the number of times [^.]+? was kicked|{count})",f"deals {count*2} damage to target player or planeswalker",text,flags=re.IGNORECASE)
+    text=re.sub(rf"damage equal to twice (?:the number|{count})",f"{count*2} damage",text,flags=re.IGNORECASE)
+    return text
 
 
 def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owner: dict, dedupe:set[str]|None=None, sources_override:list[tuple[dict,dict]]|None=None) -> None:
@@ -4092,12 +4141,13 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
     elif action_type == "cast":
         requested_source=action.get("source");zone_name="graveyard" if requested_source in {"flashback","escape","mutate_graveyard","graveyard_permission"} else "exile" if requested_source in {"airbend","suspend","foretell","plot","rebound","exile_permission"} else "hand" if requested_source in {"mutate_hand","evoke","dash_hand","bestow"} else "command" if requested_source in {"mutate_command","dash_command"} else requested_source if requested_source in {"hand","command"} else next((zone for zone in ("hand","command") if any(card["instance_id"]==action.get("card_id") for card in player.get(zone,[]))),None)
         source=requested_source if requested_source in {"flashback","escape","mutate_graveyard","graveyard_permission","airbend","suspend","foretell","plot","rebound","exile_permission","mutate_hand","mutate_command","evoke","dash_hand","dash_command","bestow"} else zone_name;card=next((card for card in player.get(zone_name or "hand",[]) if card["instance_id"]==action.get("card_id")),None);flashback=_flashback_ability(card or {}) if source=="flashback" else None;escape=_escape_ability(card or {}) if source=="escape" else None
-        requested_kicked=bool(action.get("kicked"));requested_entwined=bool(action.get("entwined"));requested_buyback=bool(action.get("buyback"));requested_convoke=bool(action.get("convoke"));requested_waterbend=bool(action.get("waterbend"));requested_overloaded=bool(action.get("overloaded"));requested_evoked=requested_source=="evoke";requested_dashed=requested_source in {"dash_hand","dash_command"};requested_bestowing=bool(action.get("bestowing") or requested_source=="bestow");requested_delve=bool(action.get("delve"));requested_mutating=bool(action.get("mutating") or requested_source in {"mutate_hand","mutate_graveyard","mutate_command"});requested_blight=bool(action.get("blighted") or (action.get("cost_card_ids") and _optional_blight_cost(card or {})));requested_blessing_top=bool(action.get("blessing_top"));available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="cast" and entry["card_id"]==action.get("card_id") and entry.get("source")==source and bool(entry.get("bestowing"))==requested_bestowing and bool(entry.get("entwined"))==requested_entwined and bool(entry.get("overloaded"))==requested_overloaded and bool(entry.get("evoked"))==requested_evoked and bool(entry.get("dashed"))==requested_dashed and bool(entry.get("delve"))==requested_delve and (not requested_delve or entry.get("cost_amount")==len(action.get("cost_card_ids") or [])) and bool(entry.get("mutating"))==requested_mutating and entry.get("mutate_position")==action.get("mutate_position") and bool(entry.get("kicked"))==requested_kicked and bool(entry.get("buyback"))==requested_buyback and bool(entry.get("convoke"))==requested_convoke and bool(entry.get("waterbend"))==requested_waterbend and bool(entry.get("blighted"))==requested_blight and bool(entry.get("blessing_top"))==requested_blessing_top),None)
+        requested_kicked=bool(action.get("kicked"));requested_multikicker=max(0,int(action.get("multikicker_count") or 0));requested_entwined=bool(action.get("entwined"));requested_buyback=bool(action.get("buyback"));requested_convoke=bool(action.get("convoke"));requested_waterbend=bool(action.get("waterbend"));requested_overloaded=bool(action.get("overloaded"));requested_evoked=requested_source=="evoke";requested_dashed=requested_source in {"dash_hand","dash_command"};requested_bestowing=bool(action.get("bestowing") or requested_source=="bestow");requested_delve=bool(action.get("delve"));requested_mutating=bool(action.get("mutating") or requested_source in {"mutate_hand","mutate_graveyard","mutate_command"});requested_blight=bool(action.get("blighted") or (action.get("cost_card_ids") and _optional_blight_cost(card or {})));requested_blessing_top=bool(action.get("blessing_top"));available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="cast" and entry["card_id"]==action.get("card_id") and entry.get("source")==source and int(entry.get("multikicker_count") or 0)==requested_multikicker and bool(entry.get("bestowing"))==requested_bestowing and bool(entry.get("entwined"))==requested_entwined and bool(entry.get("overloaded"))==requested_overloaded and bool(entry.get("evoked"))==requested_evoked and bool(entry.get("dashed"))==requested_dashed and bool(entry.get("delve"))==requested_delve and (not requested_delve or entry.get("cost_amount")==len(action.get("cost_card_ids") or [])) and bool(entry.get("mutating"))==requested_mutating and entry.get("mutate_position")==action.get("mutate_position") and bool(entry.get("kicked"))==requested_kicked and bool(entry.get("buyback"))==requested_buyback and bool(entry.get("convoke"))==requested_convoke and bool(entry.get("waterbend"))==requested_waterbend and bool(entry.get("blighted"))==requested_blight and bool(entry.get("blessing_top"))==requested_blessing_top),None)
         tax = _commander_tax(player, card) if card and source in {"command","mutate_command","dash_command"} else 0;affinity_reduction=_affinity_reduction(player,card or {});buyback=_buyback_ability(card or {}) if requested_buyback else None;generic_adjustment=tax-affinity_reduction-(_dash_reduction(player) if requested_dashed else 0)-int(available.get("buyback_reduction",0) if available else 0)
         if not card:raise RuleViolation("That spell cannot be cast")
         if not available:raise RuleViolation("That spell cannot be cast from that zone")
         cost_card={**card,"mana_cost":_overload_cost(card) or ""} if requested_overloaded else {**card,"mana_cost":_dash_cost(card)} if requested_dashed else {**card,"mana_cost":_bestow_cost(card)} if requested_bestowing else {**card,"mana_cost":(_evoke_ability(card) or {}).get("mana_cost","")} if requested_evoked else {**card,"mana_cost":_mutate_cost(card)} if requested_mutating else {**card,"mana_cost":_foretell_cost(card) or ""} if source=="foretell" else {**card,"mana_cost":"{0}"} if source in {"suspend","plot","rebound"} else {**card,"mana_cost":"{2}"} if source=="airbend" else {**card,"mana_cost":flashback["mana_cost"]} if flashback else {**card,"mana_cost":escape["mana_cost"]} if escape else card
         if requested_kicked:cost_card={**cost_card,"mana_cost":f"{cost_card.get('mana_cost') or ''}{_kicker_cost(card) or ''}"}
+        if requested_multikicker:cost_card={**cost_card,"mana_cost":f"{cost_card.get('mana_cost') or ''}{(_multikicker_cost(card) or '')*requested_multikicker}"}
         entwine=_entwine_ability(card) if requested_entwined else None
         if entwine:cost_card={**cost_card,"mana_cost":f"{cost_card.get('mana_cost') or ''}{entwine['mana_cost']}"}
         if buyback:cost_card={**cost_card,"mana_cost":f"{cost_card.get('mana_cost') or ''}{buyback['mana_cost']}"}
@@ -4146,7 +4196,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
             if target_id not in {target["id"] for target in available.get("targets",[])}:raise RuleViolation("Choose a legal creature to bestow")
         elif requested_overloaded:
             if target_id is not None:raise RuleViolation("An overloaded spell does not target")
-        elif not modal_spec and _target_kind(targeting_card) and target_id not in {target["id"] for target in targets}: raise RuleViolation("Choose a legal target")
+        elif not modal_spec and not target_steps and _target_kind(targeting_card) and target_id not in {target["id"] for target in targets}: raise RuleViolation("Choose a legal target")
         if requested_waterbend:
             _pay_mana(state,player,waterbend_residual or {"mana_cost":""},excluded_ids=set(selected_cost_ids),x_value=x_value if _has_x_cost(cost_card) else 0)
             _set_tapped(state,[permanent for permanent in player["battlefield"] if permanent["instance_id"] in selected_cost_ids],True,player_id,"waterbend")
@@ -4194,7 +4244,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if source=="rebound":state["pending_rebound"]=None
         card.pop("rebound_triggered",None);card.pop("rebound_after_turn",None);card.pop("airbent",None);card.pop("suspended_ready",None);card.pop("suspended",None);card.pop("foretold",None);card.pop("foretold_turn",None);card.pop("plotted",None);card.pop("plotted_turn",None);card.pop("exile_cast_until_turn",None)
         if card.get("commander"): player["commander_casts"] = player.get("commander_casts", 0) + 1
-        effective_target=target_id or (mode_targets[0] if len(mode_targets)==1 else None);stack_item={"id": _id(), "card": card, "controller_id": player_id, "target_id": effective_target,"target_ids":target_ids,"mode_indices":chosen_modes,"mode_targets":mode_targets,"x_value":x_value,"flashback":bool(flashback),"buyback":requested_buyback,"rebound_cast":source=="rebound","escaped":bool(escape),"escape_counters":escape["counters"] if escape else 0,"escape_counter_choice":escape["counter_choice"] if escape else False,"suspended_cast":source=="suspend","kicked":requested_kicked,"entwined":requested_entwined,"overloaded":requested_overloaded,"blighted":requested_blight,"blessing_top":requested_blessing_top,"evoked":requested_evoked,"dashed":requested_dashed,"bestowing":requested_bestowing,"delved_cards":delved_cards if requested_delve else [],"mutating":requested_mutating,"mutate_position":action.get("mutate_position"),"cast_source_zone":"graveyard" if source in {"flashback","escape","mutate_graveyard","graveyard_permission"} else "exile" if source in {"airbend","suspend","foretell","plot","rebound","exile_permission"} else "hand" if source in {"mutate_hand","evoke","dash_hand","bestow"} else "command" if source in {"mutate_command","dash_command"} else source};state["stack"].append(stack_item);state["stack"].extend(cost_triggers); state["consecutive_passes"] = 0; state["pending_phase_advance"] = False
+        effective_target=target_id or (mode_targets[0] if len(mode_targets)==1 else None);stack_item={"id": _id(), "card": card, "controller_id": player_id, "target_id": effective_target,"target_ids":target_ids,"mode_indices":chosen_modes,"mode_targets":mode_targets,"x_value":x_value,"flashback":bool(flashback),"buyback":requested_buyback,"rebound_cast":source=="rebound","escaped":bool(escape),"escape_counters":escape["counters"] if escape else 0,"escape_counter_choice":escape["counter_choice"] if escape else False,"suspended_cast":source=="suspend","kicked":requested_kicked,"multikicker_count":requested_multikicker,"entwined":requested_entwined,"overloaded":requested_overloaded,"blighted":requested_blight,"blessing_top":requested_blessing_top,"evoked":requested_evoked,"dashed":requested_dashed,"bestowing":requested_bestowing,"delved_cards":delved_cards if requested_delve else [],"mutating":requested_mutating,"mutate_position":action.get("mutate_position"),"cast_source_zone":"graveyard" if source in {"flashback","escape","mutate_graveyard","graveyard_permission"} else "exile" if source in {"airbend","suspend","foretell","plot","rebound","exile_permission"} else "hand" if source in {"mutate_hand","evoke","dash_hand","bestow"} else "command" if source in {"mutate_command","dash_command"} else source};state["stack"].append(stack_item);state["stack"].extend(cost_triggers); state["consecutive_passes"] = 0; state["pending_phase_advance"] = False
         if requested_waterbend:_queue_triggers(state,"waterbend",card,player)
         _record_spell_cast(state,player);card["cast_source_zone"]="graveyard" if source in {"flashback","escape","mutate_graveyard","graveyard_permission"} else "exile" if source in {"airbend","suspend","foretell","plot","exile_permission"} else "hand" if source=="mutate_hand" else "command" if source=="mutate_command" else source
         _queue_triggers(state,"cast",card,player);_queue_cascade_triggers(state,player,card);_queue_storm_trigger(state,player,card,stack_item);card.pop("cast_source_zone",None)

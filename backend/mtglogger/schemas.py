@@ -326,7 +326,8 @@ class GameAction(BaseModel):
     power: int | None = Field(None, ge=0, le=99)
     toughness: int | None = Field(None, ge=1, le=99)
     destination: str | None = Field(None, pattern="^(hand|battlefield|graveyard|exile)$")
-    source: str | None = Field(None, pattern="^(hand|command)$")
+    source: str | None = Field(None, pattern="^(hand|command|flashback|escape|graveyard_permission|exile_permission|airbend|suspend|foretell|plot|rebound|mutate_hand|mutate_graveyard|mutate_command|evoke|dash_hand|dash_command|bestow)$")
+    multikicker_count: int = Field(0, ge=0, le=20)
     ability_index: int | None = Field(None, ge=0, le=20)
     expected_version: int | None = Field(None, ge=1)
 
