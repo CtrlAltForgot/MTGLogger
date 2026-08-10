@@ -1741,6 +1741,7 @@ def _delirium_rules_card(card:dict,player:dict)->dict:
             "violent urge":"Target creature gets +1/+0 and gains first strike and double strike until end of turn.",
             "demonic counsel":"Search your library for a card, put it into your hand, then shuffle.",
             "traverse the ulvenwald":"Search your library for a creature or land card, reveal it, put it into your hand, then shuffle.",
+            "whispers of emrakul":"Target opponent discards two cards at random.",
         }
         name=(card.get("name") or "").casefold()
         if name in replacements:text=replacements[name]
@@ -3421,7 +3422,11 @@ def _resolve_spell(state: dict) -> None:
         state["pending_library_search"]={"player_id":caster["id"],"card_ids":eligible,"min_amount":0,"max_amount":maximum,**search_spec};state["priority_player_id"]=caster["id"]
         _log(state,f"{caster['name']} is searching their library for up to {maximum} matching card(s).")
     target_player_discard=re.search(r"target player draws? [^,.]+, then discards? (a|one|two|three|four|five|six|seven|eight|nine|ten|\d+) cards?",effect_text)
-    discard_match = re.search(r"(?:(target|each) opponent|you) discards? (a|one|two|three|four|five|six|seven|eight|nine|ten|\d+) cards?", effect_text)
+    random_discard=re.search(r"target opponent discards? (a|one|two|three|four|five|six|seven|eight|nine|ten|\d+) cards? at random",effect_text)
+    discard_match = None if random_discard else re.search(r"(?:(target|each) opponent|you) discards? (a|one|two|three|four|five|six|seven|eight|nine|ten|\d+) cards?", effect_text)
+    if random_discard and target_player:
+        word=random_discard.group(1);words={"a":1,"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10};amount=words.get(word,int(word) if word.isdigit() else 1);chosen=random.SystemRandom().sample(target_player["hand"],min(amount,len(target_player["hand"])))
+        if chosen:_discard_cards(state,target_player,chosen);_log(state,f"{target_player['name']} discarded {len(chosen)} card(s) at random.")
     if target_player_discard and target_player:
         amount_word=target_player_discard.group(1);words={"a":1,"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10};amount=words.get(amount_word,int(amount_word) if amount_word.isdigit() else 0);required=min(amount,len(target_player["hand"]))
         if required:state["pending_discard"]={"player_id":target_player["id"],"amount":required,"reason":"effect"};state["priority_player_id"]=target_player["id"];_log(state,f"{target_player['name']} must discard {required} card(s).")
