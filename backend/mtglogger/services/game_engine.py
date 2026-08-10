@@ -1905,8 +1905,8 @@ def public_state(state: dict, viewer_id: str = "player") -> dict:
             player["hand_count"] = len(player["hand"])
             player["hand"] = []
             for card in player["exile"]:
-                if card.get("foretold"):
-                    concealed={key:card.get(key) for key in ("instance_id","owner_id","controller_id","foretold","foretold_turn")};card.clear();card.update({**concealed,"scryfall_id":"foretold","name":"Foretold card","image_url":None,"type_line":"Face-down card","oracle_text":"","mana_cost":"","mana_value":0,"keywords":[],"power":None,"toughness":None,"tapped":False,"damage":0,"counters":{}})
+                if card.get("foretold") or card.get("hidden_exile_permission_player_id") not in {None,viewer_id}:
+                    foretold=bool(card.get("foretold"));concealed={key:card.get(key) for key in ("instance_id","owner_id","controller_id","foretold","foretold_turn","hidden_exile_permission_player_id")};card.clear();card.update({**concealed,"scryfall_id":"foretold" if foretold else "face-down-exile","name":"Foretold card" if foretold else "Face-down exiled card","image_url":None,"type_line":"Face-down card","oracle_text":"","mana_cost":"","mana_value":0,"keywords":[],"power":None,"toughness":None,"tapped":False,"damage":0,"counters":{}})
             for card in player["battlefield"]:
                 if card.get("face_down"):card.pop("face_down_values",None);card.pop("disguised",None)
     for item in visible.get("stack",[]):
@@ -1979,6 +1979,7 @@ def _target_kind(card: dict) -> str | None:
     if "target creature or vehicle" in text:return "creature_or_vehicle"
     if re.search(r"role token attached to target creature",text):return "creature"
     if re.search(r"target player mills?", text): return "player"
+    if "target opponent's library" in text:return "player"
     if re.search(r"target player sacrifices?",text):return "player"
     if re.search(r"target player discards?",text):return "player"
     if "target opponent reveals their hand" in text:return "player"
@@ -2580,7 +2581,7 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
     if active and main and not state["stack"]:
         if player["land_plays_remaining"]:
             actions.extend({"type": "play_land", "card_id": card["instance_id"]} for card in player["hand"] if "Land" in card.get("type_line", ""))
-            actions.extend({"type":"play_land","card_id":card["instance_id"],"source":"exile_permission"} for card in player["exile"] if "Land" in card.get("type_line","") and (card.get("exile_play_until_turn",-1)>=state["turn"] or card.get("exile_play_while_wizard") and any(re.search(r"\bWizard\b",permanent.get("type_line","")) for permanent in player["battlefield"])))
+            actions.extend({"type":"play_land","card_id":card["instance_id"],"source":"exile_permission"} for card in player["exile"] if "Land" in card.get("type_line","") and (card.get("exile_play_indefinitely") or card.get("exile_play_until_turn",-1)>=state["turn"] or card.get("exile_play_while_wizard") and any(re.search(r"\bWizard\b",permanent.get("type_line","")) for permanent in player["battlefield"])))
             actions.extend({"type":"play_land","card_id":card["instance_id"],"source":"after_adventure","label":f"Play {card['name']} after its Adventure"} for card in player["exile"] if card.get("adventured") and "Land" in (_face_rules_card(card,0) or {}).get("type_line",""))
         if _can_pay(player,{"mana_cost":"{3}"}):
             for hand_card in player["hand"]:
@@ -2664,7 +2665,7 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
     station_graveyard_source=next((permanent for permanent in player["battlefield"] if "once during each of your turns, you may cast a permanent spell from your graveyard by sacrificing a land" in _active_level_text(permanent).casefold() and permanent.get("station_graveyard_cast_turn")!=state["turn"]),None) if active else None
     if station_graveyard_source:castable.extend((card,"graveyard_permission") for card in player["graveyard"] if any(kind in card.get("type_line","") for kind in ("Artifact","Battle","Creature","Enchantment","Planeswalker")))
     castable.extend((card,"graveyard_permission") for card in player["graveyard"] if player.get("speed",0)>=4 and re.search(r"Max speed\s*[—-]\s*You may cast this card from your graveyard",card.get("oracle_text") or "",re.IGNORECASE))
-    castable.extend((card,"exile_permission") for card in player["exile"] if card.get("exile_cast_until_turn",-1)>=state["turn"] or card.get("exile_play_while_wizard") and any(re.search(r"\bWizard\b",permanent.get("type_line","")) for permanent in player["battlefield"]))
+    castable.extend((card,"exile_permission") for card in player["exile"] if card.get("exile_play_indefinitely") or card.get("exile_cast_until_turn",-1)>=state["turn"] or card.get("exile_play_while_wizard") and any(re.search(r"\bWizard\b",permanent.get("type_line","")) for permanent in player["battlefield"]))
     castable.extend((card,"airbend") for card in player["exile"] if card.get("airbent"))
     castable.extend((card,"suspend") for card in player["exile"] if card.get("suspended_ready"))
     castable.extend((card,"foretell") for card in player["exile"] if card.get("foretold") and state["turn"]>card.get("foretold_turn",state["turn"]))
@@ -3112,7 +3113,8 @@ def _resolve_spell(state: dict) -> None:
         elif item.get("buyback"):caster["hand"].append(card)
         elif item.get("flashback"):
             spell_owner=_player(state,card.get("owner_id",caster["id"]));card["controller_id"]=spell_owner["id"];_put_into_exile(state,spell_owner,[card],"stack",caster["id"])
-        else:caster["graveyard"].append(card)
+        else:
+            spell_owner=_player(state,card.get("owner_id",caster["id"]));card["controller_id"]=spell_owner["id"];spell_owner["graveyard"].append(card)
         _log(state,f"{card['name']} resolved with {len(item['mode_indices'])} modes.");return
     projected_card=_delirium_rules_card(_threshold_rules_card(card,len(caster["graveyard"])),caster)
     rules_card=_selected_mode_card(projected_card,item.get("mode_indices")) if item.get("kind","spell")=="spell" else projected_card
@@ -3227,6 +3229,11 @@ def _resolve_spell(state: dict) -> None:
     target_player = next((player for player in state["players"] if player["id"] == target_id), None)
     target_owner = next((player for player in state["players"] if any(permanent["instance_id"] == target_id for permanent in player["battlefield"])), None)
     target = next((permanent for player in state["players"] for permanent in player["battlefield"] if permanent["instance_id"] == target_id), None)
+    if target_player and "exile the top two cards of target opponent's library face down" in effect_text and "play those cards for as long as they remain exiled" in effect_text:
+        exiled=[]
+        for _ in range(min(2,len(target_player["library"]))):
+            exiled_card=target_player["library"].pop();exiled_card["controller_id"]=caster["id"];exiled_card["hidden_exile_permission_player_id"]=caster["id"];exiled_card["exile_play_indefinitely"]=True;caster["exile"].append(exiled_card);exiled.append(exiled_card)
+        _log(state,f"{caster['name']} exiled {len(exiled)} card(s) from {target_player['name']}'s library face down and may look at and play them.")
     if target and "exile up to one target non-salamander creature" in effect_text and "that creature's controller creates a 4/3 blue salamander warrior creature token" in (source_permanent or card).get("oracle_text","").casefold():
         target_controller=_player(state,target["controller_id"]);target_owner=next(owner for owner in state["players"] if target in owner["battlefield"]);_leave_battlefield(state,target_owner,target,"exile",exile_actor_id=caster["id"]);token={"instance_id":_id(),"scryfall_id":"token-salamander-warrior","name":"Salamander Warrior Token","image_url":None,"type_line":"Token Creature — Salamander Warrior","oracle_text":"","mana_cost":"","mana_value":0,"colors":["U"],"power":"4","toughness":"3","owner_id":target_controller["id"],"controller_id":target_controller["id"],"tapped":False,"damage":0,"counters":{},"summoning_sick":True,"token":True,"keywords":[]};_enter_battlefield(state,target_controller,[token],"token");_log(state,f"{target['name']} was exiled; {target_controller['name']} created a 4/3 Salamander Warrior token.");return
     if target_player and "target opponent reveals their hand" in effect_text and "you choose a nonland card from it and exile that card" in effect_text:
@@ -4048,7 +4055,8 @@ def _resolve_spell(state: dict) -> None:
             spell_owner=_player(state,card.get("owner_id",caster["id"]));_set_card_face(card,0);card["adventured"]=True;_put_into_exile(state,spell_owner,[card],"adventure",caster["id"]);_log(state,f"{card['name']} was exiled after its Adventure resolved and may be cast from exile.")
         elif item.get("flashback"):
             spell_owner=_player(state,card.get("owner_id",caster["id"]));card["controller_id"]=spell_owner["id"];_put_into_exile(state,spell_owner,[card],"stack",caster["id"])
-        else:caster["graveyard"].append(card)
+        else:
+            spell_owner=_player(state,card.get("owner_id",caster["id"]));card["controller_id"]=spell_owner["id"];spell_owner["graveyard"].append(card)
     _log(state, f"{card['name']} resolved.")
     if entered and "Saga" in card.get("type_line",""):_add_saga_lore(state,caster,card)
     if not saga_transformed:_finish_saga_final_chapter(state,item)
@@ -5420,9 +5428,9 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         _log(state,f"{player['name']} cast a creature spell face down for {{3}}.")
     elif action_type == "play_land":
         source=action.get("source","hand");zone=player["exile"] if source in {"exile_permission","after_adventure"} else player["hand"]
-        card = next((card for card in zone if card["instance_id"] == action.get("card_id") and "Land" in (_face_rules_card(card,0) or card).get("type_line", "") and (source!="exile_permission" or card.get("exile_play_until_turn",-1)>=state["turn"] or card.get("exile_play_while_wizard") and any(re.search(r"\bWizard\b",permanent.get("type_line","")) for permanent in player["battlefield"])) and (source!="after_adventure" or card.get("adventured"))), None)
+        card = next((card for card in zone if card["instance_id"] == action.get("card_id") and "Land" in (_face_rules_card(card,0) or card).get("type_line", "") and (source!="exile_permission" or card.get("exile_play_indefinitely") or card.get("exile_play_until_turn",-1)>=state["turn"] or card.get("exile_play_while_wizard") and any(re.search(r"\bWizard\b",permanent.get("type_line","")) for permanent in player["battlefield"])) and (source!="after_adventure" or card.get("adventured"))), None)
         if not card: raise RuleViolation("That land cannot be played from that zone")
-        zone.remove(card);_set_card_face(card,0);card.pop("adventured",None);card.pop("exile_play_while_wizard",None);card.setdefault("tapped",False);card["summoning_sick"]=True;_enter_battlefield(state,player,[card],"exile" if source in {"exile_permission","after_adventure"} else "hand",played=True);player["lands_played_this_turn"]=player.get("lands_played_this_turn",0)+1;player["land_plays_remaining"]-=1;_log(state,f"{player['name']} played {card['name']}{' from exile after its Adventure' if source=='after_adventure' else ''}.")
+        zone.remove(card);_set_card_face(card,0);card.pop("adventured",None);card.pop("exile_play_while_wizard",None);card.pop("exile_play_indefinitely",None);card.pop("hidden_exile_permission_player_id",None);card.setdefault("tapped",False);card["summoning_sick"]=True;_enter_battlefield(state,player,[card],"exile" if source in {"exile_permission","after_adventure"} else "hand",played=True);player["lands_played_this_turn"]=player.get("lands_played_this_turn",0)+1;player["land_plays_remaining"]-=1;_log(state,f"{player['name']} played {card['name']}{' from exile after its Adventure' if source=='after_adventure' else ''}.")
     elif action_type=="channel":
         card=next((card for card in player["hand"] if card["instance_id"]==action.get("card_id")),None);abilities=_channel_abilities(card or {});ability_index=int(action.get("ability_index") or 0);ability=abilities[ability_index] if 0<=ability_index<len(abilities) else None;requested_target_count=len(action.get("target_ids") or []);available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="channel" and entry["card_id"]==action.get("card_id") and entry.get("ability_index")==ability_index and (entry.get("channel_target_count") is None or entry.get("channel_target_count")==requested_target_count)),None)
         if not card or not ability or not available:raise RuleViolation("That Channel ability cannot be activated now")
@@ -5569,7 +5577,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         else:player[zone_name].remove(card)
         cost_triggers=state["stack"][stack_before_cost:];del state["stack"][stack_before_cost:]
         if source=="rebound":state["pending_rebound"]=None
-        card.pop("rebound_triggered",None);card.pop("rebound_after_turn",None);card.pop("airbent",None);card.pop("suspended_ready",None);card.pop("suspended",None);card.pop("foretold",None);card.pop("foretold_turn",None);card.pop("plotted",None);card.pop("plotted_turn",None);card.pop("exile_cast_until_turn",None)
+        card.pop("rebound_triggered",None);card.pop("rebound_after_turn",None);card.pop("airbent",None);card.pop("suspended_ready",None);card.pop("suspended",None);card.pop("foretold",None);card.pop("foretold_turn",None);card.pop("plotted",None);card.pop("plotted_turn",None);card.pop("exile_cast_until_turn",None);card.pop("exile_play_indefinitely",None);card.pop("hidden_exile_permission_player_id",None)
         if card.get("commander"): player["commander_casts"] = player.get("commander_casts", 0) + 1
         effective_target=target_id or (mode_targets[0] if len(mode_targets)==1 else None);stack_item={"id": _id(), "card": card, "controller_id": player_id, "target_id": effective_target,"target_ids":target_ids,"mode_indices":chosen_modes,"mode_targets":mode_targets,"x_value":x_value,"allow_zero_targets":bool(available.get("allow_zero_targets")),"flashback":bool(flashback),"buyback":requested_buyback,"rebound_cast":source=="rebound","escaped":bool(escape),"escape_counters":escape["counters"] if escape else 0,"escape_counter_choice":escape["counter_choice"] if escape else False,"suspended_cast":source=="suspend","kicked":requested_kicked,"multikicker_count":requested_multikicker,"entwined":requested_entwined,"overloaded":requested_overloaded,"blighted":requested_blight,"blessing_top":requested_blessing_top,"evoked":requested_evoked,"dashed":requested_dashed,"bestowing":requested_bestowing,"delved_cards":delved_cards if requested_delve else [],"mutating":requested_mutating,"mutate_position":action.get("mutate_position"),"cast_source_zone":"graveyard" if source in {"flashback","escape","mutate_graveyard","graveyard_permission"} else "exile" if source in {"airbend","suspend","foretell","plot","rebound","exile_permission"} else "hand" if source in {"mutate_hand","evoke","dash_hand","bestow"} else "command" if source in {"mutate_command","dash_command"} else source};state["stack"].append(stack_item);state["stack"].extend(cost_triggers); state["consecutive_passes"] = 0; state["pending_phase_advance"] = False
         if requested_waterbend:_queue_triggers(state,"waterbend",card,player)
