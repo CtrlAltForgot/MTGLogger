@@ -1151,6 +1151,36 @@ def _amass(state:dict,player:dict,subtype:str,amount:int,source_name:str)->None:
     state["pending_amass"]={"player_id":player["id"],"source_name":source_name,"subtype":subtype,"amount":amount,"card_ids":[army["instance_id"] for army in armies]};state["priority_player_id"]=player["id"]
 
 
+def _populate(state:dict,player:dict,source_name:str,repeats:int=1,tapped_attacking:bool=False,haste:bool=False,sacrifice_end:bool=False)->None:
+    if repeats<=0:return
+    tokens=[card for card in player["battlefield"] if card.get("token") and "Creature" in card.get("type_line","")]
+    if not tokens:_log(state,f"{player['name']} could not populate because they controlled no creature token.");return
+    state["pending_populate"]={"player_id":player["id"],"source_name":source_name,"repeats":repeats,"card_ids":[card["instance_id"] for card in tokens],"tapped_attacking":tapped_attacking,"haste":haste,"sacrifice_end":sacrifice_end};state["priority_player_id"]=player["id"]
+
+
+def _finish_populate(state:dict,player:dict,source:dict,pending:dict)->None:
+    token=deepcopy(source);token["instance_id"]=_id();token["owner_id"]=player["id"];token["controller_id"]=player["id"];token["token"]=True;token["damage"]=0;token["counters"]={};token["tapped"]=bool(pending.get("tapped_attacking"));token["summoning_sick"]=True
+    for key in ("attached_to","attachment_keywords","attachment_rules","temporary_power","temporary_toughness","temporary_keywords","temporary_backup_rules","deathtouch_damage","activated_ability_usage"):token.pop(key,None)
+    if pending.get("haste"):token["temporary_keywords"]=sorted(set(token.get("temporary_keywords",[]))|{"Haste"})
+    if pending.get("sacrifice_end"):token["populate_sacrifice_turn"]=state["turn"]
+    _enter_battlefield(state,player,[token],"token")
+    if pending.get("tapped_attacking") and state["phase"]=="combat":state["combat"]["attackers"].append(token["instance_id"]);state["combat"]["attack_targets"][token["instance_id"]]=opponent(state,player["id"])["id"]
+    _log(state,f"{player['name']} populated a copy of {source['name']}.")
+    repeats=int(pending.get("repeats",1))-1
+    if repeats:_populate(state,player,pending["source_name"],repeats,bool(pending.get("tapped_attacking")),bool(pending.get("haste")),bool(pending.get("sacrifice_end")))
+
+
+def _bolster(state:dict,player:dict,amount:int,source_name:str,grant_trample:bool=False)->None:
+    creatures=[card for card in player["battlefield"] if "Creature" in card.get("type_line","")]
+    if not creatures or amount<=0:return
+    minimum=min(_parse_stats(card,state)[1] for card in creatures);eligible=[card for card in creatures if _parse_stats(card,state)[1]==minimum]
+    if len(eligible)==1:
+        _add_counters(state,eligible[0],"+1/+1",amount,player["id"],"bolster")
+        if grant_trample:eligible[0]["temporary_keywords"]=sorted(set(eligible[0].get("temporary_keywords",[]))|{"Trample"})
+        _log(state,f"{player['name']} bolstered {eligible[0]['name']} {amount}.");return
+    state["pending_bolster"]={"player_id":player["id"],"source_name":source_name,"amount":amount,"card_ids":[card["instance_id"] for card in eligible],"grant_trample":grant_trample};state["priority_player_id"]=player["id"]
+
+
 def _continue_explore(state:dict,player:dict)->None:
     queue=state.setdefault("pending_explore_queue",[])
     while queue:
@@ -1375,7 +1405,7 @@ def _new_player(player_id: str, name: str, deck: list[dict], is_bot: bool, forma
 def new_game(player_deck: list[dict], opponent_deck: list[dict], play_first: bool = True, opponent_is_bot: bool = True, player_format: str = "", opponent_format: str = "") -> dict:
     human_id, bot_id = "player", "bot"
     players = [_new_player(human_id, "You", player_deck, False, player_format), _new_player(bot_id, "Bot" if opponent_is_bot else "Guest", opponent_deck, opponent_is_bot, opponent_format)]
-    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "beginning_draw_pending":True,"first_turn_draw_skipped":False,"active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id,"monarch_id":None,"initiative_id":None, "players": players, "stack": [], "combat": {"attackers": [], "attackers_declared":False,"blocks": {}, "attack_targets": {},"block_orders":{},"damage_pending":False,"damage_step":None,"first_strike_damage_ids":[],"block_triggers_pending":False}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "pending_legendary": None,"pending_commander_zone":[],"pending_library_search":None,"pending_scry":None,"pending_damage_order":None,"pending_ward":None,"pending_blight":None,"pending_proliferate":None,"pending_amass":None,"pending_discovery":None,"pending_madness":None,"pending_manifest":None,"pending_transform":None,"pending_dungeon":None,"pending_trigger_targets":[], "log": []}
+    state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "beginning_draw_pending":True,"first_turn_draw_skipped":False,"active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id,"monarch_id":None,"initiative_id":None, "players": players, "stack": [], "combat": {"attackers": [], "attackers_declared":False,"blocks": {}, "attack_targets": {},"block_orders":{},"damage_pending":False,"damage_step":None,"first_strike_damage_ids":[],"block_triggers_pending":False}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "pending_legendary": None,"pending_commander_zone":[],"pending_library_search":None,"pending_scry":None,"pending_damage_order":None,"pending_ward":None,"pending_blight":None,"pending_proliferate":None,"pending_amass":None,"pending_populate":None,"pending_bolster":None,"pending_discovery":None,"pending_madness":None,"pending_manifest":None,"pending_transform":None,"pending_dungeon":None,"pending_trigger_targets":[], "log": []}
     state["pending_explore"]=None;state["pending_explore_queue"]=[]
     state["pending_connive"]=None;state["pending_connive_queue"]=[]
     state["day_night"]=None
@@ -1577,7 +1607,7 @@ def _multiplayer(state: dict) -> bool:
 def _pending_decision(state:dict)->bool:
     if state.get("pending_explore"):return True
     if state.get("pending_connive"):return True
-    return bool(state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_discovery") or state.get("pending_madness") or state.get("pending_rebound") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
+    return bool(state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_populate") or state.get("pending_bolster") or state.get("pending_discovery") or state.get("pending_madness") or state.get("pending_rebound") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
 
 
 def _queue_commander_zone_choice(state:dict,owner:dict,card:dict,zone:str)->None:
@@ -1743,6 +1773,16 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
         if pending_amass["player_id"]!=player_id:return []
         cards_by_id={card["instance_id"]:card for card in player["battlefield"]};targets=[{"id":card_id,"name":cards_by_id[card_id]["name"],"kind":"permanent","controller_id":player_id} for card_id in pending_amass["card_ids"] if card_id in cards_by_id]
         return [{"type":"choose_amass_army","targets":targets,"source_name":pending_amass["source_name"],"amount":pending_amass["amount"],"subtype":pending_amass["subtype"]},{"type":"concede"}]
+    pending_populate=state.get("pending_populate")
+    if pending_populate:
+        if pending_populate["player_id"]!=player_id:return []
+        cards_by_id={card["instance_id"]:card for card in player["battlefield"]};targets=[{"id":card_id,"name":cards_by_id[card_id]["name"],"kind":"permanent","controller_id":player_id} for card_id in pending_populate["card_ids"] if card_id in cards_by_id and cards_by_id[card_id].get("token") and "Creature" in cards_by_id[card_id].get("type_line","")]
+        return ([{"type":"choose_populate_token","targets":targets,"source_name":pending_populate["source_name"],"repeats":pending_populate["repeats"]}] if targets else [{"type":"skip_populate","source_name":pending_populate["source_name"]}])+[{"type":"concede"}]
+    pending_bolster=state.get("pending_bolster")
+    if pending_bolster:
+        if pending_bolster["player_id"]!=player_id:return []
+        cards_by_id={card["instance_id"]:card for card in player["battlefield"]};targets=[{"id":card_id,"name":cards_by_id[card_id]["name"],"kind":"permanent","controller_id":player_id} for card_id in pending_bolster["card_ids"] if card_id in cards_by_id]
+        return [{"type":"choose_bolster_creature","targets":targets,"source_name":pending_bolster["source_name"],"amount":pending_bolster["amount"]},{"type":"concede"}]
     pending_explore=state.get("pending_explore")
     if pending_explore:
         if pending_explore["player_id"]!=player_id:return []
@@ -2104,6 +2144,11 @@ def _resolve_spell(state: dict) -> None:
         target=next((permanent for owner in state["players"] for permanent in owner["battlefield"] if permanent["instance_id"]==item.get("target_id")),None)
         if not target:_log(state,f"{card['name']} resolved, but its creature was no longer on the battlefield.");return
         target["temporary_power"]=target.get("temporary_power",0)+int(item.get("power_change") or 0);target["temporary_toughness"]=target.get("temporary_toughness",0)+int(item.get("toughness_change") or 0);_log(state,f"{item.get('keyword','combat')} changed {target['name']} by {int(item.get('power_change') or 0):+d}/{int(item.get('toughness_change') or 0):+d} until end of turn.");return
+    if item.get("kind")=="populate_sacrifice_trigger":
+        permanent=next((permanent for owner in state["players"] for permanent in owner["battlefield"] if permanent["instance_id"]==item.get("source_id")),None)
+        if permanent:
+            owner=next(owner for owner in state["players"] if permanent in owner["battlefield"]);_leave_battlefield(state,owner,permanent,"graveyard");_log(state,f"{permanent['name']} was sacrificed after its temporary population.")
+        return
     if card.get("growth_mechanic"):
         permanent=next((permanent for owner in state["players"] for permanent in owner["battlefield"] if permanent["instance_id"]==item.get("source_id")),None);mechanic=card["growth_mechanic"]
         if not permanent:_log(state,f"{card['name']} resolved, but its source was no longer on the battlefield.");return
@@ -2483,6 +2528,16 @@ def _resolve_spell(state: dict) -> None:
         for _ in range(amount):created.append(_predefined_token(caster,kind,bool(predefined.group(2))))
         _enter_battlefield(state,caster,created,"token")
         _log(state,f"{caster['name']} created {amount} {kind} token(s).")
+    populate_match=re.search(r"\bpopulate(?: (X|\d+) times)?\b",effect_text,re.IGNORECASE)
+    if populate_match:
+        repeats=int(item.get("x_value") or 0) if (populate_match.group(1) or "").upper()=="X" else int(populate_match.group(1) or 1);_populate(state,caster,card["name"],repeats,"enters tapped and attacking" in effect_text,"token created this way gains haste" in effect_text,"sacrifice it at the beginning of the next end step" in effect_text)
+    bolster_match=re.search(r"\bbolster (X|\d+|one|two|three|four|five)\b",effect_text,re.IGNORECASE)
+    if bolster_match:
+        word=bolster_match.group(1).casefold();amount={"one":1,"two":2,"three":3,"four":4,"five":5}.get(word,int(word) if word.isdigit() else int(item.get("x_value") or 0))
+        if word=="x" and "number of cards in your hand" in effect_text:amount=len(caster["hand"])
+        elif word=="x" and "number of tapped creatures you control" in effect_text:amount=sum(card.get("tapped") and "Creature" in card.get("type_line","") for card in caster["battlefield"])
+        elif word=="x" and "number of differently named artifact tokens you control" in effect_text:amount=len({card["name"] for card in caster["battlefield"] if card.get("token") and "Artifact" in card.get("type_line","")})
+        _bolster(state,caster,amount,card["name"],"chosen creature gains trample" in effect_text)
     saga_transformed=False
     if source_permanent and "exile this saga, then return it to the battlefield transformed under your control" in effect_text:
         saga_owner=next((owner for owner in state["players"] if source_permanent in owner["battlefield"]),None)
@@ -2567,7 +2622,7 @@ def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str, t
             else:zone_owner[destination].append(component)
             _queue_commander_zone_choice(state,zone_owner,component,destination)
         return
-    card["damage"] = 0; card["tapped"] = False;card.pop("escaped",None);card.pop("evoked",None);card.pop("echo_due_controller_id",None);card.pop("dashed",None);card.pop("dash_return_triggered",None);card.pop("deathtouch_damage",None);card.pop("crewed_turn",None);card.pop("temporary_control_return_to",None);card.pop("activated_ability_usage",None);card.pop("temporary_power",None);card.pop("temporary_toughness",None);card.pop("temporary_keywords",None);card.pop("temporary_backup_rules",None);card.pop("unearthed",None);card.pop("unearth_controller_id",None);card.pop("unearth_end_triggered",None);card.pop("monstrous",None);card.pop("monstrosity_value",None)
+    card["damage"] = 0; card["tapped"] = False;card.pop("escaped",None);card.pop("evoked",None);card.pop("echo_due_controller_id",None);card.pop("dashed",None);card.pop("dash_return_triggered",None);card.pop("deathtouch_damage",None);card.pop("crewed_turn",None);card.pop("temporary_control_return_to",None);card.pop("activated_ability_usage",None);card.pop("temporary_power",None);card.pop("temporary_toughness",None);card.pop("temporary_keywords",None);card.pop("temporary_backup_rules",None);card.pop("unearthed",None);card.pop("unearth_controller_id",None);card.pop("unearth_end_triggered",None);card.pop("populate_sacrifice_turn",None);card.pop("monstrous",None);card.pop("monstrosity_value",None)
     if card.get("face_down"):
         values=card.pop("face_down_values",{})
         for key,value in values.items():card[key]=value
@@ -3223,6 +3278,8 @@ def _advance_turn_phase(state: dict) -> None:
             active=_player(state,state["active_player_id"]);_queue_triggers(state,"end_step",None,active)
             for permanent in [card for owner in state["players"] for card in owner["battlefield"] if card.get("unearthed") and not card.get("unearth_end_triggered")]:
                 permanent["unearth_end_triggered"]=True;controller=_player(state,permanent.get("unearth_controller_id",permanent["controller_id"]));ability_card={**permanent,"name":f"{permanent['name']} — Unearth exile","type_line":"Ability","mana_cost":"","oracle_text":f"Exile {permanent['name']}."};state["stack"].append({"id":_id(),"kind":"unearth_exile_trigger","card":ability_card,"controller_id":controller["id"],"source_id":permanent["instance_id"]});_log(state,f"{permanent['name']}'s unearth exile trigger was put on the stack.")
+            for permanent in [card for owner in state["players"] for card in owner["battlefield"] if card.get("populate_sacrifice_turn")==state["turn"]]:
+                permanent.pop("populate_sacrifice_turn",None);controller=_player(state,permanent["controller_id"]);ability={"name":f"{permanent['name']} — Populate sacrifice","type_line":"Ability","mana_cost":"","oracle_text":f"Sacrifice {permanent['name']}."};state["stack"].append({"id":_id(),"kind":"populate_sacrifice_trigger","card":ability,"controller_id":controller["id"],"source_id":permanent["instance_id"]});_log(state,f"{permanent['name']}'s population sacrifice triggered.")
             for permanent in [card for owner in state["players"] for card in owner["battlefield"] if card.get("dashed") and not card.get("dash_return_triggered")]:
                 permanent["dash_return_triggered"]=True;controller=_player(state,permanent["controller_id"]);ability_card={"name":f"{permanent['name']} — Dash return","type_line":"Ability","mana_cost":"","oracle_text":f"Return {permanent['name']} to its owner's hand."};state["stack"].append({"id":_id(),"kind":"dash_return_trigger","card":ability_card,"controller_id":controller["id"],"source_id":permanent["instance_id"]});_log(state,f"{permanent['name']}'s dash return trigger was put on the stack.")
             if state.get("monarch_id")==active["id"]:
@@ -3813,6 +3870,25 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         army=next((card for card in player["battlefield"] if card["instance_id"]==target_id and "Army" in card.get("type_line","")),None)
         if not army:raise RuleViolation("That Army is no longer on the battlefield")
         state["pending_amass"]=None;_finish_amass(state,player,army,pending["subtype"],pending["amount"]);state["priority_player_id"]=state["active_player_id"]
+    elif action_type in {"choose_populate_token","skip_populate"}:
+        pending=state.get("pending_populate") or {};target_id=action.get("target_id")
+        if pending.get("player_id")!=player_id:raise RuleViolation("There is no populate choice for this player")
+        source=next((card for card in player["battlefield"] if card["instance_id"]==target_id and card.get("token") and "Creature" in card.get("type_line","")),None)
+        if action_type=="choose_populate_token" and (not source or target_id not in pending.get("card_ids",[])):raise RuleViolation("Choose one of your creature tokens to populate")
+        state["pending_populate"]=None
+        if source:_finish_populate(state,player,source,pending)
+        else:_log(state,f"{player['name']} could not finish populating because no eligible token remained.")
+        if not state.get("pending_populate"):state["priority_player_id"]=state["active_player_id"]
+    elif action_type=="choose_bolster_creature":
+        pending=state.get("pending_bolster") or {};target_id=action.get("target_id")
+        if pending.get("player_id")!=player_id or target_id not in pending.get("card_ids",[]):raise RuleViolation("Choose a creature tied for least toughness")
+        target=next((card for card in player["battlefield"] if card["instance_id"]==target_id and "Creature" in card.get("type_line","")),None)
+        if not target:raise RuleViolation("That bolster creature is no longer on the battlefield")
+        current=[card for card in player["battlefield"] if "Creature" in card.get("type_line","")];minimum=min((_parse_stats(card,state)[1] for card in current),default=None)
+        if minimum is None or _parse_stats(target,state)[1]!=minimum:raise RuleViolation("That creature no longer has the least toughness")
+        state["pending_bolster"]=None;_add_counters(state,target,"+1/+1",pending["amount"],player_id,"bolster")
+        if pending.get("grant_trample"):target["temporary_keywords"]=sorted(set(target.get("temporary_keywords",[]))|{"Trample"})
+        state["priority_player_id"]=state["active_player_id"];_log(state,f"{player['name']} bolstered {target['name']} {pending['amount']}.")
     elif action_type in {"accept_transform","decline_transform"}:
         pending=state.get("pending_transform") or {}
         if pending.get("player_id")!=player_id:raise RuleViolation("There is no optional transform decision for this player")

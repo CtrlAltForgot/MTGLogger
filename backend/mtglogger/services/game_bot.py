@@ -241,6 +241,13 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
     if "choose_amass_army" in by_type:
         action=by_type["choose_amass_army"][0];choice=max(action.get("targets",[]),key=lambda target:_threat_score(state,_target_card(state,target["id"]) or {}),default=None)
         return {"type":"choose_amass_army","target_id":choice["id"]} if choice else by_type.get("concede",[None])[0]
+    if "choose_populate_token" in by_type:
+        action=by_type["choose_populate_token"][0];choice=max(action.get("targets",[]),key=lambda target:_threat_score(state,_target_card(state,target["id"]) or {}),default=None)
+        return {"type":"choose_populate_token","target_id":choice["id"]} if choice else by_type.get("skip_populate",by_type.get("concede",[None]))[0]
+    if "skip_populate" in by_type:return by_type["skip_populate"][0]
+    if "choose_bolster_creature" in by_type:
+        action=by_type["choose_bolster_creature"][0];choice=max(action.get("targets",[]),key=lambda target:_threat_score(state,_target_card(state,target["id"]) or {}),default=None)
+        return {"type":"choose_bolster_creature","target_id":choice["id"]} if choice else by_type.get("concede",[None])[0]
     if "keep_explored" in by_type:
         action=by_type["keep_explored"][0];revealed=action.get("card") or {};bot=next(player for player in state["players"] if player["id"]=="bot");lands=sum("Land" in card.get("type_line","") for card in bot["battlefield"]);value=float(revealed.get("mana_value") or 0)
         keep=difficulty=="beginner" or value<=lands+2 or (_threat_score(state,revealed)>=8 and value<=lands+4)
