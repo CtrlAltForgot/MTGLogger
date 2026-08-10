@@ -289,6 +289,7 @@ def _active_threshold_text(card:dict,text:str)->str:
                 body=re.sub(r"^\s*Threshold\s*[—-]\s*","",line,flags=re.IGNORECASE)
                 body=re.sub(r"^as long as there are seven or more cards in your graveyard,\s*","",body,flags=re.IGNORECASE)
                 body=re.sub(r"^if there are seven or more cards in your graveyard,\s*","",body,flags=re.IGNORECASE)
+                body=re.sub(r",\s*if there are seven or more cards in your graveyard,",",",body,flags=re.IGNORECASE)
                 body=re.sub(r"\s+as long as there are seven or more cards in your graveyard","",body,flags=re.IGNORECASE)
                 visible.append(body)
         else:visible.append(line)
@@ -1647,6 +1648,7 @@ def _threshold_rules_card(card:dict,graveyard_count:int)->dict:
     if name in replacements:
         suffix="\n"+"\n".join(line for line in lines if re.match(r"^(?:Flashback|Buyback|Kicker|Cycling)\b",line,re.IGNORECASE))
         text=replacements[name]+(suffix if suffix.strip() else "")
+    if name.startswith("shoreline looter"):text=re.sub(r"\s*Then discard a card unless there are seven or more cards in your graveyard\.","",text,flags=re.IGNORECASE)
     return {**card,"oracle_text":text}
 
 
@@ -2272,6 +2274,7 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
         if pending.get("target_steps"):return [{"type":"choose_trigger_targets","target_steps":pending["target_steps"],"min_targets":pending.get("min_targets",len(pending["target_steps"])),"label":pending["card"]["oracle_text"],"source_name":pending["source_name"]},{"type":"concede"}]
         targets=_targets(state,player_id,pending["card"])
         actions=[{"type":"choose_trigger_target","targets":targets,"label":pending["card"]["oracle_text"],"source_name":pending["source_name"]}] if targets else []
+        if pending.get("optional") and not targets:actions.append({"type":"accept_trigger","source_name":pending["source_name"],"label":pending["card"]["oracle_text"]})
         if pending.get("optional") or not targets:actions.append({"type":"skip_trigger","source_name":pending["source_name"]})
         return actions+[{"type":"concede"}]
     if state["status"] == "mulligan":
@@ -3083,6 +3086,10 @@ def _resolve_spell(state: dict) -> None:
         if target.get("temporary_type_line") is None:target["temporary_type_line"]=target.get("type_line","")
         parts=target["temporary_type_line"].split(" — ",1);subtypes=f"{parts[1]} {animate_land.group(3).title()}" if len(parts)>1 else animate_land.group(3).title();target["type_line"]=f"{parts[0]} Creature — {subtypes}"
         target["temporary_base_power"]=int(animate_land.group(1));target["temporary_base_toughness"]=int(animate_land.group(2));target["temporary_keywords"]=sorted(set(target.get("temporary_keywords",[]))|{"Haste"});_sync_city_blessing(state);_log(state,f"{target['name']} became a {animate_land.group(1)}/{animate_land.group(2)} {animate_land.group(3).title()} land creature with haste until end of turn.")
+    animate_self_land=re.search(r"this land becomes a (\d+)/(\d+) ([a-z ]+?) creature with ([^.]+?) until end of turn",effect_text)
+    if animate_self_land and source_permanent and "Land" in source_permanent.get("type_line",""):
+        if source_permanent.get("temporary_type_line") is None:source_permanent["temporary_type_line"]=source_permanent.get("type_line","")
+        parts=source_permanent["temporary_type_line"].split(" — ",1);subtypes=f"{parts[1]} {animate_self_land.group(3).title()}" if len(parts)>1 else animate_self_land.group(3).title();source_permanent["type_line"]=f"{parts[0]} Creature — {subtypes}";source_permanent["temporary_base_power"]=int(animate_self_land.group(1));source_permanent["temporary_base_toughness"]=int(animate_self_land.group(2));supported=("flying","first strike","double strike","deathtouch","haste","hexproof","indestructible","lifelink","menace","reach","trample","vigilance");source_permanent["temporary_keywords"]=sorted(set(source_permanent.get("temporary_keywords",[]))|{keyword.title() for keyword in supported if re.search(rf"\b{re.escape(keyword)}\b",animate_self_land.group(4))});_sync_city_blessing(state);_log(state,f"{source_permanent['name']} became a {animate_self_land.group(1)}/{animate_self_land.group(2)} land creature until end of turn.")
     animate_artifact=re.search(r"(?:up to one other )?target artifact you control becomes an artifact creature with base power and toughness (\d+)/(\d+) and gains flying until end of turn",effect_text)
     if animate_artifact and target and target_owner and "Artifact" in target.get("type_line","") and target.get("controller_id")==caster["id"]:
         if target.get("temporary_type_line") is None:target["temporary_type_line"]=target.get("type_line","")
@@ -3348,6 +3355,9 @@ def _resolve_spell(state: dict) -> None:
         words={"a":1,"one":1,"two":2,"three":3,"four":4};amount=words.get(team_counters.group(1),int(team_counters.group(1)) if team_counters.group(1).isdigit() else 1)
         for permanent in caster["battlefield"]:
             if "Creature" in permanent.get("type_line",""):_add_counters(state,permanent,team_counters.group(2),amount,caster["id"],"effect")
+    named_legendary_token=re.search(r"create ([^,]+), a legendary (\d+)/(\d+) ([^.]*?) creature token",effect_text)
+    if named_legendary_token:
+        descriptor=named_legendary_token.group(4).strip();colors=[symbol for name,symbol in {"white":"W","blue":"U","black":"B","red":"R","green":"G"}.items() if re.search(rf"\b{name}\b",descriptor)];subtype=re.sub(r"\b(?:white|blue|black|red|green|colorless|and)\b"," ",descriptor);subtype=re.sub(r"\s+"," ",subtype).strip() or "Creature";token_name=named_legendary_token.group(1).strip().title().replace(" Of "," of ").replace(" The "," the ");token={"instance_id":_id(),"scryfall_id":"token","name":token_name,"image_url":None,"type_line":f"Legendary Token Creature — {subtype.title()}","oracle_text":"","mana_cost":"","mana_value":0,"colors":colors,"power":named_legendary_token.group(2),"toughness":named_legendary_token.group(3),"owner_id":caster["id"],"controller_id":caster["id"],"tapped":False,"damage":0,"counters":{},"summoning_sick":True,"token":True,"keywords":[]};_enter_battlefield(state,caster,[token],"token")
     token_match = re.search(r"create (a|one|two|three|four|five|\d+) (tapped )?(\d+)/(\d+) ([^.]*?) creature tokens?", effect_text)
     if token_match:
         amount = {"a":1,"one":1,"two":2,"three":3,"four":4,"five":5}.get(token_match.group(1),int(token_match.group(1)) if token_match.group(1).isdigit() else 0)
@@ -4120,6 +4130,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 elif _target_kind(ability_card):
                     if targets:state.setdefault("pending_trigger_targets",[]).append({"controller_id":owner["id"],"source_name":source["name"],"trigger":trigger,"card":ability_card,"optional":re.match(r"(?:otherwise,\s*)?you may\b",effect,re.IGNORECASE) is not None or "up to one target" in effect.casefold()});state["priority_player_id"]=state["pending_trigger_targets"][0]["controller_id"]
                     else:_log(state,f"{source['name']}'s trigger had no legal target and was removed.")
+                elif re.match(r"(?:otherwise,\s*)?you may\b",effect,re.IGNORECASE):state.setdefault("pending_trigger_targets",[]).append({"controller_id":owner["id"],"source_name":source["name"],"trigger":trigger,"card":ability_card,"optional":True});state["priority_player_id"]=state["pending_trigger_targets"][0]["controller_id"]
                 else:state["stack"].append(trigger)
                 _log(state, f"{source['name']} triggered: {effect}")
 
@@ -5087,7 +5098,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         else:
             state["pending_transform"]=None;_log(state,f"{player['name']} chose not to transform {pending['source_name']}.")
         state["priority_player_id"]=state["active_player_id"]
-    elif action_type in {"choose_trigger_mode","choose_trigger_target","choose_trigger_targets","skip_trigger"}:
+    elif action_type in {"choose_trigger_mode","choose_trigger_target","choose_trigger_targets","accept_trigger","skip_trigger"}:
         pending_list=state.get("pending_trigger_targets") or []
         if not pending_list or pending_list[0]["controller_id"]!=player_id:raise RuleViolation("There is no triggered target decision for this player")
         pending=pending_list.pop(0);targets=_targets(state,player_id,pending["card"]);target_id=action.get("target_id")
@@ -5107,6 +5118,9 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         elif action_type=="choose_trigger_target":
             if target_id not in {target["id"] for target in targets}:raise RuleViolation("Choose a legal target for the triggered ability")
             trigger=pending["trigger"];trigger["target_id"]=target_id;state["stack"].append(trigger);_log(state,f"{player['name']} chose {next(target['name'] for target in targets if target['id']==target_id)} for {pending['source_name']}'s trigger.")
+        elif action_type=="accept_trigger":
+            if not pending.get("optional") or targets:raise RuleViolation("That trigger does not use a simple accept choice")
+            state["stack"].append(pending["trigger"]);_log(state,f"{player['name']} accepted {pending['source_name']}'s optional trigger.")
         elif targets and not pending.get("optional"):raise RuleViolation("This triggered ability still has legal targets")
         state["pending_trigger_targets"]=pending_list;state["priority_player_id"]=pending_list[0]["controller_id"] if pending_list else state["active_player_id"]
     elif action_type == "advance_phase":

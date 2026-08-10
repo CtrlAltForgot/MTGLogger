@@ -22,6 +22,7 @@ describe('automatic game actions',()=>{
   it('waits whenever the player has a real choice',()=>{
     expect(automaticGameAction([action('resolve'),action('cast',{card_id:'response'})])).toBeUndefined()
     expect(automaticGameAction([action('advance_phase'),action('declare_attackers',{card_ids:['attacker']})])).toBeUndefined()
+    expect(automaticGameAction([action('accept_trigger'),action('skip_trigger')])).toBeUndefined()
   })
 
   it('leaves readable time before every automatic transition',()=>{
