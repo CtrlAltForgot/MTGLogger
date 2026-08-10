@@ -45,8 +45,10 @@ def _draw(state: dict, player: dict, amount: int = 1,emit_events:bool=True) -> N
             if player.get("draw_event_turn")!=state["turn"]:player["draw_event_turn"]=state["turn"];player["draws_this_turn"]=0
             player["draws_this_turn"]=player.get("draws_this_turn",0)+1
             miracle_cost=_miracle_cost(drawn)
-            if player["draws_this_turn"]==1 and miracle_cost and not state.get("pending_miracle"):
-                state["pending_miracle"]={"player_id":player["id"],"card_id":drawn["instance_id"],"card":deepcopy(drawn),"mana_cost":miracle_cost};state["priority_player_id"]=player["id"]
+            if player["draws_this_turn"]==1 and miracle_cost:
+                opportunity={"player_id":player["id"],"card_id":drawn["instance_id"],"card":deepcopy(drawn),"mana_cost":miracle_cost}
+                if state.get("pending_miracle"):state.setdefault("pending_miracle_queue",[]).append(opportunity)
+                else:state["pending_miracle"]=opportunity;state["priority_player_id"]=player["id"]
             _queue_triggers(state,"draw",drawn,player,trigger_dedupe)
 
 
@@ -1908,6 +1910,7 @@ def new_game(player_deck: list[dict], opponent_deck: list[dict], play_first: boo
     state["pending_connive"]=None;state["pending_connive_queue"]=[]
     state["pending_zethi_copies"]=None
     state["pending_miracle"]=None
+    state["pending_miracle_queue"]=[]
     state["day_night"]=None
     for player in players:
         _draw(state, player, 7,False)
@@ -1943,6 +1946,9 @@ def public_state(state: dict, viewer_id: str = "player") -> dict:
     pending_miracle=visible.get("pending_miracle")
     if pending_miracle and pending_miracle.get("player_id")!=viewer_id:
         for key in ("card_id","card","mana_cost"):pending_miracle.pop(key,None)
+    for queued_miracle in visible.get("pending_miracle_queue",[]):
+        if queued_miracle.get("player_id")!=viewer_id:
+            for key in ("card_id","card","mana_cost"):queued_miracle.pop(key,None)
     pending_revealed=visible.get("pending_revealed_discard")
     if pending_revealed and pending_revealed.get("player_id")!=viewer_id:pending_revealed["cards"]=[]
     pending_same_name=visible.get("pending_same_name_search")
@@ -3338,6 +3344,36 @@ def _resolve_spell(state: dict) -> None:
     target_player = next((player for player in state["players"] if player["id"] == target_id), None)
     target_owner = next((player for player in state["players"] if any(permanent["instance_id"] == target_id for permanent in player["battlefield"])), None)
     target = next((permanent for player in state["players"] for permanent in player["battlefield"] if permanent["instance_id"] == target_id), None)
+    if target and target_owner and re.search(r"put target (?:artifact, creature, or enchantment|nonland permanent) on (?:the )?(bottom|top) of its owner's library",effect_text):
+        destination="bottom" if "bottom" in effect_text else "top";zone_owner=_player(state,target.get("owner_id",target_owner["id"]));_leave_battlefield(state,target_owner,target,"library")
+        if destination=="bottom":zone_owner["library"].remove(target);zone_owner["library"].insert(0,target)
+        _log(state,f"{target['name']} was put on the {destination} of its owner's library.");effect_text=""
+    elif "return all nonland permanents to their owners' hands" in effect_text:
+        returning=[(owner,permanent) for owner in state["players"] for permanent in list(owner["battlefield"]) if "Land" not in permanent.get("type_line","")]
+        for owner,permanent in returning:_leave_battlefield(state,owner,permanent,"hand")
+        _log(state,f"{card['name']} returned {len(returning)} nonland permanent(s) to their owners' hands.");effect_text=""
+    elif "return all artifact and enchantment cards from your graveyard to the battlefield" in effect_text:
+        returning=[candidate for candidate in list(caster["graveyard"]) if any(kind in candidate.get("type_line","") for kind in ("Artifact","Enchantment"))];_leave_graveyard(state,caster,returning)
+        for candidate in returning:candidate["controller_id"]=caster["id"];candidate["summoning_sick"]=True
+        _enter_battlefield(state,caster,returning,"graveyard");_log(state,f"{card['name']} returned {len(returning)} artifact and enchantment card(s) from the graveyard.");effect_text=""
+    elif "each player discards their hand, then draws seven cards" in effect_text:
+        for affected in state["players"]:
+            _discard_cards(state,affected,list(affected["hand"]));_draw(state,affected,7)
+        _log(state,f"Each player discarded their hand and drew seven cards from {card['name']}.");effect_text=""
+    elif "put all creatures on the bottom of their owners' libraries" in effect_text:
+        creatures=[(owner,permanent) for owner in state["players"] for permanent in list(owner["battlefield"]) if "Creature" in permanent.get("type_line","")]
+        for owner,permanent in creatures:
+            zone_owner=_player(state,permanent.get("owner_id",owner["id"]));_leave_battlefield(state,owner,permanent,"library");zone_owner["library"].remove(permanent);zone_owner["library"].insert(0,permanent)
+        _log(state,f"{card['name']} put {len(creatures)} creature(s) on the bottoms of their owners' libraries.");effect_text=""
+    elif target and re.search(r"target creature gets \+6/\+6 and gains trample, and all creatures able to block it this turn do so",effect_text):
+        target["temporary_power"]=target.get("temporary_power",0)+6;target["temporary_toughness"]=target.get("temporary_toughness",0)+6;target["temporary_keywords"]=sorted(set(target.get("temporary_keywords",[]))|{"Trample"});target.setdefault("temporary_backup_rules",[]).append("All creatures able to block this creature this turn do so.");_log(state,f"{target['name']} got +6/+6 and trample, and must be blocked by every able creature this turn.");effect_text=""
+    bonfire=re.search(r"deals (\d+) damage to target player or planeswalker and each creature that player or that planeswalker's controller controls",effect_text)
+    if bonfire and (target_player or target):
+        amount=int(bonfire.group(1));controller=target_player or target_owner
+        if target_player:_damage_player(state,target_player,amount,card)
+        elif target:_damage_permanent(state,target,amount,card)
+        for creature in [permanent for permanent in list((controller or {}).get("battlefield",[])) if "Creature" in permanent.get("type_line","")]:_damage_permanent(state,creature,amount,card)
+        _log(state,f"{card['name']} dealt {amount} damage to its target and each creature that player controls.");effect_text=""
     if target_player and "exile the top two cards of target opponent's library face down" in effect_text and "play those cards for as long as they remain exiled" in effect_text:
         exiled=[]
         for _ in range(min(2,len(target_player["library"]))):
@@ -3482,7 +3518,7 @@ def _resolve_spell(state: dict) -> None:
     if re.search(r"you may pay \{x\}\{r\}",effect_text) and "create x 1/1 red elemental creature tokens" in effect_text:
         state["pending_tilonalli"]={"player_id":caster["id"],"source_name":source_permanent.get("name",card["name"]) if source_permanent else card["name"],"source_id":item.get("source_id"),"defender_id":state.get("combat",{}).get("attack_targets",{}).get(item.get("source_id"),opponent(state,caster["id"])["id"])};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} may pay {{X}}{{R}} for {state['pending_tilonalli']['source_name']}.");return
     if "take an extra turn after this one" in effect_text:
-        state.setdefault("extra_turns",[]).append(caster["id"]);_log(state,f"{caster['name']} will take an extra turn after this one.");return
+        state.setdefault("extra_turns",[]).append(caster["id"]);_log(state,f"{caster['name']} will take an extra turn after this one.")
     if re.search(r"there(?:'s| is) an additional combat phase after this phase|after this phase, there(?:'s| is) an additional combat phase",effect_text):
         phase_ok=state.get("phase") in {"precombat_main","postcombat_main"} or state.get("phase")=="combat" and "if it's your main phase" not in effect_text
         if state.get("active_player_id")==caster["id"] and phase_ok:
@@ -4218,6 +4254,8 @@ def _resolve_spell(state: dict) -> None:
             spell_owner=_player(state,card.get("owner_id",caster["id"]));_set_card_face(card,0);card["controller_id"]=spell_owner["id"];spell_owner["library"].append(card);random.SystemRandom().shuffle(spell_owner["library"]);_log(state,f"{card['name']} was shuffled into {spell_owner['name']}'s library after its Omen resolved.")
         elif item.get("adventure_cast"):
             spell_owner=_player(state,card.get("owner_id",caster["id"]));_set_card_face(card,0);card["adventured"]=True;_put_into_exile(state,spell_owner,[card],"adventure",caster["id"]);_log(state,f"{card['name']} was exiled after its Adventure resolved and may be cast from exile.")
+        elif "exile temporal mastery" in (card.get("oracle_text") or "").casefold():
+            spell_owner=_player(state,card.get("owner_id",caster["id"]));_put_into_exile(state,spell_owner,[card],"stack",caster["id"])
         elif item.get("flashback"):
             spell_owner=_player(state,card.get("owner_id",caster["id"]));card["controller_id"]=spell_owner["id"];_put_into_exile(state,spell_owner,[card],"stack",caster["id"])
         else:
@@ -5484,7 +5522,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         pending=state.get("pending_miracle") or {};candidate=next((card for card in player["hand"] if card["instance_id"]==pending.get("card_id")),None)
         if pending.get("player_id")!=player_id or not candidate:raise RuleViolation("That Miracle window is no longer available")
         if action_type=="decline_miracle":
-            state["pending_miracle"]=None;state["priority_player_id"]=state["active_player_id"];_log(state,f"{player['name']} kept their first drawn card in hand without revealing it.")
+            state["pending_miracle"]=(state.get("pending_miracle_queue") or []).pop(0) if state.get("pending_miracle_queue") else None;state["priority_player_id"]=(state.get("pending_miracle") or {"player_id":state["active_player_id"]})["player_id"];_log(state,f"{player['name']} kept their first drawn card in hand without revealing it.")
         else:
             cost_card={**candidate,"mana_cost":pending["mana_cost"]};x_value=int(action.get("x_value") or 0);has_x=_has_x_cost(cost_card);maximum=_maximum_x(player,cost_card)
             if (has_x and not 0<=x_value<=maximum) or (not has_x and action.get("x_value") is not None):raise RuleViolation("Choose a legal Miracle X value")
@@ -5498,8 +5536,9 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
             elif variants and target_ids:raise RuleViolation("Choose a legal Miracle target allocation")
             elif _target_kind(targeting_card) and target_id not in {target["id"] for target in _targets(state,player_id,targeting_card)}:raise RuleViolation("Choose a legal target for the Miracle spell")
             if not _can_pay(player,cost_card,x_value=x_value):raise RuleViolation("That Miracle cost can no longer be paid")
-            _pay_mana(state,player,cost_card,x_value=x_value);player["hand"].remove(candidate);state["pending_miracle"]=None;stack_item={"id":_id(),"kind":"spell","card":candidate,"controller_id":player_id,"target_id":target_id,"target_ids":target_ids,"mode_indices":[],"mode_targets":[],"x_value":x_value,"miracle_cast":True,"cast_source_zone":"hand"};state["stack"].append(stack_item);_record_spell_cast(state,player);candidate["cast_source_zone"]="hand";_queue_triggers(state,"cast",candidate,player);_queue_cascade_triggers(state,player,candidate);_queue_storm_trigger(state,player,candidate,stack_item);candidate.pop("cast_source_zone",None);[_queue_ward(state,player,target,stack_item) for target in [target_id,*target_ids] if target];state["consecutive_passes"]=0;state["pending_phase_advance"]=False
-            if (_multiplayer(state) or not allow_direct_resolution) and not state.get("pending_ward") and not state.get("pending_trigger_targets"):state["priority_player_id"]=opponent(state,player_id)["id"]
+            _pay_mana(state,player,cost_card,x_value=x_value);player["hand"].remove(candidate);state["pending_miracle"]=(state.get("pending_miracle_queue") or []).pop(0) if state.get("pending_miracle_queue") else None;stack_item={"id":_id(),"kind":"spell","card":candidate,"controller_id":player_id,"target_id":target_id,"target_ids":target_ids,"mode_indices":[],"mode_targets":[],"x_value":x_value,"miracle_cast":True,"cast_source_zone":"hand"};state["stack"].append(stack_item);_record_spell_cast(state,player);candidate["cast_source_zone"]="hand";_queue_triggers(state,"cast",candidate,player);_queue_cascade_triggers(state,player,candidate);_queue_storm_trigger(state,player,candidate,stack_item);candidate.pop("cast_source_zone",None);[_queue_ward(state,player,target,stack_item) for target in [target_id,*target_ids] if target];state["consecutive_passes"]=0;state["pending_phase_advance"]=False
+            if state.get("pending_miracle"):state["priority_player_id"]=state["pending_miracle"]["player_id"]
+            elif (_multiplayer(state) or not allow_direct_resolution) and not state.get("pending_ward") and not state.get("pending_trigger_targets"):state["priority_player_id"]=opponent(state,player_id)["id"]
             _log(state,f"{player['name']} cast {candidate['name']} for its Miracle cost {pending['mana_cost']}{f' with X={x_value}' if has_x else ''}.")
     elif action_type in {"cast_impulsivity","decline_impulsivity"}:
         pending=state.get("pending_impulsivity") or {};owner=next((candidate for candidate in state["players"] if candidate["id"]==pending.get("owner_id")),None);candidate=next((card for card in (owner or {}).get("graveyard",[]) if card["instance_id"]==pending.get("card_id")),None)
