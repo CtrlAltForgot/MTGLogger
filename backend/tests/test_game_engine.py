@@ -1262,6 +1262,16 @@ def test_landfall_land_threshold_replaces_base_token_effect():
     player["battlefield"].append({**card(849,"Unique Seventh","Land — Swamp"),"instance_id":"unique-seventh"});assert _land_threshold_effect(necrobloom,player)=="create a 2/2 black Zombie creature token."
 
 
+def test_landfall_tokens_preserve_names_keywords_and_quoted_rules():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player")
+    racetrack={**card(850,"Chocobo Racetrack","Enchantment"),"oracle_text":"Landfall — Whenever a land you control enters, create a 2/2 green Bird creature token with \"Whenever a land you control enters, this token gets +1/+0 until end of turn.\"","instance_id":"racetrack","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].append(racetrack)
+    first={**card(851,"First Track Land","Basic Land — Forest"),"instance_id":"first-track-land","owner_id":"player","controller_id":"player"};_enter_battlefield(state,player,[first],"hand");state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");bird=next(card for card in player["battlefield"] if card.get("token"));assert bird["oracle_text"].casefold().startswith("whenever a land")
+    second={**card(852,"Second Track Land","Basic Land — Plains"),"instance_id":"second-track-land","owner_id":"player","controller_id":"player"};_enter_battlefield(state,player,[second],"hand");assert len(state["stack"])==2
+    while state["stack"]:state=perform_action(state,"player",{"type":"resolve"})
+    player=next(p for p in state["players"] if p["id"]=="player");bird=next(card for card in player["battlefield"] if card["instance_id"]==bird["instance_id"]);assert bird["temporary_power"]==1
+    named={**card(853,"Mole Man, Moloid Master","Creature — Human","","2","2"),"oracle_text":"Landfall — Whenever a land you control enters, create a 1/1 green Minion creature token named Moloid with \"Whenever this token attacks, you may mill a card.\"","instance_id":"mole-man","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"]=[named];third={**card(854,"Moloid Land","Basic Land — Forest"),"instance_id":"moloid-land","owner_id":"player","controller_id":"player"};_enter_battlefield(state,player,[third],"hand");state=perform_action(state,"player",{"type":"resolve"});moloid=next(card for card in next(p for p in state["players"] if p["id"]=="player")["battlefield"] if card.get("token"));assert moloid["name"]=="Moloid" and "whenever this token attacks" in moloid["oracle_text"].casefold()
+
+
 def test_attack_triggers_count_attackers_once_or_individually_and_choose_targets():
     state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
     banner={**card(830,"Battle Banner","Enchantment"),"oracle_text":"Whenever one or more creatures you control attack, you gain 1 life.","instance_id":"battle-banner","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False}
