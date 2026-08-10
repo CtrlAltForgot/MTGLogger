@@ -203,6 +203,7 @@ def _sync_city_blessing(state:dict)->None:
         for card in owner["battlefield"]:
             controller_id=card.get("controller_id",owner["id"]);controller=_player(state,controller_id);card["controller_city_blessing"]=controller_id in blessed;card["controller_creature_count"]=sum("Creature" in permanent.get("type_line","") for permanent in controller["battlefield"]);card["controller_artifact_count"]=sum("Artifact" in permanent.get("type_line","") for permanent in controller["battlefield"]);card["controller_basic_land_count"]=sum("Basic" in permanent.get("type_line","") and "Land" in permanent.get("type_line","") for permanent in controller["battlefield"]);granted=[]
             card["controller_graveyard_count"]=len(controller["graveyard"])
+            card["opponent_black_permanent_count"]=sum("B" in _card_colors(permanent) for opponent_owner in state["players"] if opponent_owner["id"]!=controller_id for permanent in opponent_owner["battlefield"])
             for source_owner in state["players"]:
                 for source in source_owner["battlefield"]:
                     chosen=(source.get("chosen_creature_type") or "").casefold()
@@ -223,6 +224,7 @@ def _sync_city_blessing(state:dict)->None:
                         for keyword in ("trample","vigilance"):
                             if f"land creatures you control have {keyword}" in text:granted.append(keyword.title())
             card["continuous_keywords"]=sorted(set(granted))
+            card["continuous_colors"]=["B"] if re.search(r"\b(?:this creature )?is black\b",_active_level_text(card),re.IGNORECASE) else []
     for source_owner in state["players"]:
         for source in source_owner["battlefield"]:
             target=next((card for owner in state["players"] for card in owner["battlefield"] if card["instance_id"]==source.get("attached_to")),None)
@@ -374,13 +376,14 @@ def _parse_stats(card: dict,state:dict|None=None) -> tuple[int, int]:
         plus = card.get("counters", {}).get("+1/+1", 0); minus = card.get("counters", {}).get("-1/-1", 0)
         static_power,static_toughness=_continuous_stats(state,card)
         raw_text=(card.get("oracle_text") or "").casefold();speed=int(card.get("controller_speed",0));speed_power="power is equal to your speed" in raw_text;artifact_power="power is equal to the number of artifacts you control" in raw_text;level_stats=_level_stats(card);dynamic_power=speed if speed_power else int(card.get("controller_artifact_count",0)) if artifact_power else None;base_power,base_toughness=level_stats or (dynamic_power if dynamic_power is not None else int(card.get("temporary_base_power",card.get("power") or 0)),int(card.get("temporary_base_toughness",card.get("toughness") or 0)))
-        active_text=_active_level_text(card);static_clauses=[clause for clause in re.split(r"(?<=[.!])\s+|\n",active_text) if "until end of turn" not in clause.casefold() and "as long as" not in clause.casefold()];self_static=next((match for clause in static_clauses if (match:=re.search(r"this creature gets ([+-]\d+)/([+-]\d+)",clause,re.IGNORECASE))),None);speed_static=(int(self_static.group(1)),int(self_static.group(2))) if self_static else (0,0)
+        active_text=_active_level_text(card);static_clauses=[clause for clause in re.split(r"(?<=[.!])\s+|\n",active_text) if "until end of turn" not in clause.casefold() and "as long as" not in clause.casefold() and "for each" not in clause.casefold()];self_static=next((match for clause in static_clauses if (match:=re.search(r"this creature gets ([+-]\d+)/([+-]\d+)",clause,re.IGNORECASE))),None);speed_static=(int(self_static.group(1)),int(self_static.group(2))) if self_static else (0,0)
         blessing_power=blessing_toughness=0
         if card.get("controller_city_blessing"):
             blessing=re.search(r"(?:this creature|[A-Z][^.\n]+) gets ([+-]\d+)/([+-]\d+) as long as you have the city's blessing",card.get("oracle_text") or "",re.IGNORECASE)
             if blessing:blessing_power,blessing_toughness=int(blessing.group(1)),int(blessing.group(2))
         basic_bonus=int(card.get("controller_basic_land_count",0)) if "gets +1/+1 for each basic land you control" in _active_level_text(card).casefold() else 0;artifact_bonus=int(card.get("controller_artifact_count",0)) if "gets +1/+0 for each artifact you control" in _active_level_text(card).casefold() else 0
-        return base_power + plus - minus + card.get("temporary_power", 0)+static_power+blessing_power+speed_static[0]+basic_bonus+artifact_bonus, base_toughness + plus - minus + card.get("temporary_toughness", 0)+static_toughness+blessing_toughness+speed_static[1]+basic_bonus
+        opposing_black_bonus=int(card.get("opponent_black_permanent_count",0)) if "gets +1/+1 for each black permanent your opponents control" in _active_level_text(card).casefold() else 0
+        return base_power + plus - minus + card.get("temporary_power", 0)+static_power+blessing_power+speed_static[0]+basic_bonus+artifact_bonus+opposing_black_bonus, base_toughness + plus - minus + card.get("temporary_toughness", 0)+static_toughness+blessing_toughness+speed_static[1]+basic_bonus+opposing_black_bonus
     except ValueError:
         return 0, 0
 
@@ -994,6 +997,7 @@ def _toxic_value(card: dict) -> int:
 
 
 def _card_colors(card: dict) -> set[str]:
+    if card.get("continuous_colors"):return {color for color in card["continuous_colors"] if color in "WUBRG"}
     colors={part for symbol in re.findall(r"\{([^}]+)\}",(card.get("source_mana_cost") or card.get("mana_cost") or "")) for part in symbol.upper().split("/") if part in "WUBRG"}
     colors.update(color for color in card.get("colors",[]) if color in "WUBRG")
     return colors
@@ -1791,7 +1795,7 @@ def _target_kind(card: dict) -> str | None:
     if re.search(r"(?:target player gains?|target player loses|goad each creature target player controls)",text):return "player"
     if re.search(r"deals (?:\d+|x) damage to target (?:opponent|player)",text):return "player"
     if re.search(r"(?:destroy|exile|gain control of) target (?:artifact, creature, enchantment, planeswalker|noncreature permanent|nonland permanent|permanent)", text): return "permanent"
-    if re.search(r"(?:destroy|exile|tap|untap|return|regenerate|gain control of|double the power of) target creature", text) or re.search(r"(?:have )?target creature (?:block|.*(?:gets [+-](?:\d+|x)/[+-](?:\d+|x)|has base power and toughness|gains? [^.]+ until end of turn|attacks during|can(?:not|'t) (?:attack|block)))", text) or re.search(r"(?:deals (?:\d+|x) damage|put .+ counters?) (?:to|on) target creature", text): return "creature"
+    if re.search(r"(?:destroy|exile|tap|untap|return|regenerate|gain control of|double the power of) target (?:(?:white|blue|black|red|green) )?creature", text) or re.search(r"(?:have )?target creature (?:block|.*(?:gets [+-](?:\d+|x)/[+-](?:\d+|x)|has base power and toughness|gains? [^.]+ until end of turn|attacks during|can(?:not|'t) (?:attack|block)))", text) or re.search(r"(?:deals (?:\d+|x) damage|put .+ counters?) (?:to|on) target creature", text): return "creature"
     for kind in ("artifact","enchantment","land","planeswalker"):
         if re.search(rf"(?:destroy|exile|tap|untap|return) target {kind}\b",text):return kind
     if re.search(r"return target (?:nonland )?permanent", text): return "permanent"
@@ -1859,6 +1863,8 @@ def _targets(state: dict, caster_id: str, card: dict, ignore_target_protection:b
         if (kind in {"any", "player","player_or_planeswalker"} or (kind=="permanent" and "player" in aura_types)) and not ("target opponent" in text and player["id"]==caster_id) and not _player_protected_from(state,player,card): targets.append({"id": player["id"], "name": player["name"], "kind": "player", "controller_id": player["id"]})
         for permanent in player["battlefield"]:
             if kind in {"any", "permanent"} or (kind=="player_or_planeswalker" and "Planeswalker" in permanent.get("type_line","")) or (kind=="creature_or_planeswalker" and any(value in permanent.get("type_line","") for value in ("Creature","Planeswalker"))) or (kind=="artifact_or_enchantment" and any(value in permanent.get("type_line","") for value in ("Artifact","Enchantment"))) or (kind=="creature_or_spell" and "Creature" in permanent.get("type_line","")) or (kind=="creature_or_vehicle" and any(value in permanent.get("type_line","") for value in ("Creature","Vehicle"))) or (kind in {"creature","artifact","enchantment","land","planeswalker"} and kind in permanent.get("type_line", "").casefold()):
+                target_color=re.search(r"target (white|blue|black|red|green) creature",text);color_symbols={"white":"W","blue":"U","black":"B","red":"R","green":"G"}
+                if target_color and color_symbols[target_color.group(1)] not in _card_colors(permanent):continue
                 aura_types=_aura_allowed_types(card)
                 if "Aura" in card.get("type_line","") and aura_types and not any(allowed in permanent.get("type_line","").casefold() for allowed in aura_types if allowed!="player"):continue
                 if own_target_only and player["id"] != caster_id: continue
@@ -3082,10 +3088,13 @@ def _resolve_spell(state: dict) -> None:
         if target_player:
             _damage_player(state,target_player,amount,source_permanent or card)
         elif target:_damage_permanent(state,target,amount,source_permanent or card)
+        if target and "damage to that creature's controller" in effect_text and target_owner:_damage_player(state,target_owner,amount,source_permanent or card)
     each_creature_damage=re.search(r"deals (\d+) damage to each creature",effect_text)
     if each_creature_damage:
         amount=int(each_creature_damage.group(1))
-        for permanent in [candidate for owner in state["players"] for candidate in list(owner["battlefield"]) if "Creature" in candidate.get("type_line","")]:_damage_permanent(state,permanent,amount,source_permanent or card)
+        for permanent in [candidate for owner in state["players"] for candidate in list(owner["battlefield"]) if "Creature" in candidate.get("type_line","") and not ("without flying" in effect_text and _has_keyword(candidate,"Flying"))]:_damage_permanent(state,permanent,amount,source_permanent or card)
+        if "and each player" in effect_text:
+            for affected in state["players"]:_damage_player(state,affected,amount,source_permanent or card)
     if fight_steps and len(valid_fight_ids)==len(fight_steps):
         fighters=([source_permanent,next((permanent for owner in state["players"] for permanent in owner["battlefield"] if permanent["instance_id"]==valid_fight_ids[0]),None)] if len(fight_steps)==1 else [next((permanent for owner in state["players"] for permanent in owner["battlefield"] if permanent["instance_id"]==fighter_id),None) for fighter_id in valid_fight_ids[:2]])
         if all(fighters) and fighters[0] is not fighters[1]:
@@ -3261,7 +3270,18 @@ def _resolve_spell(state: dict) -> None:
         amount=int(speed_damage.group(1))
         for affected in state["players"]:
             if affected.get("speed",0)<4:_damage_player(state,affected,amount,source_permanent or card)
-    destroy_all = re.search(r"destroy all (creatures|artifacts|enchantments|nonland permanents)", effect_text)
+    if "each player sacrifices all lands they control" in effect_text:
+        for affected in state["players"]:_sacrifice_permanents(state,affected,[permanent for permanent in list(affected["battlefield"]) if "Land" in permanent.get("type_line","")])
+    cleansing_threshold="destroy all enchantments, then return all cards in your graveyard destroyed this way to the battlefield" in effect_text
+    if cleansing_threshold:
+        destroyed=[]
+        for affected in state["players"]:
+            for permanent in [entry for entry in list(affected["battlefield"]) if "Enchantment" in entry.get("type_line","")]:
+                if _destroy_permanent(state,affected,permanent):destroyed.append((affected,permanent))
+        for owner,permanent in destroyed:
+            if owner["id"]==caster["id"] and permanent in owner["graveyard"]:_leave_graveyard(state,owner,[permanent]);permanent["controller_id"]=owner["id"];_enter_battlefield(state,owner,[permanent],"graveyard")
+        _log(state,f"All enchantments were destroyed, then {caster['name']}'s cards destroyed this way returned.")
+    destroy_all = None if cleansing_threshold else re.search(r"destroy all (creatures|artifacts|enchantments|nonland permanents)", effect_text)
     exile_all = re.search(r"exile all (creatures|artifacts|enchantments|nonland permanents)", effect_text)
     for match,destination in ((destroy_all,"graveyard"),(exile_all,"exile")):
         if not match: continue
