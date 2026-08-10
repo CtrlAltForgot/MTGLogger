@@ -306,6 +306,9 @@ def _active_delirium_text(card:dict,text:str)->str:
             if "can't attack or block unless there are four or more card types among cards in your graveyard" in body.casefold():
                 if not active:visible.append(body)
                 continue
+            if re.search(r"you lose \d+ life unless there are four or more card types among cards in your graveyard",body,re.IGNORECASE):
+                if not active:visible.append(re.sub(r"\s+unless there are four or more card types among cards in your graveyard","",body,flags=re.IGNORECASE))
+                continue
             if active:
                 body=re.sub(r"^as long as there are four or more card types among cards in your graveyard,\s*","",body,flags=re.IGNORECASE)
                 body=re.sub(r"^if there are four or more card types among cards in your graveyard,\s*","",body,flags=re.IGNORECASE)
@@ -3230,6 +3233,8 @@ def _resolve_spell(state: dict) -> None:
     if damage_match:
         amount=int(damage_match.group(1))
         _damage_player(state,other,amount,source_permanent or card)
+    that_player_damage=re.search(r"deals (\d+) damage to that player",effect_text)
+    if that_player_damage and item.get("event_owner_id"):_damage_player(state,_player(state,item["event_owner_id"]),int(that_player_damage.group(1)),source_permanent or card)
     lose_life = re.search(r"(?:target opponent|each opponent) loses (\d+) life", effect_text)
     if lose_life: other["life"] -= int(lose_life.group(1))
     you_lose = re.search(r"you lose (\d+) life", effect_text)
@@ -3354,6 +3359,11 @@ def _resolve_spell(state: dict) -> None:
             if milling_player["id"]==caster["id"]:continue
             for _ in range(min(amount,len(milling_player["library"]))):milling_player["graveyard"].append(milling_player["library"].pop())
         _log(state,f"Each opponent milled {amount} card(s).")
+    that_player_mill=re.search(r"that player mills? (\d+|one|two|three|four|five|six|seven|eight|nine|ten) cards?",effect_text)
+    if that_player_mill and item.get("event_owner_id"):
+        words={"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10};word=that_player_mill.group(1);amount=words.get(word,int(word) if word.isdigit() else 0);milling_player=_player(state,item["event_owner_id"])
+        for _ in range(min(amount,len(milling_player["library"]))):milling_player["graveyard"].append(milling_player["library"].pop())
+        _log(state,f"{milling_player['name']} milled {amount} card(s).")
     defending_mill=re.search(r"defending player mills? (\d+|one|two|three|four|five|six|seven|eight|nine|ten) cards?",effect_text)
     if defending_mill:
         words={"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10};amount=words.get(defending_mill.group(1),int(defending_mill.group(1)) if defending_mill.group(1).isdigit() else 0)
@@ -4249,6 +4259,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 effect=re.sub(r"\bthat amount of damage\b",f"{damage_amount} damage",effect,flags=re.IGNORECASE)
                 effect=re.sub(r"\bthat amount\b",damage_amount,effect,flags=re.IGNORECASE)
                 if event_card.get("damage_event_target_kind")=="player":effect=re.sub(r"\bthat player controls\b","an opponent controls",effect,flags=re.IGNORECASE)
+            if event in {"upkeep","end_step"} and owner["id"]!=event_owner["id"]:effect=re.sub(r"\bthat player controls\b","an opponent controls",effect,flags=re.IGNORECASE)
             if event in {"earthbend","waterbend","firebend","airbend"} and "whenever you waterbend, earthbend, firebend, or airbend" in lower:effect=re.split(r"whenever you waterbend, earthbend, firebend, or airbend,",clause,flags=re.IGNORECASE)[1].strip()
             if event=="enters" and re.match(r"if it was kicked,",effect,re.IGNORECASE):effect=effect.split(",",1)[1].strip()
             if event=="leaves" and "transform" in effect and "next upkeep" in effect:
@@ -4276,6 +4287,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
             for _ in range(trigger_count):
                 trigger={"id":_id(),"kind":"trigger","card":ability_card,"controller_id":owner["id"],"target_id":None,"source_id":source["instance_id"]}
                 if event=="mutates":trigger["x_value"]=event_card.get("mutate_count",1)
+                if event in {"upkeep","end_step"}:trigger["event_owner_id"]=event_owner.get("id")
                 if event_card and event in {"enters","exile","tapped","untapped","counter_added","turned_face_up","transformed","dies","discard","graveyard_leave","damage","combat_damage_player","cumulative_unpaid","cast"}:
                     trigger["event_card_id"]=event_card.get("instance_id");trigger["event_owner_id"]=event_owner.get("id")
                     if event=="enters":trigger["event_card_type_line"]=event_card.get("type_line","")
