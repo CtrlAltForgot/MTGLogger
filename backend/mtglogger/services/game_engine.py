@@ -161,6 +161,8 @@ def _continuous_stats(state:dict|None,card:dict)->tuple[int,int]:
     power=toughness=0;controller=card.get("controller_id");type_line=card.get("type_line","").casefold()
     for owner in state["players"]:
         for source in owner["battlefield"]:
+            chosen_type=(source.get("chosen_creature_type") or "").casefold()
+            if chosen_type and controller==source.get("controller_id",owner["id"]) and re.search(rf"\b{re.escape(chosen_type)}\b",type_line) and "creatures you control of the chosen type get +1/+1" in (source.get("oracle_text") or "").casefold():power+=1;toughness+=1
             if source.get("attached_to")==card.get("instance_id"):
                 attachment_text=(source.get("oracle_text") or "").casefold();attachment_match=re.search(r"(?:equipped|enchanted) creature gets ([+-]\d+)/([+-]\d+)(?! until end of turn)",attachment_text)
                 if attachment_match:power+=int(attachment_match.group(1));toughness+=int(attachment_match.group(2))
@@ -189,7 +191,22 @@ def _has_ascend(card:dict)->bool:
 def _sync_city_blessing(state:dict)->None:
     blessed={player["id"] for player in state["players"] if player.get("city_blessing")}
     for owner in state["players"]:
-        for card in owner["battlefield"]:card["controller_city_blessing"]=card.get("controller_id",owner["id"]) in blessed
+        for card in owner["battlefield"]:
+            controller_id=card.get("controller_id",owner["id"]);card["controller_city_blessing"]=controller_id in blessed;granted=[]
+            for source_owner in state["players"]:
+                for source in source_owner["battlefield"]:
+                    chosen=(source.get("chosen_creature_type") or "").casefold()
+                    if chosen and source.get("controller_id",source_owner["id"])==controller_id and controller_id in blessed and "they also have vigilance" in (source.get("oracle_text") or "").casefold() and re.search(rf"\b{re.escape(chosen)}\b",card.get("type_line","").casefold()):granted.append("Vigilance")
+            card["continuous_keywords"]=sorted(set(granted))
+
+
+def _creature_subtypes(player:dict)->list[str]:
+    subtypes=[]
+    for zone in (player.get("hand",[]),player.get("battlefield",[]),player.get("graveyard",[]),player.get("exile",[]),player.get("command",[]),player.get("library",[])):
+        for card in zone:
+            if "Creature" not in card.get("type_line","") or "—" not in card.get("type_line",""):continue
+            subtypes.extend(re.findall(r"[A-Za-z][A-Za-z'-]*",card["type_line"].split("—",1)[1]))
+    return sorted(set(subtypes))
 
 
 def _check_ascend(state:dict,player:dict,spell:dict|None=None)->None:
@@ -391,14 +408,14 @@ def _mana_requirements(card: dict, extra_generic: int = 0, x_value:int=0) -> tup
 
 
 def _has_keyword(card: dict, keyword: str) -> bool:
-    printed={value.casefold() for value in card.get("keywords", [])};temporary={value.casefold() for value in card.get("temporary_keywords", [])};attached={value.casefold() for values in card.get("attachment_keywords",{}).values() for value in values};counter_keywords={name.casefold() for name,amount in card.get("counters",{}).items() if amount>0}
+    printed={value.casefold() for value in card.get("keywords", [])};temporary={value.casefold() for value in card.get("temporary_keywords", [])};continuous={value.casefold() for value in card.get("continuous_keywords", [])};attached={value.casefold() for values in card.get("attachment_keywords",{}).values() for value in values};counter_keywords={name.casefold() for name,amount in card.get("counters",{}).items() if amount>0}
     _,level_sections=_level_sections(card)
     if level_sections and any(re.search(rf"\b{re.escape(keyword)}\b","\n".join(lines),re.IGNORECASE) for _,_,lines in level_sections):printed.discard(keyword.casefold())
     lower_keyword=keyword.casefold();text=_active_level_text(card).casefold();conditional=[clause for clause in re.split(r"(?<=[.!])\s+|\n",text) if "as long as this creature is monstrous" in clause];blessing_conditional=[clause for clause in re.split(r"(?<=[.!])\s+|\n",text) if "city's blessing" in clause];unconditional="\n".join(clause for clause in re.split(r"(?<=[.!])\s+|\n",text) if clause not in conditional and clause not in blessing_conditional)
     if any(re.search(rf"\b{re.escape(lower_keyword)}\b",clause) for clause in blessing_conditional):printed.discard(lower_keyword)
     monstrous_match=card.get("monstrous") and any(re.search(rf"\b{re.escape(lower_keyword)}\b",clause) for clause in conditional)
     blessing_match=card.get("controller_city_blessing") and any(re.search(rf"\b{re.escape(lower_keyword)}\b",clause) for clause in blessing_conditional)
-    return lower_keyword in printed|temporary|attached|counter_keywords or (lower_keyword=="haste" and bool(card.get("earthbent") or card.get("suspend_haste"))) or bool(monstrous_match) or bool(blessing_match) or re.search(rf"\b{re.escape(lower_keyword)}\b",unconditional) is not None
+    return lower_keyword in printed|temporary|continuous|attached|counter_keywords or (lower_keyword=="haste" and bool(card.get("earthbent") or card.get("suspend_haste"))) or bool(monstrous_match) or bool(blessing_match) or re.search(rf"\b{re.escape(lower_keyword)}\b",unconditional) is not None
 
 
 def _attachment_keywords(card:dict)->list[str]:
@@ -1686,7 +1703,7 @@ def _multiplayer(state: dict) -> bool:
 def _pending_decision(state:dict)->bool:
     if state.get("pending_explore"):return True
     if state.get("pending_connive"):return True
-    return bool(state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_populate") or state.get("pending_bolster") or state.get("pending_discovery") or state.get("pending_madness") or state.get("pending_rebound") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
+    return bool(state.get("pending_creature_type") or state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_populate") or state.get("pending_bolster") or state.get("pending_discovery") or state.get("pending_madness") or state.get("pending_rebound") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
 
 
 def _split_second_on_stack(state:dict)->bool:
@@ -1728,6 +1745,11 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
     if state["status"] == "complete":
         return []
     player = _player(state, player_id)
+    pending_types=state.get("pending_creature_type") or []
+    if pending_types:
+        pending=pending_types[0]
+        if pending["player_id"]!=player_id:return []
+        return [{"type":"choose_creature_type","card_id":pending["card_id"],"card_name":pending["card_name"],"suggested_types":_creature_subtypes(player),"label":f"Choose a creature type for {pending['card_name']}"},{"type":"concede"}]
     pending_cumulative=state.get("pending_cumulative_upkeep") or []
     if pending_cumulative:
         pending=pending_cumulative[0]
@@ -2753,6 +2775,7 @@ def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str, t
     if adjusts_land_plays:_ensure_land_play_tracking(owner)
     if card in owner["battlefield"]: owner["battlefield"].remove(card)
     if adjusts_land_plays:_refresh_land_plays(state,owner)
+    _sync_city_blessing(state)
     earthbend_controller=card.get("earthbend_controller") if destination in {"graveyard","exile"} else None
     _queue_triggers(state,"leaves",card,owner,trigger_dedupe,trigger_sources)
     if destination=="graveyard":_queue_triggers(state,"dies",card,owner,trigger_dedupe,trigger_sources)
@@ -2862,6 +2885,8 @@ def _enter_battlefield(state:dict,controller:dict,cards:list[dict],origin:str="e
         card["controller_id"]=controller["id"];card["entered_turn"]=state["turn"];card["entry_event_origin"]=origin;card["entry_event_was_cast"]=was_cast;card["entry_event_played"]=played;card["entry_event_batch_size"]=batch_size
         if _echo_cost(card):card["echo_due_controller_id"]=controller["id"]
         controller["battlefield"].append(card)
+        if "as this enchantment enters, choose a creature type" in (card.get("oracle_text") or "").casefold() and not card.get("chosen_creature_type"):
+            state.setdefault("pending_creature_type",[]).append({"player_id":controller["id"],"card_id":card["instance_id"],"card_name":card["name"]});state["priority_player_id"]=controller["id"]
     if any("you may play an additional land on each of your turns" in (card.get("oracle_text") or "").casefold() for card in entering):_refresh_land_plays(state,controller)
     _sync_city_blessing(state)
     ordered_owners=sorted(state["players"],key=lambda owner:owner["id"]!=state.get("active_player_id"));sources=[(owner,permanent) for owner in ordered_owners for permanent in owner["battlefield"]]
@@ -3458,7 +3483,14 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
     manual_actions = {"adjust_life", "add_counter", "create_token", "move_zone"}
     if action_type not in allowed and action_type not in manual_actions:
         raise RuleViolation(f"{action_type} is not legal right now")
-    if action_type in {"pay_cumulative_upkeep","sacrifice_cumulative_upkeep"}:
+    if action_type=="choose_creature_type":
+        pending_list=state.get("pending_creature_type") or [];pending=pending_list[0] if pending_list else None;choice=" ".join(str(action.get("creature_type") or "").strip().split())
+        if not pending or pending["player_id"]!=player_id:raise RuleViolation("There is no creature-type choice for this player")
+        if not re.fullmatch(r"[A-Za-z][A-Za-z' -]{0,39}",choice):raise RuleViolation("Choose a valid creature type")
+        permanent=next((card for card in player["battlefield"] if card["instance_id"]==pending["card_id"]),None)
+        if not permanent:raise RuleViolation("That permanent is no longer on the battlefield")
+        permanent["chosen_creature_type"]=choice.title();pending_list.pop(0);state["pending_creature_type"]=pending_list;_sync_city_blessing(state);state["priority_player_id"]=pending_list[0]["player_id"] if pending_list else state["active_player_id"];_log(state,f"{player['name']} chose {permanent['chosen_creature_type']} for {permanent['name']}.")
+    elif action_type in {"pay_cumulative_upkeep","sacrifice_cumulative_upkeep"}:
         pending=(state.get("pending_cumulative_upkeep") or [None])[0]
         if not pending or pending["player_id"]!=player_id:raise RuleViolation("There is no cumulative upkeep payment due")
         permanent=next((card for card in player["battlefield"] if card["instance_id"]==pending["card_id"]),None);cost=_cumulative_upkeep_cost(permanent or {});age=pending["age"]
