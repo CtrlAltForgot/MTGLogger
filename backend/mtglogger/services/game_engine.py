@@ -367,6 +367,7 @@ def _mana_payment_plan(player: dict, card: dict, extra_generic: int = 0, exclude
         excluded.add(excluded_id)
     sources = [permanent for permanent in player["battlefield"] if permanent.get("instance_id") not in excluded and _mana_source_options(permanent)]
     sources.extend({"instance_id": f"firebending-mana-{index}", "name": "Firebending mana", "type_line": "", "oracle_text": "Add {R}.", "firebending_mana": True} for index in range(player.get("firebending_mana", 0)))
+    sources.extend({"instance_id":f"any-color-mana-{index}","name":"Floating mana","type_line":"","oracle_text":"Add one mana of any color.","any_color_mana":True} for index in range(player.get("any_color_mana",0)))
     colored, generic = _mana_requirements(card, extra_generic, x_value)
     needed = len(colored) + generic
     if needed == 0:
@@ -378,7 +379,7 @@ def _mana_payment_plan(player: dict, card: dict, extra_generic: int = 0, exclude
     empty = (0, 0, 0, 0, 0, 0)
     states: dict[tuple[int, ...], tuple[int, list[dict]]] = {empty: (0, [])}
     for source in sources:
-        options = [{"pool":(0,0,0,1,0,0),"taps":False,"life_cost":0,"self_sacrifice":False}] if source.get("firebending_mana") else _mana_source_options(source)
+        options = ([{"pool":tuple(1 if color==choice else 0 for color in _MANA_COLORS),"taps":False,"life_cost":0,"self_sacrifice":False} for choice in "WUBRG"] if source.get("any_color_mana") else [{"pool":(0,0,0,1,0,0),"taps":False,"life_cost":0,"self_sacrifice":False}] if source.get("firebending_mana") else _mana_source_options(source))
         options=[option for option in options if player.get("life",0)>=option["life_cost"] and (not option["taps"] or (not source.get("tapped") and not ("Creature" in source.get("type_line","") and source.get("summoning_sick") and not _has_keyword(source,"Haste"))))]
         if not options:
             continue
@@ -387,7 +388,7 @@ def _mana_payment_plan(player: dict, card: dict, extra_generic: int = 0, exclude
             for option in options:
                 output=option["pool"]
                 combined = tuple(min(needed, pool[index] + output[index]) for index in range(6))
-                source_cost=1 if source.get("firebending_mana") else 10000 if option["self_sacrifice"] else 100+option["life_cost"]*1000
+                source_cost=1 if source.get("firebending_mana") or source.get("any_color_mana") else 10000 if option["self_sacrifice"] else 100+option["life_cost"]*1000
                 candidate = (cost + source_cost, chosen + [{"source":source,"option":option}])
                 current = updated.get(combined)
                 if current is None or (candidate[0], len(candidate[1])) < (current[0], len(current[1])):
@@ -1135,6 +1136,7 @@ def _pay_mana(state:dict,player: dict, card: dict, extra_generic: int = 0, exclu
     for payment in chosen:
         land=payment["source"];option=payment["option"]
         if land.get("firebending_mana"):player["firebending_mana"]=max(0,player.get("firebending_mana",0)-1)
+        elif land.get("any_color_mana"):player["any_color_mana"]=max(0,player.get("any_color_mana",0)-1)
         elif option["self_sacrifice"]:
             player["life"]-=option["life_cost"]
             _sacrifice_permanents(state,player,[land]);_log(state,f"{player['name']} sacrificed {land['name']} for mana.")
@@ -1489,7 +1491,7 @@ def _new_player(player_id: str, name: str, deck: list[dict], is_bot: bool, forma
         if commander:
             library.remove(commander); commander["commander"] = True; command.append(commander)
     random.SystemRandom().shuffle(library)
-    return {"id": player_id, "name": name, "is_bot": is_bot, "format": format_name, "life": 40 if is_commander else 20, "poison": 0,"energy":0,"energy_paid_this_turn":0,"firebending_mana":0,"bent_this_turn":[],"undercity_rooms":[],"city_blessing":False, "library": library, "hand": [], "battlefield": [], "graveyard": [], "exile": [], "command": command, "commander_casts": 0, "commander_damage": {}, "commander_damage_names": {}, "land_plays_remaining": 1,"lands_played_this_turn":0, "kept_hand": False, "mulligans": 0, "lost": False}
+    return {"id": player_id, "name": name, "is_bot": is_bot, "format": format_name, "life": 40 if is_commander else 20, "poison": 0,"energy":0,"energy_paid_this_turn":0,"firebending_mana":0,"any_color_mana":0,"bent_this_turn":[],"undercity_rooms":[],"city_blessing":False, "library": library, "hand": [], "battlefield": [], "graveyard": [], "exile": [], "command": command, "commander_casts": 0, "commander_damage": {}, "commander_damage_names": {}, "land_plays_remaining": 1,"lands_played_this_turn":0, "kept_hand": False, "mulligans": 0, "lost": False}
 
 
 def new_game(player_deck: list[dict], opponent_deck: list[dict], play_first: bool = True, opponent_is_bot: bool = True, player_format: str = "", opponent_format: str = "") -> dict:
@@ -2453,6 +2455,14 @@ def _resolve_spell(state: dict) -> None:
     target_stack_item = next((entry for entry in state["stack"] if entry["id"] == target_id), None)
     graveyard_owner=next((player for player in state["players"] if any(graveyard_card["instance_id"]==target_id for graveyard_card in player["graveyard"])),None)
     graveyard_target=next((graveyard_card for player in state["players"] for graveyard_card in player["graveyard"] if graveyard_card["instance_id"]==target_id),None)
+    if "add one mana of any color" in effect_text:caster["any_color_mana"]=caster.get("any_color_mana",0)+1;_log(state,f"{caster['name']} added one mana of any color.")
+    if re.search(r"reveal cards from the top of your library until you reveal an elf or elemental card",effect_text):
+        revealed=[];found=None
+        while caster["library"]:
+            candidate=caster["library"].pop();revealed.append(candidate)
+            if re.search(r"\b(?:Elf|Elemental)\b",candidate.get("type_line",""),re.IGNORECASE):found=candidate;break
+        if found:revealed.remove(found);caster["hand"].append(found)
+        random.SystemRandom().shuffle(revealed);caster["library"][0:0]=revealed;result=f" and put {found['name']} into their hand" if found else "";_log(state,f"{caster['name']} revealed {len(revealed)+(1 if found else 0)} card(s){result}.");return
     optional_payment=re.search(r"you may pay ((?:\{[^}]+\})+)\.\s*if you do,\s*(.+)",effect_text,re.DOTALL)
     if optional_payment and "{x}" not in optional_payment.group(1):
         mana_cost=optional_payment.group(1).upper();continuation=optional_payment.group(2).strip();source_name=(source_permanent or source_graveyard or card).get("name",card["name"])
@@ -3115,17 +3125,22 @@ def _remove_counters(target:dict,name:str,amount:int)->int:
 
 def _resolution_order_effect(text:str,count:int)->str:
     """Select clauses gated by how many times a triggered ability resolved this turn."""
-    selected=[]
+    selected=[];ordinal_followup:bool|None=None
     ordinals={"first":1,"second":2,"third":3,"fourth":4}
     for sentence in re.split(r"(?<=[.!])\s+",text.strip()):
         sentence=sentence.strip()
         prefix=re.match(r"(?:then )?if (?:this is|it(?:'s| is)) the (first|second|third|fourth) time(?: this ability has resolved)?(?: this turn)?,\s*(.+)",sentence,re.IGNORECASE)
         if prefix:
-            if count==ordinals[prefix.group(1).casefold()]:
+            ordinal_followup=count==ordinals[prefix.group(1).casefold()]
+            if ordinal_followup:
                 body=prefix.group(2)
                 if body.casefold().endswith(" instead."):selected=[];body=re.sub(r"\s+instead(?=\.$)","",body,flags=re.IGNORECASE)
                 selected.append(body)
             continue
+        if ordinal_followup is not None and re.match(r"(?:put|return|exile) that card\b",sentence,re.IGNORECASE):
+            if ordinal_followup:selected.append(sentence)
+            ordinal_followup=None;continue
+        ordinal_followup=None
         postfix=re.match(r"(.+?)\s+if this is the (first|second|third|fourth) time this ability has resolved this turn\.(.*)",sentence,re.IGNORECASE)
         if postfix:
             if count==ordinals[postfix.group(2).casefold()]:selected.append(f"{postfix.group(1)}.{postfix.group(3)}".strip())
@@ -3614,7 +3629,7 @@ def _begin_next_turn(state:dict)->None:
             if "you may play an additional land on each of your turns" in (permanent.get("oracle_text") or "").casefold():_refresh_land_plays(state,current);_refresh_land_plays(state,return_to)
             _log(state,f"{permanent['name']} returned to {return_to['name']}'s control.")
     for owner in state["players"]:
-        owner["firebending_mana"]=0;owner["bent_this_turn"]=[];owner["energy_paid_this_turn"]=0
+        owner["firebending_mana"]=0;owner["any_color_mana"]=0;owner["bent_this_turn"]=[];owner["energy_paid_this_turn"]=0
         for permanent in owner["battlefield"]:
             permanent.pop("temporary_power",None);permanent.pop("temporary_toughness",None);permanent.pop("temporary_base_power",None);permanent.pop("temporary_base_toughness",None);permanent.pop("temporary_keywords",None);permanent.pop("temporary_removed_keywords",None);permanent.pop("temporary_backup_rules",None);permanent.pop("cant_attack_until_turn",None);permanent.pop("cant_block_until_turn",None);permanent.pop("regeneration_shields",None);permanent.pop("deathtouch_damage",None);permanent.pop("crewed_turn",None);permanent["damage"]=0
             if permanent.get("goaded_until_turn",0)<state["turn"]:permanent.pop("goaded_until_turn",None);permanent.pop("goaded_by",None)
@@ -3642,6 +3657,7 @@ def _advance_turn_phase(state: dict) -> None:
             state["pending_discard"]={"player_id":ending["id"],"amount":excess};state["priority_player_id"]=ending["id"];state["pending_phase_advance"]=False;state["consecutive_passes"]=0;_log(state,f"{ending['name']} must discard {excess} card(s) to hand size.");return
         _begin_next_turn(state)
     else:
+        for owner in state["players"]:owner["any_color_mana"]=0
         if state["phase"]=="beginning" and state.get("beginning_draw_pending",False):
             active=_player(state,state["active_player_id"])
             if state["turn"]==1 and not state.get("first_turn_draw_skipped"):
