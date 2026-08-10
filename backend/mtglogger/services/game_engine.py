@@ -1962,6 +1962,7 @@ def _target_kind(card: dict) -> str | None:
     if re.search(r"(?:up to )?x target creatures?(?! cards?\b)",text):return "creature"
     if re.search(r"up to one target non-[a-z]+ creature",text):return "creature"
     if re.search(r"up to (?:two|three|four|\d+) target (?:non-[a-z]+ )?creatures?",text):return "creature"
+    if "exile two target creatures and/or lands you control" in text:return "permanent"
     if re.search(r"up to x target creature cards? from your graveyard",text):return "graveyard_creature"
     if re.search(r"up to x target instant cards? from your graveyard",text):return "graveyard_card"
     if re.search(r"target creature or enchantment card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_creature_or_enchantment"
@@ -2114,6 +2115,9 @@ def _multi_target_step_variants(state:dict,caster_id:str,card:dict)->list[list[d
             targets=[{"id":candidate["instance_id"],"name":candidate["name"],"kind":"graveyard","controller_id":caster_id} for candidate in player["graveyard"] if kind.title() in candidate.get("type_line","")]
             steps.append({"label":f"Choose a {kind} card (or none)","targets":targets,"graveyard_kind":kind})
         return [[steps[index] for index in range(2) if index in selected] for count in range(3) for selected in combinations(range(2),count) if all(steps[index]["targets"] for index in selected)]
+    if "exile two target creatures and/or lands you control" in text:
+        targets=[{"id":candidate["instance_id"],"name":candidate["name"],"kind":"permanent","controller_id":caster_id} for candidate in _player(state,caster_id)["battlefield"] if any(kind in candidate.get("type_line","") for kind in ("Creature","Land")) and not _has_keyword(candidate,"Shroud") and not _protected_from(candidate,card)]
+        return [[{"label":f"Choose permanent {position+1}","targets":targets,"distinct":True} for position in range(2)]] if len(targets)>=2 else []
     match=re.search(r"\b(tap|untap) (up to )?(two|three|four|\d+) target (creatures|lands)\b",text);damage=re.search(r"deals (\d+) damage to each of up to (two|three|four|\d+) targets?",text)
     if match:
         maximum=words.get(match.group(3),int(match.group(3)) if match.group(3).isdigit() else 0);minimum=0 if match.group(2) else maximum;kind="creature" if match.group(4)=="creatures" else "land";targeting={**card,"oracle_text":f"{match.group(1).title()} target {kind}."}
@@ -2621,7 +2625,7 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
         instant_speed="Instant" in rules_card.get("type_line","") or _has_keyword(rules_card,"Flash")
         if not ((active and main and not state["stack"]) or instant_speed) or not _can_pay(player,{**rules_card,"mana_cost":cost}):continue
         cost_card={**rules_card,"mana_cost":cost};targeting_card=_spell_targeting_card(rules_card);targets=_targets(state,player_id,targeting_card);required=bool(_target_kind(targeting_card));multi_variants=_multi_target_step_variants(state,player_id,rules_card)
-        if required and not targets and not multi_variants:continue
+        if (required and not targets and not multi_variants) or ("exile two target creatures and/or lands you control" in (rules_card.get("oracle_text") or "").casefold() and not multi_variants):continue
         action_type={"disturb":"cast_disturb","adventure":"cast_adventure","after_adventure":"cast_after_adventure"}[source];label={"disturb":f"Disturb as {rules_card['name']}","adventure":f"Adventure — {rules_card['name']}","after_adventure":f"Cast {rules_card['name']} after its Adventure"}[source]
         action={"type":action_type,"card_id":original["instance_id"],"source":source,"mana_cost":cost,"label":f"{label} · {cost or '{0}'}",**({"targets":targets} if targets and not multi_variants else {})}
         if _has_x_cost(cost_card):
@@ -2968,6 +2972,13 @@ def _resolve_spell(state: dict) -> None:
         for token in tokens:
             owner=next(owner for owner in state["players"] if token in owner["battlefield"]);_leave_battlefield(state,owner,token,"exile",exile_actor_id=caster["id"])
         _log(state,f"{len(tokens)} temporary token(s) were exiled at the beginning of the end step.");return
+    if item.get("kind")=="delayed_blink_return_trigger":
+        returned=[]
+        for owner in state["players"]:
+            for exiled in list(owner["exile"]):
+                if exiled["instance_id"] not in set(item.get("card_ids",[])):continue
+                _leave_exile(state,owner,[exiled]);exiled.pop("delayed_blink_after_turn",None);exiled["controller_id"]=owner["id"];exiled["summoning_sick"]=True;exiled["counters"]={};_enter_battlefield(state,owner,[exiled],"exile");returned.append(exiled)
+        _log(state,f"{len(returned)} exiled permanent(s) returned at the beginning of the end step.");return
     if item.get("kind")=="rad_trigger":
         amount=max(0,int(caster.get("rad",0)));milled=[]
         for _ in range(min(amount,len(caster["library"]))):milled.append(caster["library"].pop())
@@ -3575,7 +3586,21 @@ def _resolve_spell(state: dict) -> None:
         if _destroy_permanent(state,target_owner,target,"can't be regenerated" in effect_text):_log(state, f"{target['name']} was destroyed.")
         source_text=((source_permanent or {}).get("oracle_text") or card.get("oracle_text") or "").casefold()
         if "destroy target creature an opponent controls. you gain 3 life" in source_text:_gain_life(state,caster,3);_log(state,f"{caster['name']} gained 3 life.")
-    if target and target_owner and re.search(r"exile target (?:artifact|creature|enchantment|land|planeswalker|permanent|nonland permanent)", effect_text):
+    handled_blink=False
+    if target_ids and "exile two target creatures and/or lands you control, then return them to the battlefield under their owner's control" in effect_text:
+        blinking=[permanent for permanent in list(caster["battlefield"]) if permanent["instance_id"] in set(target_ids) and any(kind in permanent.get("type_line","") for kind in ("Creature","Land"))]
+        for permanent in blinking:
+            owner=_player(state,permanent.get("owner_id",caster["id"]));_leave_battlefield(state,caster,permanent,"exile",exile_actor_id=caster["id"]);_leave_exile(state,owner,[permanent]);permanent["controller_id"]=owner["id"];permanent["summoning_sick"]=True;permanent["counters"]={};_enter_battlefield(state,owner,[permanent],"exile")
+        handled_blink=True;_log(state,f"{card['name']} exiled and returned {len(blinking)} permanent(s) under their owners' control.")
+    immediate_blink=target and re.search(r"exile target creature you control, then return that card to the battlefield under its owner's control",effect_text)
+    delayed_blink=target and "exile target nontoken creature" in effect_text and "return it to the battlefield" in effect_text and "at the beginning of the next end step" in effect_text
+    if (immediate_blink or delayed_blink) and target_owner:
+        zone_owner=_player(state,target.get("owner_id",target_owner["id"]));_leave_battlefield(state,target_owner,target,"exile",exile_actor_id=caster["id"])
+        if immediate_blink:
+            _leave_exile(state,zone_owner,[target]);target["controller_id"]=zone_owner["id"];target["summoning_sick"]=True;target["counters"]={};_enter_battlefield(state,zone_owner,[target],"exile");_log(state,f"{target['name']} was exiled and immediately returned under its owner's control.")
+        else:target["delayed_blink_after_turn"]=state["turn"]+(1 if state.get("phase")=="ending" else 0);_log(state,f"{target['name']} was exiled and will return at the beginning of the next end step.")
+        handled_blink=True
+    if not handled_blink and target and target_owner and re.search(r"exile target (?:artifact|creature|enchantment|land|planeswalker|permanent|nonland permanent)", effect_text):
         linked_source=source_permanent if source_permanent and "return all cards exiled with" in (source_permanent.get("oracle_text") or "").casefold() else None
         _leave_battlefield(state,target_owner,target,"exile",exile_actor_id=caster["id"])
         if linked_source and target in _player(state,target.get("owner_id",target_owner["id"]))["exile"]:target["exiled_with_source_id"]=linked_source["instance_id"]
@@ -4928,6 +4953,9 @@ def _advance_turn_phase(state: dict) -> None:
             for owner in state["players"]:owner["firebending_mana"]=0
         if state["phase"] == "ending":
             active=_player(state,state["active_player_id"]);_queue_triggers(state,"end_step",None,active)
+            delayed_returns=[card for owner in state["players"] for card in owner["exile"] if card.get("delayed_blink_after_turn",state["turn"]+1)<=state["turn"]]
+            if delayed_returns:
+                controller=_player(state,delayed_returns[0].get("owner_id",active["id"]));ability={"name":"Delayed blink return","type_line":"Ability","mana_cost":"","oracle_text":"Return the exiled permanent cards to the battlefield under their owners' control."};state["stack"].append({"id":_id(),"kind":"delayed_blink_return_trigger","card":ability,"controller_id":controller["id"],"card_ids":[card["instance_id"] for card in delayed_returns]});_log(state,f"The delayed return of {len(delayed_returns)} exiled permanent(s) triggered.")
             for permanent in [card for owner in state["players"] for card in owner["battlefield"] if card.get("unearthed") and not card.get("unearth_end_triggered")]:
                 permanent["unearth_end_triggered"]=True;controller=_player(state,permanent.get("unearth_controller_id",permanent["controller_id"]));ability_card={**permanent,"name":f"{permanent['name']} — Unearth exile","type_line":"Ability","mana_cost":"","oracle_text":f"Exile {permanent['name']}."};state["stack"].append({"id":_id(),"kind":"unearth_exile_trigger","card":ability_card,"controller_id":controller["id"],"source_id":permanent["instance_id"]});_log(state,f"{permanent['name']}'s unearth exile trigger was put on the stack.")
             for permanent in [card for owner in state["players"] for card in owner["battlefield"] if card.get("populate_sacrifice_turn")==state["turn"]]:
