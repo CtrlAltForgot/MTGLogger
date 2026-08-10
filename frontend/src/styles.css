@@ -123,7 +123,7 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .hidden-hand { position:absolute; top:2px; left:50%; transform:translateX(-50%); height:54px; align-items:flex-start; z-index:4; }
 .card-back { width:42px; height:59px; border-radius:6px; border:3px solid #17100c; background:radial-gradient(circle,#351b11 12%,#100907 15%,#100907 31%,#6d321b 33%,#1b0d08 37%,#080504 55%,#5a2919 58%,#0b0706 62%); box-shadow:0 5px 10px rgba(0,0,0,.45); }
 .manifest-card-back { width:100%; height:100%; border-radius:7px; box-shadow:0 8px 16px rgba(0,0,0,.55); }
-.table-divider { position:relative; z-index:2; color:rgba(255,255,255,.35) !important; }
+.table-divider { position:absolute !important; left:8%; right:8%; top:50%; z-index:2; transform:translateY(-50%); color:rgba(255,255,255,.35) !important; }
 .player-hud { position:absolute; left:12px; bottom:16px; z-index:12; display:flex; align-items:center; gap:7px; max-width:min(330px,calc(50vw - 50px)); padding:8px 10px; border-radius:50px 14px 14px 50px; background:linear-gradient(135deg,rgba(26,31,30,.96),rgba(7,10,10,.9)); border:1px solid rgba(226,216,184,.22); box-shadow:0 10px 30px rgba(0,0,0,.45); backdrop-filter:blur(12px); }
 .player-hud > .MuiSvgIcon-root { width:34px; height:34px; padding:7px; border-radius:50%; background:rgba(151,20,39,.5); }
 .player-hud > .MuiTypography-h4 { min-width:30px; text-align:center; text-shadow:0 2px 7px #000; }
@@ -136,6 +136,9 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .play-actions .MuiButton-contained { min-height:44px; padding-inline:20px; font-size:.96rem; }
 .game-log { position:absolute; right:12px; top:58px; width:240px; max-height:116px; overflow:auto; padding:7px 10px; z-index:8; border-color:rgba(255,255,255,.1) !important; background:rgba(7,10,10,.72) !important; backdrop-filter:blur(9px); opacity:.72; transition:opacity .2s ease; }
 .game-log:hover { opacity:1; }
+.card-inspector { position:absolute; right:12px; top:188px; z-index:16; width:154px; padding:6px; overflow:hidden; border:1px solid rgba(244,224,168,.38); background:rgba(7,9,9,.94) !important; box-shadow:0 20px 50px rgba(0,0,0,.72) !important; pointer-events:none; animation:inspector-in .16s ease-out; }
+.card-inspector img { display:block; width:100%; aspect-ratio:488/680; object-fit:cover; }
+.card-inspector .MuiTypography-root { display:block; margin:5px 2px 0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .action-prompt { position:absolute; right:16px; bottom:76px; z-index:13; display:flex; flex-direction:column; align-items:flex-end; max-width:390px; padding:7px 12px; border-right:3px solid rgba(255,255,255,.25); text-align:right; text-shadow:0 2px 6px #000; }
 .action-prompt .MuiTypography-overline { color:#fff; font-weight:900; line-height:1.2; letter-spacing:.1em; }
 .action-prompt .MuiTypography-caption { color:rgba(255,255,255,.72); }
@@ -174,9 +177,10 @@ button.zone-gallery-card:hover { border-color:#ff687c; transform:translateY(-4px
 @keyframes stack-arrive { from { opacity:0; transform:translateY(-90px) scale(1.7) rotate(6deg); filter:brightness(1.7) drop-shadow(0 0 30px #8ad8ff); } to { opacity:1; transform:none; } }
 @keyframes hud-impact { 20% { transform:scale(1.18); background:rgba(130,12,28,.92); box-shadow:0 0 35px rgba(255,67,91,.8); } 100% { transform:none; } }
 @keyframes notice-in { 0% { opacity:0; transform:translate(-50%,-35%) scale(.82); } 15%,72% { opacity:1; transform:translate(-50%,-50%) scale(1); } 100% { opacity:0; transform:translate(-50%,-62%) scale(.96); } }
+@keyframes inspector-in { from { opacity:0; transform:translateX(12px) scale(.96); } }
 
 @media (prefers-reduced-motion: reduce) {
-  .play-card,.play-card.is-legal,.play-card.is-entering,.player-hud.is-impacted,.visual-stack .stack-card,.table-notice { animation:none !important; transition:none !important; }
+  .play-card,.play-card.is-legal,.play-card.is-entering,.player-hud.is-impacted,.visual-stack .stack-card,.table-notice,.card-inspector { animation:none !important; transition:none !important; }
 }
 
 @media (max-width: 900px) {
@@ -189,6 +193,7 @@ button.zone-gallery-card:hover { border-color:#ff687c; transform:translateY(-4px
   .phase-step { font-size:0; gap:0; }
   .phase-step span { width:8px; height:8px; }
   .game-log { display:none; }
+  .card-inspector { display:none; }
   .player-hud { left:6px; max-width:190px; padding:5px 7px; }
   .player-hud .zone-links,.player-hud > .MuiChip-root { display:none; }
   .player-hud > .MuiSvgIcon-root { width:28px; height:28px; padding:6px; }
