@@ -1401,6 +1401,7 @@ def _continue_explore(state:dict,player:dict)->None:
         _add_counters(state,creature,"+1/+1",1,player["id"],"explore")
         state["pending_explore"]={"player_id":player["id"],"creature_id":creature_id,"creature_name":creature["name"],"card_id":revealed["instance_id"],"card":revealed};state["priority_player_id"]=player["id"]
         _log(state,f"{creature['name']} received a +1/+1 counter. {player['name']} may put {revealed['name']} into their graveyard.");return
+    state["pending_zone_choice"]=None
     state["pending_explore"]=None;state["pending_explore_queue"]=[]
 
 
@@ -1664,6 +1665,8 @@ def public_state(state: dict, viewer_id: str = "player") -> dict:
             item["card"].pop("face_down_values",None);item["card"].pop("disguised",None)
     pending_search=visible.get("pending_library_search")
     if pending_search and pending_search.get("player_id")!=viewer_id:pending_search["card_ids"]=[]
+    pending_zone=visible.get("pending_zone_choice")
+    if pending_zone and pending_zone.get("player_id")!=viewer_id:pending_zone["card_ids"]=[]
     pending_top=visible.get("pending_top_card_choice")
     if pending_top and pending_top.get("player_id")!=viewer_id:pending_top.pop("card",None)
     pending_revealed=visible.get("pending_revealed_discard")
@@ -1869,6 +1872,7 @@ def _pending_decision(state:dict)->bool:
     if state.get("pending_connive"):return True
     if state.get("pending_zethi_copies"):return True
     if state.get("pending_counter_payment"):return True
+    if state.get("pending_zone_choice"):return True
     return bool(state.get("pending_rad_choice") or state.get("pending_top_card_choice") or state.get("pending_revealed_discard") or state.get("pending_optional_discard") or state.get("pending_optional_payment") or state.get("pending_tilonalli") or state.get("pending_creature_type") or state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_populate") or state.get("pending_bolster") or state.get("pending_discovery") or state.get("pending_madness") or state.get("pending_rebound") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
 
 
@@ -2016,6 +2020,13 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
         if action:actions.insert(0,action)
         return actions
     pending_discard=state.get("pending_discard")
+    pending_zone=state.get("pending_zone_choice")
+    if pending_zone:
+        if pending_zone["player_id"]!=player_id:return []
+        zone=player.get(pending_zone["zone"],[]);cards=[card for card in zone if card["instance_id"] in set(pending_zone["card_ids"])]
+        actions=[{"type":"choose_zone_card","card_id":card["instance_id"],"card":card,"source_name":pending_zone["source_name"],"label":f"Choose {card['name']}"} for card in cards]
+        if pending_zone.get("optional"):actions.append({"type":"decline_zone_choice","source_name":pending_zone["source_name"],"label":"Choose none"})
+        return actions+[{"type":"concede"}]
     if pending_discard:
         if pending_discard["player_id"] != player_id:return []
         return [{"type":"discard_cards","card_ids":[card["instance_id"] for card in player["hand"]],"amount":pending_discard["amount"],"reason":pending_discard.get("reason","cleanup")},{"type":"concede"}]
@@ -3074,6 +3085,17 @@ def _resolve_spell(state: dict) -> None:
         words={"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10}; amount=words.get(mill_match.group(1),int(mill_match.group(1)) if mill_match.group(1).isdigit() else 0)
         for _ in range(min(amount,len(target_player["library"]))): target_player["graveyard"].append(target_player["library"].pop())
         _log(state, f"{target_player['name']} milled {amount} card(s).")
+    self_mill=re.search(r"(?<!target player )\bmill (\d+|one|two|three|four|five|six|seven|eight|nine|ten) cards?",effect_text)
+    if self_mill:
+        words={"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10};amount=words.get(self_mill.group(1),int(self_mill.group(1)) if self_mill.group(1).isdigit() else 0)
+        for _ in range(min(amount,len(caster["library"]))):caster["graveyard"].append(caster["library"].pop())
+        _log(state,f"{caster['name']} milled {amount} card(s).")
+    if "return a creature or spacecraft card from your graveyard to your hand" in effect_text:
+        choices=[candidate["instance_id"] for candidate in caster["graveyard"] if "Creature" in candidate.get("type_line","") or "Spacecraft" in candidate.get("type_line","")]
+        if choices:state["pending_zone_choice"]={"player_id":caster["id"],"source_name":source_name,"zone":"graveyard","destination":"hand","card_ids":choices,"optional":False};state["priority_player_id"]=caster["id"]
+    if "you may put a creature card from your hand onto the battlefield" in effect_text:
+        choices=[candidate["instance_id"] for candidate in caster["hand"] if "Creature" in candidate.get("type_line","")]
+        state["pending_zone_choice"]={"player_id":caster["id"],"source_name":source_name,"zone":"hand","destination":"battlefield","card_ids":choices,"optional":True};state["priority_player_id"]=caster["id"]
     scry_match=re.search(r"\bscry (\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b",effect_text)
     surveil_match=re.search(r"\bsurveil (\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b",effect_text)
     library_match,mode=(surveil_match,"surveil") if surveil_match else (scry_match,"scry")
@@ -4965,6 +4987,19 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         player["library"].extend(cards[card_id] for card_id in reversed(top_ids));draw_after=int(pending.get("draw_after",0));state["pending_scry"]=None;state["priority_player_id"]=state["active_player_id"]
         if draw_after:_draw(state,player,draw_after)
         _log(state,f"{player['name']} kept {len(top_ids)} card(s) on top and put {len(away_ids)} in {'the graveyard' if action_type=='surveil' else 'the bottom of the library'}.")
+    elif action_type in {"choose_zone_card","decline_zone_choice"}:
+        pending=state.get("pending_zone_choice") or {}
+        if pending.get("player_id")!=player_id:raise RuleViolation("There is no zone choice for this player")
+        if action_type=="choose_zone_card":
+            zone=player.get(pending["zone"],[]);chosen=next((card for card in zone if card["instance_id"]==action.get("card_id") and card["instance_id"] in set(pending["card_ids"])),None)
+            if not chosen:raise RuleViolation("Choose an eligible card")
+            zone.remove(chosen);destination=pending["destination"]
+            if destination=="battlefield":chosen["controller_id"]=player_id;chosen["summoning_sick"]=True;_enter_battlefield(state,player,[chosen],pending["zone"])
+            else:player[destination].append(chosen)
+            _log(state,f"{player['name']} chose {chosen['name']} for {pending['source_name']}.")
+        elif not pending.get("optional"):raise RuleViolation("This choice is required")
+        else:_log(state,f"{player['name']} chose no card for {pending['source_name']}.")
+        state["pending_zone_choice"]=None;state["priority_player_id"]=state["active_player_id"]
     elif action_type == "adjust_life":
         target_player = _player(state, action.get("target_id") or player_id); amount = max(-100, min(100, int(action.get("amount") or 0))); target_player["life"] += amount; _log(state, f"{target_player['name']}'s life was adjusted by {amount:+d}.")
     elif action_type == "add_counter":
