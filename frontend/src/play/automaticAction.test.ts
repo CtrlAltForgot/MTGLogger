@@ -1,6 +1,6 @@
 import { describe,expect,it } from 'vitest'
 import type { LegalGameAction } from '../types'
-import { automaticGameAction,isMeaningfulGameChoice } from './automaticAction'
+import { automaticActionDelay,automaticGameAction,isMeaningfulGameChoice } from './automaticAction'
 
 const action=(type:string,extra:Partial<LegalGameAction>={}):LegalGameAction=>({type,...extra})
 
@@ -22,5 +22,11 @@ describe('automatic game actions',()=>{
   it('waits whenever the player has a real choice',()=>{
     expect(automaticGameAction([action('resolve'),action('cast',{card_id:'response'})])).toBeUndefined()
     expect(automaticGameAction([action('advance_phase'),action('declare_attackers',{card_ids:['attacker']})])).toBeUndefined()
+  })
+
+  it('leaves readable time before every automatic transition',()=>{
+    expect(automaticActionDelay(action('pass_priority'))).toBeGreaterThanOrEqual(800)
+    expect(automaticActionDelay(action('advance_phase'))).toBeGreaterThan(automaticActionDelay(action('pass_priority')))
+    expect(automaticActionDelay(action('resolve_combat_damage'))).toBeGreaterThanOrEqual(1500)
   })
 })

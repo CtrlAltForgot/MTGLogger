@@ -131,7 +131,7 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .visual-stack .stack-card { margin-left:-48px; animation:stack-arrive .45s cubic-bezier(.18,.9,.24,1.2) both; }
 .visual-stack .stack-card:first-child { margin-left:0; }
 .visual-stack .play-card { width:112px; margin-left:0; filter:drop-shadow(0 16px 20px rgba(0,0,0,.75)); }
-.table-notice { position:absolute; left:50%; top:43%; transform:translate(-50%,-50%); z-index:30; max-width:min(620px,80%); display:flex; align-items:center; gap:10px; padding:14px 22px; border:1px solid rgba(255,255,255,.24); background:rgba(12,14,13,.94) !important; backdrop-filter:blur(14px); pointer-events:none; animation:notice-in 1.55s ease both; }
+.table-notice { position:absolute; left:50%; top:43%; transform:translate(-50%,-50%); z-index:30; max-width:min(620px,80%); display:flex; align-items:center; gap:10px; padding:14px 22px; border:1px solid rgba(255,255,255,.24); background:rgba(12,14,13,.94) !important; backdrop-filter:blur(14px); pointer-events:none; animation:notice-in 1.8s ease both; }
 .table-notice.tone-phase { color:#ffe19a; box-shadow:0 0 42px rgba(255,199,75,.28); }
 .table-notice.tone-good { color:#7cf0ad; box-shadow:0 0 42px rgba(91,225,150,.25); }
 .table-notice.tone-danger { color:#ff8293; box-shadow:0 0 42px rgba(255,84,111,.28); }

@@ -16,3 +16,10 @@ export const automaticGameAction=(actions:LegalGameAction[])=>{
     ||actions.find(action=>action.type==='advance_phase')
     ||actions.find(action=>action.type==='pass_priority')
 }
+
+export const automaticActionDelay=(action:LegalGameAction)=>({
+  resolve_combat_damage:1500,
+  resolve:1350,
+  advance_phase:1100,
+  pass_priority:850,
+}[action.type]||1100)

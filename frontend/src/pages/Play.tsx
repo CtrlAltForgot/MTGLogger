@@ -3,9 +3,9 @@ import { ArrowDownward, ArrowUpward, AutoAwesome, Bolt, Build, ContentCopy, Dele
 import { Alert, Box, Button, Card, CardContent, Chip, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle, Divider, FormControlLabel, Grid, IconButton, MenuItem, Paper, Stack, Switch, TextField, Tooltip, Typography } from '@mui/material'
 import { request } from '../api'
 import type { Deck, Game, GameCard, GameMode, GamePlayer, GameTarget, LegalGameAction } from '../types'
-import { automaticGameAction,isMeaningfulGameChoice } from '../play/automaticAction'
+import { automaticActionDelay,automaticGameAction,isMeaningfulGameChoice } from '../play/automaticAction'
 import { buildInviteUrl,guestTokenKey,normalizeInviteUrl,resolveInviteAccess,scrubbedInvitePath,storedHostCredentials } from '../play/inviteAccess'
-import { classifyNoticeTone,visualStateDiff } from '../play/visualTransition'
+import { presentationNotices,visualStateDiff,type TableNotice } from '../play/visualTransition'
 import { commanderDamageTotals } from '../play/commanderDamage'
 import { gameOutcomeCopy } from '../play/gameOutcome'
 import { acceptMonotonicGame } from '../play/multiplayerState'
@@ -59,7 +59,7 @@ export default function Play(){
   const [toolsOpen,setToolsOpen]=useState(false),[toolForm,setToolForm]=useState({target_id:'',counter_name:'+1/+1',amount:1,token_name:'Creature Token',power:1,toughness:1,destination:'graveyard'})
   const [zoneView,setZoneView]=useState<{ownerId:string;zone:'graveyard'|'exile'|'command'}>()
   const [historyOpen,setHistoryOpen]=useState(false)
-  const previousState=useRef<Game['state']|undefined>(undefined),previousGameId=useRef<string|undefined>(undefined),[enteringCards,setEnteringCards]=useState<Set<string>>(new Set()),[impactPlayers,setImpactPlayers]=useState<Set<string>>(new Set()),[tableNotice,setTableNotice]=useState<{id:string;text:string;tone:'phase'|'good'|'danger'|'stack'}>()
+  const previousState=useRef<Game['state']|undefined>(undefined),previousGameId=useRef<string|undefined>(undefined),[enteringCards,setEnteringCards]=useState<Set<string>>(new Set()),[impactPlayers,setImpactPlayers]=useState<Set<string>>(new Set()),[tableNotice,setTableNotice]=useState<TableNotice>(),[noticeQueue,setNoticeQueue]=useState<TableNotice[]>([])
   const [inviteAccess]=useState(()=>{const code=new URLSearchParams(location.search).get('invite')||'',stored=code?sessionStorage.getItem(guestTokenKey(code))||'':'';return resolveInviteAccess(location.search,location.hash,stored)})
   const inviteCode=inviteAccess.code,inviteToken=inviteAccess.token,isGuest=!!inviteCode&&!!inviteToken,viewerId=isGuest?'bot':'player',opponentId=isGuest?'player':'bot'
   const credentials=(id:string)=>{const raw=localStorage.getItem(`mtglogger-invite-${id}`)||'';if(!raw)return{hostToken:'',inviteUrl:''};try{const saved=JSON.parse(raw) as {hostToken:string;inviteUrl:string};return{...saved,inviteUrl:normalizeInviteUrl(saved.inviteUrl)}}catch{return{hostToken:'',inviteUrl:normalizeInviteUrl(raw)}}}
@@ -69,24 +69,26 @@ export default function Play(){
   useEffect(()=>{if(inviteCode){if(!inviteToken){setError('This private-game link is missing its access secret. Ask the host for a fresh invite.');return}request<Game>(`/play/invite/${inviteCode}/state`,{headers:{'X-Game-Token':inviteToken}}).then(setGame).catch(e=>setError(e.message))}else void load().catch(e=>setError(e.message))},[])
   useEffect(()=>{if(!game||game.opponent_type!=='human')return;const timer=setInterval(()=>request<Game>(gamePath,{headers:authHeaders}).then(updated=>{setGame(current=>acceptMonotonicGame(current,updated));setError(undefined)}).catch(e=>setError(e instanceof Error?e.message:'Could not synchronize the private game')),1800);return()=>clearInterval(timer)},[game?.id,gamePath,accessToken])
   useEffect(()=>{
-    if(!game||busy||game.state.status!=='active'||game.state.priority_player_id!==viewerId)return
+    if(!game||busy||tableNotice||noticeQueue.length||game.state.status!=='active'||game.state.priority_player_id!==viewerId)return
     const automatic=automaticGameAction(game.legal_actions)
     if(!automatic)return
-    const timer=setTimeout(()=>void act({type:automatic.type}),220)
+    const timer=setTimeout(()=>void act({type:automatic.type}),automaticActionDelay(automatic))
     return()=>clearTimeout(timer)
-  },[game?.state.version,busy,viewerId])
+  },[game?.state.version,busy,viewerId,tableNotice,noticeQueue.length])
   useEffect(()=>{setSelectedAttackers([]);setBlocks({});setChoosingBlocker(undefined);setAttackTargets({});setAttackDialog(false);setAbilityChoices([]);setModeChoice(undefined);setSelectedModes([]);setModalTargetChoice(undefined);setMultiTargetChoice(undefined);setCostChoice(undefined);setBlightChoice(undefined);setSelectedCosts([]);setXChoice(undefined);setSelectedDiscards([]);setSelectedSacrifices([]);setSelectedLegendary([]);setSelectedSearch([]);setSelectedProliferate([]);setScryOrder([]);setScryBottom([]);setBlockOrders({})},[game?.state.version])
   useEffect(()=>{
     if(!game)return
     const current=game.state,previous=previousGameId.current===game.id?previousState.current:undefined;previousGameId.current=game.id;previousState.current=current
-    if(!previous){setEnteringCards(new Set());setImpactPlayers(new Set());setTableNotice(undefined)}
+    if(!previous){setEnteringCards(new Set());setImpactPlayers(new Set());setTableNotice(undefined);setNoticeQueue([])}
     if(!previous||previous.version===current.version)return
     const visual=visualStateDiff(previous,current);setEnteringCards(visual.enteringIds);setImpactPlayers(visual.impactedPlayerIds)
-    const latest=current.log.at(-1),text=visual.phaseChanged?`Turn ${current.turn} · ${phases.find(([key])=>key===current.phase)?.[1]||current.phase}`:latest?.message
-    if(text)setTableNotice({id:`${current.version}-${latest?.id||current.phase}`,text,tone:classifyNoticeTone(text,visual.phaseChanged)})
-    const timer=setTimeout(()=>{setEnteringCards(new Set());setImpactPlayers(new Set());setTableNotice(undefined)},1550)
+    const label=phases.find(([key])=>key===current.phase)?.[1]||current.phase
+    setNoticeQueue(queue=>[...queue,...presentationNotices(previous,current,label)])
+    const timer=setTimeout(()=>{setEnteringCards(new Set());setImpactPlayers(new Set())},1800)
     return()=>clearTimeout(timer)
   },[game?.id,game?.state.version])
+  useEffect(()=>{if(tableNotice||!noticeQueue.length)return;setTableNotice(noticeQueue[0]);setNoticeQueue(queue=>queue.slice(1))},[tableNotice,noticeQueue])
+  useEffect(()=>{if(!tableNotice)return;const timer=setTimeout(()=>setTableNotice(undefined),1800);return()=>clearTimeout(timer)},[tableNotice])
   const act=async(action:Record<string,unknown>)=>{if(!game)return;setBusy(true);setError(undefined);try{const path=isGuest?`/play/invite/${inviteCode}/actions`:`/play/${game.id}/actions`;const updated=await request<Game>(path,{method:'POST',headers:{'Content-Type':'application/json',...authHeaders},body:JSON.stringify({...action,expected_version:game.state.version})});setGame(current=>acceptMonotonicGame(current,updated))}catch(e){setError(e instanceof Error?e.message:'The action could not be completed');if(e instanceof Error&&e.message.includes('other browser'))void request<Game>(gamePath,{headers:authHeaders}).then(updated=>setGame(current=>acceptMonotonicGame(current,updated)))}finally{setBusy(false)}}
   const create=async()=>{setBusy(true);setError(undefined);try{const created=await request<Game>('/play',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(setup)});setGame(created);if(created.invite_code&&created.invite_token&&created.host_token){const url=buildInviteUrl(location.origin,location.pathname,created.invite_code,created.invite_token);localStorage.setItem(`mtglogger-invite-${created.id}`,JSON.stringify({hostToken:created.host_token,inviteUrl:url}));setHostToken(created.host_token);setInviteUrl(url)}}catch(e){setError(e instanceof Error?e.message:'Could not start the game')}finally{setBusy(false)}}
   const undo=async()=>{if(!game||isGuest||game.opponent_type!=='bot')return;setBusy(true);try{setGame(await request<Game>(`/play/${game.id}/undo`,{method:'POST',headers:{'Content-Type':'application/json',...authHeaders},body:JSON.stringify({expected_version:game.state.version})}))}catch(e){setError(e instanceof Error?e.message:'Nothing to undo')}finally{setBusy(false)}}
