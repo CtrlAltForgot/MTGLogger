@@ -179,6 +179,22 @@ def _continuous_stats(state:dict|None,card:dict)->tuple[int,int]:
     return power,toughness
 
 
+def _has_ascend(card:dict)->bool:
+    return re.search(r"(?:^|\n)Ascend(?:\s|\()",card.get("oracle_text") or "",re.IGNORECASE) is not None
+
+
+def _sync_city_blessing(state:dict)->None:
+    blessed={player["id"] for player in state["players"] if player.get("city_blessing")}
+    for owner in state["players"]:
+        for card in owner["battlefield"]:card["controller_city_blessing"]=card.get("controller_id",owner["id"]) in blessed
+
+
+def _check_ascend(state:dict,player:dict,spell:dict|None=None)->None:
+    if player.get("city_blessing") or len(player["battlefield"])<10:return
+    if not (_has_ascend(spell or {}) or any(_has_ascend(card) for card in player["battlefield"])):return
+    player["city_blessing"]=True;_sync_city_blessing(state);_log(state,f"{player['name']} received the city's blessing for the rest of the game.")
+
+
 def _level_sections(card:dict)->tuple[list[str],list[tuple[int,int|None,list[str]]]]:
     preamble=[];sections=[];current=None
     for line in (card.get("oracle_text") or "").splitlines():
@@ -213,7 +229,11 @@ def _parse_stats(card: dict,state:dict|None=None) -> tuple[int, int]:
         plus = card.get("counters", {}).get("+1/+1", 0); minus = card.get("counters", {}).get("-1/-1", 0)
         static_power,static_toughness=_continuous_stats(state,card)
         level_stats=_level_stats(card);base_power,base_toughness=level_stats or (int(card.get("power") or 0),int(card.get("toughness") or 0))
-        return base_power + plus - minus + card.get("temporary_power", 0)+static_power, base_toughness + plus - minus + card.get("temporary_toughness", 0)+static_toughness
+        blessing_power=blessing_toughness=0
+        if card.get("controller_city_blessing"):
+            blessing=re.search(r"(?:this creature|[A-Z][^.\n]+) gets ([+-]\d+)/([+-]\d+) as long as you have the city's blessing",card.get("oracle_text") or "",re.IGNORECASE)
+            if blessing:blessing_power,blessing_toughness=int(blessing.group(1)),int(blessing.group(2))
+        return base_power + plus - minus + card.get("temporary_power", 0)+static_power+blessing_power, base_toughness + plus - minus + card.get("temporary_toughness", 0)+static_toughness+blessing_toughness
     except ValueError:
         return 0, 0
 
@@ -357,9 +377,11 @@ def _has_keyword(card: dict, keyword: str) -> bool:
     printed={value.casefold() for value in card.get("keywords", [])};temporary={value.casefold() for value in card.get("temporary_keywords", [])};attached={value.casefold() for values in card.get("attachment_keywords",{}).values() for value in values};counter_keywords={name.casefold() for name,amount in card.get("counters",{}).items() if amount>0}
     _,level_sections=_level_sections(card)
     if level_sections and any(re.search(rf"\b{re.escape(keyword)}\b","\n".join(lines),re.IGNORECASE) for _,_,lines in level_sections):printed.discard(keyword.casefold())
-    lower_keyword=keyword.casefold();text=_active_level_text(card).casefold();conditional=[clause for clause in re.split(r"(?<=[.!])\s+|\n",text) if "as long as this creature is monstrous" in clause];unconditional="\n".join(clause for clause in re.split(r"(?<=[.!])\s+|\n",text) if clause not in conditional)
+    lower_keyword=keyword.casefold();text=_active_level_text(card).casefold();conditional=[clause for clause in re.split(r"(?<=[.!])\s+|\n",text) if "as long as this creature is monstrous" in clause];blessing_conditional=[clause for clause in re.split(r"(?<=[.!])\s+|\n",text) if "city's blessing" in clause];unconditional="\n".join(clause for clause in re.split(r"(?<=[.!])\s+|\n",text) if clause not in conditional and clause not in blessing_conditional)
+    if any(re.search(rf"\b{re.escape(lower_keyword)}\b",clause) for clause in blessing_conditional):printed.discard(lower_keyword)
     monstrous_match=card.get("monstrous") and any(re.search(rf"\b{re.escape(lower_keyword)}\b",clause) for clause in conditional)
-    return lower_keyword in printed|temporary|attached|counter_keywords or (lower_keyword=="haste" and bool(card.get("earthbent") or card.get("suspend_haste"))) or bool(monstrous_match) or re.search(rf"\b{re.escape(lower_keyword)}\b",unconditional) is not None
+    blessing_match=card.get("controller_city_blessing") and any(re.search(rf"\b{re.escape(lower_keyword)}\b",clause) for clause in blessing_conditional)
+    return lower_keyword in printed|temporary|attached|counter_keywords or (lower_keyword=="haste" and bool(card.get("earthbent") or card.get("suspend_haste"))) or bool(monstrous_match) or bool(blessing_match) or re.search(rf"\b{re.escape(lower_keyword)}\b",unconditional) is not None
 
 
 def _attachment_keywords(card:dict)->list[str]:
@@ -685,6 +707,7 @@ def _can_attack(state:dict,card:dict,attacker:dict,defender:dict)->bool:
     defender_override="defender" in text and "can attack as though it didn't have defender" in text and any("Creature" in permanent.get("type_line","") and _parse_stats(permanent,state)[0]>=4 for permanent in attacker["battlefield"])
     if _has_keyword(card,"Defender") and not defender_override:return False
     if "can't attack unless" in text or "can't attack or block unless" in text:
+        if "unless you have the city's blessing" in text and attacker.get("city_blessing"):return True
         if "seven or more cards in your graveyard" in text and len(attacker["graveyard"])<7:return False
         if "there is a mountain on the battlefield" in text and not any("mountain" in permanent.get("type_line","").casefold() for owner in state["players"] for permanent in owner["battlefield"]):return False
         if "defending player controls an enchantment or an enchanted permanent" in text and not any("Enchantment" in permanent.get("type_line","") or permanent.get("attached_to") for permanent in defender["battlefield"]):return False
@@ -697,7 +720,7 @@ def _can_attack(state:dict,card:dict,attacker:dict,defender:dict)->bool:
 def _can_block_pair(state:dict,attacker:dict,blocker:dict)->bool:
     attacker_text=_effective_rules_text(state,attacker);blocker_text=_effective_rules_text(state,blocker)
     if blocker.get("cant_block_until_turn")==state["turn"]:return False
-    conditional="can't attack or block unless" in blocker_text
+    conditional="can't attack or block unless" in blocker_text and not ("unless you have the city's blessing" in blocker_text and _player(state,blocker.get("controller_id")).get("city_blessing"))
     if conditional and "you control another creature with power 4 or greater" in blocker_text:
         controller=_player(state,blocker.get("controller_id"));conditional=any(permanent["instance_id"]!=blocker["instance_id"] and "Creature" in permanent.get("type_line","") and _parse_stats(permanent,state)[0]>=4 for permanent in controller["battlefield"])
         if not conditional:return False
@@ -989,6 +1012,7 @@ def _activated_abilities(card: dict) -> list[dict]:
 
 def _activation_timing_legal(state:dict,player_id:str,permanent:dict,index:int,ability:dict)->bool:
     restrictions=ability.get("restrictions",{});active=state["active_player_id"]==player_id;phase=state["phase"]
+    if "activate only if you have the city's blessing" in ability.get("effect","").casefold() and not _player(state,player_id).get("city_blessing"):return False
     if restrictions.get("sorcery") and not (active and phase in {"precombat_main","postcombat_main"} and not state["stack"]):return False
     if restrictions.get("your_turn") and not active:return False
     if restrictions.get("opponent_turn") and active:return False
@@ -1413,7 +1437,7 @@ def _new_player(player_id: str, name: str, deck: list[dict], is_bot: bool, forma
         if commander:
             library.remove(commander); commander["commander"] = True; command.append(commander)
     random.SystemRandom().shuffle(library)
-    return {"id": player_id, "name": name, "is_bot": is_bot, "format": format_name, "life": 40 if is_commander else 20, "poison": 0,"energy":0,"energy_paid_this_turn":0,"firebending_mana":0,"bent_this_turn":[],"undercity_rooms":[], "library": library, "hand": [], "battlefield": [], "graveyard": [], "exile": [], "command": command, "commander_casts": 0, "commander_damage": {}, "commander_damage_names": {}, "land_plays_remaining": 1, "kept_hand": False, "mulligans": 0, "lost": False}
+    return {"id": player_id, "name": name, "is_bot": is_bot, "format": format_name, "life": 40 if is_commander else 20, "poison": 0,"energy":0,"energy_paid_this_turn":0,"firebending_mana":0,"bent_this_turn":[],"undercity_rooms":[],"city_blessing":False, "library": library, "hand": [], "battlefield": [], "graveyard": [], "exile": [], "command": command, "commander_casts": 0, "commander_damage": {}, "commander_damage_names": {}, "land_plays_remaining": 1, "kept_hand": False, "mulligans": 0, "lost": False}
 
 
 def new_game(player_deck: list[dict], opponent_deck: list[dict], play_first: bool = True, opponent_is_bot: bool = True, player_format: str = "", opponent_format: str = "") -> dict:
@@ -1613,6 +1637,7 @@ def _change_control(state:dict,card:dict,new_controller:dict,until_end_of_turn:b
     if until_end_of_turn and not card.get("temporary_control_return_to"):
         card["temporary_control_return_to"]=current["id"]
     current["battlefield"].remove(card);new_controller["battlefield"].append(card);card["controller_id"]=new_controller["id"];card["summoning_sick"]=True;card.pop("suspend_haste",None)
+    _sync_city_blessing(state);_check_ascend(state,new_controller)
     if _echo_cost(card):card["echo_due_controller_id"]=new_controller["id"]
     _remove_from_combat(state,card["instance_id"])
 
@@ -2177,6 +2202,7 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
 def _resolve_spell(state: dict) -> None:
     item = state["stack"].pop()
     card, caster = item["card"], _player(state, item["controller_id"])
+    if item.get("kind","spell")=="spell":_check_ascend(state,caster,card)
     if item.get("kind")=="combat_stat_trigger":
         target=next((permanent for owner in state["players"] for permanent in owner["battlefield"] if permanent["instance_id"]==item.get("target_id")),None)
         if not target:_log(state,f"{card['name']} resolved, but its creature was no longer on the battlefield.");return
@@ -2761,6 +2787,7 @@ def _enter_battlefield(state:dict,controller:dict,cards:list[dict],origin:str="e
         card["controller_id"]=controller["id"];card["entry_event_origin"]=origin;card["entry_event_was_cast"]=was_cast;card["entry_event_played"]=played;card["entry_event_batch_size"]=batch_size
         if _echo_cost(card):card["echo_due_controller_id"]=controller["id"]
         controller["battlefield"].append(card)
+    _sync_city_blessing(state)
     ordered_owners=sorted(state["players"],key=lambda owner:owner["id"]!=state.get("active_player_id"));sources=[(owner,permanent) for owner in ordered_owners for permanent in owner["battlefield"]]
     for card in entering:_queue_triggers(state,"enters",card,controller,dedupe,sources)
     for card in entering:
@@ -2770,6 +2797,7 @@ def _enter_battlefield(state:dict,controller:dict,cards:list[dict],origin:str="e
             if targets:state.setdefault("pending_trigger_targets",[]).append({"controller_id":controller["id"],"source_name":card["name"],"trigger":trigger,"card":ability});state["priority_player_id"]=state["pending_trigger_targets"][0]["controller_id"]
     for card in entering:
         for key in ("entry_event_origin","entry_event_was_cast","entry_event_played","entry_event_batch_size"):card.pop(key,None)
+    _check_ascend(state,controller)
     return entering
 
 
