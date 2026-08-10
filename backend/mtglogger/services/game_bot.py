@@ -402,7 +402,7 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
         if difficulty == "beginner":
             choice = random.choice(spells)
         else:
-            choice = max(spells, key=lambda action: ((_card(state,"bot",action["card_id"]).get("mana_value") or 0)+(2 if action.get("kicked") else 0)+(1 if action.get("buyback") else 0),len(_card(state,"bot",action["card_id"]).get("oracle_text") or "")))
+            choice = max(spells, key=lambda action: ((_card(state,"bot",action["card_id"]).get("mana_value") or 0)+(2 if action.get("kicked") else 0)+(1 if action.get("buyback") else 0)+(1 if action.get("blessing_top") else 0),len(_card(state,"bot",action["card_id"]).get("oracle_text") or "")))
         if choice.get("x_max") is not None:choice={**choice,"x_value":_choose_x(state,choice)}
         if choice.get("cost_options"):choice={**choice,"cost_card_ids":_choose_convoke_cost(state,choice) if choice.get("cost_kind") in {"convoke","waterbend"} else _choose_ability_cost(state,choice)}
         if choice.get("target_steps"):choice={**choice,"target_ids":_choose_fight_targets(state,choice)}
