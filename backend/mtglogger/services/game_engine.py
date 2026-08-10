@@ -689,9 +689,11 @@ def _unearth_ability(card:dict)->dict|None:
     return {"mana_cost":match.group(1).upper(),"energy_cost":0} if match else None
 
 
-def _encore_cost(card:dict)->str|None:
+def _encore_cost(card:dict,player:dict|None=None)->str|None:
     match=re.search(r"(?:^|\n)Encore\s+((?:\{[^}]+\})+)",card.get("oracle_text") or "",re.IGNORECASE)
-    return match.group(1).upper() if match else None
+    if match:return match.group(1).upper()
+    granted=player and re.search(r"\bSliver\b",card.get("type_line",""),re.IGNORECASE) and any(permanent.get("name")=="Sliver Gravemother" and "Each Sliver creature card in your graveyard has encore {X}" in (permanent.get("oracle_text") or "") for permanent in player["battlefield"])
+    return f"{{{int(float(card.get('mana_value') or 0))}}}" if granted else None
 
 
 def _delirium_graveyard_return(card:dict)->dict|None:
@@ -2492,7 +2494,7 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
                 cost_label=unearth["mana_cost"] or f"{unearth['energy_cost']} energy";actions.append({"type":"unearth","card_id":grave_card["instance_id"],"source":"graveyard","mana_cost":unearth["mana_cost"],"energy_cost":unearth["energy_cost"],"label":f"Unearth {grave_card['name']} · {cost_label}"})
             delirium_return=_delirium_graveyard_return(grave_card)
             if delirium_return and _graveyard_card_type_count(player)>=4 and _can_pay(player,{"mana_cost":delirium_return["mana_cost"]}):actions.append({"type":"activate_graveyard","card_id":grave_card["instance_id"],"source":"graveyard","mana_cost":delirium_return["mana_cost"],"label":f"Return {grave_card['name']} with finality · {delirium_return['mana_cost']}"})
-            encore_cost=_encore_cost(grave_card)
+            encore_cost=_encore_cost(grave_card,player)
             if encore_cost and _can_pay(player,{"mana_cost":encore_cost}):actions.append({"type":"encore","card_id":grave_card["instance_id"],"source":"graveyard","mana_cost":encore_cost,"label":f"Encore {grave_card['name']} · {encore_cost}"})
         plot_reduction=_plot_reduction(player)
         for hand_card in player["hand"]:
@@ -5240,7 +5242,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if _multiplayer(state) or not allow_direct_resolution:state["priority_player_id"]=opponent(state,player_id)["id"]
         _log(state,f"{player['name']} activated {card['name']}'s Delirium graveyard ability.")
     elif action_type=="encore":
-        card=next((card for card in player["graveyard"] if card["instance_id"]==action.get("card_id")),None);cost=_encore_cost(card or {});available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="encore" and entry["card_id"]==action.get("card_id")),None)
+        card=next((card for card in player["graveyard"] if card["instance_id"]==action.get("card_id")),None);cost=_encore_cost(card or {},player);available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="encore" and entry["card_id"]==action.get("card_id")),None)
         if not card or not cost or not available:raise RuleViolation("That card cannot be encored now")
         _pay_mana(state,player,{"mana_cost":cost});_leave_graveyard(state,player,[card]);_put_into_exile(state,player,[card],"graveyard",player_id);ability={**card,"name":f"{card['name']} — Encore","type_line":"Ability","mana_cost":"","oracle_text":f"Create one token copy of {card['name']} for each opponent. Each copy must attack that opponent this turn if able. Sacrifice the copies at the beginning of the next end step."};state["stack"].append({"id":_id(),"kind":"encore_ability","card":ability,"source_card":deepcopy(card),"controller_id":player_id});state["consecutive_passes"]=0;state["pending_phase_advance"]=False
         if _multiplayer(state) or not allow_direct_resolution:state["priority_player_id"]=opponent(state,player_id)["id"]
