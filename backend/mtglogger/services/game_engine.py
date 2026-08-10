@@ -2357,6 +2357,7 @@ def _pending_decision(state:dict)->bool:
     if state.get("pending_card_type"):return True
     if state.get("pending_headdress"):return True
     if state.get("pending_grim_captain"):return True
+    if state.get("pending_blunderbuss"):return True
     return bool(state.get("pending_miracle") or state.get("pending_impulsivity") or state.get("pending_library_placement") or state.get("pending_sticktwister") or state.get("pending_eumidian_choice") or state.get("pending_rad_choice") or state.get("pending_tap_choice") or state.get("pending_top_card_choice") or state.get("pending_revealed_discard") or state.get("pending_same_name_search") or state.get("pending_winter_exile") or state.get("pending_optional_discard") or state.get("pending_optional_payment") or state.get("pending_tilonalli") or state.get("pending_creature_type") or state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_populate") or state.get("pending_bolster") or state.get("pending_discovery") or state.get("pending_madness") or state.get("pending_rebound") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
 
 
@@ -2724,6 +2725,13 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
         actions=[{"type":"decline_grim_return","source_name":pending_grim["source_name"],"label":"Return no crafted creature"},{"type":"concede"}]
         if cards and defenders:actions.insert(0,{"type":"choose_grim_return","source_name":pending_grim["source_name"],"card_ids":[card["instance_id"] for card in cards],"cards":cards,"defenders":defenders,"label":"Return a crafted creature tapped and attacking"})
         return actions
+    pending_blunderbuss=state.get("pending_blunderbuss")
+    if pending_blunderbuss:
+        if pending_blunderbuss["player_id"]!=player_id:return []
+        if pending_blunderbuss["stage"]=="sacrifice":
+            cards=[card for card in player["battlefield"] if card["instance_id"] in set(pending_blunderbuss["card_ids"])];return [{"type":"choose_blunderbuss_sacrifice","source_name":pending_blunderbuss["source_name"],"card_ids":pending_blunderbuss["card_ids"],"cards":cards,"label":"Sacrifice another artifact"},{"type":"concede"}]
+        targets=[{"id":card["instance_id"],"name":card["name"],"kind":"permanent","controller_id":owner["id"]} for owner in state["players"] for card in owner["battlefield"] if "Creature" in card.get("type_line","") and not _has_keyword(card,"Shroud")]
+        return ([{"type":"choose_blunderbuss_target","source_name":pending_blunderbuss["source_name"],"targets":targets,"label":"Choose the creature that will be dealt damage"}] if targets else [{"type":"finish_blunderbuss","source_name":pending_blunderbuss["source_name"],"label":"No legal creature remains"}])+[{"type":"concede"}]
     pending_zethi=state.get("pending_zethi_copies")
     if pending_zethi:
         if pending_zethi["player_id"]!=player_id:return []
@@ -2780,7 +2788,7 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
         if pending["controller_id"]!=player_id:return []
         if pending.get("mode_options"):return [{"type":"choose_trigger_mode","modes":pending["mode_options"],"label":pending["card"]["oracle_text"],"source_name":pending["source_name"]},{"type":"concede"}]
         if pending.get("target_steps"):return [{"type":"choose_trigger_targets","target_steps":pending["target_steps"],"min_targets":pending.get("min_targets",len(pending["target_steps"])),"label":pending["card"]["oracle_text"],"source_name":pending["source_name"]},{"type":"concede"}]
-        targets=pending.get("targets_override") if pending.get("targets_override") is not None else _targets(state,player_id,pending["card"])
+        targets=[] if pending.get("defer_targets") else pending.get("targets_override") if pending.get("targets_override") is not None else _targets(state,player_id,pending["card"])
         actions=[{"type":"choose_trigger_target","targets":targets,"label":pending["card"]["oracle_text"],"source_name":pending["source_name"]}] if targets else []
         if pending.get("optional") and not targets:actions.append({"type":"accept_trigger","source_name":pending["source_name"],"label":pending["card"]["oracle_text"]})
         if pending.get("optional") or not targets:actions.append({"type":"skip_trigger","source_name":pending["source_name"]})
@@ -3511,6 +3519,15 @@ def _resolve_spell(state: dict) -> None:
         spell_caster=_player(state,item.get("event_owner_id"));spell_caster["cant_attack_turn"]=state["turn"];spell_caster["cant_attack_defender_ids_turn"]=sorted(set(spell_caster.get("cant_attack_defender_ids_turn",[]))|{caster["id"]});_log(state,f"{source_permanent['name']} prevents {spell_caster['name']} from attacking {caster['name']} or their planeswalkers this turn.");return
     if source_permanent and source_permanent.get("name")=="The Grim Captain" and "each opponent sacrifices a nonland permanent" in effect_text and "exiled creature card used to craft" in effect_text:
         pending={"controller_id":caster["id"],"source_id":source_permanent["instance_id"],"source_name":source_permanent["name"],"crafted_ids":list(source_permanent.get("crafted_with_ids") or []),"opponent_ids":[owner["id"] for owner in state["players"] if owner["id"]!=caster["id"]]};state["pending_grim_captain"]=pending;_advance_grim_captain(state,pending);_log(state,f"{source_permanent['name']} requires each opponent to sacrifice a nonland permanent before {caster['name']} chooses a crafted creature.");return
+    if source_permanent and "you may sacrifice an artifact other than dire blunderbuss" in effect_text and "deals damage equal to its power to target creature" in text.casefold():
+        equipment=next((card for card in caster["battlefield"] if card.get("attached_to")==source_permanent["instance_id"] and card.get("name")=="Dire Blunderbuss"),None);choices=[card["instance_id"] for card in caster["battlefield"] if "Artifact" in card.get("type_line","") and card is not equipment]
+        if choices:state["pending_blunderbuss"]={"player_id":caster["id"],"stage":"sacrifice","source_id":source_permanent["instance_id"],"source_name":"Dire Blunderbuss","equipment_id":equipment.get("instance_id") if equipment else None,"card_ids":choices};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} must choose another artifact to sacrifice for Dire Blunderbuss.")
+        else:_log(state,"Dire Blunderbuss had no other artifact available to sacrifice.")
+        return
+    if card.get("name")=="Dire Blunderbuss reflexive trigger":
+        victim=next((permanent for owner in state["players"] for permanent in owner["battlefield"] if permanent["instance_id"]==target_id),None)
+        if not victim:_log(state,"Dire Blunderbuss's damage trigger lost its target.");return
+        source=source_permanent or item.get("source_snapshot") or card;amount=_parse_stats(source,state)[0] if source_permanent else int(item.get("source_power") or 0);_damage_permanent(state,victim,amount,source);_log(state,f"{source.get('name','The equipped creature')} dealt {amount} damage to {victim['name']} with Dire Blunderbuss.");return
     if source_permanent and "choose an exiled card used to craft" in effect_text and "at random" in effect_text and "cast that card without paying its mana cost" in effect_text:
         crafted_ids=set(source_permanent.get("crafted_with_ids") or []);candidates=[candidate for candidate in caster["exile"] if candidate["instance_id"] in crafted_ids]
         if not candidates:_log(state,f"{source_permanent['name']} had no crafted card remaining in exile to choose.");return
@@ -4869,7 +4886,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
         trigger_text=re.sub(r"\bU\.S\.S\.\s+","USS ",text,flags=re.IGNORECASE);raw_clauses = re.split(r"(?<=[.!])\s+|\n", trigger_text);clauses=[]
         for clause in raw_clauses:
             modal_continuation=bool(clauses and (clause.strip().startswith(("•","-")) or clauses[-1].lstrip().startswith(("•","-")) or re.search(r"\n[•-]\s",clauses[-1]) and not re.match(r"(?:when(?:ever)?\b|at the beginning\b|[+−-]?\d+\s*:|\{[^}]+\}[^:]*:)",clause.strip(),re.IGNORECASE)))
-            top_card_continuation=bool(clauses and (re.match(r"then\b",clause.strip(),re.IGNORECASE) or (re.match(r"(?:when(?:ever)?|at the beginning)\b",clauses[-1].strip(),re.IGNORECASE) and re.match(r"create\b",clause.strip(),re.IGNORECASE)) or re.match(r"put a charge counter on this spacecraft",clause.strip(),re.IGNORECASE) or ("look at the top card of your library" in clauses[-1].casefold() and re.match(r"if (?:it(?:'s| is) a (?:creature|land) card|you don.t put the card into your hand|you don.t put the card onto the battlefield)",clause.strip(),re.IGNORECASE)) or ("each opponent sacrifices" in clauses[-1].casefold() and re.match(r"each opponent who can.t discards a card",clause.strip(),re.IGNORECASE)) or ("each opponent discards" in clauses[-1].casefold() and re.match(r"each opponent who can't loses? \d+ life",clause.strip(),re.IGNORECASE))))
+            top_card_continuation=bool(clauses and (re.match(r"(?:then|when you do)\b",clause.strip(),re.IGNORECASE) or (re.match(r"(?:when(?:ever)?|at the beginning)\b",clauses[-1].strip(),re.IGNORECASE) and re.match(r"create\b",clause.strip(),re.IGNORECASE)) or re.match(r"put a charge counter on this spacecraft",clause.strip(),re.IGNORECASE) or ("look at the top card of your library" in clauses[-1].casefold() and re.match(r"if (?:it(?:'s| is) a (?:creature|land) card|you don.t put the card into your hand|you don.t put the card onto the battlefield)",clause.strip(),re.IGNORECASE)) or ("each opponent sacrifices" in clauses[-1].casefold() and re.match(r"each opponent who can.t discards a card",clause.strip(),re.IGNORECASE)) or ("each opponent discards" in clauses[-1].casefold() and re.match(r"each opponent who can't loses? \d+ life",clause.strip(),re.IGNORECASE))))
             continuation=bool(clauses and (modal_continuation or top_card_continuation or re.match(r"after this phase, there (?:is|'s) an additional combat phase",clause.strip(),re.IGNORECASE) or ("additional combat phase after this phase" in clauses[-1].casefold() and re.match(r"at the beginning of that combat",clause.strip(),re.IGNORECASE)) or ("target" in clauses[-1].casefold() and re.match(r"it gains? [^.]+ until end of turn",clause.strip(),re.IGNORECASE)) or re.match(r"(?:then if|if you do|if you didn't|if you did not|if you have the city's blessing|otherwise),?\b",clause.strip(),re.IGNORECASE) or re.match(r"if you control (?:one|two|three|four|five|six|seven|eight|nine|ten|\d+) or more lands",clause.strip(),re.IGNORECASE) or re.match(r"if that land is (?:a |an )?[a-z]+,",clause.strip(),re.IGNORECASE) or re.match(r"if (?:this is|it(?:'s| is)) the (?:first|second|third|fourth) time(?: this ability has resolved)?(?: this turn)?,",clause.strip(),re.IGNORECASE) or ("target opponent reveals their hand" in clauses[-1].casefold() and re.match(r"you choose an instant or sorcery card from it",clause.strip(),re.IGNORECASE)) or ("you choose an instant or sorcery card from it" in clauses[-1].casefold() and re.match(r"that player discards that card",clause.strip(),re.IGNORECASE)) or ("create " in clauses[-1].casefold() and " creature token" in clauses[-1].casefold() and re.match(r"(?:that token attacks this combat if able|sacrifice that token at end of combat|exile (?:that|those) tokens? at the beginning of the next end step)",clause.strip(),re.IGNORECASE)) or ("exile the top card of your library" in clauses[-1].casefold() and re.match(r"you may play that card this turn",clause.strip(),re.IGNORECASE)) or ("exile cards from the top of your library until you exile a nonland card" in clauses[-1].casefold() and re.match(r"you may cast that card this turn",clause.strip(),re.IGNORECASE)) or ("create x 1/1 red elemental creature tokens" in clauses[-1].casefold() and re.match(r"at the beginning of the next end step, exile those tokens",clause.strip(),re.IGNORECASE)) or ("reveal the top card of your library and put that card into your hand" in clauses[-1].casefold() and re.match(r"each opponent loses x life\b",clause.strip(),re.IGNORECASE))))
             if continuation:
                 separator="\n" if modal_continuation else " ";clauses[-1]=f"{clauses[-1]}{separator}{clause.strip()}"
@@ -5210,10 +5227,10 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 elif fight_steps:
                     if all(step["targets"] for step in fight_steps):state.setdefault("pending_trigger_targets",[]).append({"controller_id":owner["id"],"source_name":source["name"],"trigger":trigger,"card":ability_card,"target_steps":fight_steps});state["priority_player_id"]=state["pending_trigger_targets"][0]["controller_id"]
                     else:_log(state,f"{source['name']}'s fight trigger had no legal targets and was removed.")
-                elif _target_kind(ability_card):
+                elif _target_kind(ability_card) and "when you do" not in (ability_card.get("oracle_text") or effect).casefold():
                     if targets:state.setdefault("pending_trigger_targets",[]).append({"controller_id":owner["id"],"source_name":source["name"],"trigger":trigger,"card":ability_card,"optional":re.match(r"(?:otherwise,\s*)?you may\b",effect,re.IGNORECASE) is not None or "up to one target" in effect.casefold(),**({"targets_override":targets} if special_targets is not None else {})});state["priority_player_id"]=state["pending_trigger_targets"][0]["controller_id"]
                     else:_log(state,f"{source['name']}'s trigger had no legal target and was removed.")
-                elif re.match(r"(?:otherwise,\s*)?you may\b",effect,re.IGNORECASE):state.setdefault("pending_trigger_targets",[]).append({"controller_id":owner["id"],"source_name":source["name"],"trigger":trigger,"card":ability_card,"optional":True});state["priority_player_id"]=state["pending_trigger_targets"][0]["controller_id"]
+                elif re.match(r"(?:otherwise,\s*)?you may\b",effect,re.IGNORECASE):state.setdefault("pending_trigger_targets",[]).append({"controller_id":owner["id"],"source_name":source["name"],"trigger":trigger,"card":ability_card,"optional":True,"defer_targets":"when you do" in (ability_card.get("oracle_text") or "").casefold()});state["priority_player_id"]=state["pending_trigger_targets"][0]["controller_id"]
                 else:state["stack"].append(trigger)
                 _log(state, f"{source['name']} triggered: {effect}")
 
@@ -5639,6 +5656,19 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         permanent=next((card for card in player["battlefield"] if card["instance_id"]==pending["card_id"]),None)
         if not permanent:raise RuleViolation("That permanent is no longer on the battlefield")
         permanent["chosen_creature_type"]=choice.title();pending_list.pop(0);state["pending_creature_type"]=pending_list;_sync_city_blessing(state);state["priority_player_id"]=pending_list[0]["player_id"] if pending_list else state["active_player_id"];_log(state,f"{player['name']} chose {permanent['chosen_creature_type']} for {permanent['name']}.")
+    elif action_type=="choose_blunderbuss_sacrifice":
+        pending=state.get("pending_blunderbuss") or {};choice_id=action.get("card_id");artifact=next((card for card in player["battlefield"] if card["instance_id"]==choice_id),None)
+        if pending.get("stage")!="sacrifice" or pending.get("player_id")!=player_id or choice_id not in set(pending.get("card_ids",[])) or not artifact or "Artifact" not in artifact.get("type_line","") or artifact["instance_id"]==pending.get("equipment_id"):raise RuleViolation("Choose a legal artifact other than Dire Blunderbuss")
+        _sacrifice_permanents(state,player,[artifact]);pending["stage"]="target";pending.pop("card_ids",None);state["priority_player_id"]=player_id;_log(state,f"{player['name']} sacrificed {artifact['name']} to Dire Blunderbuss and must choose its damage target.")
+    elif action_type in {"choose_blunderbuss_target","finish_blunderbuss"}:
+        pending=state.get("pending_blunderbuss") or {}
+        if pending.get("stage")!="target" or pending.get("player_id")!=player_id:raise RuleViolation("There is no Dire Blunderbuss target choice for this player")
+        source=next((card for card in player["battlefield"] if card["instance_id"]==pending.get("source_id")),None);target=next((card for owner in state["players"] for card in owner["battlefield"] if card["instance_id"]==action.get("target_id") and "Creature" in card.get("type_line","") and not _has_keyword(card,"Shroud")),None)
+        state["pending_blunderbuss"]=None
+        if action_type=="finish_blunderbuss":state["priority_player_id"]=state["active_player_id"];_log(state,"Dire Blunderbuss had no legal damage target after the sacrifice.")
+        else:
+            if not target:raise RuleViolation("Choose a legal creature for Dire Blunderbuss")
+            snapshot=deepcopy(source) if source else {};power=_parse_stats(source,state)[0] if source else 0;ability={"name":"Dire Blunderbuss reflexive trigger","oracle_text":"This creature deals damage equal to its power to target creature.","type_line":"Ability","mana_cost":""};state["stack"].append({"id":_id(),"kind":"trigger","card":ability,"controller_id":player_id,"target_id":target["instance_id"],"source_id":pending.get("source_id"),"source_power":power,"source_snapshot":snapshot});state["consecutive_passes"]=0;state["pending_phase_advance"]=False;state["priority_player_id"]=opponent(state,player_id)["id"] if _multiplayer(state) else state["active_player_id"];_log(state,f"Dire Blunderbuss's reflexive trigger targeted {target['name']}.")
     elif action_type=="choose_grim_sacrifice":
         pending=state.get("pending_grim_captain") or {};choice_id=action.get("card_id");permanent=next((card for card in player["battlefield"] if card["instance_id"]==choice_id),None)
         if pending.get("stage")!="sacrifice" or pending.get("player_id")!=player_id or choice_id not in set(pending.get("card_ids",[])) or not permanent or "Land" in permanent.get("type_line",""):raise RuleViolation("Choose a legal nonland permanent for The Grim Captain")
@@ -6435,7 +6465,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
     elif action_type in {"choose_trigger_mode","choose_trigger_target","choose_trigger_targets","accept_trigger","skip_trigger"}:
         pending_list=state.get("pending_trigger_targets") or []
         if not pending_list or pending_list[0]["controller_id"]!=player_id:raise RuleViolation("There is no triggered target decision for this player")
-        pending=pending_list.pop(0);targets=_targets(state,player_id,pending["card"]);target_id=action.get("target_id")
+        pending=pending_list.pop(0);targets=[] if pending.get("defer_targets") else _targets(state,player_id,pending["card"]);target_id=action.get("target_id")
         if action_type=="choose_trigger_mode":
             mode_index=action.get("mode_index");options={option["index"]:option for option in pending.get("mode_options",[])}
             if mode_index not in options:raise RuleViolation("Choose a legal mode for the triggered ability")
@@ -6454,6 +6484,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
             trigger=pending["trigger"];trigger["target_id"]=target_id;state["stack"].append(trigger);_log(state,f"{player['name']} chose {next(target['name'] for target in targets if target['id']==target_id)} for {pending['source_name']}'s trigger.")
         elif action_type=="accept_trigger":
             if not pending.get("optional") or targets:raise RuleViolation("That trigger does not use a simple accept choice")
+            if pending.get("defer_targets"):pending["trigger"]["allow_zero_targets"]=True
             state["stack"].append(pending["trigger"]);_log(state,f"{player['name']} accepted {pending['source_name']}'s optional trigger.")
         elif targets and not pending.get("optional"):raise RuleViolation("This triggered ability still has legal targets")
         state["pending_trigger_targets"]=pending_list;state["priority_player_id"]=pending_list[0]["controller_id"] if pending_list else state["active_player_id"]
