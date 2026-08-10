@@ -3175,6 +3175,7 @@ def _resolve_spell(state: dict) -> None:
     is_permanent_spell = item.get("kind", "spell") in {"spell","storm_copy"} and any(kind in card.get("type_line", "") for kind in ("Creature", "Artifact", "Enchantment", "Planeswalker", "Battle"))
     effect_text = "" if is_permanent_spell and re.search(r"\b(?:when|whenever|at the beginning)\b", text) else text
     if "damage can't be prevented this turn" in effect_text:state["damage_cant_be_prevented_until_turn"]=state["turn"]
+    token_rules_text=effect_text;effect_text=re.sub(r"(tokens? with\s+)[\"“][^\"”]*[\"”]",r"\1",effect_text,flags=re.IGNORECASE|re.DOTALL)
     counter_distribution=re.search(r"distribute (\d+|two|three|four) \+1/\+1 counters among (?:any number of|one or two) target creatures(?: you control)?",effect_text)
     divided_damage=re.search(r"deals (\d+) damage divided as you choose among any number of targets",effect_text)
     if counter_distribution and not flytrap_distribution:
@@ -4047,7 +4048,7 @@ def _resolve_spell(state: dict) -> None:
         descriptor=token_match.group(5).strip();color_names={"white":"W","blue":"U","black":"B","red":"R","green":"G"};colors=[symbol for name,symbol in color_names.items() if re.search(rf"\b{name}\b",descriptor)]
         artifact_token=re.search(r"\bartifact\b",descriptor,re.IGNORECASE) is not None;subtype=re.sub(r"\b(?:white|blue|black|red|green|colorless|artifact|and)\b"," ",descriptor).strip();subtype=re.sub(r"\s+"," ",subtype) or "Creature"
         keywords=[keyword.title() for keyword in ("changeling","defender","flying","first strike","double strike","deathtouch","haste","lifelink","menace","reach","trample","vigilance") if re.search(rf"\b{keyword}\b",effect_text)]
-        named=re.search(r"creature token named ([a-z][a-z '-]+?)(?:\s+with\b|\.|$)",effect_text,re.IGNORECASE);quoted=re.search(r'creature token[^.]*?"(.+?)"',effect_text,re.IGNORECASE)
+        named=re.search(r"creature token named ([a-z][a-z '-]+?)(?:\s+with\b|\.|$)",effect_text,re.IGNORECASE);quoted=re.search(r'creature token[^.]*?["“](.+?)["”]',token_rules_text,re.IGNORECASE)
         delayed_exile_group=_id() if re.search(r"exile (?:that|those) tokens? at the beginning of the next end step",effect_text) else None;end_combat_sacrifice=bool(re.search(r"sacrifice that token at end of combat",effect_text))
         for _ in range(amount):
             token={"instance_id":_id(),"scryfall_id":"token","name":named.group(1).strip().title() if named else f"{subtype.title()} Token","image_url":None,"type_line":f"Token {'Artifact ' if artifact_token else ''}Creature — {subtype.title()}","oracle_text":quoted.group(1) if quoted else ("Changeling" if "Changeling" in keywords else ""),"mana_cost":"","mana_value":0,"colors":colors,"power":token_match.group(3),"toughness":token_match.group(4),"owner_id":caster["id"],"controller_id":caster["id"],"tapped":tapped,"damage":0,"counters":{},"summoning_sick":True,"token":True,"keywords":keywords};created.append(token)
