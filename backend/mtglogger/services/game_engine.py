@@ -2423,6 +2423,10 @@ def _resolve_spell(state: dict) -> None:
     text = (rules_card.get("oracle_text") or "").casefold()
     is_permanent_spell = item.get("kind", "spell") in {"spell","storm_copy"} and any(kind in card.get("type_line", "") for kind in ("Creature", "Artifact", "Enchantment", "Planeswalker", "Battle"))
     effect_text = "" if is_permanent_spell and re.search(r"\b(?:when|whenever|at the beginning)\b", text) else text
+    if item.get("kind")=="trigger" and re.search(r"\b(?:first|second|third|fourth) time(?: this ability has resolved)? this turn\b",effect_text):
+        usage=state.setdefault("trigger_resolution_usage",{});key=f"{item.get('source_id')}:{card.get('oracle_text','')}";record=usage.get(key,{})
+        count=(record.get("count",0)+1) if record.get("turn")==state.get("turn") else 1
+        usage[key]={"turn":state.get("turn"),"count":count};effect_text=_resolution_order_effect(effect_text,count)
     other = opponent(state, caster["id"])
     target_player = next((player for player in state["players"] if player["id"] == target_id), None)
     target_owner = next((player for player in state["players"] if any(permanent["instance_id"] == target_id for permanent in player["battlefield"])), None)
@@ -3003,6 +3007,27 @@ def _remove_counters(target:dict,name:str,amount:int)->int:
     return removed
 
 
+def _resolution_order_effect(text:str,count:int)->str:
+    """Select clauses gated by how many times a triggered ability resolved this turn."""
+    selected=[]
+    ordinals={"first":1,"second":2,"third":3,"fourth":4}
+    for sentence in re.split(r"(?<=[.!])\s+",text.strip()):
+        sentence=sentence.strip()
+        prefix=re.match(r"(?:then )?if (?:this is|it(?:'s| is)) the (first|second|third|fourth) time(?: this ability has resolved)?(?: this turn)?,\s*(.+)",sentence,re.IGNORECASE)
+        if prefix:
+            if count==ordinals[prefix.group(1).casefold()]:
+                body=prefix.group(2)
+                if body.casefold().endswith(" instead."):selected=[];body=re.sub(r"\s+instead(?=\.$)","",body,flags=re.IGNORECASE)
+                selected.append(body)
+            continue
+        postfix=re.match(r"(.+?)\s+if this is the (first|second|third|fourth) time this ability has resolved this turn\.(.*)",sentence,re.IGNORECASE)
+        if postfix:
+            if count==ordinals[postfix.group(2).casefold()]:selected.append(f"{postfix.group(1)}.{postfix.group(3)}".strip())
+            continue
+        selected.append(sentence)
+    return " ".join(selected)
+
+
 def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owner: dict, dedupe:set[str]|None=None, sources_override:list[tuple[dict,dict]]|None=None) -> None:
     if event in {"earthbend","waterbend","firebend","airbend"}:
         event_owner["bent_this_turn"]=sorted(set(event_owner.get("bent_this_turn",[]))|{event})
@@ -3018,7 +3043,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
         text = "\n".join([source.get("oracle_text") or "",*(source.get("temporary_backup_rules") or [])])
         raw_clauses = re.split(r"(?<=[.!])\s+|\n", text);clauses=[]
         for clause in raw_clauses:
-            continuation=bool(clauses and (re.match(r"(?:then if|if you do|if you have the city's blessing),?\b",clause.strip(),re.IGNORECASE) or ("create x 1/1 red elemental creature tokens" in clauses[-1].casefold() and re.match(r"at the beginning of the next end step, exile those tokens",clause.strip(),re.IGNORECASE)) or ("reveal the top card of your library and put that card into your hand" in clauses[-1].casefold() and re.match(r"each opponent loses x life\b",clause.strip(),re.IGNORECASE))))
+            continuation=bool(clauses and (re.match(r"(?:then if|if you do|if you have the city's blessing),?\b",clause.strip(),re.IGNORECASE) or re.match(r"if (?:this is|it(?:'s| is)) the (?:first|second|third|fourth) time(?: this ability has resolved)?(?: this turn)?,",clause.strip(),re.IGNORECASE) or ("create x 1/1 red elemental creature tokens" in clauses[-1].casefold() and re.match(r"at the beginning of the next end step, exile those tokens",clause.strip(),re.IGNORECASE)) or ("reveal the top card of your library and put that card into your hand" in clauses[-1].casefold() and re.match(r"each opponent loses x life\b",clause.strip(),re.IGNORECASE))))
             if continuation:clauses[-1]=f"{clauses[-1]} {clause.strip()}"
             else:clauses.append(clause)
         for clause in clauses:

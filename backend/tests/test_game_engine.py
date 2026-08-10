@@ -1,7 +1,7 @@
 import pytest
 
 from mtglogger.services.game_bot import _choose_blocks, choose_bot_action, run_bot
-from mtglogger.services.game_engine import RuleViolation, _add_counters, _add_saga_lore, _amass, _begin_next_turn, _can_block_pair, _change_control, _combat_damage, _connive, _counter_stack_item, _enter_battlefield, _explore, _face_down_ability, _has_keyword, _leave_battlefield, _leave_graveyard, _merge_mutate, _parse_stats, _put_into_exile, _queue_triggers, _set_day_night, _set_tapped, _venture_undercity, _ward_details, legal_actions, new_game, perform_action, public_state
+from mtglogger.services.game_engine import RuleViolation, _add_counters, _add_saga_lore, _amass, _begin_next_turn, _can_block_pair, _change_control, _combat_damage, _connive, _counter_stack_item, _enter_battlefield, _explore, _face_down_ability, _has_keyword, _leave_battlefield, _leave_graveyard, _merge_mutate, _parse_stats, _put_into_exile, _queue_triggers, _resolution_order_effect, _set_day_night, _set_tapped, _venture_undercity, _ward_details, legal_actions, new_game, perform_action, public_state
 
 
 def card(index:int,name:str,type_line:str,mana_cost:str="",power:str|None=None,toughness:str|None=None,quantity:int=1):
@@ -1196,6 +1196,28 @@ def test_landfall_cast_and_end_step_triggers_use_the_stack():
     state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");assert len(player["hand"])==before
     state=perform_action(state,"player",{"type":"resolve"});state["phase"]="postcombat_main";state=perform_action(state,"player",{"type":"advance_phase"});assert state["phase"]=="ending" and state["stack"][-1]["card"]["name"]=="Dusk Reveler trigger"
     state=perform_action(state,"player",{"type":"resolve"});assert next(p for p in state["players"] if p["id"]=="player")["life"]==starting_life+3
+
+
+def test_landfall_resolution_order_applies_conditional_effect_only_at_stated_time():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
+    tannuk={**card(825,"Tannuk, Memorial Ensign","Creature — Human Soldier","","2","2"),"oracle_text":"Landfall — Whenever a land you control enters, Tannuk deals 1 damage to each opponent. If this is the second time this ability has resolved this turn, draw a card.","instance_id":"tannuk","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    player["battlefield"].append(tannuk);life=bot["life"];cards=len(player["hand"]);library=len(player["library"])
+    for index in range(3):
+        land={**card(826+index,f"Land {index}","Basic Land — Forest"),"instance_id":f"landfall-{index}","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+        _enter_battlefield(state,player,[land],"hand");state=perform_action(state,"player",{"type":"resolve"})
+        player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
+        assert bot["life"]==life-index-1
+        assert len(player["hand"])==cards+(1 if index>=1 else 0)
+    assert len(player["library"])==library-1
+
+
+def test_landfall_resolution_order_selects_omnath_and_instead_clauses():
+    omnath="You gain 4 life if this is the first time this ability has resolved this turn. If it's the second time, add {R}{G}{W}{U}. If it's the third time, Omnath deals 4 damage to each opponent."
+    assert _resolution_order_effect(omnath,1)=="You gain 4 life."
+    assert _resolution_order_effect(omnath,2)=="add {R}{G}{W}{U}."
+    assert _resolution_order_effect(omnath,3)=="Omnath deals 4 damage to each opponent."
+    scythe="Put a +1/+1 counter on target creature you control. If this is the second time this ability has resolved this turn, double the number of +1/+1 counters on that creature instead."
+    assert _resolution_order_effect(scythe,2)=="double the number of +1/+1 counters on that creature."
 
 
 def test_attack_triggers_count_attackers_once_or_individually_and_choose_targets():
