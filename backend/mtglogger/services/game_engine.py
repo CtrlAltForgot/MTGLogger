@@ -673,6 +673,53 @@ def _can_block_pair(state:dict,attacker:dict,blocker:dict)->bool:
     return (not _has_keyword(attacker,"Flying") or _has_keyword(blocker,"Flying") or _has_keyword(blocker,"Reach")) and not _protected_from(attacker,blocker)
 
 
+def _keyword_instances(state:dict,card:dict,keyword:str)->list[int]:
+    values=[];pattern=rf"(?:^|[,;/—]\s*){re.escape(keyword)}(?:\s+(\d+))?\b"
+    for line in _effective_rules_text(state,card).splitlines():
+        rules=line.split("(",1)[0]
+        values.extend(int(match.group(1) or 1) for match in re.finditer(pattern,rules,re.IGNORECASE))
+    if not values and _has_keyword(card,keyword):values=[1]
+    return values
+
+
+def _granted_exalted_count(state:dict,controller:dict)->int:
+    count=0
+    for source in controller["battlefield"]:
+        text=(source.get("oracle_text") or "").casefold()
+        if "other creatures you control have exalted" in text:count+=sum("Creature" in card.get("type_line","") and card is not source for card in controller["battlefield"])
+        if "other vampires you control have exalted" in text:count+=sum(card is not source and re.search(r"\bVampire\b",card.get("type_line",""),re.IGNORECASE) is not None for card in controller["battlefield"])
+    return count
+
+
+def _granted_flanking_count(state:dict,attacker:dict,controller:dict)->int:
+    if not _keyword_instances(state,attacker,"Flanking"):return 0
+    return sum(source is not attacker and "other creatures you control with flanking have flanking" in (source.get("oracle_text") or "").casefold() for source in controller["battlefield"])
+
+
+def _queue_combat_stat_trigger(state:dict,controller_id:str,source:dict,target:dict,keyword:str,power:int,toughness:int)->None:
+    ability={"name":f"{source['name']} — {keyword}","oracle_text":f"{target['name']} gets {power:+d}/{toughness:+d} until end of turn.","type_line":"Ability","mana_cost":""};state["stack"].append({"id":_id(),"kind":"combat_stat_trigger","card":ability,"controller_id":controller_id,"source_id":source["instance_id"],"target_id":target["instance_id"],"power_change":power,"toughness_change":toughness,"keyword":keyword});_log(state,f"{source['name']}'s {keyword} ability triggered for {target['name']}.")
+
+
+def _queue_exalted_triggers(state:dict,controller:dict,attacker:dict)->None:
+    for source in controller["battlefield"]:
+        for _ in _keyword_instances(state,source,"Exalted"):_queue_combat_stat_trigger(state,controller["id"],source,attacker,"exalted",1,1)
+    for _ in range(_granted_exalted_count(state,controller)):_queue_combat_stat_trigger(state,controller["id"],attacker,attacker,"granted exalted",1,1)
+
+
+def _queue_block_keyword_triggers(state:dict,attacker_controller:dict,defender:dict)->None:
+    battlefield={card["instance_id"]:card for owner in state["players"] for card in owner["battlefield"]};blocks=state["combat"].get("blocks",{});bushido_attackers=set()
+    for blocker_id,attacker_id in blocks.items():
+        attacker= battlefield.get(attacker_id);blocker=battlefield.get(blocker_id)
+        if not attacker or not blocker:continue
+        if attacker_id not in bushido_attackers:
+            for amount in _keyword_instances(state,attacker,"Bushido"):_queue_combat_stat_trigger(state,attacker_controller["id"],attacker,attacker,"bushido",amount,amount)
+            bushido_attackers.add(attacker_id)
+        for amount in _keyword_instances(state,blocker,"Bushido"):_queue_combat_stat_trigger(state,defender["id"],blocker,blocker,"bushido",amount,amount)
+        if not _keyword_instances(state,blocker,"Flanking"):
+            count=len(_keyword_instances(state,attacker,"Flanking"))+_granted_flanking_count(state,attacker,attacker_controller)
+            for _ in range(count):_queue_combat_stat_trigger(state,attacker_controller["id"],attacker,blocker,"flanking",-1,-1)
+
+
 def _toxic_value(card: dict) -> int:
     match=re.search(r"\btoxic (\d+)\b",card.get("oracle_text") or "",re.IGNORECASE)
     return int(match.group(1)) if match else 0
@@ -1995,6 +2042,10 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
 def _resolve_spell(state: dict) -> None:
     item = state["stack"].pop()
     card, caster = item["card"], _player(state, item["controller_id"])
+    if item.get("kind")=="combat_stat_trigger":
+        target=next((permanent for owner in state["players"] for permanent in owner["battlefield"] if permanent["instance_id"]==item.get("target_id")),None)
+        if not target:_log(state,f"{card['name']} resolved, but its creature was no longer on the battlefield.");return
+        target["temporary_power"]=target.get("temporary_power",0)+int(item.get("power_change") or 0);target["temporary_toughness"]=target.get("temporary_toughness",0)+int(item.get("toughness_change") or 0);_log(state,f"{item.get('keyword','combat')} changed {target['name']} by {int(item.get('power_change') or 0):+d}/{int(item.get('toughness_change') or 0):+d} until end of turn.");return
     if item.get("kind")=="evoke_sacrifice":
         permanent=next((permanent for owner in state["players"] for permanent in owner["battlefield"] if permanent["instance_id"]==item.get("source_id") and permanent.get("evoked")),None)
         if permanent:
@@ -2650,6 +2701,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
         for clause in clauses:
             lower = clause.casefold(); matches = False
             if event=="cast" and re.match(r"^storm\s*\(",lower):continue
+            if event in {"attackers_declared","blockers_declared"} and re.match(r"^(?:bushido(?:\s+\d+)?|flanking|exalted)\s*\(",lower):continue
             if event=="enters" and re.match(r"^backup\b",lower):continue
             if event=="upkeep" and re.match(r"^cumulative upkeep\b",lower):continue
             trigger_count = 1
@@ -3589,6 +3641,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         state["combat"]["attackers"] = list(requested);state["combat"]["attackers_declared"]=True
         state["combat"]["attack_targets"]={attacker_id:requested_targets.get(attacker_id,default_target) for attacker_id in requested}
         _set_tapped(state,[card for card in player["battlefield"] if card["instance_id"] in requested and not _has_keyword(card,"Vigilance")],True,player_id,"attack")
+        if len(requested)==1:_queue_exalted_triggers(state,player,next(card for card in player["battlefield"] if card["instance_id"] in requested))
         _queue_triggers(state,"attackers_declared",None,player)
         if not state.get("pending_trigger_targets"):state["priority_player_id"] = opponent(state, player_id)["id"]
         _log(state, f"{player['name']} attacked with {len(requested)} creature(s).")
@@ -3605,6 +3658,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         state["combat"]["blocks"] = blocks;groups={attacker_id:[blocker_id for blocker_id,target_id in blocks.items() if target_id==attacker_id] for attacker_id in state["combat"]["attackers"]};groups={attacker_id:blocker_ids for attacker_id,blocker_ids in groups.items() if len(blocker_ids)>1}
         if groups:state["pending_damage_order"]={"player_id":state["active_player_id"],"groups":groups};state["combat"]["block_triggers_pending"]=True;state["priority_player_id"]=state["active_player_id"]
         else:
+            _queue_block_keyword_triggers(state,attacking_owner,player)
             _queue_triggers(state,"blockers_declared",None,player);state["combat"]["damage_pending"]=True
             if not state.get("pending_trigger_targets"):state["priority_player_id"] = state["active_player_id"]
             _log(state,"Blockers were finalized. Players may respond before combat damage.")
@@ -3612,7 +3666,8 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         pending=state.get("pending_damage_order") or {};orders=action.get("block_orders") or {};expected=pending.get("groups",{})
         if pending.get("player_id")!=player_id or set(orders)!=set(expected) or any(len(order)!=len(expected[attacker_id]) or len(set(order))!=len(order) or set(order)!=set(expected[attacker_id]) for attacker_id,order in orders.items()):raise RuleViolation("Order every creature blocking each attacker exactly once")
         state["combat"]["block_orders"]=orders;state["pending_damage_order"]=None;state["combat"]["damage_pending"]=True
-        if state["combat"].pop("block_triggers_pending",False):_queue_triggers(state,"blockers_declared",None,opponent(state,state["active_player_id"]))
+        if state["combat"].pop("block_triggers_pending",False):
+            defender=opponent(state,state["active_player_id"]);_queue_block_keyword_triggers(state,_player(state,state["active_player_id"]),defender);_queue_triggers(state,"blockers_declared",None,defender)
         if not state.get("pending_trigger_targets"):state["priority_player_id"]=state["active_player_id"]
         _log(state,"Damage order was chosen. Players may respond before combat damage.")
     elif action_type == "resolve_combat_damage":
