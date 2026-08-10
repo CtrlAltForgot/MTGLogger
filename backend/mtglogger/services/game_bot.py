@@ -215,6 +215,8 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
     if "take_top_card" in by_type or "mill_top_card" in by_type or "keep_top_card" in by_type:
         if "take_top_card" in by_type:return by_type["take_top_card"][0]
         return by_type["keep_top_card"][0] if difficulty=="beginner" else by_type.get("mill_top_card",by_type["keep_top_card"])[0]
+    if "choose_revealed_discard" in by_type:
+        return max(by_type["choose_revealed_discard"],key=lambda action:float((action.get("card") or {}).get("mana_value") or 0))
     if "accept_rad_counters" in by_type or "decline_rad_counters" in by_type:return by_type["decline_rad_counters"][0]
     if "pay_cumulative_upkeep" in by_type or "sacrifice_cumulative_upkeep" in by_type:
         if "pay_cumulative_upkeep" not in by_type or difficulty=="beginner" and random.random()<.2:return by_type["sacrifice_cumulative_upkeep"][0]

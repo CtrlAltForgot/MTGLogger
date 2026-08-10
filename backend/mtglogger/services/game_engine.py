@@ -207,6 +207,8 @@ def _sync_city_blessing(state:dict)->None:
                         for keyword in ("haste","first strike","double strike","deathtouch","lifelink","menace","trample","vigilance"):
                             global_keyword=re.search(rf"\b(other )?(?:[a-z]+ )?creatures you control have {re.escape(keyword)}\b",text)
                             if global_keyword and (not global_keyword.group(1) or source.get("instance_id")!=card.get("instance_id")):granted.append(keyword.title())
+                            subtype_keyword=re.search(rf"\b(other )?([a-z]+)s you control have {re.escape(keyword)}\b",text)
+                            if subtype_keyword and re.search(rf"\b{re.escape(subtype_keyword.group(2))}s?\b",card_types) and (not subtype_keyword.group(1) or source.get("instance_id")!=card.get("instance_id")):granted.append(keyword.title())
                     if source.get("controller_id",source_owner["id"])==controller_id and "land" in card_types and "creature" in card_types:
                         for keyword in ("trample","vigilance"):
                             if f"land creatures you control have {keyword}" in text:granted.append(keyword.title())
@@ -1414,6 +1416,10 @@ def _queue_storm_trigger(state:dict,player:dict,card:dict,stack_item:dict)->None
     state["stack"].append({"id":_id(),"kind":"storm_trigger","card":ability,"controller_id":player["id"],"target_id":None,"source_id":card["instance_id"],"storm_count":count,"copy_item":deepcopy(stack_item)});_log(state,f"{card['name']}'s storm ability triggered with storm count {count}.")
 
 
+def _copy_stack_item(state:dict,caster:dict,original:dict)->dict:
+    copied=deepcopy(original);copied["id"]=_id();copied["kind"]="storm_copy";copied_card=deepcopy(copied["card"]);copied_card["instance_id"]=_id();copied["card"]=copied_card;copied["controller_id"]=caster["id"];state["stack"].append(copied);_queue_triggers(state,"copy",copied_card,caster);return copied
+
+
 _FACE_DOWN_KEYS=("name","image_url","type_line","oracle_text","mana_cost","mana_value","power","toughness","loyalty","keywords","colors")
 
 
@@ -1609,6 +1615,8 @@ def public_state(state: dict, viewer_id: str = "player") -> dict:
     if pending_search and pending_search.get("player_id")!=viewer_id:pending_search["card_ids"]=[]
     pending_top=visible.get("pending_top_card_choice")
     if pending_top and pending_top.get("player_id")!=viewer_id:pending_top.pop("card",None)
+    pending_revealed=visible.get("pending_revealed_discard")
+    if pending_revealed and pending_revealed.get("player_id")!=viewer_id:pending_revealed["cards"]=[]
     pending_dungeon=visible.get("pending_dungeon")
     if pending_dungeon and pending_dungeon.get("player_id")!=viewer_id:
         pending_dungeon.pop("cards",None);pending_dungeon["card_ids"]=[];pending_dungeon.pop("top_ids",None)
@@ -1627,6 +1635,7 @@ def _target_kind(card: dict) -> str | None:
     if re.search(r"counter target (?:spell or (?:activated or triggered )?ability|spell or ability)",text):return "stack"
     if re.search(r"counter target (?:activated or triggered|activated|triggered) ability",text):return "ability"
     if "counter target spell" in text:return "spell"
+    if "copy target spell" in text:return "spell"
     if re.search(r"\bairbend (?:up to one )?target creature or spell\b",text):return "creature_or_spell"
     if re.search(r"\bairbend (?:up to one )?target spell\b",text):return "spell"
     if re.search(r"\bairbend (?:up to one )?target creature\b",text):return "creature"
@@ -1644,6 +1653,7 @@ def _target_kind(card: dict) -> str | None:
     if re.search(r"target player mills?", text): return "player"
     if re.search(r"target player sacrifices?",text):return "player"
     if re.search(r"target player discards?",text):return "player"
+    if "target opponent reveals their hand" in text:return "player"
     if re.search(r"deals? (?:\d+|x)?\s*damage[^.]*to target player or planeswalker",text):return "player_or_planeswalker"
     if re.search(r"deals? damage equal to (?:its|his|her) power to target creature",text):return "creature"
     if re.search(r"(?:target player gains?|target player loses|goad each creature target player controls)",text):return "player"
@@ -1701,7 +1711,8 @@ def _targets(state: dict, caster_id: str, card: dict, ignore_target_protection:b
     if kind in {"spell","ability","stack"}:
         def allowed(item:dict)->bool:
             is_spell=item.get("kind","spell")=="spell"
-            return kind=="stack" or (kind=="spell" and is_spell) or (kind=="ability" and not is_spell)
+            controlled_copy="copy target spell you control" in text
+            return (kind=="stack" or (kind=="spell" and is_spell) or (kind=="ability" and not is_spell)) and (not controlled_copy or item.get("controller_id")==caster_id)
         return [{"id":item["id"],"name":item["card"]["name"],"kind":"spell" if item.get("kind","spell")=="spell" else "ability","controller_id":item["controller_id"]} for item in state["stack"] if allowed(item) and not ("you don't control" in text and item["controller_id"]==caster_id)]
     if kind == "creature_or_spell":
         targets=[{"id":item["id"],"name":item["card"]["name"],"kind":"spell","controller_id":item["controller_id"]} for item in state["stack"]]
@@ -1803,7 +1814,7 @@ def _pending_decision(state:dict)->bool:
     if state.get("pending_connive"):return True
     if state.get("pending_zethi_copies"):return True
     if state.get("pending_counter_payment"):return True
-    return bool(state.get("pending_rad_choice") or state.get("pending_top_card_choice") or state.get("pending_optional_payment") or state.get("pending_tilonalli") or state.get("pending_creature_type") or state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_populate") or state.get("pending_bolster") or state.get("pending_discovery") or state.get("pending_madness") or state.get("pending_rebound") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
+    return bool(state.get("pending_rad_choice") or state.get("pending_top_card_choice") or state.get("pending_revealed_discard") or state.get("pending_optional_payment") or state.get("pending_tilonalli") or state.get("pending_creature_type") or state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_populate") or state.get("pending_bolster") or state.get("pending_discovery") or state.get("pending_madness") or state.get("pending_rebound") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
 
 
 def _split_second_on_stack(state:dict)->bool:
@@ -1856,6 +1867,10 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
         if pending_top.get("allow_hand"):actions.append({"type":"take_top_card","label":f"Reveal and put {pending_top['card']['name']} into your hand",**common})
         if pending_top.get("allow_graveyard"):actions.append({"type":"mill_top_card","label":f"Put {pending_top['card']['name']} into your graveyard",**common})
         return actions+[{"type":"keep_top_card","label":"Leave it on top",**common},{"type":"concede"}]
+    pending_revealed=state.get("pending_revealed_discard")
+    if pending_revealed:
+        if pending_revealed["player_id"]!=player_id:return []
+        return [{"type":"choose_revealed_discard","card_id":card["instance_id"],"card":card,"source_name":pending_revealed["source_name"],"label":f"Choose {card['name']} for {pending_revealed['opponent_name']} to discard"} for card in pending_revealed["cards"]]+[{"type":"concede"}]
     pending_payment=state.get("pending_optional_payment")
     if pending_payment:
         if pending_payment["player_id"]!=player_id:return []
@@ -2104,6 +2119,7 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
     if active and main and not state["stack"]:
         if player["land_plays_remaining"]:
             actions.extend({"type": "play_land", "card_id": card["instance_id"]} for card in player["hand"] if "Land" in card.get("type_line", ""))
+            actions.extend({"type":"play_land","card_id":card["instance_id"],"source":"exile_permission"} for card in player["exile"] if "Land" in card.get("type_line","") and card.get("exile_play_until_turn")==state["turn"])
         if _can_pay(player,{"mana_cost":"{3}"}):
             for hand_card in player["hand"]:
                 face_down=_face_down_ability(hand_card)
@@ -2507,8 +2523,7 @@ def _resolve_spell(state: dict) -> None:
         _start_discovery(state,caster,int(item.get("cascade_value") or 0),"cascade",card["name"]);return
     if item.get("kind")=="storm_trigger":
         original=item.get("copy_item") or {};count=int(item.get("storm_count") or 0)
-        for _ in range(count):
-            copied=deepcopy(original);copied["id"]=_id();copied["kind"]="storm_copy";copied_card=deepcopy(copied["card"]);copied_card["instance_id"]=_id();copied["card"]=copied_card;state["stack"].append(copied);_queue_triggers(state,"copy",copied_card,caster)
+        for _ in range(count):_copy_stack_item(state,caster,original)
         _log(state,f"{card['name']} created {count} spell {'copy' if count==1 else 'copies'}.");return
     if item.get("kind")=="madness_trigger":
         candidate=next((candidate for candidate in caster["exile"] if candidate["instance_id"]==item.get("source_id")),None)
@@ -2593,6 +2608,10 @@ def _resolve_spell(state: dict) -> None:
     if times_kicked:effect_text=_multikicker_effect(effect_text,times_kicked)
     if caster.get("speed",0):effect_text=_speed_effect(effect_text,caster)
     if source_permanent and re.search(r"deals damage equal to (?:its|his|her) power",effect_text):effect_text=re.sub(r"deals damage equal to (?:its|his|her) power",f"deals {_parse_stats(source_permanent,state)[0]} damage",effect_text)
+    if "copy target spell you control" in effect_text:
+        original=next((stack_item for stack_item in state["stack"] if stack_item["id"]==target_id and stack_item.get("controller_id")==caster["id"] and stack_item.get("kind","spell")=="spell"),None)
+        if original:_copy_stack_item(state,caster,original);_log(state,f"{caster['name']} copied {original['card']['name']}.")
+        return
     if "if you had a land enter" in effect_text:effect_text=_landfall_spell_effect(effect_text,caster.get("land_entered_turn")==state.get("turn"))
     if item.get("kind")=="trigger" and re.search(r"\b(?:first|second|third|fourth) time(?: this ability has resolved)? this turn\b",effect_text):
         usage=state.setdefault("trigger_resolution_usage",{});key=f"{item.get('source_id')}:{card.get('oracle_text','')}";record=usage.get(key,{})
@@ -2606,6 +2625,11 @@ def _resolve_spell(state: dict) -> None:
     target_player = next((player for player in state["players"] if player["id"] == target_id), None)
     target_owner = next((player for player in state["players"] if any(permanent["instance_id"] == target_id for permanent in player["battlefield"])), None)
     target = next((permanent for player in state["players"] for permanent in player["battlefield"] if permanent["instance_id"] == target_id), None)
+    if target_player and "target opponent reveals their hand" in effect_text and "you choose an instant or sorcery card from it" in effect_text:
+        choices=[deepcopy(hand_card) for hand_card in target_player["hand"] if any(kind in hand_card.get("type_line","") for kind in ("Instant","Sorcery"))]
+        if choices:state["pending_revealed_discard"]={"player_id":caster["id"],"opponent_id":target_player["id"],"opponent_name":target_player["name"],"source_name":card["name"],"cards":choices};state["priority_player_id"]=caster["id"];_log(state,f"{target_player['name']} revealed their hand; {caster['name']} must choose an instant or sorcery to discard.")
+        else:_log(state,f"{target_player['name']} revealed no instant or sorcery cards.")
+        return
     event_permanent=next((permanent for player in state["players"] for permanent in player["battlefield"] if permanent["instance_id"]==item.get("event_card_id")),None);event_controller=_player(state,item.get("event_owner_id")) if item.get("event_owner_id") else _player(state,event_permanent.get("controller_id")) if event_permanent else None;source_graveyard=next((graveyard_card for graveyard_card in caster["graveyard"] if graveyard_card["instance_id"]==item.get("source_id")),None)
     target_stack_item = next((entry for entry in state["stack"] if entry["id"] == target_id), None)
     graveyard_owner=next((player for player in state["players"] if any(graveyard_card["instance_id"]==target_id for graveyard_card in player["graveyard"])),None)
@@ -2663,7 +2687,7 @@ def _resolve_spell(state: dict) -> None:
     optional_payment=re.search(r"you may pay ((?:\{[^}]+\})+)\.\s*if you do,\s*(.+)",effect_text,re.DOTALL)
     if optional_payment and "{x}" not in optional_payment.group(1):
         mana_cost=optional_payment.group(1).upper();continuation=optional_payment.group(2).strip();source_name=(source_permanent or source_graveyard or card).get("name",card["name"])
-        state["pending_optional_payment"]={"player_id":caster["id"],"source_name":source_name,"source_id":item.get("source_id"),"mana_cost":mana_cost,"continuation":continuation};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} may pay {mana_cost} for {source_name}.");return
+        state["pending_optional_payment"]={"player_id":caster["id"],"source_name":source_name,"source_id":item.get("source_id"),"event_card_id":item.get("event_card_id"),"mana_cost":mana_cost,"continuation":continuation};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} may pay {mana_cost} for {source_name}.");return
     if re.search(r"you may pay \{x\}\{r\}",effect_text) and "create x 1/1 red elemental creature tokens" in effect_text:
         state["pending_tilonalli"]={"player_id":caster["id"],"source_name":source_permanent.get("name",card["name"]) if source_permanent else card["name"],"source_id":item.get("source_id"),"defender_id":state.get("combat",{}).get("attack_targets",{}).get(item.get("source_id"),opponent(state,caster["id"])["id"])};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} may pay {{X}}{{R}} for {state['pending_tilonalli']['source_name']}.");return
     if "take an extra turn after this one" in effect_text:
@@ -2706,6 +2730,12 @@ def _resolve_spell(state: dict) -> None:
             if "Land" not in revealed.get("type_line",""):castable_card=revealed;break
         if castable_card and "you may cast that card this turn" in effect_text:castable_card["exile_cast_until_turn"]=state["turn"]
         permission=f" and may cast {castable_card['name']} this turn" if castable_card else "";_log(state,f"{caster['name']} exiled {len(exiled)} card(s){permission}.");return
+    if "exile the top card of your library" in effect_text and "you may play that card this turn" in effect_text:
+        if caster["library"]:
+            exiled=caster["library"].pop();_put_into_exile(state,caster,[exiled],"library",caster["id"]);exiled["exile_play_until_turn"]=state["turn"]
+            if "Land" not in exiled.get("type_line",""):exiled["exile_cast_until_turn"]=state["turn"]
+            _log(state,f"{caster['name']} exiled {exiled['name']} and may play it this turn.")
+        return
     if "reveal the top card of your library and put that card into your hand" in effect_text and "where x is that card's mana value" in effect_text:
         if caster["library"]:
             revealed=caster["library"].pop();caster["hand"].append(revealed);amount=int(revealed.get("mana_value") or 0)
@@ -3034,7 +3064,7 @@ def _resolve_spell(state: dict) -> None:
     token_match = re.search(r"create (a|one|two|three|four|five|\d+) (tapped )?(\d+)/(\d+) ([^.]*?) creature tokens?", effect_text)
     if token_match:
         amount = {"a":1,"one":1,"two":2,"three":3,"four":4,"five":5}.get(token_match.group(1),int(token_match.group(1)) if token_match.group(1).isdigit() else 0)
-        attacking="tapped and attacking" in effect_text;tapped=bool(token_match.group(2)) or attacking or "tokens enter tapped" in effect_text;created=[]
+        attacking="tapped and attacking" in effect_text;must_attack="that token attacks this combat if able" in effect_text;tapped=bool(token_match.group(2)) or attacking or "tokens enter tapped" in effect_text;created=[]
         descriptor=token_match.group(5).strip();color_names={"white":"W","blue":"U","black":"B","red":"R","green":"G"};colors=[symbol for name,symbol in color_names.items() if re.search(rf"\b{name}\b",descriptor)]
         artifact_token=re.search(r"\bartifact\b",descriptor,re.IGNORECASE) is not None;subtype=re.sub(r"\b(?:white|blue|black|red|green|colorless|artifact|and)\b"," ",descriptor).strip();subtype=re.sub(r"\s+"," ",subtype) or "Creature"
         keywords=[keyword.title() for keyword in ("defender","flying","first strike","double strike","deathtouch","haste","lifelink","menace","reach","trample","vigilance") if re.search(rf"\b{keyword}\b",effect_text)]
@@ -3042,6 +3072,7 @@ def _resolve_spell(state: dict) -> None:
         delayed_exile_group=_id() if re.search(r"exile (?:that|those) tokens? at the beginning of the next end step",effect_text) else None
         for _ in range(amount):
             token={"instance_id":_id(),"scryfall_id":"token","name":named.group(1).strip().title() if named else f"{subtype.title()} Token","image_url":None,"type_line":f"Token {'Artifact ' if artifact_token else ''}Creature — {subtype.title()}","oracle_text":quoted.group(1) if quoted else "","mana_cost":"","mana_value":0,"colors":colors,"power":token_match.group(3),"toughness":token_match.group(4),"owner_id":caster["id"],"controller_id":caster["id"],"tapped":tapped,"damage":0,"counters":{},"summoning_sick":True,"token":True,"keywords":keywords};created.append(token)
+            if must_attack:token["must_attack_next_combat"]=True
             if delayed_exile_group:token["delayed_exile_group"]=delayed_exile_group
         if attacking and state.get("phase")=="combat":
             source_target=state["combat"].get("attack_targets",{}).get(item.get("source_id"),other["id"])
@@ -3494,7 +3525,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
         for clause in raw_clauses:
             modal_continuation=bool(clauses and (clause.strip().startswith(("•","-")) or clauses[-1].lstrip().startswith(("•","-")) or re.search(r"\n[•-]\s",clauses[-1]) and not re.match(r"(?:when(?:ever)?\b|at the beginning\b|[+−-]?\d+\s*:|\{[^}]+\}[^:]*:)",clause.strip(),re.IGNORECASE)))
             top_card_continuation=bool(clauses and "look at the top card of your library" in clauses[-1].casefold() and re.match(r"if (?:it(?:'s| is) a creature card|you don.t put the card into your hand)",clause.strip(),re.IGNORECASE))
-            continuation=bool(clauses and (modal_continuation or top_card_continuation or ("additional combat phase after this phase" in clauses[-1].casefold() and re.match(r"at the beginning of that combat",clause.strip(),re.IGNORECASE)) or ("target" in clauses[-1].casefold() and re.match(r"it gains? [^.]+ until end of turn",clause.strip(),re.IGNORECASE)) or re.match(r"(?:then if|if you do|if you didn't|if you did not|if you have the city's blessing|otherwise),?\b",clause.strip(),re.IGNORECASE) or re.match(r"if you control (?:one|two|three|four|five|six|seven|eight|nine|ten|\d+) or more lands",clause.strip(),re.IGNORECASE) or re.match(r"if that land is (?:a |an )?[a-z]+,",clause.strip(),re.IGNORECASE) or re.match(r"if (?:this is|it(?:'s| is)) the (?:first|second|third|fourth) time(?: this ability has resolved)?(?: this turn)?,",clause.strip(),re.IGNORECASE) or ("create " in clauses[-1].casefold() and " creature token" in clauses[-1].casefold() and re.match(r"exile (?:that|those) tokens? at the beginning of the next end step",clause.strip(),re.IGNORECASE)) or ("exile cards from the top of your library until you exile a nonland card" in clauses[-1].casefold() and re.match(r"you may cast that card this turn",clause.strip(),re.IGNORECASE)) or ("create x 1/1 red elemental creature tokens" in clauses[-1].casefold() and re.match(r"at the beginning of the next end step, exile those tokens",clause.strip(),re.IGNORECASE)) or ("reveal the top card of your library and put that card into your hand" in clauses[-1].casefold() and re.match(r"each opponent loses x life\b",clause.strip(),re.IGNORECASE))))
+            continuation=bool(clauses and (modal_continuation or top_card_continuation or ("additional combat phase after this phase" in clauses[-1].casefold() and re.match(r"at the beginning of that combat",clause.strip(),re.IGNORECASE)) or ("target" in clauses[-1].casefold() and re.match(r"it gains? [^.]+ until end of turn",clause.strip(),re.IGNORECASE)) or re.match(r"(?:then if|if you do|if you didn't|if you did not|if you have the city's blessing|otherwise),?\b",clause.strip(),re.IGNORECASE) or re.match(r"if you control (?:one|two|three|four|five|six|seven|eight|nine|ten|\d+) or more lands",clause.strip(),re.IGNORECASE) or re.match(r"if that land is (?:a |an )?[a-z]+,",clause.strip(),re.IGNORECASE) or re.match(r"if (?:this is|it(?:'s| is)) the (?:first|second|third|fourth) time(?: this ability has resolved)?(?: this turn)?,",clause.strip(),re.IGNORECASE) or ("target opponent reveals their hand" in clauses[-1].casefold() and re.match(r"you choose an instant or sorcery card from it",clause.strip(),re.IGNORECASE)) or ("you choose an instant or sorcery card from it" in clauses[-1].casefold() and re.match(r"that player discards that card",clause.strip(),re.IGNORECASE)) or ("create " in clauses[-1].casefold() and " creature token" in clauses[-1].casefold() and re.match(r"(?:that token attacks this combat if able|exile (?:that|those) tokens? at the beginning of the next end step)",clause.strip(),re.IGNORECASE)) or ("exile the top card of your library" in clauses[-1].casefold() and re.match(r"you may play that card this turn",clause.strip(),re.IGNORECASE)) or ("exile cards from the top of your library until you exile a nonland card" in clauses[-1].casefold() and re.match(r"you may cast that card this turn",clause.strip(),re.IGNORECASE)) or ("create x 1/1 red elemental creature tokens" in clauses[-1].casefold() and re.match(r"at the beginning of the next end step, exile those tokens",clause.strip(),re.IGNORECASE)) or ("reveal the top card of your library and put that card into your hand" in clauses[-1].casefold() and re.match(r"each opponent loses x life\b",clause.strip(),re.IGNORECASE))))
             if continuation:
                 separator="\n" if modal_continuation else " ";clauses[-1]=f"{clauses[-1]}{separator}{clause.strip()}"
             else:clauses.append(clause)
@@ -3779,7 +3810,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
             for _ in range(trigger_count):
                 trigger={"id":_id(),"kind":"trigger","card":ability_card,"controller_id":owner["id"],"target_id":None,"source_id":source["instance_id"]}
                 if event=="mutates":trigger["x_value"]=event_card.get("mutate_count",1)
-                if event_card and event in {"enters","exile","tapped","untapped","counter_added","turned_face_up","dies","discard","graveyard_leave","damage","combat_damage_player","cumulative_unpaid"}:
+                if event_card and event in {"enters","exile","tapped","untapped","counter_added","turned_face_up","dies","discard","graveyard_leave","damage","combat_damage_player","cumulative_unpaid","cast"}:
                     trigger["event_card_id"]=event_card.get("instance_id");trigger["event_owner_id"]=event_owner.get("id")
                     if event=="enters":trigger["event_card_type_line"]=event_card.get("type_line","")
                 modal_options=_modal_options(ability_card)
@@ -4053,12 +4084,24 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
             player["library"].pop();player["graveyard"].append(top);_log(state,f"{player['name']} put the top card of their library into their graveyard.")
         else:_log(state,f"{player['name']} left the card on top of their library.")
         state["pending_top_card_choice"]=None;state["priority_player_id"]=state["active_player_id"]
+    elif action_type=="choose_revealed_discard":
+        pending=state.get("pending_revealed_discard") or {};discarded_id=action.get("card_id")
+        if pending.get("player_id")!=player_id or discarded_id not in {card["instance_id"] for card in pending.get("cards",[])}:raise RuleViolation("Choose a revealed instant or sorcery card")
+        victim=_player(state,pending["opponent_id"]);discarded=next((card for card in victim["hand"] if card["instance_id"]==discarded_id),None)
+        if not discarded:raise RuleViolation("That revealed card is no longer in the opponent's hand")
+        _discard_cards(state,victim,[discarded]);state["pending_revealed_discard"]=None;state["priority_player_id"]=state["active_player_id"];_log(state,f"{player['name']} chose {discarded['name']}; {victim['name']} discarded it.")
     elif action_type in {"pay_optional_mana","decline_optional_mana"}:
         pending=state.get("pending_optional_payment") or {}
         if pending.get("player_id")!=player_id:raise RuleViolation("There is no optional mana payment for this player")
         state["pending_optional_payment"]=None
         if action_type=="pay_optional_mana":
-            _pay_mana(state,player,{"mana_cost":pending["mana_cost"]});continuation=pending.get("continuation") or "";ability_card={"name":f"{pending['source_name']} paid effect","oracle_text":continuation,"type_line":"Ability","mana_cost":""};trigger={"id":_id(),"kind":"trigger","card":ability_card,"controller_id":player_id,"target_id":None,"source_id":pending.get("source_id")};targets=_targets(state,player_id,ability_card)
+            _pay_mana(state,player,{"mana_cost":pending["mana_cost"]});continuation=pending.get("continuation") or ""
+            if continuation.casefold().startswith("copy it"):
+                original=next((stack_item for stack_item in state["stack"] if stack_item.get("card",{}).get("instance_id")==pending.get("event_card_id") and stack_item.get("kind","spell")=="spell"),None)
+                if original:_copy_stack_item(state,player,original);_log(state,f"{player['name']} paid {pending['mana_cost']} and copied {original['card']['name']}.")
+                else:_log(state,f"{player['name']} paid {pending['mana_cost']}, but the spell was no longer on the stack.")
+                state["priority_player_id"]=state["active_player_id"];_update_speed_for_life_loss(state,life_before);_state_based_actions(state);_check_winner(state);state["version"]+=1;return state
+            ability_card={"name":f"{pending['source_name']} paid effect","oracle_text":continuation,"type_line":"Ability","mana_cost":""};trigger={"id":_id(),"kind":"trigger","card":ability_card,"controller_id":player_id,"target_id":None,"source_id":pending.get("source_id")};targets=_targets(state,player_id,ability_card)
             if _target_kind(ability_card) and targets:state.setdefault("pending_trigger_targets",[]).append({"controller_id":player_id,"source_name":pending["source_name"],"trigger":trigger,"card":ability_card})
             elif not _target_kind(ability_card):state["stack"].append(trigger);_resolve_spell(state)
             else:_log(state,f"{pending['source_name']}'s paid effect had no legal target.")
@@ -4284,9 +4327,10 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if _multiplayer(state) or not allow_direct_resolution:state["priority_player_id"]=opponent(state,player_id)["id"]
         _log(state,f"{player['name']} cast a creature spell face down for {{3}}.")
     elif action_type == "play_land":
-        card = next((card for card in player["hand"] if card["instance_id"] == action.get("card_id") and "Land" in card.get("type_line", "")), None)
-        if not card: raise RuleViolation("That land is not in your hand")
-        player["hand"].remove(card);card["summoning_sick"]=True;_enter_battlefield(state,player,[card],"hand",played=True);player["lands_played_this_turn"]=player.get("lands_played_this_turn",0)+1;player["land_plays_remaining"]-=1;_log(state,f"{player['name']} played {card['name']}.")
+        source=action.get("source","hand");zone=player["exile"] if source=="exile_permission" else player["hand"]
+        card = next((card for card in zone if card["instance_id"] == action.get("card_id") and "Land" in card.get("type_line", "") and (source!="exile_permission" or card.get("exile_play_until_turn")==state["turn"])), None)
+        if not card: raise RuleViolation("That land cannot be played from that zone")
+        zone.remove(card);card["summoning_sick"]=True;_enter_battlefield(state,player,[card],"exile" if source=="exile_permission" else "hand",played=True);player["lands_played_this_turn"]=player.get("lands_played_this_turn",0)+1;player["land_plays_remaining"]-=1;_log(state,f"{player['name']} played {card['name']}.")
     elif action_type=="channel":
         card=next((card for card in player["hand"] if card["instance_id"]==action.get("card_id")),None);abilities=_channel_abilities(card or {});ability_index=int(action.get("ability_index") or 0);ability=abilities[ability_index] if 0<=ability_index<len(abilities) else None;requested_target_count=len(action.get("target_ids") or []);available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="channel" and entry["card_id"]==action.get("card_id") and entry.get("ability_index")==ability_index and (entry.get("channel_target_count") is None or entry.get("channel_target_count")==requested_target_count)),None)
         if not card or not ability or not available:raise RuleViolation("That Channel ability cannot be activated now")
