@@ -818,6 +818,21 @@ def _craft_selection_valid(spec:dict,selected:list[dict])->bool:
     return True
 
 
+def _apply_crafted_characteristics(card:dict)->None:
+    materials=card.get("crafted_with_cards") or [];text=(card.get("oracle_text") or "").casefold()
+    powers=[]
+    for material in materials:
+        try:powers.append(int(material.get("power") or 0))
+        except (TypeError,ValueError):powers.append(0)
+    total_power=sum(powers);colors={color for material in materials for color in (material.get("colors") or [])}
+    if "power and toughness are each equal to the total power of the exiled cards used to craft it" in text:card["power"]=card["toughness"]=str(total_power)
+    elif "power is equal to the total power of the exiled cards used to craft it" in text:card["power"]=str(total_power)
+    if "power and toughness are each equal to the number of colors among the exiled cards used to craft it" in text:card["power"]=card["toughness"]=str(len(colors))
+    if "same is true for first strike" in text:
+        inherited=[keyword for material in materials for keyword in ("Flying","First strike","Double strike","Deathtouch","Haste","Hexproof","Indestructible","Lifelink","Menace","Protection","Reach","Trample","Vigilance") if _has_keyword(material,keyword)]
+        card["keywords"]=sorted(set(card.get("keywords",[]))|set(inherited))
+
+
 def _overload_cost(card:dict)->str|None:
     match=re.search(r"(?:^|\n)Overload\s+((?:\{[^}]+\})+)",card.get("oracle_text") or "",re.IGNORECASE)
     return match.group(1).upper() if match else None
@@ -3362,6 +3377,8 @@ def _resolve_spell(state: dict) -> None:
     effect_text=re.sub(r"draw a card for each multicolored permanent you control",f"draw {multicolored_count} cards",effect_text,flags=re.IGNORECASE)
     effect_text=re.sub(r"deals damage equal to the number of artifacts you control",f"deals {artifact_count} damage",effect_text,flags=re.IGNORECASE)
     effect_text=re.sub(r"draw cards equal to the sacrificed creature's power",f"draw {int(item.get('sacrificed_power',0))} cards",effect_text,flags=re.IGNORECASE)
+    if source_permanent and "gain life equal to the mana value of the exiled card used to craft it" in effect_text:
+        crafted=source_permanent.get("crafted_with_cards") or [];effect_text=re.sub(r"gain life equal to the mana value of the exiled card used to craft it",f"gain {int((crafted[0] if crafted else {}).get('mana_value') or 0)} life",effect_text,flags=re.IGNORECASE)
     effect_text=re.sub(r"\bto up to one target\b","to target",effect_text,flags=re.IGNORECASE)
     if source_permanent and re.search(r"deals damage equal to (?:its|his|her) power",effect_text):effect_text=re.sub(r"deals damage equal to (?:its|his|her) power",f"deals {_parse_stats(source_permanent,state)[0]} damage",effect_text)
     if "copy target spell you control" in effect_text:
@@ -5982,7 +5999,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
             if material in player["battlefield"]:_leave_battlefield(state,player,material,"exile",exile_actor_id=player_id)
             elif material in player["graveyard"]:_leave_graveyard(state,player,[material]);_put_into_exile(state,player,[material],"graveyard",player_id)
         if source not in source_owner["exile"]:raise RuleViolation("The Craft source did not remain in exile")
-        _leave_exile(state,source_owner,[source]);source["crafted_with_cards"]=crafted_cards;source["crafted_with_ids"]=[card["instance_id"] for card in crafted_cards];source["controller_id"]=source_owner["id"];source["summoning_sick"]=True;source["tapped"]=False;source["counters"]={};_set_card_face(source,1);_enter_battlefield(state,source_owner,[source],"exile");state["consecutive_passes"]=0;state["pending_phase_advance"]=False;_log(state,f"{player['name']} crafted {source['name']} with {len(selected)} exiled card{'s' if len(selected)!=1 else ''}.")
+        _leave_exile(state,source_owner,[source]);source["crafted_with_cards"]=crafted_cards;source["crafted_with_ids"]=[card["instance_id"] for card in crafted_cards];source["controller_id"]=source_owner["id"];source["summoning_sick"]=True;source["tapped"]=False;source["counters"]={};_set_card_face(source,1);_apply_crafted_characteristics(source);_enter_battlefield(state,source_owner,[source],"exile");state["consecutive_passes"]=0;state["pending_phase_advance"]=False;_log(state,f"{player['name']} crafted {source['name']} with {len(selected)} exiled card{'s' if len(selected)!=1 else ''}.")
     elif action_type=="station":
         permanent=next((card for card in player["battlefield"] if card["instance_id"]==action.get("card_id") and re.search(r"(?:^|\n)Station\b",card.get("oracle_text") or "",re.IGNORECASE)),None);selected=action.get("cost_card_ids") or []
         available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="station" and entry["card_id"]==action.get("card_id")),None)
