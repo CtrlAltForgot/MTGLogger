@@ -164,7 +164,7 @@ def _continuous_stats(state:dict|None,card:dict)->tuple[int,int]:
             if source.get("attached_to")==card.get("instance_id"):
                 attachment_text=(source.get("oracle_text") or "").casefold();attachment_match=re.search(r"(?:equipped|enchanted) creature gets ([+-]\d+)/([+-]\d+)(?! until end of turn)",attachment_text)
                 if attachment_match:power+=int(attachment_match.group(1));toughness+=int(attachment_match.group(2))
-            clauses=re.split(r"(?<=[.!])\s+|\n",source.get("oracle_text") or "")
+            clauses=re.split(r"(?<=[.!])\s+|\n",_active_level_text(source))
             for clause in clauses:
                 lower=clause.casefold()
                 if ":" in clause or "until end of turn" in lower or "as long as" in lower or re.match(r"\s*(?:when|whenever|if)\b",lower):continue
@@ -179,11 +179,41 @@ def _continuous_stats(state:dict|None,card:dict)->tuple[int,int]:
     return power,toughness
 
 
+def _level_sections(card:dict)->tuple[list[str],list[tuple[int,int|None,list[str]]]]:
+    preamble=[];sections=[];current=None
+    for line in (card.get("oracle_text") or "").splitlines():
+        match=re.fullmatch(r"\s*LEVEL\s+(\d+)(?:-(\d+)|\+)\s*",line,re.IGNORECASE)
+        if match:
+            current=(int(match.group(1)),int(match.group(2)) if match.group(2) else None,[]);sections.append(current);continue
+        (current[2] if current else preamble).append(line)
+    return preamble,sections
+
+
+def _active_level_text(card:dict)->str:
+    preamble,sections=_level_sections(card)
+    if not sections:return card.get("oracle_text") or ""
+    level=int(card.get("counters",{}).get("level",0));active=next((lines for minimum,maximum,lines in sections if level>=minimum and (maximum is None or level<=maximum)),[])
+    return "\n".join([*preamble,*active])
+
+
+def _level_stats(card:dict)->tuple[int,int]|None:
+    _,sections=_level_sections(card);level=int(card.get("counters",{}).get("level",0));active=next((lines for minimum,maximum,lines in sections if level>=minimum and (maximum is None or level<=maximum)),None)
+    if active is None:return None
+    match=next((re.fullmatch(r"\s*(\d+)\s*/\s*(\d+)\s*",line) for line in active if re.fullmatch(r"\s*(\d+)\s*/\s*(\d+)\s*",line)),None)
+    return (int(match.group(1)),int(match.group(2))) if match else None
+
+
+def _level_up_cost(card:dict)->str|None:
+    match=re.search(r"(?:^|\n)Level up\s+((?:\{[^}]+\})+)",card.get("oracle_text") or "",re.IGNORECASE)
+    return match.group(1).upper() if match else None
+
+
 def _parse_stats(card: dict,state:dict|None=None) -> tuple[int, int]:
     try:
         plus = card.get("counters", {}).get("+1/+1", 0); minus = card.get("counters", {}).get("-1/-1", 0)
         static_power,static_toughness=_continuous_stats(state,card)
-        return int(card.get("power") or 0) + plus - minus + card.get("temporary_power", 0)+static_power, int(card.get("toughness") or 0) + plus - minus + card.get("temporary_toughness", 0)+static_toughness
+        level_stats=_level_stats(card);base_power,base_toughness=level_stats or (int(card.get("power") or 0),int(card.get("toughness") or 0))
+        return base_power + plus - minus + card.get("temporary_power", 0)+static_power, base_toughness + plus - minus + card.get("temporary_toughness", 0)+static_toughness
     except ValueError:
         return 0, 0
 
@@ -325,7 +355,9 @@ def _mana_requirements(card: dict, extra_generic: int = 0, x_value:int=0) -> tup
 
 def _has_keyword(card: dict, keyword: str) -> bool:
     printed={value.casefold() for value in card.get("keywords", [])};temporary={value.casefold() for value in card.get("temporary_keywords", [])};attached={value.casefold() for values in card.get("attachment_keywords",{}).values() for value in values};counter_keywords={name.casefold() for name,amount in card.get("counters",{}).items() if amount>0}
-    lower_keyword=keyword.casefold();text=(card.get("oracle_text") or "").casefold();conditional=[clause for clause in re.split(r"(?<=[.!])\s+|\n",text) if "as long as this creature is monstrous" in clause];unconditional="\n".join(clause for clause in re.split(r"(?<=[.!])\s+|\n",text) if clause not in conditional)
+    _,level_sections=_level_sections(card)
+    if level_sections and any(re.search(rf"\b{re.escape(keyword)}\b","\n".join(lines),re.IGNORECASE) for _,_,lines in level_sections):printed.discard(keyword.casefold())
+    lower_keyword=keyword.casefold();text=_active_level_text(card).casefold();conditional=[clause for clause in re.split(r"(?<=[.!])\s+|\n",text) if "as long as this creature is monstrous" in clause];unconditional="\n".join(clause for clause in re.split(r"(?<=[.!])\s+|\n",text) if clause not in conditional)
     monstrous_match=card.get("monstrous") and any(re.search(rf"\b{re.escape(lower_keyword)}\b",clause) for clause in conditional)
     return lower_keyword in printed|temporary|attached|counter_keywords or (lower_keyword=="haste" and bool(card.get("earthbent") or card.get("suspend_haste"))) or bool(monstrous_match) or re.search(rf"\b{re.escape(lower_keyword)}\b",unconditional) is not None
 
@@ -630,7 +662,7 @@ def _aura_allowed_types(card:dict)->set[str]:
 
 def _effective_rules_text(state:dict,card:dict)->str:
     attachment_texts=[attachment.get("oracle_text") or "" for owner in state["players"] for attachment in owner["battlefield"] if attachment.get("attached_to")==card.get("instance_id")]
-    return "\n".join([card.get("oracle_text") or "",*(card.get("temporary_backup_rules") or []),*attachment_texts]).casefold()
+    return "\n".join([_active_level_text(card),*(card.get("temporary_backup_rules") or []),*attachment_texts]).casefold()
 
 
 def _can_attack(state:dict,card:dict,attacker:dict,defender:dict)->bool:
@@ -905,6 +937,7 @@ def _activated_abilities(card: dict) -> list[dict]:
     abilities = []
     text=card.get("oracle_text") or "";quoted=re.findall(r'"([^"]+:[^"]+)"',text);lines=[*(line for line in text.splitlines() if '"' not in line),*quoted]
     for line in lines:
+        if re.match(r"^\s*Level up\b",line,re.IGNORECASE):continue
         match = re.match(r"^([^:]+):\s*(.+)$", line.strip())
         if not match: continue
         cost,effect = match.group(1).strip(),match.group(2).strip()
@@ -966,7 +999,13 @@ def _activation_generic_reduction(state:dict,player:dict,permanent:dict,ability:
 
 def _permanent_abilities(state:dict,card:dict)->list[dict]:
     granted=[ability for rules in card.get("attachment_rules",{}).values() for ability in re.findall(r'"([^"]+:[^"]+)"',rules)]
-    return _activated_abilities({**card,"oracle_text":"\n".join([card.get("oracle_text") or "",*(card.get("temporary_backup_rules") or []),*granted])})
+    rules="\n".join([_active_level_text(card),*(card.get("temporary_backup_rules") or []),*granted]);level_cost=_level_up_cost(card)
+    if level_cost:rules=f"{rules}\n{level_cost}: Put a level counter on this. Activate only as a sorcery."
+    abilities=_activated_abilities({**card,"oracle_text":rules})
+    for ability in abilities:
+        if ability["effect"].casefold().startswith("put a level counter on this"):
+            ability["card"]["growth_mechanic"]="level_up";ability["card"]["growth_amount"]=1
+    return abilities
 
 
 def _loyalty_abilities(card:dict)->list[dict]:
@@ -2072,6 +2111,7 @@ def _resolve_spell(state: dict) -> None:
             if permanent.get("counters",{}).get("+1/+1",0)<=0:_add_counters(state,permanent,"+1/+1",int(card.get("growth_amount") or 0),caster["id"],"adapt");_log(state,f"{permanent['name']} adapted {card.get('growth_amount',0)}.")
             else:_log(state,f"{permanent['name']} could not adapt because it already had a +1/+1 counter.")
             return
+        if mechanic=="level_up":_add_counters(state,permanent,"level",1,caster["id"],"level_up");_log(state,f"{permanent['name']} advanced to level {permanent['counters'].get('level',0)}.");return
         if permanent.get("monstrous"):_log(state,f"{permanent['name']} was already monstrous, so monstrosity had no effect.");return
         amount=card.get("growth_amount",0)
         if amount=="X":amount=int(item.get("x_value") or 0)
