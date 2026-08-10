@@ -2628,10 +2628,13 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
         if not rules_card:continue
         instant_speed="Instant" in rules_card.get("type_line","") or _has_keyword(rules_card,"Flash")
         if not ((active and main and not state["stack"]) or instant_speed) or not _can_pay(player,{**rules_card,"mana_cost":cost}):continue
+        sacrifice_creature="as an additional cost to cast this spell, sacrifice a creature" in (rules_card.get("oracle_text") or "").casefold();sacrifice_options=[candidate["instance_id"] for candidate in player["battlefield"] if "Creature" in candidate.get("type_line","")]
+        if sacrifice_creature and not sacrifice_options:continue
         cost_card={**rules_card,"mana_cost":cost};targeting_card=_spell_targeting_card(rules_card);targets=_targets(state,player_id,targeting_card);required=bool(_target_kind(targeting_card));multi_variants=_multi_target_step_variants(state,player_id,rules_card)
         if (required and not targets and not multi_variants) or ("exile two target creatures and/or lands you control" in (rules_card.get("oracle_text") or "").casefold() and not multi_variants):continue
         action_type={"disturb":"cast_disturb","adventure":"cast_adventure","after_adventure":"cast_after_adventure"}[source];label={"disturb":f"Disturb as {rules_card['name']}","adventure":f"Adventure — {rules_card['name']}","after_adventure":f"Cast {rules_card['name']} after its Adventure"}[source]
         action={"type":action_type,"card_id":original["instance_id"],"source":source,"mana_cost":cost,"label":f"{label} · {cost or '{0}'}",**({"targets":targets} if targets and not multi_variants else {})}
+        if sacrifice_creature:action.update({"cost_kind":"sacrifice","cost_amount":1,"cost_options":sacrifice_options,"label":f"{action['label']} · sacrifice a creature"})
         if _has_x_cost(cost_card):
             maximum=_maximum_x(player,cost_card);action.update({"x_min":0,"x_max":maximum})
             x_targets=re.search(r"\b(?:tap )?X target creatures\b",rules_card.get("oracle_text") or "",re.IGNORECASE)
@@ -5409,6 +5412,8 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         source_zone="graveyard" if action_type=="cast_disturb" else "hand" if action_type=="cast_adventure" else "exile";original=next((candidate for candidate in player[source_zone] if candidate["instance_id"]==action.get("card_id")),None)
         rules_index=1 if action_type in {"cast_disturb","cast_adventure"} else 0;rules_card=_face_rules_card(original or {},rules_index);target_id=action.get("target_id");x_value=int(action.get("x_value") or 0)
         if not available or not original or not rules_card:raise RuleViolation("That alternate-face cast is no longer available")
+        selected_cost_ids=action.get("cost_card_ids") or [];required_cost=int(available.get("cost_amount") or 0);cost_options=set(available.get("cost_options") or [])
+        if len(selected_cost_ids)!=required_cost or len(set(selected_cost_ids))!=required_cost or not set(selected_cost_ids).issubset(cost_options):raise RuleViolation(f"Choose exactly {required_cost} permanents for the additional cost")
         cost_card={**rules_card,"mana_cost":available["mana_cost"]};has_x=_has_x_cost(cost_card)
         if (has_x and not available.get("x_min",0)<=x_value<=available.get("x_max",0)) or (not has_x and action.get("x_value") is not None):raise RuleViolation("Choose a legal value for X")
         targets=_targets(state,player_id,_spell_targeting_card(rules_card))
@@ -5417,6 +5422,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
             if len(requested_target_ids)!=len(target_steps) or any(target_value not in {target["id"] for target in target_steps[position]["targets"]} for position,target_value in enumerate(requested_target_ids)) or any(step.get("distinct") and requested_target_ids[position] in requested_target_ids[:position] for position,step in enumerate(target_steps)):raise RuleViolation("Choose each alternate-face target exactly once")
         elif not available.get("allow_zero_targets") and _target_kind(_spell_targeting_card(rules_card)) and target_id not in {target["id"] for target in targets}:raise RuleViolation("Choose a legal target for that face")
         _pay_mana(state,player,cost_card,x_value=x_value)
+        if available.get("cost_kind")=="sacrifice":_sacrifice_permanents(state,player,[candidate for candidate in list(player["battlefield"]) if candidate["instance_id"] in set(selected_cost_ids)])
         if source_zone=="graveyard":_leave_graveyard(state,player,[original])
         elif source_zone=="exile":_leave_exile(state,player,[original])
         else:player["hand"].remove(original)
