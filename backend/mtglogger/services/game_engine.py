@@ -754,7 +754,7 @@ def _disturb_ability(card:dict)->dict|None:
 
 def _adventure_ability(card:dict)->dict|None:
     adventure=_face_rules_card(card,1)
-    return {"mana_cost":adventure.get("mana_cost","").upper(),"card":adventure} if adventure and any(kind in adventure.get("type_line","") for kind in ("Instant","Sorcery")) else None
+    return {"mana_cost":adventure.get("mana_cost","").upper(),"card":adventure,"omen":"Omen" in adventure.get("type_line","")} if adventure and any(kind in adventure.get("type_line","") for kind in ("Instant","Sorcery")) else None
 
 
 def _kicker_cost(card:dict)->str|None:
@@ -2660,7 +2660,7 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
         if sacrifice_creature and not sacrifice_options:continue
         cost_card={**rules_card,"mana_cost":cost};targeting_card=_spell_targeting_card(rules_card);targets=_targets(state,player_id,targeting_card);required=bool(_target_kind(targeting_card));multi_variants=_multi_target_step_variants(state,player_id,rules_card)
         if (required and not targets and not multi_variants) or ("exile two target creatures and/or lands you control" in (rules_card.get("oracle_text") or "").casefold() and not multi_variants):continue
-        action_type={"disturb":"cast_disturb","adventure":"cast_adventure","after_adventure":"cast_after_adventure"}[source];label={"disturb":f"Disturb as {rules_card['name']}","adventure":f"Adventure — {rules_card['name']}","after_adventure":f"Cast {rules_card['name']} after its Adventure"}[source]
+        action_type={"disturb":"cast_disturb","adventure":"cast_adventure","after_adventure":"cast_after_adventure"}[source];label={"disturb":f"Disturb as {rules_card['name']}","adventure":f"{'Omen' if 'Omen' in rules_card.get('type_line','') else 'Adventure'} — {rules_card['name']}","after_adventure":f"Cast {rules_card['name']} after its Adventure"}[source]
         action={"type":action_type,"card_id":original["instance_id"],"source":source,"mana_cost":cost,"label":f"{label} · {cost or '{0}'}",**({"targets":targets} if targets and not multi_variants else {})}
         if sacrifice_creature:action.update({"cost_kind":"sacrifice","cost_amount":1,"cost_options":sacrifice_options,"label":f"{action['label']} · sacrifice a creature"})
         if _has_x_cost(cost_card):
@@ -4136,6 +4136,8 @@ def _resolve_spell(state: dict) -> None:
         if rebound_from_hand:
             card["rebound_pending"]=True;card["rebound_after_turn"]=state["turn"];_put_into_exile(state,caster,[card],"rebound",caster["id"])
         elif item.get("buyback"):caster["hand"].append(card)
+        elif item.get("omen_cast"):
+            spell_owner=_player(state,card.get("owner_id",caster["id"]));_set_card_face(card,0);card["controller_id"]=spell_owner["id"];spell_owner["library"].append(card);random.SystemRandom().shuffle(spell_owner["library"]);_log(state,f"{card['name']} was shuffled into {spell_owner['name']}'s library after its Omen resolved.")
         elif item.get("adventure_cast"):
             spell_owner=_player(state,card.get("owner_id",caster["id"]));_set_card_face(card,0);card["adventured"]=True;_put_into_exile(state,spell_owner,[card],"adventure",caster["id"]);_log(state,f"{card['name']} was exiled after its Adventure resolved and may be cast from exile.")
         elif item.get("flashback"):
@@ -5554,7 +5556,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         elif source_zone=="exile":_leave_exile(state,player,[original])
         else:player["hand"].remove(original)
         _set_card_face(original,rules_index);original.pop("adventured",None)
-        stack_item={"id":_id(),"kind":"spell","card":original,"controller_id":player_id,"target_id":target_id,"target_ids":requested_target_ids,"mode_indices":[],"mode_targets":[],"x_value":x_value,"allow_zero_targets":bool(available.get("allow_zero_targets")),"flashback":action_type=="cast_disturb","disturbed":action_type=="cast_disturb","adventure_cast":action_type=="cast_adventure","cast_source_zone":source_zone};state["stack"].append(stack_item);_record_spell_cast(state,player);original["cast_source_zone"]=source_zone;_queue_triggers(state,"cast",original,player);_queue_cascade_triggers(state,player,original);_queue_storm_trigger(state,player,original,stack_item);original.pop("cast_source_zone",None);[_queue_ward(state,player,ward_target,stack_item) for ward_target in [target_id,*requested_target_ids] if ward_target];state["consecutive_passes"]=0;state["pending_phase_advance"]=False
+        stack_item={"id":_id(),"kind":"spell","card":original,"controller_id":player_id,"target_id":target_id,"target_ids":requested_target_ids,"mode_indices":[],"mode_targets":[],"x_value":x_value,"allow_zero_targets":bool(available.get("allow_zero_targets")),"flashback":action_type=="cast_disturb","disturbed":action_type=="cast_disturb","adventure_cast":action_type=="cast_adventure" and "Omen" not in rules_card.get("type_line",""),"omen_cast":action_type=="cast_adventure" and "Omen" in rules_card.get("type_line",""),"cast_source_zone":source_zone};state["stack"].append(stack_item);_record_spell_cast(state,player);original["cast_source_zone"]=source_zone;_queue_triggers(state,"cast",original,player);_queue_cascade_triggers(state,player,original);_queue_storm_trigger(state,player,original,stack_item);original.pop("cast_source_zone",None);[_queue_ward(state,player,ward_target,stack_item) for ward_target in [target_id,*requested_target_ids] if ward_target];state["consecutive_passes"]=0;state["pending_phase_advance"]=False
         if (_multiplayer(state) or not allow_direct_resolution) and not state.get("pending_ward") and not state.get("pending_trigger_targets"):state["priority_player_id"]=opponent(state,player_id)["id"]
         _log(state,f"{player['name']} cast {original['name']}{' with Disturb' if action_type=='cast_disturb' else ' as an Adventure' if action_type=='cast_adventure' else ' from exile after its Adventure'}.")
     elif action_type == "cast":
