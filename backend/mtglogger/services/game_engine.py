@@ -1922,6 +1922,7 @@ def _target_kind(card: dict) -> str | None:
     if "choose target creature, then choose another target creature for each time" in text:return "creature"
     if re.search(r"each of up to x targets?",text):return "any"
     if re.search(r"up to x target creatures?(?! cards?\b)",text):return "creature"
+    if re.search(r"up to one target non-[a-z]+ creature",text):return "creature"
     if re.search(r"up to (?:two|three|four|\d+) target (?:non-[a-z]+ )?creatures?",text):return "creature"
     if re.search(r"up to x target creature cards? from your graveyard",text):return "graveyard_creature"
     if re.search(r"up to x target instant cards? from your graveyard",text):return "graveyard_card"
@@ -2026,6 +2027,7 @@ def _targets(state: dict, caster_id: str, card: dict, ignore_target_protection:b
                 if "non-spacecraft" in text and "Spacecraft" in permanent.get("type_line",""):continue
                 if "noncreature artifact" in text and "Creature" in permanent.get("type_line", ""): continue
                 if "creature without flying" in text and _has_keyword(permanent,"Flying"):continue
+                if "non-salamander creature" in text and re.search(r"\bSalamander\b",permanent.get("type_line",""),re.IGNORECASE):continue
                 if not ignore_target_protection and (_has_keyword(permanent,"Shroud") or (player["id"] != caster_id and (_has_keyword(permanent,"Hexproof") or permanent.get("hexproof_until_turn",0)>=state["turn"]))): continue
                 if not ignore_target_protection and _protected_from(permanent,card): continue
                 targets.append({"id": permanent["instance_id"], "name": permanent["name"], "kind": "permanent", "controller_id": player["id"]})
@@ -3069,6 +3071,8 @@ def _resolve_spell(state: dict) -> None:
     target_player = next((player for player in state["players"] if player["id"] == target_id), None)
     target_owner = next((player for player in state["players"] if any(permanent["instance_id"] == target_id for permanent in player["battlefield"])), None)
     target = next((permanent for player in state["players"] for permanent in player["battlefield"] if permanent["instance_id"] == target_id), None)
+    if target and "exile up to one target non-salamander creature" in effect_text and "that creature's controller creates a 4/3 blue salamander warrior creature token" in (source_permanent or card).get("oracle_text","").casefold():
+        target_controller=_player(state,target["controller_id"]);target_owner=next(owner for owner in state["players"] if target in owner["battlefield"]);_leave_battlefield(state,target_owner,target,"exile",exile_actor_id=caster["id"]);token={"instance_id":_id(),"scryfall_id":"token-salamander-warrior","name":"Salamander Warrior Token","image_url":None,"type_line":"Token Creature — Salamander Warrior","oracle_text":"","mana_cost":"","mana_value":0,"colors":["U"],"power":"4","toughness":"3","owner_id":target_controller["id"],"controller_id":target_controller["id"],"tapped":False,"damage":0,"counters":{},"summoning_sick":True,"token":True,"keywords":[]};_enter_battlefield(state,target_controller,[token],"token");_log(state,f"{target['name']} was exiled; {target_controller['name']} created a 4/3 Salamander Warrior token.");return
     if target_player and "target opponent reveals their hand" in effect_text and "you choose a nonland card from it and exile that card" in effect_text:
         choices=[deepcopy(hand_card) for hand_card in target_player["hand"] if "Land" not in hand_card.get("type_line","")]
         if choices:state["pending_same_name_search"]={"player_id":caster["id"],"victim_id":target_player["id"],"victim_name":target_player["name"],"source_name":card["name"],"stage":"seed","delirium":_graveyard_card_type_count(caster)>=4,"cards":choices};state["priority_player_id"]=caster["id"];_log(state,f"{target_player['name']} revealed their hand; {caster['name']} must choose a nonland card to exile.")
