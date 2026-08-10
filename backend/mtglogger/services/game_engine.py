@@ -1515,7 +1515,7 @@ def _maximum_waterbend_x(player:dict,base_card:dict,excluded_ids:set[str]|None=N
 
 
 def _predefined_token(owner:dict,kind:str,tapped:bool=False)->dict:
-    oracle={"Clue":"{2}, Sacrifice this artifact: Draw a card.","Food":"{2}, {T}, Sacrifice this artifact: You gain 3 life.","Treasure":"{T}, Sacrifice this artifact: Add one mana of any color.","Blood":"{1}, {T}, Discard a card, Sacrifice this artifact: Draw a card.","Gold":"Sacrifice this artifact: Add one mana of any color."}[kind]
+    oracle={"Clue":"{2}, Sacrifice this artifact: Draw a card.","Food":"{2}, {T}, Sacrifice this artifact: You gain 3 life.","Treasure":"{T}, Sacrifice this artifact: Add one mana of any color.","Blood":"{1}, {T}, Discard a card, Sacrifice this artifact: Draw a card.","Gold":"Sacrifice this artifact: Add one mana of any color.","Map":"{1}, {T}, Sacrifice this artifact: Target creature you control explores. Activate only as a sorcery."}[kind]
     return {"instance_id":_id(),"scryfall_id":f"token-{kind.casefold()}","name":f"{kind} Token","image_url":None,"type_line":f"Token Artifact — {kind}","oracle_text":oracle,"mana_cost":"","mana_value":0,"power":None,"toughness":None,"owner_id":owner["id"],"controller_id":owner["id"],"tapped":tapped,"damage":0,"counters":{},"summoning_sick":True,"token":True,"keywords":[]}
 
 
@@ -3150,6 +3150,8 @@ def _resolve_spell(state: dict) -> None:
     if valid_multi_ids:target_ids=valid_multi_ids
     is_permanent_spell = item.get("kind", "spell") in {"spell","storm_copy"} and any(kind in card.get("type_line", "") for kind in ("Creature", "Artifact", "Enchantment", "Planeswalker", "Battle"))
     effect_text = "" if is_permanent_spell and re.search(r"\b(?:when|whenever|at the beginning)\b", text) else text
+    if re.search(r"create \d+ map tokens?, where \d+ is one plus the number of opponents who control an artifact",effect_text):
+        map_count=1+sum(any("Artifact" in permanent.get("type_line","") for permanent in owner["battlefield"]) for owner in state["players"] if owner["id"]!=caster["id"]);effect_text=re.sub(r"create \d+ map tokens?",f"create {map_count} Map tokens",effect_text,count=1)
     if "owner of target attacking creature you don't control puts it on their choice of the top or bottom of their library" in effect_text:
         placement_target=next((candidate for owner in state["players"] for candidate in owner["battlefield"] if candidate["instance_id"]==target_id),None);placement_controller=next((owner for owner in state["players"] if placement_target in owner["battlefield"]),None) if placement_target else None
         if placement_target and placement_controller:
@@ -3981,7 +3983,7 @@ def _resolve_spell(state: dict) -> None:
             supported=("flying","first strike","double strike","deathtouch","haste","hexproof","indestructible","lifelink","menace","reach","trample","vigilance");gained={keyword for keyword in supported if global_stats.group(4) and re.search(rf"\b{re.escape(keyword)}\b",global_stats.group(4))}
             for token in created:token["temporary_power"]=token.get("temporary_power",0)+int(global_stats.group(2));token["temporary_toughness"]=token.get("temporary_toughness",0)+int(global_stats.group(3));token["temporary_keywords"]=sorted(set(token.get("temporary_keywords",[]))|gained)
         _log(state, f"{caster['name']} created {amount} token(s){' tapped and attacking' if attacking else ''}.")
-    predefined_matches=list(re.finditer(r"create (a|one|two|three|four|five|\d+) (tapped )?(clue|food|treasure|blood|gold) tokens?",effect_text,re.IGNORECASE))
+    predefined_matches=list(re.finditer(r"create (a|one|two|three|four|five|\d+) (tapped )?(clue|food|treasure|blood|gold|map) tokens?",effect_text,re.IGNORECASE))
     for predefined in predefined_matches:
         word=predefined.group(1).casefold();amount={"a":1,"one":1,"two":2,"three":3,"four":4,"five":5}.get(word,int(word) if word.isdigit() else 1);kind=predefined.group(3).title()
         created=[]
