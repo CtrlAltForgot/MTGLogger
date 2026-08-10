@@ -2058,6 +2058,7 @@ def _target_kind(card: dict) -> str | None:
     if re.search(r"each of up to x targets?",text):return "any"
     if re.search(r"(?:up to )?x target creatures?(?! cards?\b)",text):return "creature"
     if re.search(r"up to one target non-[a-z]+ creature",text):return "creature"
+    if re.search(r"target attacking creature",text):return "creature"
     if re.search(r"up to (?:two|three|four|\d+) target (?:non-[a-z]+ )?creatures?",text):return "creature"
     if "exile two target creatures and/or lands you control" in text:return "permanent"
     if re.search(r"up to x target creature cards? from your graveyard",text):return "graveyard_creature"
@@ -2069,6 +2070,7 @@ def _target_kind(card: dict) -> str | None:
     if re.search(r"target (?:nonland permanent |nonland )?card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_card"
     if "target face-down permanent you control" in text:return "permanent"
     if "target artifact or enchantment" in text:return "artifact_or_enchantment"
+    if "target artifact or creature" in text:return "artifact_or_creature"
     if re.search(r"target artifact\b",text):return "artifact"
     if "target creature or planeswalker" in text:return "creature_or_planeswalker"
     if "target creature or vehicle" in text:return "creature_or_vehicle"
@@ -2157,7 +2159,7 @@ def _targets(state: dict, caster_id: str, card: dict, ignore_target_protection:b
         aura_types=_aura_allowed_types(card)
         if (kind in {"any", "player","player_or_planeswalker"} or (kind=="permanent" and "player" in aura_types)) and not ("target opponent" in text and player["id"]==caster_id) and not _player_protected_from(state,player,card): targets.append({"id": player["id"], "name": player["name"], "kind": "player", "controller_id": player["id"]})
         for permanent in player["battlefield"]:
-            if kind in {"any", "permanent"} or (kind=="player_or_planeswalker" and "Planeswalker" in permanent.get("type_line","")) or (kind=="creature_or_planeswalker" and any(value in permanent.get("type_line","") for value in ("Creature","Planeswalker"))) or (kind=="artifact_or_enchantment" and any(value in permanent.get("type_line","") for value in ("Artifact","Enchantment"))) or (kind=="creature_or_spell" and "Creature" in permanent.get("type_line","")) or (kind=="creature_or_vehicle" and any(value in permanent.get("type_line","") for value in ("Creature","Vehicle"))) or (kind in {"creature","artifact","enchantment","land","planeswalker"} and kind in permanent.get("type_line", "").casefold()):
+            if kind in {"any", "permanent"} or (kind=="player_or_planeswalker" and "Planeswalker" in permanent.get("type_line","")) or (kind=="creature_or_planeswalker" and any(value in permanent.get("type_line","") for value in ("Creature","Planeswalker"))) or (kind=="artifact_or_enchantment" and any(value in permanent.get("type_line","") for value in ("Artifact","Enchantment"))) or (kind=="artifact_or_creature" and any(value in permanent.get("type_line","") for value in ("Artifact","Creature"))) or (kind=="creature_or_spell" and "Creature" in permanent.get("type_line","")) or (kind=="creature_or_vehicle" and any(value in permanent.get("type_line","") for value in ("Creature","Vehicle"))) or (kind in {"creature","artifact","enchantment","land","planeswalker"} and kind in permanent.get("type_line", "").casefold()):
                 target_color=re.search(r"target (white|blue|black|red|green) creature",text);color_symbols={"white":"W","blue":"U","black":"B","red":"R","green":"G"}
                 if target_color and color_symbols[target_color.group(1)] not in _card_colors(permanent):continue
                 aura_types=_aura_allowed_types(card)
@@ -2313,7 +2315,7 @@ def _pending_decision(state:dict)->bool:
     if state.get("pending_zone_choice"):return True
     if state.get("pending_counter_choice"):return True
     if state.get("pending_color_choice"):return True
-    return bool(state.get("pending_miracle") or state.get("pending_impulsivity") or state.get("pending_library_placement") or state.get("pending_sticktwister") or state.get("pending_eumidian_choice") or state.get("pending_rad_choice") or state.get("pending_top_card_choice") or state.get("pending_revealed_discard") or state.get("pending_same_name_search") or state.get("pending_winter_exile") or state.get("pending_optional_discard") or state.get("pending_optional_payment") or state.get("pending_tilonalli") or state.get("pending_creature_type") or state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_populate") or state.get("pending_bolster") or state.get("pending_discovery") or state.get("pending_madness") or state.get("pending_rebound") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
+    return bool(state.get("pending_miracle") or state.get("pending_impulsivity") or state.get("pending_library_placement") or state.get("pending_sticktwister") or state.get("pending_eumidian_choice") or state.get("pending_rad_choice") or state.get("pending_tap_choice") or state.get("pending_top_card_choice") or state.get("pending_revealed_discard") or state.get("pending_same_name_search") or state.get("pending_winter_exile") or state.get("pending_optional_discard") or state.get("pending_optional_payment") or state.get("pending_tilonalli") or state.get("pending_creature_type") or state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_populate") or state.get("pending_bolster") or state.get("pending_discovery") or state.get("pending_madness") or state.get("pending_rebound") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
 
 
 def _split_second_on_stack(state:dict)->bool:
@@ -2439,6 +2441,10 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
     if pending_winter:
         if pending_winter["player_id"]!=player_id:return []
         common={"source_name":pending_winter["source_name"]};return [{"type":"choose_winter_exile","card_ids":[card["instance_id"] for card in pending_winter["cards"]],"cards":pending_winter["cards"],"label":"Choose graveyard cards containing at least four card types",**common},{"type":"decline_winter_exile","label":"Exile no cards",**common},{"type":"concede"}]
+    pending_tap_choice=state.get("pending_tap_choice")
+    if pending_tap_choice:
+        if pending_tap_choice["player_id"]!=player_id:return []
+        common={"source_name":pending_tap_choice["source_name"],"card_name":pending_tap_choice["card_name"]};return [{"type":"choose_tap_target","label":f"Tap {pending_tap_choice['card_name']}",**common},{"type":"choose_untap_target","label":f"Untap {pending_tap_choice['card_name']}",**common},{"type":"concede"}]
     pending_optional_discard=state.get("pending_optional_discard")
     if pending_optional_discard:
         if pending_optional_discard["player_id"]!=player_id:return []
@@ -3433,6 +3439,8 @@ def _resolve_spell(state: dict) -> None:
     target_player = next((player for player in state["players"] if player["id"] == target_id), None)
     target_owner = next((player for player in state["players"] if any(permanent["instance_id"] == target_id for permanent in player["battlefield"])), None)
     target = next((permanent for player in state["players"] for permanent in player["battlefield"] if permanent["instance_id"] == target_id), None)
+    if target and re.search(r"you may tap or untap target artifact or creature",effect_text):
+        state["pending_tap_choice"]={"player_id":caster["id"],"source_name":source_permanent.get("name",card["name"]) if source_permanent else card["name"],"card_id":target["instance_id"],"card_name":target["name"]};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} must choose whether to tap or untap {target['name']}.");return
     if target and source_permanent and "attach it to target creature you control" in effect_text:
         _attach(state,source_permanent,target);_log(state,f"{source_permanent['name']} attached to {target['name']} as its enter trigger resolved.");effect_text=""
     elif target and target_owner and re.search(r"put target (?:artifact, creature, or enchantment|nonland permanent) on (?:the )?(bottom|top) of its owner's library",effect_text):
@@ -3975,7 +3983,7 @@ def _resolve_spell(state: dict) -> None:
     source_counter_name=re.escape((source_permanent or {}).get("name","").casefold());self_counter=re.search(rf"put (another|a|one|two|three|four|five|\d+) ([+−-]\d+/[+−-]\d+|[a-z][a-z-]*) counters? on (?:him|her|them|it|this (?:creature|spacecraft|permanent|artifact|enchantment|planeswalker)|{source_counter_name})",effect_text)
     if source_permanent and self_counter:
         words={"another":1,"a":1,"one":1,"two":2,"three":3,"four":4,"five":5};amount=words.get(self_counter.group(1),int(self_counter.group(1)) if self_counter.group(1).isdigit() else 1);name=self_counter.group(2).replace("−","-");_add_counters(state,source_permanent,name,amount,caster["id"],"effect")
-    keyword_match=re.search(r"target creature[^.]*?\bgains? ([^.]+?) until end of turn",effect_text)
+    keyword_match=re.search(r"target (?:attacking )?creature[^.]*?\bgains? ([^.]+?) until end of turn",effect_text)
     if target and keyword_match:
         supported=("flying","first strike","double strike","deathtouch","haste","hexproof","indestructible","lifelink","menace","reach","trample","vigilance")
         gained=[keyword for keyword in supported if re.search(rf"\b{re.escape(keyword)}\b",keyword_match.group(1))]
@@ -5404,6 +5412,10 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if action_type=="accept_rad_counters":player["rad"]=player.get("rad",0)+int(pending["amount"]);_log(state,f"{player['name']} got {pending['amount']} rad counter(s) from {pending['source_name']}.")
         else:_log(state,f"{player['name']} declined the rad counters from {pending.get('source_name','the effect')}.")
         state["pending_rad_choice"]=None;state["priority_player_id"]=state["active_player_id"]
+    elif action_type in {"choose_tap_target","choose_untap_target"}:
+        pending=state.get("pending_tap_choice") or {};target=next((card for owner in state["players"] for card in owner["battlefield"] if card["instance_id"]==pending.get("card_id")),None)
+        if pending.get("player_id")!=player_id or not target:raise RuleViolation("There is no tap-or-untap choice for this player")
+        tapped=action_type=="choose_tap_target";_set_tapped(state,[target],tapped,player_id,"effect");state["pending_tap_choice"]=None;state["priority_player_id"]=state["active_player_id"];_log(state,f"{player['name']} chose to {'tap' if tapped else 'untap'} {target['name']} for {pending['source_name']}.")
     elif action_type in {"place_target_top","place_target_bottom"}:
         pending=state.get("pending_library_placement") or {}
         if pending.get("player_id")!=player_id:raise RuleViolation("There is no library-placement choice for this player")
