@@ -1430,6 +1430,9 @@ def _activated_abilities(card: dict) -> list[dict]:
             count_word=(sacrifice_match.group(1) or "a").strip().casefold();selection_costs.append({"kind":"sacrifice","filter":sacrifice_match.group(2).casefold(),"amount":"X" if count_word=="x" else 2 if count_word=="two other" else 3 if count_word=="three other" else words.get(count_word,1),"exclude_source":"other" in count_word or count_word=="another"})
         blight_match=re.search(r"\bblight (\d+)\b",cost,re.IGNORECASE)
         if blight_match:selection_costs.append({"kind":"blight","filter":"creature","amount":1,"blight_amount":int(blight_match.group(1)),"exclude_source":False})
+        tap_selection=re.search(r"\btap (one|two|three|four|five|\d+) other untapped (artifact|creature)s? you control\b",cost,re.IGNORECASE)
+        if tap_selection:
+            word=tap_selection.group(1).casefold();selection_costs.append({"kind":"tap","filter":f"untapped {tap_selection.group(2).casefold()}","amount":words.get(word,int(word) if word.isdigit() else 1),"exclude_source":True})
         unsupported=("discard" in cost.casefold() and not selection_costs) or ("sacrifice" in cost.casefold() and not self_sacrifice and not selection_costs) or ("remove" in cost.casefold() and "counter" in cost.casefold() and not counter_cost) or (waterbend_symbol and selection_costs)
         if unsupported or (not taps and not mana_cost and not waterbend_symbol and not energy_cost and not self_sacrifice and not self_bottom and not life_cost and not counter_cost and not selection_costs):continue
         if re.match(r"add (?:\{|one mana)", effect, re.IGNORECASE): continue
@@ -1493,6 +1496,7 @@ def _activated_cost_options(player:dict,source:dict,selection_cost:dict|None)->l
     kind=selection_cost["filter"].casefold()
     def matches(card:dict)->bool:
         type_line=card.get("type_line","").casefold()
+        if kind.startswith("untapped "):return not card.get("tapped") and kind.removeprefix("untapped ") in type_line
         if kind in {"card","permanent"}:return True
         if kind=="nonland":return "land" not in type_line
         if kind=="nonland permanent":return "land" not in type_line
@@ -6084,7 +6088,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
             permanent.setdefault("activated_ability_usage",{})[str(index)]={"turn":state["turn"],"ever":True}
         cost_triggers=state["stack"][stack_before_cost:];del state["stack"][stack_before_cost:]
         sacrificed_power=max((_parse_stats(card,state)[0] for card in selected_cost_cards if "Creature" in card.get("type_line","")),default=0) if "sacrificed creature's power" in ability["effect"].casefold() else 0
-        stack_item={"id":_id(),"kind":"ability","card":ability["card"],"controller_id":player_id,"target_id":target_id,"target_ids":target_ids,"source_id":permanent["instance_id"],"x_value":x_value,"sacrificed_power":sacrificed_power};state["stack"].append(stack_item);state["stack"].extend(cost_triggers);state["consecutive_passes"]=0;state["pending_phase_advance"]=False
+        activated_kind="crew_ability" if "this vehicle becomes an artifact creature until end of turn" in ability["effect"].casefold() else "ability";stack_item={"id":_id(),"kind":activated_kind,"card":ability["card"],"controller_id":player_id,"target_id":target_id,"target_ids":target_ids,"source_id":permanent["instance_id"],"x_value":x_value,"sacrificed_power":sacrificed_power};state["stack"].append(stack_item);state["stack"].extend(cost_triggers);state["consecutive_passes"]=0;state["pending_phase_advance"]=False
         if waterbend_symbol:_queue_triggers(state,"waterbend",permanent,player)
         for ward_target in ([target_id] if target_id else [])+target_ids:_queue_ward(state,player,ward_target,stack_item)
         sacrifice_cards=[permanent] if ability["self_sacrifice"] else []
@@ -6092,11 +6096,13 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         sacrifice_ids={card_id for requirement in available.get("cost_requirements",[]) if requirement["kind"]=="sacrifice" for card_id in requirement["options"]}
         exile_graveyard_ids={card_id for requirement in available.get("cost_requirements",[]) if requirement["kind"]=="exile_graveyard" for card_id in requirement["options"]}
         bottom_graveyard_ids={card_id for requirement in available.get("cost_requirements",[]) if requirement["kind"]=="bottom_graveyard" for card_id in requirement["options"]}
+        tap_ids={card_id for requirement in available.get("cost_requirements",[]) if requirement["kind"]=="tap" for card_id in requirement["options"]}
         discard_cards=[]
         for card in list(selected_cost_cards):
             if card["instance_id"] in discard_ids and card in player["hand"]:discard_cards.append(card)
             elif card["instance_id"] in sacrifice_ids and card in player["battlefield"]:sacrifice_cards.append(card)
         _discard_cards(state,player,discard_cards)
+        _set_tapped(state,[card for card in selected_cost_cards if card["instance_id"] in tap_ids],True,player_id,"activation_cost")
         _sacrifice_permanents(state,player,list({card["instance_id"]:card for card in sacrifice_cards}.values()))
         exiled=[card for card in selected_cost_cards if card["instance_id"] in exile_graveyard_ids and card in player["graveyard"]]
         if exiled:_leave_graveyard(state,player,exiled);_put_into_exile(state,player,exiled,"activation_cost",player_id)
