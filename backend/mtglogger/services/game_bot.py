@@ -215,6 +215,11 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
         if discard and (not sacrifice or float((discard.get("card") or {}).get("mana_value") or 0)<=_threat_score(state,sacrifice.get("card") or {})):return {"type":"sticktwister_discard","card_id":discard["card_id"]}
         if sacrifice:return {"type":"sticktwister_sacrifice","card_id":sacrifice["card_id"]}
     if "sticktwister_take_damage" in by_type:return by_type["sticktwister_take_damage"][0]
+    if "eumidian_discard" in by_type or "eumidian_sacrifice" in by_type:
+        discard=min(by_type.get("eumidian_discard",[]),key=lambda action:float((action.get("card") or {}).get("mana_value") or 0),default=None);sacrifice=min(by_type.get("eumidian_sacrifice",[]),key=lambda action:_threat_score(state,action.get("card") or {}),default=None)
+        if discard and (not sacrifice or float((discard.get("card") or {}).get("mana_value") or 0)<=_threat_score(state,sacrifice.get("card") or {})):return {"type":"eumidian_discard","card_id":discard["card_id"]}
+        if sacrifice:return {"type":"eumidian_sacrifice","card_id":sacrifice["card_id"]}
+    if "eumidian_no_action" in by_type:return by_type["eumidian_no_action"][0]
     if "keep" in by_type:
         return by_type.get("mulligan",by_type["keep"])[0] if _should_mulligan(state,difficulty) else by_type["keep"][0]
     if "take_top_card" in by_type or "mill_top_card" in by_type or "keep_top_card" in by_type:

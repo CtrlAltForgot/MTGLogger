@@ -1890,6 +1890,10 @@ def public_state(state: dict, viewer_id: str = "player") -> dict:
     if pending_sticktwister:
         for selection in pending_sticktwister.get("selections",[]):
             if selection.get("kind")=="discard":selection.pop("card_id",None)
+    pending_eumidian=visible.get("pending_eumidian_choice")
+    if pending_eumidian:
+        for selection in pending_eumidian.get("selections",[]):
+            if selection.get("kind")=="discard":selection.pop("card_id",None)
     pending_dungeon=visible.get("pending_dungeon")
     if pending_dungeon and pending_dungeon.get("player_id")!=viewer_id:
         pending_dungeon.pop("cards",None);pending_dungeon["card_ids"]=[];pending_dungeon.pop("top_ids",None)
@@ -2129,7 +2133,7 @@ def _pending_decision(state:dict)->bool:
     if state.get("pending_zone_choice"):return True
     if state.get("pending_counter_choice"):return True
     if state.get("pending_color_choice"):return True
-    return bool(state.get("pending_sticktwister") or state.get("pending_rad_choice") or state.get("pending_top_card_choice") or state.get("pending_revealed_discard") or state.get("pending_same_name_search") or state.get("pending_winter_exile") or state.get("pending_optional_discard") or state.get("pending_optional_payment") or state.get("pending_tilonalli") or state.get("pending_creature_type") or state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_populate") or state.get("pending_bolster") or state.get("pending_discovery") or state.get("pending_madness") or state.get("pending_rebound") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
+    return bool(state.get("pending_sticktwister") or state.get("pending_eumidian_choice") or state.get("pending_rad_choice") or state.get("pending_top_card_choice") or state.get("pending_revealed_discard") or state.get("pending_same_name_search") or state.get("pending_winter_exile") or state.get("pending_optional_discard") or state.get("pending_optional_payment") or state.get("pending_tilonalli") or state.get("pending_creature_type") or state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_populate") or state.get("pending_bolster") or state.get("pending_discovery") or state.get("pending_madness") or state.get("pending_rebound") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
 
 
 def _split_second_on_stack(state:dict)->bool:
@@ -2187,6 +2191,13 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
         common={"source_name":pending_sticktwister["source_name"],"source_power":pending_sticktwister["source_power"]};actions=[{"type":"sticktwister_discard","card_id":card["instance_id"],"card":card,"label":f"Discard {card['name']}",**common} for card in player["hand"]]
         actions.extend({"type":"sticktwister_sacrifice","card_id":card["instance_id"],"card":card,"label":f"Sacrifice {card['name']}",**common} for card in player["battlefield"] if "Land" not in card.get("type_line",""))
         return actions+[{"type":"sticktwister_take_damage","label":f"Take {pending_sticktwister['source_power']} damage",**common},{"type":"concede"}]
+    pending_eumidian=state.get("pending_eumidian_choice")
+    if pending_eumidian:
+        position=len(pending_eumidian.get("selections",[]));choosers=pending_eumidian.get("choosers",[]);current=choosers[position] if position<len(choosers) else None
+        if not current or current!=player_id:return []
+        common={"source_name":pending_eumidian["source_name"]};actions=[{"type":"eumidian_discard","card_id":card["instance_id"],"card":card,"label":f"Discard {card['name']}",**common} for card in player["hand"]];actions.extend({"type":"eumidian_sacrifice","card_id":card["instance_id"],"card":card,"label":f"Sacrifice {card['name']}",**common} for card in player["battlefield"])
+        if not actions:actions.append({"type":"eumidian_no_action","label":"No card or permanent available",**common})
+        return actions+[{"type":"concede"}]
     pending_rad=state.get("pending_rad_choice")
     if pending_rad:
         if pending_rad["player_id"]!=player_id:return []
@@ -3040,6 +3051,10 @@ def _resolve_spell(state: dict) -> None:
         if choices:
             state["pending_sticktwister"]={"controller_id":caster["id"],"source_name":source.get("name",card["name"]).removesuffix(" trigger"),"source_card":deepcopy(source),"source_power":_parse_stats(source,state)[0],"choices":choices,"selections":[]};state["priority_player_id"]=choices[0]["player_id"];_log(state,f"Each opponent must choose whether to discard, sacrifice a nonland permanent, or take damage from {state['pending_sticktwister']['source_name']}.")
         return
+    eumidian_text=(source_permanent or card).get("oracle_text","").casefold()
+    if "you and defending player each discard a card or sacrifice a permanent" in eumidian_text and "draw a card for each land card put into a graveyard this way" in eumidian_text:
+        defender_id=state.get("combat",{}).get("attack_targets",{}).get(item.get("source_id"),other["id"]);choosers=[caster["id"],defender_id]
+        state["pending_eumidian_choice"]={"controller_id":caster["id"],"source_name":source_permanent.get("name",card["name"]).removesuffix(" trigger") if source_permanent else card["name"].removesuffix(" trigger"),"choosers":choosers,"selections":[]};state["priority_player_id"]=choosers[0];_log(state,f"{caster['name']} and the defending player must each choose a card to discard or a permanent to sacrifice for {state['pending_eumidian_choice']['source_name']}.");return
     if "you may exile any number of cards from your graveyard with four or more card types among them" in effect_text and "put a permanent card from among them onto the battlefield with a finality counter" in effect_text:
         choices=[deepcopy(candidate) for candidate in caster["graveyard"]]
         state["pending_winter_exile"]={"player_id":caster["id"],"source_name":source_permanent.get("name",card["name"]).removesuffix(" trigger") if source_permanent else card["name"].removesuffix(" trigger"),"cards":choices};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} may choose graveyard cards containing four or more card types to exile for Winter.");return
@@ -4744,6 +4759,22 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
             for selection in pending["selections"]:
                 if selection["kind"]=="take_damage":_damage_player(state,_player(state,selection["player_id"]),int(pending["source_power"]),source)
             state["pending_sticktwister"]=None;state["priority_player_id"]=(state.get("pending_trigger_targets") or [{"controller_id":state["active_player_id"]}])[0]["controller_id"];_log(state,f"All opponents completed {pending['source_name']}'s choice.")
+    elif action_type in {"eumidian_discard","eumidian_sacrifice","eumidian_no_action"}:
+        pending=state.get("pending_eumidian_choice") or {};position=len(pending.get("selections",[]));choosers=pending.get("choosers",[]);current=choosers[position] if position<len(choosers) else None
+        if current!=player_id:raise RuleViolation("There is no Eumidian choice for this player")
+        kind=action_type.removeprefix("eumidian_");card_id=action.get("card_id")
+        if kind=="discard" and card_id not in {card["instance_id"] for card in player["hand"]}:raise RuleViolation("Choose a card in your hand to discard")
+        if kind=="sacrifice" and card_id not in {card["instance_id"] for card in player["battlefield"]}:raise RuleViolation("Choose a permanent to sacrifice")
+        if kind=="no_action" and (player["hand"] or player["battlefield"]):raise RuleViolation("You must discard a card or sacrifice a permanent if able")
+        pending.setdefault("selections",[]).append({"player_id":player_id,"kind":kind,"card_id":card_id});state["pending_eumidian_choice"]=pending
+        if len(pending["selections"])<len(choosers):state["priority_player_id"]=choosers[len(pending["selections"])]
+        else:
+            lands=0
+            for selection in pending["selections"]:
+                chooser=_player(state,selection["player_id"]);selected=selection.get("card_id")
+                if selection["kind"]=="discard":chosen=next(card for card in chooser["hand"] if card["instance_id"]==selected);lands+=int("Land" in chosen.get("type_line",""));_discard_cards(state,chooser,[chosen])
+                elif selection["kind"]=="sacrifice":chosen=next(card for card in chooser["battlefield"] if card["instance_id"]==selected);lands+=int("Land" in chosen.get("type_line",""));_sacrifice_permanents(state,chooser,[chosen])
+            controller=_player(state,pending["controller_id"]);_draw(state,controller,lands);state["pending_eumidian_choice"]=None;state["priority_player_id"]=state["active_player_id"];_log(state,f"Both players completed {pending['source_name']}'s choices; {controller['name']} drew {lands} card(s) for lands put into graveyards.")
     elif action_type in {"pay_tilonalli","decline_tilonalli"}:
         pending=state.get("pending_tilonalli") or {}
         if pending.get("player_id")!=player_id:raise RuleViolation("There is no Tilonalli payment decision for this player")
