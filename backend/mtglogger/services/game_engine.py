@@ -3114,10 +3114,10 @@ def _resolve_spell(state: dict) -> None:
         for affected in [owner for owner in state["players"] if owner["id"]!=caster["id"]]:
             choices=[permanent["instance_id"] for permanent in affected["battlefield"] if "Creature" in permanent.get("type_line","")];required=(len(choices)+1)//2
             if required:state["pending_sacrifice"]={"player_id":affected["id"],"amount":required,"card_ids":choices};state["priority_player_id"]=affected["id"];_log(state,f"{affected['name']} must sacrifice {required} creature(s).")
-    sacrifice_match=None if half_sacrifice else re.search(r"(?:target player|each opponent) sacrifices? (a|one|two|three|four|\d+) (creature or vehicle|creature|permanent)s?",effect_text)
+    sacrifice_match=None if half_sacrifice else re.search(r"(?:target player|each opponent) sacrifices? (a|one|two|three|four|\d+) (nontoken )?(creature or vehicle|creature|permanent)s?",effect_text)
     if sacrifice_match:
-        words={"a":1,"one":1,"two":2,"three":3,"four":4};amount=words.get(sacrifice_match.group(1),int(sacrifice_match.group(1)) if sacrifice_match.group(1).isdigit() else 1);affected=target_player if "target player" in sacrifice_match.group(0) and target_player else other;kind=sacrifice_match.group(2)
-        choices=[permanent["instance_id"] for permanent in affected["battlefield"] if kind=="permanent" or any(part in permanent.get("type_line","").casefold() for part in kind.split(" or "))];required=min(amount,len(choices))
+        words={"a":1,"one":1,"two":2,"three":3,"four":4};amount=words.get(sacrifice_match.group(1),int(sacrifice_match.group(1)) if sacrifice_match.group(1).isdigit() else 1);affected=target_player if "target player" in sacrifice_match.group(0) and target_player else other;kind=sacrifice_match.group(3)
+        choices=[permanent["instance_id"] for permanent in affected["battlefield"] if (not sacrifice_match.group(2) or not permanent.get("token")) and (kind=="permanent" or any(part in permanent.get("type_line","").casefold() for part in kind.split(" or ")))];required=min(amount,len(choices))
         if required:state["pending_sacrifice"]={"player_id":affected["id"],"amount":required,"card_ids":choices};state["priority_player_id"]=affected["id"];_log(state,f"{affected['name']} must sacrifice {required} {kind}(s).")
         elif "who can't discards a card" in effect_text and affected["hand"]:state["pending_discard"]={"player_id":affected["id"],"amount":1,"reason":"effect"};state["priority_player_id"]=affected["id"];_log(state,f"{affected['name']} could not sacrifice and must discard a card.")
     speed_damage=re.search(r"deals (\d+) damage to each player who (?:doesn't|does not) have max speed",effect_text)
