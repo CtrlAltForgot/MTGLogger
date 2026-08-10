@@ -425,7 +425,7 @@ def _parse_stats(card: dict,state:dict|None=None) -> tuple[int, int]:
     try:
         plus = card.get("counters", {}).get("+1/+1", 0); minus = card.get("counters", {}).get("-1/-1", 0)
         static_power,static_toughness=_continuous_stats(state,card)
-        raw_text=(card.get("oracle_text") or "").casefold();speed=int(card.get("controller_speed",0));speed_power="power is equal to your speed" in raw_text;artifact_power="power is equal to the number of artifacts you control" in raw_text;life_stats="power and toughness are each equal to your life total" in raw_text;life_total=_player(state,card.get("controller_id",card.get("owner_id")))["life"] if state and life_stats else int(card.get("controller_life",0));level_stats=_level_stats(card);dynamic_power=speed if speed_power else int(card.get("controller_artifact_count",0)) if artifact_power else life_total if life_stats else None;base_power,base_toughness=level_stats or ((dynamic_power,dynamic_power) if life_stats else (dynamic_power if dynamic_power is not None else int(card.get("temporary_base_power",card.get("power") or 0)),int(card.get("temporary_base_toughness",card.get("toughness") or 0))))
+        raw_text=(card.get("oracle_text") or "").casefold();speed=int(card.get("controller_speed",0));speed_power="power is equal to your speed" in raw_text;artifact_power="power is equal to the number of artifacts you control" in raw_text;life_stats="power and toughness are each equal to your life total" in raw_text;spirit_enchantment_stats="power and toughness are each equal to the number of permanents you control that are spirits and/or enchantments" in raw_text;controller=_player(state,card.get("controller_id",card.get("owner_id"))) if state and (life_stats or spirit_enchantment_stats) else None;life_total=controller["life"] if controller and life_stats else int(card.get("controller_life",0));spirit_enchantment_total=sum("Spirit" in permanent.get("type_line","") or "Enchantment" in permanent.get("type_line","") for permanent in controller["battlefield"]) if controller and spirit_enchantment_stats else 0;level_stats=_level_stats(card);dynamic_power=speed if speed_power else int(card.get("controller_artifact_count",0)) if artifact_power else life_total if life_stats else spirit_enchantment_total if spirit_enchantment_stats else None;base_power,base_toughness=level_stats or ((dynamic_power,dynamic_power) if life_stats or spirit_enchantment_stats else (dynamic_power if dynamic_power is not None else int(card.get("temporary_base_power",card.get("power") or 0)),int(card.get("temporary_base_toughness",card.get("toughness") or 0))))
         active_text=_active_level_text(card);static_clauses=[clause for clause in re.split(r"(?<=[.!])\s+|\n",active_text) if "until end of turn" not in clause.casefold() and "as long as" not in clause.casefold() and "for each" not in clause.casefold()];self_name=re.escape(card.get("name","").split(" ability",1)[0]);self_static=next((match for clause in static_clauses if (match:=re.search(rf"(?:this creature|{self_name}) gets ([+-]\d+)/([+-]\d+)",clause,re.IGNORECASE))),None);speed_static=(int(self_static.group(1)),int(self_static.group(2))) if self_static else (0,0)
         blessing_power=blessing_toughness=0
         if card.get("controller_city_blessing"):
@@ -1007,7 +1007,7 @@ def _can_attack(state:dict,card:dict,attacker:dict,defender:dict)->bool:
     text=_effective_rules_text(state,card)
     if card.get("cant_attack_until_turn")==state["turn"]:return False
     if "can't attack or block unless you have max speed" in text and attacker.get("speed",0)<4:return False
-    defender_override="defender" in text and "can attack as though it didn't have defender" in text and ("as long as you control a creature with power 4 or greater" not in text or any("Creature" in permanent.get("type_line","") and _parse_stats(permanent,state)[0]>=4 for permanent in attacker["battlefield"]))
+    defender_override="defender" in text and "can attack as though it didn't have defender" in text and ("three or more judgment counters" not in text or card.get("counters",{}).get("judgment",0)>=3) and ("as long as you control a creature with power 4 or greater" not in text or any("Creature" in permanent.get("type_line","") and _parse_stats(permanent,state)[0]>=4 for permanent in attacker["battlefield"]))
     if _has_keyword(card,"Defender") and not defender_override:return False
     if "can't attack unless" in text or "can't attack or block unless" in text:
         if "unless you have the city's blessing" in text and attacker.get("city_blessing"):return True
@@ -3099,6 +3099,14 @@ def _resolve_spell(state: dict) -> None:
     if valid_multi_ids:target_ids=valid_multi_ids
     is_permanent_spell = item.get("kind", "spell") in {"spell","storm_copy"} and any(kind in card.get("type_line", "") for kind in ("Creature", "Artifact", "Enchantment", "Planeswalker", "Battle"))
     effect_text = "" if is_permanent_spell and re.search(r"\b(?:when|whenever|at the beginning)\b", text) else text
+    if source_permanent and "if this creature has two or fewer judgment counters on it, put a judgment counter on it" in effect_text:
+        if source_permanent.get("counters",{}).get("judgment",0)<=2:_add_counters(state,source_permanent,"judgment",1,caster["id"],"upkeep")
+        _log(state,f"{source_permanent['name']} has {source_permanent.get('counters',{}).get('judgment',0)} judgment counter(s).");return
+    if source_permanent and "put a judgment counter on this aura" in effect_text and "enchanted player loses the game" in effect_text:
+        _add_counters(state,source_permanent,"judgment",1,caster["id"],"upkeep");amount=source_permanent.get("counters",{}).get("judgment",0);enchanted=next((owner for owner in state["players"] if owner["id"]==source_permanent.get("attached_to")),None)
+        if enchanted and amount>=3:enchanted["lost"]=True;enchanted["loss_reason"]="sinners_judgment";_log(state,f"{enchanted['name']} lost the game to Sinner's Judgment with {amount} judgment counters.")
+        else:_log(state,f"{source_permanent['name']} has {amount} judgment counter(s).")
+        return
     times_kicked=int(item.get("multikicker_count") or (source_permanent or {}).get("times_kicked",0))
     if times_kicked:effect_text=_multikicker_effect(effect_text,times_kicked)
     if caster.get("speed",0):effect_text=_speed_effect(effect_text,caster)
