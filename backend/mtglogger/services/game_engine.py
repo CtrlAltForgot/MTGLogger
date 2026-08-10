@@ -3840,7 +3840,10 @@ def _resolve_spell(state: dict) -> None:
         elif re.search(r"return (?:target|that) (?:creature |nonland permanent )?card .*graveyard to (?:your|its owner'?s) hand",effect_text):
             _leave_graveyard(state,graveyard_owner,[graveyard_target]);graveyard_target["controller_id"]=graveyard_target.get("owner_id",graveyard_owner["id"]);_player(state,graveyard_target["controller_id"])["hand"].append(graveyard_target);_log(state,f"{graveyard_target['name']} returned to its owner's hand.")
         elif re.search(r"exile target (?:creature )?card .*graveyard",effect_text):
-            _leave_graveyard(state,graveyard_owner,[graveyard_target]);_put_into_exile(state,graveyard_owner,[graveyard_target],"graveyard",caster["id"]);_log(state,f"{graveyard_target['name']} was exiled from a graveyard.")
+            _leave_graveyard(state,graveyard_owner,[graveyard_target]);_put_into_exile(state,graveyard_owner,[graveyard_target],"graveyard",caster["id"])
+            if "until the end of your next turn, you may cast that card" in effect_text:
+                active_index=next(index for index,owner in enumerate(state["players"]) if owner["id"]==state["active_player_id"]);caster_index=next(index for index,owner in enumerate(state["players"]) if owner["id"]==caster["id"]);distance=(caster_index-active_index)%len(state["players"]) or len(state["players"]);graveyard_target["exile_cast_until_turn"]=state["turn"]+distance
+            _log(state,f"{graveyard_target['name']} was exiled from a graveyard{' and may be cast through the end of '+caster['name']+'’s next turn' if graveyard_target.get('exile_cast_until_turn') else ''}.")
         elif re.search(r"put target (?:instant or sorcery|permanent) card from your graveyard on top of your library",effect_text):
             _leave_graveyard(state,graveyard_owner,[graveyard_target]);caster["library"].append(graveyard_target);_log(state,f"{graveyard_target['name']} was put on top of {caster['name']}'s library.")
     half_sacrifice=re.search(r"each opponent sacrifices half the creatures they control, rounded up",effect_text)
