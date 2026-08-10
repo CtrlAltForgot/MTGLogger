@@ -2811,6 +2811,17 @@ def _resolve_spell(state: dict) -> None:
         else:_log(state,f"{target_player['name']} revealed no instant or sorcery cards.")
         return
     event_permanent=next((permanent for player in state["players"] for permanent in player["battlefield"] if permanent["instance_id"]==item.get("event_card_id")),None);event_controller=_player(state,item.get("event_owner_id")) if item.get("event_owner_id") else _player(state,event_permanent.get("controller_id")) if event_permanent else None;source_graveyard=next((graveyard_card for graveyard_card in caster["graveyard"] if graveyard_card["instance_id"]==item.get("source_id")),None)
+    if source_permanent and "sacrifice it unless you exile a card from your graveyard" in effect_text:
+        choices=[candidate["instance_id"] for candidate in caster["graveyard"]]
+        if choices:
+            state["pending_zone_choice"]={"player_id":caster["id"],"source_name":source_permanent["name"],"source_id":source_permanent["instance_id"],"zone":"graveyard","destination":"exile","card_ids":choices,"optional":True,"decline_sacrifice_source_id":source_permanent["instance_id"]};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} must exile a graveyard card or sacrifice {source_permanent['name']}.")
+        else:_sacrifice_permanents(state,caster,[source_permanent])
+        return
+    graveyard_exile_effect=re.search(r"exile (a|one|two|three|\d+) cards? from your graveyard",effect_text)
+    if graveyard_exile_effect:
+        source_label=source_permanent.get("name",card["name"]) if source_permanent else card["name"];words={"a":1,"one":1,"two":2,"three":3};requested=words.get(graveyard_exile_effect.group(1),int(graveyard_exile_effect.group(1)) if graveyard_exile_effect.group(1).isdigit() else 1);choices=[candidate["instance_id"] for candidate in caster["graveyard"]];amount=min(requested,len(choices))
+        if amount:state["pending_zone_choice"]={"player_id":caster["id"],"source_name":source_label,"source_id":item.get("source_id"),"zone":"graveyard","destination":"exile","card_ids":choices,"optional":False,"remaining":amount};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} must exile {amount} graveyard card(s) for {source_label}.")
+        return
     target_stack_item = next((entry for entry in state["stack"] if entry["id"] == target_id), None)
     graveyard_owner=next((player for player in state["players"] if any(graveyard_card["instance_id"]==target_id for graveyard_card in player["graveyard"])),None)
     graveyard_target=next((graveyard_card for player in state["players"] for graveyard_card in player["graveyard"] if graveyard_card["instance_id"]==target_id),None)
@@ -3265,6 +3276,10 @@ def _resolve_spell(state: dict) -> None:
         choices=[permanent["instance_id"] for permanent in affected["battlefield"] if (not sacrifice_match.group(2) or not permanent.get("token")) and (kind=="permanent" or any(part in permanent.get("type_line","").casefold() for part in kind.split(" or ")))];required=min(amount,len(choices))
         if required:state["pending_sacrifice"]={"player_id":affected["id"],"amount":required,"card_ids":choices};state["priority_player_id"]=affected["id"];_log(state,f"{affected['name']} must sacrifice {required} {kind}(s).")
         elif "who can't discards a card" in effect_text and affected["hand"]:state["pending_discard"]={"player_id":affected["id"],"amount":1,"reason":"effect"};state["priority_player_id"]=affected["id"];_log(state,f"{affected['name']} could not sacrifice and must discard a card.")
+    self_sacrifice_effect=re.search(r"(?:^|[.,]\s*)(?:you )?sacrifice (a|one|two|three|\d+) (creature|permanent)s?",effect_text) if item.get("kind")=="trigger" else None
+    if self_sacrifice_effect:
+        words={"a":1,"one":1,"two":2,"three":3};amount=words.get(self_sacrifice_effect.group(1),int(self_sacrifice_effect.group(1)) if self_sacrifice_effect.group(1).isdigit() else 1);kind=self_sacrifice_effect.group(2);choices=[permanent["instance_id"] for permanent in caster["battlefield"] if kind=="permanent" or "Creature" in permanent.get("type_line","")];required=min(amount,len(choices))
+        if required:state["pending_sacrifice"]={"player_id":caster["id"],"amount":required,"card_ids":choices};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} must sacrifice {required} {kind}(s).")
     speed_damage=re.search(r"deals (\d+) damage to each player who (?:doesn't|does not) have max speed",effect_text)
     if speed_damage:
         amount=int(speed_damage.group(1))
@@ -5157,12 +5172,20 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
             destination=pending["destination"]
             if pending.get("sacrifice"):_sacrifice_permanents(state,player,[chosen])
             else:
-                zone.remove(chosen)
+                if pending["zone"]=="graveyard":_leave_graveyard(state,player,[chosen])
+                else:zone.remove(chosen)
                 if destination=="battlefield":chosen["controller_id"]=player_id;chosen["summoning_sick"]=True;_enter_battlefield(state,player,[chosen],pending["zone"])
+                elif destination=="exile":_put_into_exile(state,player,[chosen],pending["zone"],player_id)
                 else:player[destination].append(chosen)
             _log(state,f"{player['name']} chose {chosen['name']} for {pending['source_name']}.")
         elif not pending.get("optional"):raise RuleViolation("This choice is required")
-        else:_log(state,f"{player['name']} chose no card for {pending['source_name']}.")
+        else:
+            sacrifice_source=next((card for card in player["battlefield"] if card["instance_id"]==pending.get("decline_sacrifice_source_id")),None)
+            if sacrifice_source:_sacrifice_permanents(state,player,[sacrifice_source])
+            _log(state,f"{player['name']} chose no card for {pending['source_name']}.")
+        remaining=max(0,int(pending.get("remaining",1))-1) if action_type=="choose_zone_card" else 0
+        if remaining:
+            pending["remaining"]=remaining;pending["card_ids"]=[card_id for card_id in pending["card_ids"] if card_id!=action.get("card_id")];state["pending_zone_choice"]=pending;state["priority_player_id"]=player_id;return state
         state["pending_zone_choice"]=None;state["priority_player_id"]=state["active_player_id"]
         if action_type=="choose_zone_card" and pending.get("continuation"):
             ability={"name":f"{pending['source_name']} follow-up","oracle_text":pending["continuation"],"type_line":"Ability","mana_cost":""};state["stack"].append({"id":_id(),"kind":"trigger","card":ability,"controller_id":player_id,"target_id":None,"source_id":pending.get("source_id")});_resolve_spell(state)
