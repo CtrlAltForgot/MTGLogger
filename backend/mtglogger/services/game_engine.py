@@ -1603,7 +1603,7 @@ def _targets(state: dict, caster_id: str, card: dict, ignore_target_protection:b
     kind = _target_kind(card)
     if not kind: return []
     text = (card.get("oracle_text") or "").casefold()
-    own_target_only=bool(re.search(r"(?:target|enchant)[^.\n]*\byou control\b",text));opponent_target_only=bool(re.search(r"(?:target|enchant)[^.\n]*\b(?:you (?:do not|don't) control|(?:an opponent|opponents?) controls?)\b",text))
+    target_scope_text=re.sub(r"for as long as you control (?:this (?:creature|permanent)|[^.]+)","",text);own_target_only=bool(re.search(r"(?:target|enchant)[^.\n]*\byou control\b",target_scope_text));opponent_target_only=bool(re.search(r"(?:target|enchant)[^.\n]*\b(?:you (?:do not|don't) control|(?:an opponent|opponents?) controls?)\b",target_scope_text))
     targets = []
     if kind in {"spell","ability","stack"}:
         def allowed(item:dict)->bool:
@@ -2477,6 +2477,8 @@ def _resolve_spell(state: dict) -> None:
     if control_change:
         temporary="until end of turn" in effect_text;previous_controller=target_owner
         _change_control(state,target,caster,temporary)
+        if source_permanent and "for as long as you control this creature" in effect_text:
+            target["control_while_source_id"]=source_permanent["instance_id"];target["control_return_to_id"]=previous_controller["id"]
         target_owner=caster
         if re.search(r"\buntap (?:it|that creature|target creature)\b",effect_text):_set_tapped(state,[target],False,caster["id"],"effect")
         if re.search(r"\b(?:it|that creature|target creature) gains? haste\b",effect_text):target["temporary_keywords"]=sorted(set(target.get("temporary_keywords",[]))|{"haste"})
@@ -2845,6 +2847,9 @@ def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str, t
             for land in list(land_controller["battlefield"]):
                 land_owner=_player(state,land.get("owner_id",land_controller["id"]))
                 if "Land" in land.get("type_line","") and land_controller["id"]!=land_owner["id"]:_change_control(state,land,land_owner)
+    linked_controlled=[permanent for controller in state["players"] for permanent in list(controller["battlefield"]) if permanent.get("control_while_source_id")==card.get("instance_id")]
+    for permanent in linked_controlled:
+        return_to=_player(state,permanent.pop("control_return_to_id"));permanent.pop("control_while_source_id",None);_change_control(state,permanent,return_to)
     if card.get("attached_to"):_detach(state,card)
     attachments=[(attachment_owner,attachment) for attachment_owner in state["players"] for attachment in list(attachment_owner["battlefield"]) if attachment.get("attached_to")==card.get("instance_id")]
     for attachment_owner,attachment in attachments:
@@ -2872,7 +2877,7 @@ def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str, t
             else:zone_owner[destination].append(component)
             _queue_commander_zone_choice(state,zone_owner,component,destination)
         return
-    card["damage"] = 0; card["tapped"] = False;card.pop("escaped",None);card.pop("evoked",None);card.pop("echo_due_controller_id",None);card.pop("dashed",None);card.pop("dash_return_triggered",None);card.pop("deathtouch_damage",None);card.pop("crewed_turn",None);card.pop("temporary_control_return_to",None);card.pop("activated_ability_usage",None);card.pop("temporary_power",None);card.pop("temporary_toughness",None);card.pop("temporary_base_power",None);card.pop("temporary_base_toughness",None);card.pop("temporary_keywords",None);card.pop("temporary_removed_keywords",None);card.pop("temporary_backup_rules",None);card.pop("unearthed",None);card.pop("unearth_controller_id",None);card.pop("unearth_end_triggered",None);card.pop("populate_sacrifice_turn",None);card.pop("monstrous",None);card.pop("monstrosity_value",None)
+    card["damage"] = 0; card["tapped"] = False;card.pop("escaped",None);card.pop("evoked",None);card.pop("echo_due_controller_id",None);card.pop("dashed",None);card.pop("dash_return_triggered",None);card.pop("deathtouch_damage",None);card.pop("crewed_turn",None);card.pop("temporary_control_return_to",None);card.pop("control_while_source_id",None);card.pop("control_return_to_id",None);card.pop("activated_ability_usage",None);card.pop("temporary_power",None);card.pop("temporary_toughness",None);card.pop("temporary_base_power",None);card.pop("temporary_base_toughness",None);card.pop("temporary_keywords",None);card.pop("temporary_removed_keywords",None);card.pop("temporary_backup_rules",None);card.pop("unearthed",None);card.pop("unearth_controller_id",None);card.pop("unearth_end_triggered",None);card.pop("populate_sacrifice_turn",None);card.pop("monstrous",None);card.pop("monstrosity_value",None)
     if card.get("face_down"):
         values=card.pop("face_down_values",{})
         for key,value in values.items():card[key]=value
