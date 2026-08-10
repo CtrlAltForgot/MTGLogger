@@ -1230,6 +1230,19 @@ def test_landfall_entered_land_subtype_selects_replacement_effect():
     assert hydra["counters"]["+1/+1"]==3
 
 
+def test_landfall_shared_equipped_and_keyword_stat_bonuses():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player")
+    baloth={**card(832,"Baloth Woodcrasher","Creature — Beast","","4","4"),"oracle_text":"Landfall — Whenever a land you control enters, this creature gets +4/+4 and gains trample until end of turn.","instance_id":"baloth","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    ally={**card(833,"Buff Ally","Creature — Scout","","1","1"),"instance_id":"buff-ally","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    gear={**card(834,"Adventuring Gear","Artifact — Equipment"),"oracle_text":"Landfall — Whenever a land you control enters, equipped creature gets +2/+2 until end of turn.","instance_id":"gear","owner_id":"player","controller_id":"player","attached_to":"buff-ally","tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    godmaw={**card(835,"Glacier Godmaw","Creature — Beast","","6","6"),"oracle_text":"Landfall — Whenever a land you control enters, creatures you control get +1/+1 and gain vigilance and haste until end of turn.","instance_id":"godmaw","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].extend([baloth,ally,gear,godmaw])
+    land={**card(836,"Buff Forest","Basic Land — Forest"),"instance_id":"buff-forest","owner_id":"player","controller_id":"player"};_enter_battlefield(state,player,[land],"hand")
+    while state["stack"]:state=perform_action(state,"player",{"type":"resolve"})
+    player=next(p for p in state["players"] if p["id"]=="player");baloth=next(card for card in player["battlefield"] if card["instance_id"]=="baloth");ally=next(card for card in player["battlefield"] if card["instance_id"]=="buff-ally")
+    assert (baloth["temporary_power"],baloth["temporary_toughness"])==(5,5) and {"trample","vigilance","haste"}<=set(baloth["temporary_keywords"])
+    assert (ally["temporary_power"],ally["temporary_toughness"])==(3,3) and {"vigilance","haste"}<=set(ally["temporary_keywords"])
+
+
 def test_attack_triggers_count_attackers_once_or_individually_and_choose_targets():
     state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
     banner={**card(830,"Battle Banner","Enchantment"),"oracle_text":"Whenever one or more creatures you control attack, you gain 1 life.","instance_id":"battle-banner","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False}

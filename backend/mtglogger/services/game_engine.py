@@ -2614,9 +2614,15 @@ def _resolve_spell(state: dict) -> None:
         target["temporary_power"] = target.get("temporary_power", 0) + int(stats_match.group(1))
         target["temporary_toughness"] = target.get("temporary_toughness", 0) + int(stats_match.group(2))
     if source_permanent:
-        source_name=re.escape(source_permanent.get("name","").casefold());self_stats=re.search(rf"(?:this creature|{source_name}) gets ([+-]\d+)/([+-]\d+) until end of turn",effect_text)
+        source_name=re.escape(source_permanent.get("name","").casefold());self_stats=re.search(rf"(?:this creature|{source_name}) gets ([+-]\d+)/([+-]\d+)(?: and gains? [^.]+?)? until end of turn",effect_text)
         if self_stats:
             source_permanent["temporary_power"]=source_permanent.get("temporary_power",0)+int(self_stats.group(1));source_permanent["temporary_toughness"]=source_permanent.get("temporary_toughness",0)+int(self_stats.group(2))
+        self_keyword=re.search(rf"(?:this creature|{source_name}) gets [^.]+ and gains? ([^.]+?) until end of turn",effect_text)
+        if self_keyword:
+            supported=("flying","first strike","double strike","deathtouch","haste","hexproof","indestructible","lifelink","menace","reach","trample","vigilance");source_permanent["temporary_keywords"]=sorted(set(source_permanent.get("temporary_keywords",[]))|{keyword for keyword in supported if re.search(rf"\b{re.escape(keyword)}\b",self_keyword.group(1))})
+        if source_permanent.get("attached_to"):
+            equipped=next((permanent for owner in state["players"] for permanent in owner["battlefield"] if permanent["instance_id"]==source_permanent["attached_to"]),None);equipped_stats=re.search(r"equipped creature gets ([+-]\d+)/([+-]\d+) until end of turn",effect_text)
+            if equipped and equipped_stats:equipped["temporary_power"]=equipped.get("temporary_power",0)+int(equipped_stats.group(1));equipped["temporary_toughness"]=equipped.get("temporary_toughness",0)+int(equipped_stats.group(2))
     counter_match=re.search(r"put (a|one|two|three|four|five|six|seven|eight|nine|ten|\d+) ([+−-]\d+/[+−-]\d+|[a-z][a-z-]*) counters? on target (?:creature|permanent|artifact|planeswalker)",effect_text)
     if target and counter_match:
         words={"a":1,"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10};amount=words.get(counter_match.group(1),int(counter_match.group(1)) if counter_match.group(1).isdigit() else 1);name=counter_match.group(2).replace("−","-")
@@ -2683,13 +2689,13 @@ def _resolve_spell(state: dict) -> None:
             if destination=="graveyard":_destroy_permanent(state,owner,permanent,"can't be regenerated" in effect_text,trigger_sources,trigger_dedupe)
             else:_leave_battlefield(state,owner,permanent,destination,trigger_sources,trigger_dedupe,caster["id"],len(affected))
         _log(state,f"All {kind} were {'destroyed' if destination=='graveyard' else 'exiled'}.")
-    global_stats=re.search(r"(?:(?:all|each) )?creatures?(?: you control| your opponents control)? get ([+-]\d+)/([+-]\d+) until end of turn",effect_text)
+    global_stats=re.search(r"(?:(?:all|each|other) )?creatures?(?: you control| your opponents control)? get ([+-]\d+)/([+-]\d+)(?: and gains? ([^.]+?))? until end of turn",effect_text)
     if global_stats:
-        own_only="you control" in global_stats.group(0);opponents_only="opponents control" in global_stats.group(0)
+        own_only="you control" in global_stats.group(0);opponents_only="opponents control" in global_stats.group(0);other_only=global_stats.group(0).startswith("other ");supported=("flying","first strike","double strike","deathtouch","haste","hexproof","indestructible","lifelink","menace","reach","trample","vigilance");gained={keyword for keyword in supported if global_stats.group(3) and re.search(rf"\b{re.escape(keyword)}\b",global_stats.group(3))}
         for owner in state["players"]:
             if own_only and owner["id"]!=caster["id"] or opponents_only and owner["id"]==caster["id"]:continue
             for permanent in owner["battlefield"]:
-                if "Creature" in permanent.get("type_line",""):permanent["temporary_power"]=permanent.get("temporary_power",0)+int(global_stats.group(1));permanent["temporary_toughness"]=permanent.get("temporary_toughness",0)+int(global_stats.group(2))
+                if "Creature" in permanent.get("type_line","") and not (other_only and permanent is source_permanent):permanent["temporary_power"]=permanent.get("temporary_power",0)+int(global_stats.group(1));permanent["temporary_toughness"]=permanent.get("temporary_toughness",0)+int(global_stats.group(2));permanent["temporary_keywords"]=sorted(set(permanent.get("temporary_keywords",[]))|gained)
     team_counters=re.search(r"put (a|one|two|three|four|\d+) ([+\-]\d+/[+\-]\d+) counters? on each creature you control",effect_text)
     if team_counters:
         words={"a":1,"one":1,"two":2,"three":3,"four":4};amount=words.get(team_counters.group(1),int(team_counters.group(1)) if team_counters.group(1).isdigit() else 1)
