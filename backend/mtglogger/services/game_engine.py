@@ -3128,7 +3128,8 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
         if eligible:
             defending=opponent(state,player_id);defenders=[{"id":defending["id"],"name":defending["name"],"kind":"player","controller_id":defending["id"]}]
             defenders.extend({"id":card["instance_id"],"name":card["name"],"kind":"permanent","controller_id":defending["id"]} for card in defending["battlefield"] if "Planeswalker" in card.get("type_line",""))
-            actions.append({"type": "declare_attackers", "card_ids": eligible,"defenders":defenders})
+            forbidden=set(player.get("cant_attack_defender_ids_turn",[])) if player.get("cant_attack_turn")==state["turn"] else set();defenders=[target for target in defenders if target["controller_id"] not in forbidden]
+            if defenders:actions.append({"type": "declare_attackers", "card_ids": eligible,"defenders":defenders})
     elif not active and state["phase"] == "combat" and state["combat"]["attackers"] and not state["combat"].get("damage_pending"):
         attackers = [card for card in opponent(state, player_id)["battlefield"] if card["instance_id"] in state["combat"]["attackers"]]
         blockers = [card["instance_id"] for card in player["battlefield"] if "Creature" in card.get("type_line", "") and not card.get("tapped")]
@@ -3140,6 +3141,8 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
             if required_blocks:actions=[action for action in actions if action["type"]!="advance_phase"]
     if _split_second_on_stack(state):
         actions=[action for action in actions if action["type"] in {"concede","turn_face_up","foretell","pass_priority","resolve"}]
+    attacked=set(player.get("attacked_defender_ids_turn",[])) if player.get("attacked_defender_turn")==state["turn"] else set()
+    if any(owner["id"] in attacked and any("each opponent who attacked you or a planeswalker you control this turn can't cast spells" in _active_level_text(permanent).casefold() for permanent in owner["battlefield"]) for owner in state["players"]):actions=[action for action in actions if not action["type"].startswith("cast")]
     return actions
 
 
@@ -3451,6 +3454,8 @@ def _resolve_spell(state: dict) -> None:
         chosen_type=source_permanent.get("chosen_card_type")
         if chosen_type:caster["apex_free_spell_type"]=chosen_type;caster["apex_free_spell_turn"]=state["turn"]
         _log(state,f"{source_permanent['name']} made {caster['name']}'s next {chosen_type or 'chosen-type'} spell this turn free.");return
+    if source_permanent and "they can't attack you or planeswalkers you control this turn" in effect_text:
+        spell_caster=_player(state,item.get("event_owner_id"));spell_caster["cant_attack_turn"]=state["turn"];spell_caster["cant_attack_defender_ids_turn"]=sorted(set(spell_caster.get("cant_attack_defender_ids_turn",[]))|{caster["id"]});_log(state,f"{source_permanent['name']} prevents {spell_caster['name']} from attacking {caster['name']} or their planeswalkers this turn.");return
     if source_permanent and "choose an exiled card used to craft" in effect_text and "at random" in effect_text and "cast that card without paying its mana cost" in effect_text:
         crafted_ids=set(source_permanent.get("crafted_with_ids") or []);candidates=[candidate for candidate in caster["exile"] if candidate["instance_id"] in crafted_ids]
         if not candidates:_log(state,f"{source_permanent['name']} had no crafted card remaining in exile to choose.");return
@@ -4995,10 +5000,11 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
             elif event == "cast" and event_card:
                 controlled=event_owner["id"]==owner["id"];type_line=event_card.get("type_line","").casefold();count=event_owner.get("spells_cast_this_turn",0);cast_zone=event_card.get("cast_source_zone","hand");colors=set(event_card.get("colors") or [])
                 kind_match=((re.search(r"casts? (?:a|an) spell(?: from (?:exile|your graveyard))?(?:,|$)",lower) is not None) or ("spell with cascade" in lower and _cascade_count(event_card)>0) or ("creature spell" in lower and "creature" in type_line) or ("noncreature spell" in lower and "creature" not in type_line) or ("instant or sorcery spell" in lower and any(kind in type_line for kind in ("instant","sorcery"))) or ("artifact spell" in lower and "artifact" in type_line) or ("enchantment spell" in lower and "enchantment" in type_line) or ("planeswalker spell" in lower and "planeswalker" in type_line) or ("permanent spell" in lower and any(kind in type_line for kind in ("creature","artifact","enchantment","planeswalker","battle"))) or ("legendary spell" in lower and "legendary" in type_line) or ("historic spell" in lower and ("legendary" in type_line or "artifact" in type_line or "saga" in type_line)) or ("multicolored spell" in lower and len(colors)>=2))
+                if re.search(r"casts? (?:a|an) spell during [^,]+(?:,|$)",lower):kind_match=True
                 zone_ok=("from exile" not in lower or cast_zone=="exile") and ("from your graveyard" not in lower or cast_zone=="graveyard")
                 ordinal=("whenever you cast your first spell each turn" in lower and count==1) or ("whenever you cast your second spell each turn" in lower and count==2) or ("whenever you cast your third spell each turn" in lower and count==3)
                 yours=controlled and source is not event_card and ("whenever you cast" in lower or "whenever you cast or copy" in lower) and (kind_match or ordinal) and zone_ok
-                opposing=not controlled and "whenever an opponent casts" in lower and kind_match and zone_ok
+                opposing=not controlled and "whenever an opponent casts" in lower and kind_match and zone_ok and ("during their turn" not in lower or state.get("active_player_id")==event_owner["id"])
                 any_player="whenever a player casts" in lower and kind_match and zone_ok
                 self_cast=source is event_card and re.search(r"when you cast (?:this spell|~)",lower) is not None
                 matches=yours or opposing or any_player or self_cast
@@ -6214,6 +6220,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if any((attacker:=next(card for card in player["battlefield"] if card["instance_id"]==attacker_id)).get("encore_defender_id") and requested_targets.get(attacker_id,default_target)!=attacker["encore_defender_id"] for attacker_id in requested):raise RuleViolation("Each Encore token must attack its assigned opponent")
         state["combat"]["attackers"] = list(requested);state["combat"]["attackers_declared"]=True
         state["combat"]["attack_targets"]={attacker_id:requested_targets.get(attacker_id,default_target) for attacker_id in requested}
+        attacked_controllers={next((owner["id"] for owner in state["players"] if target_id==owner["id"] or any(permanent["instance_id"]==target_id and "Planeswalker" in permanent.get("type_line","") for permanent in owner["battlefield"])),target_id) for target_id in state["combat"]["attack_targets"].values()};player["attacked_defender_turn"]=state["turn"];player["attacked_defender_ids_turn"]=sorted(set(player.get("attacked_defender_ids_turn",[]))|attacked_controllers)
         for card in player["battlefield"]:
             if card["instance_id"] in requested:card["attacks_this_turn"]=card.get("attacks_this_turn",0)+1
         for card in player["battlefield"]:card.pop("must_attack_next_combat",None)
