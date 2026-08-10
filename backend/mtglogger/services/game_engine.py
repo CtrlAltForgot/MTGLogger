@@ -658,6 +658,18 @@ def _can_block_pair(state:dict,attacker:dict,blocker:dict)->bool:
     if "can't be blocked" in attacker_text or "unblockable" in attacker_text:return False
     if "can't be blocked by non-spirit creatures" in attacker_text and "spirit" not in blocker.get("type_line","").casefold():return False
     if "can't block or be blocked by non-spirit creatures" in blocker_text and "spirit" not in attacker.get("type_line","").casefold():return False
+    attacker_controller=_player(state,attacker.get("controller_id"));defender=opponent(state,attacker_controller["id"]);defender_lands=[card for card in defender["battlefield"] if "Land" in card.get("type_line","")]
+    global_text="\n".join(card.get("oracle_text") or "" for owner in state["players"] for card in owner["battlefield"]).casefold()
+    for kind in ("plains","island","swamp","mountain","forest","desert"):
+        if re.search(rf"\b{kind}walk\b",attacker_text) and (any(re.search(rf"\b{kind}\b",land.get("type_line",""),re.IGNORECASE) for land in defender_lands) or f"all lands are {kind}s" in global_text):return False
+    if "legendary landwalk" in attacker_text and any("Legendary" in land.get("type_line","") for land in defender_lands):return False
+    if "nonbasic landwalk" in attacker_text and any("Basic" not in land.get("type_line","") for land in defender_lands):return False
+    if _has_keyword(attacker,"Fear") and not ("Artifact" in blocker.get("type_line","") or "B" in _card_colors(blocker)):return False
+    if _has_keyword(attacker,"Intimidate") and not ("Artifact" in blocker.get("type_line","") or bool(_card_colors(attacker)&_card_colors(blocker))):return False
+    if _has_keyword(attacker,"Skulk") and _parse_stats(blocker,state)[0]>_parse_stats(attacker,state)[0]:return False
+    attacker_shadow=_has_keyword(attacker,"Shadow");blocker_shadow=_has_keyword(blocker,"Shadow")
+    if attacker_shadow!=blocker_shadow:return False
+    if _has_keyword(attacker,"Horsemanship") and not _has_keyword(blocker,"Horsemanship"):return False
     return (not _has_keyword(attacker,"Flying") or _has_keyword(blocker,"Flying") or _has_keyword(blocker,"Reach")) and not _protected_from(attacker,blocker)
 
 

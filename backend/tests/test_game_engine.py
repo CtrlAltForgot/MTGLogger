@@ -1,7 +1,7 @@
 import pytest
 
 from mtglogger.services.game_bot import _choose_blocks, choose_bot_action, run_bot
-from mtglogger.services.game_engine import RuleViolation, _add_counters, _add_saga_lore, _amass, _begin_next_turn, _change_control, _combat_damage, _connive, _counter_stack_item, _enter_battlefield, _explore, _face_down_ability, _has_keyword, _leave_battlefield, _leave_graveyard, _merge_mutate, _put_into_exile, _queue_triggers, _set_day_night, _set_tapped, _venture_undercity, _ward_details, legal_actions, new_game, perform_action, public_state
+from mtglogger.services.game_engine import RuleViolation, _add_counters, _add_saga_lore, _amass, _begin_next_turn, _can_block_pair, _change_control, _combat_damage, _connive, _counter_stack_item, _enter_battlefield, _explore, _face_down_ability, _has_keyword, _leave_battlefield, _leave_graveyard, _merge_mutate, _put_into_exile, _queue_triggers, _set_day_night, _set_tapped, _venture_undercity, _ward_details, legal_actions, new_game, perform_action, public_state
 
 
 def card(index:int,name:str,type_line:str,mana_cost:str="",power:str|None=None,toughness:str|None=None,quantity:int=1):
@@ -2502,3 +2502,21 @@ def test_cumulative_upkeep_supports_snow_discard_sacrifice_and_special_payments(
 
 def test_bot_pays_available_echo_and_cumulative_upkeep_costs():
     state=kept_game();state["active_player_id"]="bot";state["priority_player_id"]="bot";bot=next(p for p in state["players"] if p["id"]=="bot");land={**card(2280,"Mountain","Basic Land — Mountain"),"instance_id":"bot-upkeep-land","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};tax={**card(2281,"Bot Upkeep","Enchantment"),"oracle_text":"Cumulative upkeep {1}","instance_id":"bot-upkeep","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{"age":1},"summoning_sick":False};bot["battlefield"]=[land,tax];state["pending_cumulative_upkeep"]=[{"player_id":"bot","card_id":"bot-upkeep","card_name":"Bot Upkeep","age":1}];assert choose_bot_action(state,"expert")["type"]=="pay_cumulative_upkeep"
+
+
+def test_legacy_evasion_keywords_enforce_pairwise_block_legality():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot");swamp={**card(2290,"Swamp","Basic Land — Swamp"),"instance_id":"evasion-swamp","owner_id":"bot","controller_id":"bot"};bot["battlefield"].append(swamp)
+    def creature(name,keywords,owner="player",power="2",mana=""):
+        return {**card(2291,name,"Creature — Rogue",mana,power,"2"),"oracle_text":"\n".join(keywords),"keywords":keywords,"instance_id":name,"owner_id":owner,"controller_id":owner,"tapped":False,"damage":0,"counters":{},"summoning_sick":False}
+    ordinary=creature("ordinary",[],"bot");artifact={**creature("artifact",[],"bot"),"type_line":"Artifact Creature — Golem"};black=creature("black",[],"bot",mana="{B}");shadow=creature("shadow",["Shadow"],"bot");horse=creature("horse",["Horsemanship"],"bot");large=creature("large",[],"bot",power="4")
+    assert not _can_block_pair(state,creature("swampwalker",["Swampwalk"]),ordinary)
+    assert not _can_block_pair(state,creature("fear",["Fear"]),ordinary) and _can_block_pair(state,creature("fear2",["Fear"]),artifact) and _can_block_pair(state,creature("fear3",["Fear"]),black)
+    assert not _can_block_pair(state,creature("intimidate",["Intimidate"],mana="{G}"),ordinary) and _can_block_pair(state,creature("intimidate2",["Intimidate"],mana="{G}"),artifact) and _can_block_pair(state,creature("intimidate3",["Intimidate"],mana="{B}"),black)
+    assert not _can_block_pair(state,creature("shadow-attacker",["Shadow"]),ordinary) and _can_block_pair(state,creature("shadow-attacker2",["Shadow"]),shadow) and not _can_block_pair(state,creature("normal-attacker",[]),shadow)
+    assert not _can_block_pair(state,creature("horse-attacker",["Horsemanship"]),ordinary) and _can_block_pair(state,creature("horse-attacker2",["Horsemanship"]),horse)
+    assert not _can_block_pair(state,creature("skulk",["Skulk"]),large)
+    bot["battlefield"].extend([{**card(2292,"Academy Ruins","Legendary Land"),"instance_id":"academy-ruins","owner_id":"bot","controller_id":"bot"},{**card(2293,"Wastes","Basic Land"),"instance_id":"wastes","owner_id":"bot","controller_id":"bot"}])
+    assert not _can_block_pair(state,creature("legendary-walker",["Legendary landwalk"]),ordinary)
+    assert not _can_block_pair(state,creature("nonbasic-walker",["Nonbasic landwalk"]),ordinary)
+    player["battlefield"].append({**card(2294,"Dream Thrush","Creature — Bird","{1}{U}","1","1"),"oracle_text":"All lands are Islands.","instance_id":"dream-thrush","owner_id":"player","controller_id":"player"})
+    assert not _can_block_pair(state,creature("islandwalker",["Islandwalk"]),ordinary)
