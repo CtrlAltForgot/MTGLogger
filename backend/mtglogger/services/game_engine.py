@@ -3051,6 +3051,12 @@ def _resolve_spell(state: dict) -> None:
     source_attack_target=state.get("combat",{}).get("attack_targets",{}).get(item.get("source_id"))
     if source_permanent and "it gets +1/+0 until end of turn for each land defending player controls" in effect_text:
         defending=_player(state,source_attack_target) if source_attack_target and any(owner["id"]==source_attack_target for owner in state["players"]) else other;amount=sum("Land" in permanent.get("type_line","") for permanent in defending["battlefield"]);source_permanent["temporary_power"]=source_permanent.get("temporary_power",0)+amount;_log(state,f"{source_permanent['name']} got +{amount}/+0 for {defending['name']}'s lands.");return
+    if "attacking creatures with flying get +1/+1 until end of turn" in effect_text:
+        affected=[]
+        for attacker_id in state.get("combat",{}).get("attackers",[]):
+            attacker=next((candidate for owner in state["players"] for candidate in owner["battlefield"] if candidate["instance_id"]==attacker_id),None)
+            if attacker and _has_keyword(attacker,"Flying"):attacker["temporary_power"]=attacker.get("temporary_power",0)+1;attacker["temporary_toughness"]=attacker.get("temporary_toughness",0)+1;affected.append(attacker)
+        _log(state,f"{len(affected)} attacking creature(s) with flying got +1/+1 until end of turn.");return
     if source_permanent and "it deals damage to the player or planeswalker it's attacking equal to the number of artifacts you control" in effect_text:
         amount=sum("Artifact" in permanent.get("type_line","") for permanent in caster["battlefield"]);defending_player=next((owner for owner in state["players"] if owner["id"]==source_attack_target),None);defending_planeswalker=next((permanent for owner in state["players"] for permanent in owner["battlefield"] if permanent["instance_id"]==source_attack_target and "Planeswalker" in permanent.get("type_line","")),None)
         if defending_player:_damage_player(state,defending_player,amount,source_permanent)
@@ -3668,12 +3674,12 @@ def _resolve_spell(state: dict) -> None:
         if "create an x/x green ooze creature token" in effect_text:
             token={"instance_id":_id(),"scryfall_id":"token-ooze","name":"Ooze Token","image_url":None,"type_line":"Token Creature — Ooze","oracle_text":"","mana_cost":"","mana_value":0,"colors":["G"],"power":str(destroyed_value),"toughness":str(destroyed_value),"owner_id":caster["id"],"controller_id":caster["id"],"tapped":False,"damage":0,"counters":{},"summoning_sick":True,"token":True,"keywords":[]};_enter_battlefield(state,caster,[token],"token")
         _log(state,f"Convert to Slime destroyed permanents with total mana value {destroyed_value}.")
-    attacking_stats=re.search(r"(other )?attacking creatures get ([+-]\d+)/([+-]\d+)(?: and gains? ([^.]+?))? until end of turn",effect_text)
+    attacking_stats=re.search(r"(other )?attacking creatures(?: with (flying))? get ([+-]\d+)/([+-]\d+)(?: and gains? ([^.]+?))? until end of turn",effect_text)
     if attacking_stats:
-        supported=("flying","first strike","double strike","deathtouch","haste","hexproof","indestructible","lifelink","menace","reach","trample","vigilance");gained={keyword for keyword in supported if attacking_stats.group(4) and re.search(rf"\b{re.escape(keyword)}\b",attacking_stats.group(4))}
+        supported=("flying","first strike","double strike","deathtouch","haste","hexproof","indestructible","lifelink","menace","reach","trample","vigilance");gained={keyword for keyword in supported if attacking_stats.group(5) and re.search(rf"\b{re.escape(keyword)}\b",attacking_stats.group(5))}
         for attacker_id in state.get("combat",{}).get("attackers",[]):
             permanent=next((candidate for owner in state["players"] for candidate in owner["battlefield"] if candidate["instance_id"]==attacker_id),None)
-            if permanent and not (attacking_stats.group(1) and permanent.get("instance_id")==item.get("source_id")):permanent["temporary_power"]=permanent.get("temporary_power",0)+int(attacking_stats.group(2));permanent["temporary_toughness"]=permanent.get("temporary_toughness",0)+int(attacking_stats.group(3));permanent["temporary_keywords"]=sorted(set(permanent.get("temporary_keywords",[]))|gained)
+            if permanent and (not attacking_stats.group(2) or _has_keyword(permanent,attacking_stats.group(2))) and not (attacking_stats.group(1) and permanent.get("instance_id")==item.get("source_id")):permanent["temporary_power"]=permanent.get("temporary_power",0)+int(attacking_stats.group(3));permanent["temporary_toughness"]=permanent.get("temporary_toughness",0)+int(attacking_stats.group(4));permanent["temporary_keywords"]=sorted(set(permanent.get("temporary_keywords",[]))|gained)
     global_stats=None if attacking_stats else re.search(r"(?:(?:all|each|other) )?(nonblack )?creatures?(?: you control| your opponents control)? get ([+-]\d+)/([+-]\d+)(?: and gains? ([^.]+?))? until end of turn",effect_text)
     if global_stats:
         own_only="you control" in global_stats.group(0);opponents_only="opponents control" in global_stats.group(0);other_only=global_stats.group(0).startswith("other ");nonblack=bool(global_stats.group(1));supported=("flying","first strike","double strike","deathtouch","haste","hexproof","indestructible","lifelink","menace","reach","trample","vigilance");gained={keyword for keyword in supported if global_stats.group(4) and re.search(rf"\b{re.escape(keyword)}\b",global_stats.group(4))}
@@ -3716,11 +3722,11 @@ def _resolve_spell(state: dict) -> None:
         attacking="tapped and attacking" in effect_text;must_attack="that token attacks this combat if able" in effect_text;tapped=bool(token_match.group(2)) or attacking or "tokens enter tapped" in effect_text;created=[]
         descriptor=token_match.group(5).strip();color_names={"white":"W","blue":"U","black":"B","red":"R","green":"G"};colors=[symbol for name,symbol in color_names.items() if re.search(rf"\b{name}\b",descriptor)]
         artifact_token=re.search(r"\bartifact\b",descriptor,re.IGNORECASE) is not None;subtype=re.sub(r"\b(?:white|blue|black|red|green|colorless|artifact|and)\b"," ",descriptor).strip();subtype=re.sub(r"\s+"," ",subtype) or "Creature"
-        keywords=[keyword.title() for keyword in ("defender","flying","first strike","double strike","deathtouch","haste","lifelink","menace","reach","trample","vigilance") if re.search(rf"\b{keyword}\b",effect_text)]
+        keywords=[keyword.title() for keyword in ("changeling","defender","flying","first strike","double strike","deathtouch","haste","lifelink","menace","reach","trample","vigilance") if re.search(rf"\b{keyword}\b",effect_text)]
         named=re.search(r"creature token named ([a-z][a-z '-]+?)(?:\s+with\b|\.|$)",effect_text,re.IGNORECASE);quoted=re.search(r'creature token[^.]*?"(.+?)"',effect_text,re.IGNORECASE)
         delayed_exile_group=_id() if re.search(r"exile (?:that|those) tokens? at the beginning of the next end step",effect_text) else None
         for _ in range(amount):
-            token={"instance_id":_id(),"scryfall_id":"token","name":named.group(1).strip().title() if named else f"{subtype.title()} Token","image_url":None,"type_line":f"Token {'Artifact ' if artifact_token else ''}Creature — {subtype.title()}","oracle_text":quoted.group(1) if quoted else "","mana_cost":"","mana_value":0,"colors":colors,"power":token_match.group(3),"toughness":token_match.group(4),"owner_id":caster["id"],"controller_id":caster["id"],"tapped":tapped,"damage":0,"counters":{},"summoning_sick":True,"token":True,"keywords":keywords};created.append(token)
+            token={"instance_id":_id(),"scryfall_id":"token","name":named.group(1).strip().title() if named else f"{subtype.title()} Token","image_url":None,"type_line":f"Token {'Artifact ' if artifact_token else ''}Creature — {subtype.title()}","oracle_text":quoted.group(1) if quoted else ("Changeling" if "Changeling" in keywords else ""),"mana_cost":"","mana_value":0,"colors":colors,"power":token_match.group(3),"toughness":token_match.group(4),"owner_id":caster["id"],"controller_id":caster["id"],"tapped":tapped,"damage":0,"counters":{},"summoning_sick":True,"token":True,"keywords":keywords};created.append(token)
             if must_attack:token["must_attack_next_combat"]=True
             if delayed_exile_group:token["delayed_exile_group"]=delayed_exile_group
         if attacking and state.get("phase")=="combat":
