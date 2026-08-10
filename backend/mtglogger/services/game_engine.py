@@ -2037,6 +2037,7 @@ def _targets(state: dict, caster_id: str, card: dict, ignore_target_protection:b
     if kind == "creature_or_spell":
         targets=[{"id":item["id"],"name":item["card"]["name"],"kind":"spell","controller_id":item["controller_id"]} for item in state["stack"]]
     if kind in {"graveyard_creature","graveyard_creature_or_enchantment","graveyard_card","graveyard_permanent"}:
+        if any("cards in graveyards can't be the targets of spells or abilities" in _active_level_text(permanent).casefold() for owner in state["players"] for permanent in owner["battlefield"]):return []
         own_only="your graveyard" in text
         soulshift=card.get("soulshift_value")
         instant_or_sorcery="instant or sorcery" in text;instant_only=bool(re.search(r"target instant cards?",text))
@@ -4351,7 +4352,9 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 any_creature=is_creature and re.search(r"whenever a creature dies",lower) is not None
                 one_or_more=is_creature and source is not event_card and "whenever one or more other creatures die" in lower;dedupe_key=f"dies:{source.get('instance_id')}"
                 damaged_by_source=is_creature and source.get("instance_id") in event_card.get("damage_source_ids_turn",[]) and "whenever a creature dealt damage by this creature this turn dies" in lower
-                matches=self_dies or another or controlled or graveyard_entry or opposing or any_creature or damaged_by_source or (one_or_more and (dedupe is None or dedupe_key not in dedupe))
+                dennick="whenever one or more creature cards are put into graveyards from anywhere" in lower and is_creature and source.get("dennick_trigger_turn")!=state["turn"]
+                matches=self_dies or another or controlled or graveyard_entry or opposing or any_creature or damaged_by_source or dennick or (one_or_more and (dedupe is None or dedupe_key not in dedupe))
+                if matches and dennick:source["dennick_trigger_turn"]=state["turn"]
                 if matches and one_or_more and dedupe is not None:dedupe.add(dedupe_key)
             elif event == "sacrifice" and event_card:
                 under_control=event_card.get("controller_id")==source.get("controller_id",owner["id"]);type_line=event_card.get("type_line","").casefold();is_token=bool(event_card.get("token"));one_or_more="one or more" in lower;dedupe_key=f"sacrifice:{source.get('instance_id')}"
@@ -4876,6 +4879,7 @@ def _advance_turn_phase(state: dict) -> None:
 
 def perform_action(state: dict, player_id: str, action: dict, allow_direct_resolution:bool=True) -> dict:
     life_before={owner["id"]:owner.get("life",0) for owner in state["players"]}
+    graveyard_before={card["instance_id"] for owner in state["players"] for card in owner["graveyard"]}
     state = deepcopy(state)
     player = _player(state, player_id)
     action_type = action.get("type")
@@ -5923,6 +5927,12 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
                 if destination=="exile":_put_into_exile(state,source_owner,[card],source,player_id)
                 else:source_owner[destination].append(card)
         _log(state, f"{moved_name} moved from {source} to {destination}.")
-    _update_speed_for_life_loss(state,life_before);_state_based_actions(state);_check_winner(state)
+    _update_speed_for_life_loss(state,life_before);_state_based_actions(state)
+    new_creatures=[card for owner in state["players"] for card in owner["graveyard"] if card["instance_id"] not in graveyard_before and "Creature" in card.get("type_line","")]
+    if new_creatures:
+        for owner in state["players"]:
+            for dennick in [permanent for permanent in owner["battlefield"] if "whenever one or more creature cards are put into graveyards from anywhere" in _active_level_text(permanent).casefold() and permanent.get("dennick_trigger_turn")!=state["turn"]]:
+                dennick["dennick_trigger_turn"]=state["turn"];ability={**dennick,"name":f"{dennick['name']} trigger","type_line":"Ability","mana_cost":"","oracle_text":"Investigate."};state["stack"].append({"id":_id(),"kind":"trigger","card":ability,"controller_id":owner["id"],"source_id":dennick["instance_id"]});_log(state,f"{dennick['name']} triggered after {len(new_creatures)} creature card(s) entered graveyards.")
+    _check_winner(state)
     state["version"] += 1
     return state
