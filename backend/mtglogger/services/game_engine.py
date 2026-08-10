@@ -3045,6 +3045,14 @@ def _resolve_spell(state: dict) -> None:
     if item.get("kind")=="trigger" and re.search(r"if you control (?:one|two|three|four|five|six|seven|eight|nine|ten|\d+) or more lands",effect_text):
         effect_text=_land_threshold_effect(effect_text,caster)
     other = opponent(state, caster["id"])
+    source_attack_target=state.get("combat",{}).get("attack_targets",{}).get(item.get("source_id"))
+    if source_permanent and "it gets +1/+0 until end of turn for each land defending player controls" in effect_text:
+        defending=_player(state,source_attack_target) if source_attack_target and any(owner["id"]==source_attack_target for owner in state["players"]) else other;amount=sum("Land" in permanent.get("type_line","") for permanent in defending["battlefield"]);source_permanent["temporary_power"]=source_permanent.get("temporary_power",0)+amount;_log(state,f"{source_permanent['name']} got +{amount}/+0 for {defending['name']}'s lands.");return
+    if source_permanent and "it deals damage to the player or planeswalker it's attacking equal to the number of artifacts you control" in effect_text:
+        amount=sum("Artifact" in permanent.get("type_line","") for permanent in caster["battlefield"]);defending_player=next((owner for owner in state["players"] if owner["id"]==source_attack_target),None);defending_planeswalker=next((permanent for owner in state["players"] for permanent in owner["battlefield"] if permanent["instance_id"]==source_attack_target and "Planeswalker" in permanent.get("type_line","")),None)
+        if defending_player:_damage_player(state,defending_player,amount,source_permanent)
+        elif defending_planeswalker:_damage_permanent(state,defending_planeswalker,amount,source_permanent)
+        _log(state,f"{source_permanent['name']} dealt {amount} damage to the defender it is attacking.");return
     if "each opponent may sacrifice a nonland permanent of their choice or discard a card" in effect_text and "each opponent who didn't sacrifice a permanent or discard a card this way" in effect_text:
         if _graveyard_card_type_count(caster)<4:_log(state,f"{card['name']} did not resolve because its Delirium condition was no longer true.");return
         source=source_permanent or card;choices=[{"player_id":owner["id"]} for owner in state["players"] if owner["id"]!=caster["id"]]
