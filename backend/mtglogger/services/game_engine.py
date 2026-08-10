@@ -1118,6 +1118,13 @@ def _queue_cascade_triggers(state:dict,player:dict,card:dict)->None:
         _log(state,f"{card['name']}'s cascade ability triggered.")
 
 
+def _queue_storm_trigger(state:dict,player:dict,card:dict,stack_item:dict)->None:
+    rules=(card.get("oracle_text") or "").split("(",1)[0]
+    if not re.search(r"(?:^|\n)Storm\b",rules,re.IGNORECASE) and not (_has_keyword(card,"Storm") and not re.search(r"\b(?:Gravestorm|Channelstorm)\b",rules,re.IGNORECASE)):return
+    count=max(0,player.get("spells_cast_this_turn",0)-1);ability={"name":f"{card['name']} — Storm","oracle_text":"Copy this spell for each spell cast before it this turn.","source_type_line":card.get("type_line",""),"source_mana_cost":card.get("mana_cost",""),"type_line":"Ability","mana_cost":""}
+    state["stack"].append({"id":_id(),"kind":"storm_trigger","card":ability,"controller_id":player["id"],"target_id":None,"source_id":card["instance_id"],"storm_count":count,"copy_item":deepcopy(stack_item)});_log(state,f"{card['name']}'s storm ability triggered with storm count {count}.")
+
+
 _FACE_DOWN_KEYS=("name","image_url","type_line","oracle_text","mana_cost","mana_value","power","toughness","loyalty","keywords","colors")
 
 
@@ -2025,6 +2032,11 @@ def _resolve_spell(state: dict) -> None:
         state["pending_rebound"]={"player_id":caster["id"],"card_id":candidate["instance_id"],"card_name":candidate["name"]};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} may cast {candidate['name']} from Rebound.");return
     if item.get("kind")=="cascade":
         _start_discovery(state,caster,int(item.get("cascade_value") or 0),"cascade",card["name"]);return
+    if item.get("kind")=="storm_trigger":
+        original=item.get("copy_item") or {};count=int(item.get("storm_count") or 0)
+        for _ in range(count):
+            copied=deepcopy(original);copied["id"]=_id();copied["kind"]="storm_copy";copied_card=deepcopy(copied["card"]);copied_card["instance_id"]=_id();copied["card"]=copied_card;state["stack"].append(copied);_queue_triggers(state,"copy",copied_card,caster)
+        _log(state,f"{card['name']} created {count} spell {'copy' if count==1 else 'copies'}.");return
     if item.get("kind")=="madness_trigger":
         candidate=next((candidate for candidate in caster["exile"] if candidate["instance_id"]==item.get("source_id")),None)
         if not candidate:_log(state,f"{card['name']} resolved, but the discarded card was no longer in exile.");return
@@ -2091,7 +2103,7 @@ def _resolve_spell(state: dict) -> None:
         _finish_saga_final_chapter(state,item)
         _log(state,f"{card['name']} was countered because its target was no longer legal.");return
     text = (rules_card.get("oracle_text") or "").casefold()
-    is_permanent_spell = item.get("kind", "spell") == "spell" and any(kind in card.get("type_line", "") for kind in ("Creature", "Artifact", "Enchantment", "Planeswalker", "Battle"))
+    is_permanent_spell = item.get("kind", "spell") in {"spell","storm_copy"} and any(kind in card.get("type_line", "") for kind in ("Creature", "Artifact", "Enchantment", "Planeswalker", "Battle"))
     effect_text = "" if is_permanent_spell and re.search(r"\b(?:when|whenever|at the beginning)\b", text) else text
     other = opponent(state, caster["id"])
     target_player = next((player for player in state["players"] if player["id"] == target_id), None)
@@ -2362,6 +2374,9 @@ def _resolve_spell(state: dict) -> None:
     elif is_permanent_spell and item.get("buyback"):
         caster["hand"].append(card);_log(state,f"{card['name']} returned to {caster['name']}'s hand through buyback.")
     elif is_permanent_spell:
+        if item.get("kind")=="storm_copy":
+            card["token"]=True
+            if "isn't legendary if it's a token" in (card.get("oracle_text") or "").casefold():card["type_line"]=re.sub(r"\bLegendary\s+","",card.get("type_line","")).strip()
         card["was_kicked"]=bool(item.get("kicked"))
         card["escaped"]=bool(item.get("escaped"))
         if item.get("suspended_cast"):card["suspend_haste"]=True
@@ -2369,7 +2384,7 @@ def _resolve_spell(state: dict) -> None:
         card["summoning_sick"] = True
         if re.search(r"\benters (?:the battlefield )?tapped\b",text):card["tapped"]=True
         enters_counters=re.search(r"enters(?: the battlefield)? with (a|one|two|three|four|five|six|seven|eight|nine|ten|twelve|\d+) ([+−-]\d+/[+−-]\d+|loyalty|charge|shield|stun) counters?",text)
-        _enter_battlefield(state,caster,[card],item.get("cast_source_zone","stack"),True)
+        _enter_battlefield(state,caster,[card],item.get("cast_source_zone","stack"),item.get("kind","spell")=="spell")
         delved_cards=item.get("delved_cards") or []
         if delved_cards:
             card["delved_card_ids"]=[candidate["instance_id"] for candidate in delved_cards]
@@ -2634,6 +2649,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
             else:clauses.append(clause)
         for clause in clauses:
             lower = clause.casefold(); matches = False
+            if event=="cast" and re.match(r"^storm\s*\(",lower):continue
             if event=="enters" and re.match(r"^backup\b",lower):continue
             if event=="upkeep" and re.match(r"^cumulative upkeep\b",lower):continue
             trigger_count = 1
@@ -2807,6 +2823,8 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 any_player="whenever a player casts" in lower and kind_match and zone_ok
                 self_cast=source is event_card and re.search(r"when you cast (?:this spell|~)",lower) is not None
                 matches=yours or opposing or any_player or self_cast
+            elif event=="copy" and event_card:
+                controlled=event_owner["id"]==owner["id"];type_line=event_card.get("type_line","").casefold();matches=controlled and source is not event_card and "whenever you cast or copy" in lower and "instant or sorcery spell" in lower and any(kind in type_line for kind in ("instant","sorcery"))
             elif event == "attackers_declared":
                 attacking_ids = set(state.get("combat", {}).get("attackers", []))
                 controlled_attackers = [card for card in owner["battlefield"] if card.get("instance_id") in attacking_ids]
@@ -3206,7 +3224,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
             target_id=action.get("target_id");targeting_card=_spell_targeting_card(candidate);targets=_targets(state,player_id,targeting_card)
             if _target_kind(targeting_card) and target_id not in {target["id"] for target in targets}:raise RuleViolation("Choose a legal target for the madness spell")
             if player["life"]<ability["life_cost"] or not _can_pay(player,cost_card,x_value=x_value):raise RuleViolation("That madness cost can no longer be paid")
-            _pay_mana(state,player,cost_card,x_value=x_value);player["life"]-=ability["life_cost"];_leave_exile(state,player,[candidate]);stack_item={"id":_id(),"kind":"spell","card":candidate,"controller_id":player_id,"target_id":target_id,"target_ids":[],"mode_indices":[],"mode_targets":[],"x_value":x_value,"cast_source_zone":"exile","madness_cast":True};state["stack"].append(stack_item);_record_spell_cast(state,player);candidate["cast_source_zone"]="exile";_queue_triggers(state,"cast",candidate,player);_queue_cascade_triggers(state,player,candidate);candidate.pop("cast_source_zone",None);_queue_ward(state,player,target_id,stack_item);state["consecutive_passes"]=0;state["pending_phase_advance"]=False
+            _pay_mana(state,player,cost_card,x_value=x_value);player["life"]-=ability["life_cost"];_leave_exile(state,player,[candidate]);stack_item={"id":_id(),"kind":"spell","card":candidate,"controller_id":player_id,"target_id":target_id,"target_ids":[],"mode_indices":[],"mode_targets":[],"x_value":x_value,"cast_source_zone":"exile","madness_cast":True};state["stack"].append(stack_item);_record_spell_cast(state,player);candidate["cast_source_zone"]="exile";_queue_triggers(state,"cast",candidate,player);_queue_cascade_triggers(state,player,candidate);_queue_storm_trigger(state,player,candidate,stack_item);candidate.pop("cast_source_zone",None);_queue_ward(state,player,target_id,stack_item);state["consecutive_passes"]=0;state["pending_phase_advance"]=False
             if (_multiplayer(state) or not allow_direct_resolution) and not state.get("pending_ward") and not state.get("pending_trigger_targets"):state["priority_player_id"]=opponent(state,player_id)["id"]
             x_label=f" with X={x_value}" if has_x else "";life_label=f" and paid {ability['life_cost']} life" if ability["life_cost"] else "";_log(state,f"{player['name']} cast {candidate['name']} for its madness cost {ability['mana_cost']}{x_label}{life_label}.")
     elif action_type in {"cast_discovered","hand_discovered","decline_discovery"}:
@@ -3216,7 +3234,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if action_type=="cast_discovered" and _target_kind(targeting_card) and target_id not in {target["id"] for target in targets}:raise RuleViolation("Choose a legal target for the discovered spell")
         remaining=[card_id for card_id in pending["revealed_ids"] if card_id!=candidate["instance_id"]];state["pending_discovery"]=None
         if action_type=="cast_discovered":
-            _leave_exile(state,player,[candidate]);stack_item={"id":_id(),"card":candidate,"controller_id":player_id,"target_id":target_id,"target_ids":[],"mode_indices":[],"mode_targets":[],"x_value":0,"free_cast":True,"cast_source_zone":"exile"};state["stack"].append(stack_item);_record_spell_cast(state,player);candidate["cast_source_zone"]="exile";_queue_triggers(state,"cast",candidate,player);_queue_cascade_triggers(state,player,candidate);candidate.pop("cast_source_zone",None);_log(state,f"{player['name']} cast {candidate['name']} without paying its mana cost.")
+            _leave_exile(state,player,[candidate]);stack_item={"id":_id(),"card":candidate,"controller_id":player_id,"target_id":target_id,"target_ids":[],"mode_indices":[],"mode_targets":[],"x_value":0,"free_cast":True,"cast_source_zone":"exile"};state["stack"].append(stack_item);_record_spell_cast(state,player);candidate["cast_source_zone"]="exile";_queue_triggers(state,"cast",candidate,player);_queue_cascade_triggers(state,player,candidate);_queue_storm_trigger(state,player,candidate,stack_item);candidate.pop("cast_source_zone",None);_log(state,f"{player['name']} cast {candidate['name']} without paying its mana cost.")
         elif action_type=="hand_discovered":
             _leave_exile(state,player,[candidate]);player["hand"].append(candidate);_log(state,f"{player['name']} put {candidate['name']} into their hand.")
         else:
@@ -3406,7 +3424,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         effective_target=target_id or (mode_targets[0] if len(mode_targets)==1 else None);stack_item={"id": _id(), "card": card, "controller_id": player_id, "target_id": effective_target,"target_ids":target_ids,"mode_indices":chosen_modes,"mode_targets":mode_targets,"x_value":x_value,"flashback":bool(flashback),"buyback":requested_buyback,"rebound_cast":source=="rebound","escaped":bool(escape),"escape_counters":escape["counters"] if escape else 0,"escape_counter_choice":escape["counter_choice"] if escape else False,"suspended_cast":source=="suspend","kicked":requested_kicked,"blighted":requested_blight,"evoked":requested_evoked,"dashed":requested_dashed,"delved_cards":delved_cards if requested_delve else [],"mutating":requested_mutating,"mutate_position":action.get("mutate_position"),"cast_source_zone":"graveyard" if source in {"flashback","escape","mutate_graveyard"} else "exile" if source in {"airbend","suspend","foretell","plot","rebound"} else "hand" if source in {"mutate_hand","evoke","dash_hand"} else "command" if source in {"mutate_command","dash_command"} else source};state["stack"].append(stack_item);state["stack"].extend(cost_triggers); state["consecutive_passes"] = 0; state["pending_phase_advance"] = False
         if requested_waterbend:_queue_triggers(state,"waterbend",card,player)
         _record_spell_cast(state,player);card["cast_source_zone"]="graveyard" if source in {"flashback","escape","mutate_graveyard"} else "exile" if source in {"airbend","suspend","foretell","plot"} else "hand" if source=="mutate_hand" else "command" if source=="mutate_command" else source
-        _queue_triggers(state,"cast",card,player);_queue_cascade_triggers(state,player,card);card.pop("cast_source_zone",None)
+        _queue_triggers(state,"cast",card,player);_queue_cascade_triggers(state,player,card);_queue_storm_trigger(state,player,card,stack_item);card.pop("cast_source_zone",None)
         ward_targets=[effective_target] if effective_target else []
         ward_targets.extend(target for target in mode_targets if target and target not in ward_targets)
         ward_targets.extend(target for target in target_ids if target not in ward_targets)
