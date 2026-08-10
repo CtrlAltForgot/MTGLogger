@@ -2551,7 +2551,7 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
     if active and main and not state["stack"]:
         if player["land_plays_remaining"]:
             actions.extend({"type": "play_land", "card_id": card["instance_id"]} for card in player["hand"] if "Land" in card.get("type_line", ""))
-            actions.extend({"type":"play_land","card_id":card["instance_id"],"source":"exile_permission"} for card in player["exile"] if "Land" in card.get("type_line","") and card.get("exile_play_until_turn",-1)>=state["turn"])
+            actions.extend({"type":"play_land","card_id":card["instance_id"],"source":"exile_permission"} for card in player["exile"] if "Land" in card.get("type_line","") and (card.get("exile_play_until_turn",-1)>=state["turn"] or card.get("exile_play_while_wizard") and any(re.search(r"\bWizard\b",permanent.get("type_line","")) for permanent in player["battlefield"])))
             actions.extend({"type":"play_land","card_id":card["instance_id"],"source":"after_adventure","label":f"Play {card['name']} after its Adventure"} for card in player["exile"] if card.get("adventured") and "Land" in (_face_rules_card(card,0) or {}).get("type_line",""))
         if _can_pay(player,{"mana_cost":"{3}"}):
             for hand_card in player["hand"]:
@@ -2632,7 +2632,7 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
     station_graveyard_source=next((permanent for permanent in player["battlefield"] if "once during each of your turns, you may cast a permanent spell from your graveyard by sacrificing a land" in _active_level_text(permanent).casefold() and permanent.get("station_graveyard_cast_turn")!=state["turn"]),None) if active else None
     if station_graveyard_source:castable.extend((card,"graveyard_permission") for card in player["graveyard"] if any(kind in card.get("type_line","") for kind in ("Artifact","Battle","Creature","Enchantment","Planeswalker")))
     castable.extend((card,"graveyard_permission") for card in player["graveyard"] if player.get("speed",0)>=4 and re.search(r"Max speed\s*[—-]\s*You may cast this card from your graveyard",card.get("oracle_text") or "",re.IGNORECASE))
-    castable.extend((card,"exile_permission") for card in player["exile"] if card.get("exile_cast_until_turn",-1)>=state["turn"])
+    castable.extend((card,"exile_permission") for card in player["exile"] if card.get("exile_cast_until_turn",-1)>=state["turn"] or card.get("exile_play_while_wizard") and any(re.search(r"\bWizard\b",permanent.get("type_line","")) for permanent in player["battlefield"]))
     castable.extend((card,"airbend") for card in player["exile"] if card.get("airbent"))
     castable.extend((card,"suspend") for card in player["exile"] if card.get("suspended_ready"))
     castable.extend((card,"foretell") for card in player["exile"] if card.get("foretold") and state["turn"]>card.get("foretold_turn",state["turn"]))
@@ -3361,6 +3361,18 @@ def _resolve_spell(state: dict) -> None:
             through_next="until the end of your next turn" in effect_text;expires=state["turn"]+len(state["players"]) if through_next else state["turn"];exiled=caster["library"].pop();_put_into_exile(state,caster,[exiled],"library",caster["id"]);exiled["exile_play_until_turn"]=expires
             if "Land" not in exiled.get("type_line",""):exiled["exile_cast_until_turn"]=expires
             _log(state,f"{caster['name']} exiled {exiled['name']} and may play it {'until the end of their next turn' if through_next else 'this turn'}.")
+    exile_top_two=re.search(r"(?:look at |exile )?the top two cards of your library and exile them face down|exile the top two cards of your library",effect_text)
+    if exile_top_two:
+        exiled=[]
+        for _ in range(min(2,len(caster["library"]))):exiled_card=caster["library"].pop();_put_into_exile(state,caster,[exiled_card],"library",caster["id"]);exiled.append(exiled_card)
+        wizard_permission="if you control a wizard" in effect_text
+        expires=state["turn"] if state.get("active_player_id")==caster["id"] else state["turn"]+1
+        for exiled_card in exiled:
+            if wizard_permission:exiled_card["exile_play_while_wizard"]=True
+            else:
+                exiled_card["exile_play_until_turn"]=expires
+                if "Land" not in exiled_card.get("type_line",""):exiled_card["exile_cast_until_turn"]=expires
+        _log(state,f"{caster['name']} exiled {len(exiled)} card(s) and may play them {'while they control a Wizard' if wizard_permission else 'until their next end step'}.")
     if "reveal the top card of your library and put that card into your hand" in effect_text and "where x is that card's mana value" in effect_text:
         if caster["library"]:
             revealed=caster["library"].pop();caster["hand"].append(revealed);amount=int(revealed.get("mana_value") or 0)
@@ -3747,6 +3759,8 @@ def _resolve_spell(state: dict) -> None:
             _leave_graveyard(state,graveyard_owner,[graveyard_target]);graveyard_target["controller_id"]=graveyard_target.get("owner_id",graveyard_owner["id"]);_player(state,graveyard_target["controller_id"])["hand"].append(graveyard_target);_log(state,f"{graveyard_target['name']} returned to its owner's hand.")
         elif re.search(r"exile target (?:creature )?card .*graveyard",effect_text):
             _leave_graveyard(state,graveyard_owner,[graveyard_target]);_put_into_exile(state,graveyard_owner,[graveyard_target],"graveyard",caster["id"]);_log(state,f"{graveyard_target['name']} was exiled from a graveyard.")
+        elif re.search(r"put target (?:instant or sorcery|permanent) card from your graveyard on top of your library",effect_text):
+            _leave_graveyard(state,graveyard_owner,[graveyard_target]);caster["library"].append(graveyard_target);_log(state,f"{graveyard_target['name']} was put on top of {caster['name']}'s library.")
     half_sacrifice=re.search(r"each opponent sacrifices half the creatures they control, rounded up",effect_text)
     if half_sacrifice:
         for affected in [owner for owner in state["players"] if owner["id"]!=caster["id"]]:
@@ -5312,9 +5326,9 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         _log(state,f"{player['name']} cast a creature spell face down for {{3}}.")
     elif action_type == "play_land":
         source=action.get("source","hand");zone=player["exile"] if source in {"exile_permission","after_adventure"} else player["hand"]
-        card = next((card for card in zone if card["instance_id"] == action.get("card_id") and "Land" in (_face_rules_card(card,0) or card).get("type_line", "") and (source!="exile_permission" or card.get("exile_play_until_turn",-1)>=state["turn"]) and (source!="after_adventure" or card.get("adventured"))), None)
+        card = next((card for card in zone if card["instance_id"] == action.get("card_id") and "Land" in (_face_rules_card(card,0) or card).get("type_line", "") and (source!="exile_permission" or card.get("exile_play_until_turn",-1)>=state["turn"] or card.get("exile_play_while_wizard") and any(re.search(r"\bWizard\b",permanent.get("type_line","")) for permanent in player["battlefield"])) and (source!="after_adventure" or card.get("adventured"))), None)
         if not card: raise RuleViolation("That land cannot be played from that zone")
-        zone.remove(card);_set_card_face(card,0);card.pop("adventured",None);card.setdefault("tapped",False);card["summoning_sick"]=True;_enter_battlefield(state,player,[card],"exile" if source in {"exile_permission","after_adventure"} else "hand",played=True);player["lands_played_this_turn"]=player.get("lands_played_this_turn",0)+1;player["land_plays_remaining"]-=1;_log(state,f"{player['name']} played {card['name']}{' from exile after its Adventure' if source=='after_adventure' else ''}.")
+        zone.remove(card);_set_card_face(card,0);card.pop("adventured",None);card.pop("exile_play_while_wizard",None);card.setdefault("tapped",False);card["summoning_sick"]=True;_enter_battlefield(state,player,[card],"exile" if source in {"exile_permission","after_adventure"} else "hand",played=True);player["lands_played_this_turn"]=player.get("lands_played_this_turn",0)+1;player["land_plays_remaining"]-=1;_log(state,f"{player['name']} played {card['name']}{' from exile after its Adventure' if source=='after_adventure' else ''}.")
     elif action_type=="channel":
         card=next((card for card in player["hand"] if card["instance_id"]==action.get("card_id")),None);abilities=_channel_abilities(card or {});ability_index=int(action.get("ability_index") or 0);ability=abilities[ability_index] if 0<=ability_index<len(abilities) else None;requested_target_count=len(action.get("target_ids") or []);available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="channel" and entry["card_id"]==action.get("card_id") and entry.get("ability_index")==ability_index and (entry.get("channel_target_count") is None or entry.get("channel_target_count")==requested_target_count)),None)
         if not card or not ability or not available:raise RuleViolation("That Channel ability cannot be activated now")
