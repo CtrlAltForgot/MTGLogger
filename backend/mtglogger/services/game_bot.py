@@ -210,6 +210,11 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
     if not actions:
         return None
     by_type = {kind: [action for action in actions if action["type"] == kind] for kind in {action["type"] for action in actions}}
+    if "sticktwister_discard" in by_type or "sticktwister_sacrifice" in by_type:
+        discard=min(by_type.get("sticktwister_discard",[]),key=lambda action:float((action.get("card") or {}).get("mana_value") or 0),default=None);sacrifice=min(by_type.get("sticktwister_sacrifice",[]),key=lambda action:_threat_score(state,action.get("card") or {}),default=None)
+        if discard and (not sacrifice or float((discard.get("card") or {}).get("mana_value") or 0)<=_threat_score(state,sacrifice.get("card") or {})):return {"type":"sticktwister_discard","card_id":discard["card_id"]}
+        if sacrifice:return {"type":"sticktwister_sacrifice","card_id":sacrifice["card_id"]}
+    if "sticktwister_take_damage" in by_type:return by_type["sticktwister_take_damage"][0]
     if "keep" in by_type:
         return by_type.get("mulligan",by_type["keep"])[0] if _should_mulligan(state,difficulty) else by_type["keep"][0]
     if "take_top_card" in by_type or "mill_top_card" in by_type or "keep_top_card" in by_type:

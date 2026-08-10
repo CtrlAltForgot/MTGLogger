@@ -1868,6 +1868,10 @@ def public_state(state: dict, viewer_id: str = "player") -> dict:
     if pending_top and pending_top.get("player_id")!=viewer_id:pending_top.pop("card",None)
     pending_revealed=visible.get("pending_revealed_discard")
     if pending_revealed and pending_revealed.get("player_id")!=viewer_id:pending_revealed["cards"]=[]
+    pending_sticktwister=visible.get("pending_sticktwister")
+    if pending_sticktwister:
+        for selection in pending_sticktwister.get("selections",[]):
+            if selection.get("kind")=="discard":selection.pop("card_id",None)
     pending_dungeon=visible.get("pending_dungeon")
     if pending_dungeon and pending_dungeon.get("player_id")!=viewer_id:
         pending_dungeon.pop("cards",None);pending_dungeon["card_ids"]=[];pending_dungeon.pop("top_ids",None)
@@ -2106,7 +2110,7 @@ def _pending_decision(state:dict)->bool:
     if state.get("pending_zone_choice"):return True
     if state.get("pending_counter_choice"):return True
     if state.get("pending_color_choice"):return True
-    return bool(state.get("pending_rad_choice") or state.get("pending_top_card_choice") or state.get("pending_revealed_discard") or state.get("pending_optional_discard") or state.get("pending_optional_payment") or state.get("pending_tilonalli") or state.get("pending_creature_type") or state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_populate") or state.get("pending_bolster") or state.get("pending_discovery") or state.get("pending_madness") or state.get("pending_rebound") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
+    return bool(state.get("pending_sticktwister") or state.get("pending_rad_choice") or state.get("pending_top_card_choice") or state.get("pending_revealed_discard") or state.get("pending_optional_discard") or state.get("pending_optional_payment") or state.get("pending_tilonalli") or state.get("pending_creature_type") or state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_populate") or state.get("pending_bolster") or state.get("pending_discovery") or state.get("pending_madness") or state.get("pending_rebound") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
 
 
 def _split_second_on_stack(state:dict)->bool:
@@ -2157,6 +2161,13 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
     if state["status"] == "complete":
         return []
     player = _player(state, player_id)
+    pending_sticktwister=state.get("pending_sticktwister")
+    if pending_sticktwister:
+        position=len(pending_sticktwister.get("selections",[]));choices=pending_sticktwister.get("choices",[]);current=choices[position] if position<len(choices) else None
+        if not current or current["player_id"]!=player_id:return []
+        common={"source_name":pending_sticktwister["source_name"],"source_power":pending_sticktwister["source_power"]};actions=[{"type":"sticktwister_discard","card_id":card["instance_id"],"card":card,"label":f"Discard {card['name']}",**common} for card in player["hand"]]
+        actions.extend({"type":"sticktwister_sacrifice","card_id":card["instance_id"],"card":card,"label":f"Sacrifice {card['name']}",**common} for card in player["battlefield"] if "Land" not in card.get("type_line",""))
+        return actions+[{"type":"sticktwister_take_damage","label":f"Take {pending_sticktwister['source_power']} damage",**common},{"type":"concede"}]
     pending_rad=state.get("pending_rad_choice")
     if pending_rad:
         if pending_rad["player_id"]!=player_id:return []
@@ -2983,6 +2994,12 @@ def _resolve_spell(state: dict) -> None:
     if item.get("kind")=="trigger" and re.search(r"if you control (?:one|two|three|four|five|six|seven|eight|nine|ten|\d+) or more lands",effect_text):
         effect_text=_land_threshold_effect(effect_text,caster)
     other = opponent(state, caster["id"])
+    if "each opponent may sacrifice a nonland permanent of their choice or discard a card" in effect_text and "each opponent who didn't sacrifice a permanent or discard a card this way" in effect_text:
+        if _graveyard_card_type_count(caster)<4:_log(state,f"{card['name']} did not resolve because its Delirium condition was no longer true.");return
+        source=source_permanent or card;choices=[{"player_id":owner["id"]} for owner in state["players"] if owner["id"]!=caster["id"]]
+        if choices:
+            state["pending_sticktwister"]={"controller_id":caster["id"],"source_name":source.get("name",card["name"]).removesuffix(" trigger"),"source_card":deepcopy(source),"source_power":_parse_stats(source,state)[0],"choices":choices,"selections":[]};state["priority_player_id"]=choices[0]["player_id"];_log(state,f"Each opponent must choose whether to discard, sacrifice a nonland permanent, or take damage from {state['pending_sticktwister']['source_name']}.")
+        return
     target_player = next((player for player in state["players"] if player["id"] == target_id), None)
     target_owner = next((player for player in state["players"] if any(permanent["instance_id"] == target_id for permanent in player["battlefield"])), None)
     target = next((permanent for player in state["players"] for permanent in player["battlefield"] if permanent["instance_id"] == target_id), None)
@@ -4658,7 +4675,24 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
     manual_actions = {"adjust_life", "add_counter", "create_token", "move_zone"}
     if action_type not in allowed and action_type not in manual_actions:
         raise RuleViolation(f"{action_type} is not legal right now")
-    if action_type in {"pay_tilonalli","decline_tilonalli"}:
+    if action_type in {"sticktwister_discard","sticktwister_sacrifice","sticktwister_take_damage"}:
+        pending=state.get("pending_sticktwister") or {};position=len(pending.get("selections",[]));choices=pending.get("choices",[]);current=choices[position] if position<len(choices) else None
+        if not current or current.get("player_id")!=player_id:raise RuleViolation("There is no Sticktwister choice for this player")
+        kind=action_type.removeprefix("sticktwister_");card_id=action.get("card_id")
+        if kind=="discard" and card_id not in {card["instance_id"] for card in player["hand"]}:raise RuleViolation("Choose a card in your hand to discard")
+        if kind=="sacrifice" and card_id not in {card["instance_id"] for card in player["battlefield"] if "Land" not in card.get("type_line","")}:raise RuleViolation("Choose a nonland permanent to sacrifice")
+        pending.setdefault("selections",[]).append({"player_id":player_id,"kind":kind,"card_id":card_id});state["pending_sticktwister"]=pending
+        if len(pending["selections"])<len(choices):state["priority_player_id"]=choices[len(pending["selections"])]["player_id"]
+        else:
+            for selection in pending["selections"]:
+                chooser=_player(state,selection["player_id"]);selected=selection.get("card_id")
+                if selection["kind"]=="discard":_discard_cards(state,chooser,[next(card for card in chooser["hand"] if card["instance_id"]==selected)])
+                elif selection["kind"]=="sacrifice":_sacrifice_permanents(state,chooser,[next(card for card in chooser["battlefield"] if card["instance_id"]==selected)])
+            source=pending["source_card"]
+            for selection in pending["selections"]:
+                if selection["kind"]=="take_damage":_damage_player(state,_player(state,selection["player_id"]),int(pending["source_power"]),source)
+            state["pending_sticktwister"]=None;state["priority_player_id"]=(state.get("pending_trigger_targets") or [{"controller_id":state["active_player_id"]}])[0]["controller_id"];_log(state,f"All opponents completed {pending['source_name']}'s choice.")
+    elif action_type in {"pay_tilonalli","decline_tilonalli"}:
         pending=state.get("pending_tilonalli") or {}
         if pending.get("player_id")!=player_id:raise RuleViolation("There is no Tilonalli payment decision for this player")
         if action_type=="pay_tilonalli":

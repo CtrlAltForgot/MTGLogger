@@ -99,7 +99,7 @@ def _spectator_state(state:dict)->dict:
         for zone in ("hand","battlefield","graveyard","exile","command"):player[zone]=[]
         player["commander_damage"]={};player["bent_this_turn"]=[]
     visible["stack"]=[];visible["combat"]={"attackers":[],"blocks":{},"attack_targets":{},"block_orders":{},"damage_pending":False,"damage_step":None,"first_strike_damage_ids":[]};visible["log"]=[]
-    for key in ("pending_discard","pending_mulligan_bottom","pending_sacrifice","pending_legendary","pending_library_search","pending_scry","pending_damage_order","pending_ward","pending_blight","pending_proliferate","pending_transform"):visible[key]=None
+    for key in ("pending_sticktwister","pending_discard","pending_mulligan_bottom","pending_sacrifice","pending_legendary","pending_library_search","pending_scry","pending_damage_order","pending_ward","pending_blight","pending_proliferate","pending_transform"):visible[key]=None
     visible["pending_commander_zone"]=[];visible["pending_trigger_targets"]=[]
     return visible
 
