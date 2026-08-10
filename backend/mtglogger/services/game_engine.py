@@ -1100,7 +1100,7 @@ def _activated_abilities(card: dict) -> list[dict]:
         waterbend_symbol=_waterbend_symbol(cost);energy_cost=_energy_quantity(cost,"pay");regular_cost=re.sub(r"\bwaterbend\s+\{(?:\d+|X)\}","",cost,flags=re.IGNORECASE)
         mana_cost="".join(re.findall(r"\{[^}]+\}",regular_cost,re.IGNORECASE)).upper().replace("{T}","").replace("{Q}","").replace("{E}","")
         taps="{T}" in cost.upper()
-        source_name=re.escape(card.get("name", ""));self_reference=rf"(?:~|this (?:artifact|creature|permanent)|{source_name})"
+        source_name=re.escape(card.get("name", ""));self_reference=rf"(?:~|this (?:artifact|creature|enchantment|land|permanent)|{source_name})"
         self_sacrifice=re.search(rf"\bsacrifice {self_reference}\b",cost,re.IGNORECASE) is not None
         self_bottom=re.search(rf"\bput {self_reference} on the bottom of (?:its|your) owner's library\b",cost,re.IGNORECASE) is not None
         life_match=re.search(r"\bpay (\d+) life\b",cost,re.IGNORECASE);life_cost=int(life_match.group(1)) if life_match else 0
@@ -1112,7 +1112,7 @@ def _activated_abilities(card: dict) -> list[dict]:
         discard_match=re.search(r"\bdiscard (a|an|one|two|three|four|five|X|\d+) (?:(nonland|land|creature|artifact|enchantment|planeswalker|instant|sorcery) )?cards?\b",cost,re.IGNORECASE)
         if discard_match:
             word=discard_match.group(1).casefold();selection_costs.append({"kind":"discard","filter":discard_match.group(2).casefold() if discard_match.group(2) else "card","amount":"X" if word=="x" else words.get(word,int(word) if word.isdigit() else 1),"exclude_source":False})
-        sacrifice_match=None if self_sacrifice else re.search(r"\bsacrifice (another |a |an |one |two |three |X |two other |three other )?(artifact or creature|creature or artifact|nonland permanent|land|creature|artifact|enchantment|planeswalker|permanent|token)s?\b",cost,re.IGNORECASE)
+        sacrifice_match=None if self_sacrifice else re.search(r"\bsacrifice (another |a |an |one |two |three |X |two other |three other )?(artifact or creature|creature or artifact|creature or vehicle|nonland permanent|land|creature|artifact|enchantment|planeswalker|permanent|token)s?\b",cost,re.IGNORECASE)
         if sacrifice_match:
             count_word=(sacrifice_match.group(1) or "a").strip().casefold();selection_costs.append({"kind":"sacrifice","filter":sacrifice_match.group(2).casefold(),"amount":"X" if count_word=="x" else 2 if count_word=="two other" else 3 if count_word=="three other" else words.get(count_word,1),"exclude_source":"other" in count_word or count_word=="another"})
         blight_match=re.search(r"\bblight (\d+)\b",cost,re.IGNORECASE)
@@ -1526,7 +1526,9 @@ def _city_blessing_rules_card(card:dict,blessed:bool)->dict:
 
 
 def _library_search_spec(card:dict)->dict|None:
-    text=card.get("oracle_text") or "";match=re.search(r"(?:may )?search your library for (up to )?(a|an|one|two|three|four|five|six|seven|eight|nine|ten|\d+) (.+?) cards?\b",text,re.IGNORECASE)
+    text=card.get("oracle_text") or "";unrestricted=re.search(r"(?:may )?search your library for a card,\s*put it into your hand",text,re.IGNORECASE)
+    if unrestricted:return {"amount":1,"descriptor":"card","destination":"hand","tapped":False,"different_names":False,"shared_land_type":False,"label":unrestricted.group(0)}
+    match=re.search(r"(?:may )?search your library for (up to )?(a|an|one|two|three|four|five|six|seven|eight|nine|ten|\d+) (.+?) cards?\b",text,re.IGNORECASE)
     if not match:return None
     tail=text[match.start():];clause=re.split(r"\bthen shuffle\b",tail,maxsplit=1,flags=re.IGNORECASE)[0].casefold();lower_tail=tail.casefold()
     battlefield="onto the battlefield" in clause;hand="into your hand" in clause or "put it into your hand" in clause or "put them into your hand" in clause;top="shuffle and put that card on top" in lower_tail
@@ -1650,6 +1652,7 @@ def _target_kind(card: dict) -> str | None:
     if re.search(r"target creature card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_creature"
     if re.search(r"target (?:nonland permanent |nonland )?card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_card"
     if "target face-down permanent you control" in text:return "permanent"
+    if "target creature or vehicle" in text:return "creature_or_vehicle"
     if re.search(r"target player mills?", text): return "player"
     if re.search(r"target player sacrifices?",text):return "player"
     if re.search(r"target player discards?",text):return "player"
@@ -1726,7 +1729,7 @@ def _targets(state: dict, caster_id: str, card: dict, ignore_target_protection:b
         aura_types=_aura_allowed_types(card)
         if (kind in {"any", "player","player_or_planeswalker"} or (kind=="permanent" and "player" in aura_types)) and not ("target opponent" in text and player["id"]==caster_id) and not _player_protected_from(state,player,card): targets.append({"id": player["id"], "name": player["name"], "kind": "player", "controller_id": player["id"]})
         for permanent in player["battlefield"]:
-            if kind in {"any", "permanent"} or (kind=="player_or_planeswalker" and "Planeswalker" in permanent.get("type_line","")) or (kind=="creature_or_spell" and "Creature" in permanent.get("type_line","")) or (kind in {"creature","artifact","enchantment","land","planeswalker"} and kind in permanent.get("type_line", "").casefold()):
+            if kind in {"any", "permanent"} or (kind=="player_or_planeswalker" and "Planeswalker" in permanent.get("type_line","")) or (kind=="creature_or_spell" and "Creature" in permanent.get("type_line","")) or (kind=="creature_or_vehicle" and any(value in permanent.get("type_line","") for value in ("Creature","Vehicle"))) or (kind in {"creature","artifact","enchantment","land","planeswalker"} and kind in permanent.get("type_line", "").casefold()):
                 aura_types=_aura_allowed_types(card)
                 if "Aura" in card.get("type_line","") and aura_types and not any(allowed in permanent.get("type_line","").casefold() for allowed in aura_types if allowed!="player"):continue
                 if own_target_only and player["id"] != caster_id: continue
@@ -1814,7 +1817,7 @@ def _pending_decision(state:dict)->bool:
     if state.get("pending_connive"):return True
     if state.get("pending_zethi_copies"):return True
     if state.get("pending_counter_payment"):return True
-    return bool(state.get("pending_rad_choice") or state.get("pending_top_card_choice") or state.get("pending_revealed_discard") or state.get("pending_optional_payment") or state.get("pending_tilonalli") or state.get("pending_creature_type") or state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_populate") or state.get("pending_bolster") or state.get("pending_discovery") or state.get("pending_madness") or state.get("pending_rebound") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
+    return bool(state.get("pending_rad_choice") or state.get("pending_top_card_choice") or state.get("pending_revealed_discard") or state.get("pending_optional_discard") or state.get("pending_optional_payment") or state.get("pending_tilonalli") or state.get("pending_creature_type") or state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_populate") or state.get("pending_bolster") or state.get("pending_discovery") or state.get("pending_madness") or state.get("pending_rebound") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
 
 
 def _split_second_on_stack(state:dict)->bool:
@@ -1871,6 +1874,10 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
     if pending_revealed:
         if pending_revealed["player_id"]!=player_id:return []
         return [{"type":"choose_revealed_discard","card_id":card["instance_id"],"card":card,"source_name":pending_revealed["source_name"],"label":f"Choose {card['name']} for {pending_revealed['opponent_name']} to discard"} for card in pending_revealed["cards"]]+[{"type":"concede"}]
+    pending_optional_discard=state.get("pending_optional_discard")
+    if pending_optional_discard:
+        if pending_optional_discard["player_id"]!=player_id:return []
+        return [{"type":"discard_optional_card","card_id":card["instance_id"],"source_name":pending_optional_discard["source_name"],"label":f"Discard {card['name']}"} for card in player["hand"]]+[{"type":"decline_optional_discard","source_name":pending_optional_discard["source_name"],"label":"Don't discard"},{"type":"concede"}]
     pending_payment=state.get("pending_optional_payment")
     if pending_payment:
         if pending_payment["player_id"]!=player_id:return []
@@ -2688,6 +2695,9 @@ def _resolve_spell(state: dict) -> None:
     if optional_payment and "{x}" not in optional_payment.group(1):
         mana_cost=optional_payment.group(1).upper();continuation=optional_payment.group(2).strip();source_name=(source_permanent or source_graveyard or card).get("name",card["name"])
         state["pending_optional_payment"]={"player_id":caster["id"],"source_name":source_name,"source_id":item.get("source_id"),"event_card_id":item.get("event_card_id"),"mana_cost":mana_cost,"continuation":continuation};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} may pay {mana_cost} for {source_name}.");return
+    optional_discard=re.search(r"you may discard a card\.\s*if you do,\s*(.+)",effect_text,re.DOTALL)
+    if optional_discard:
+        source_name=(source_permanent or card).get("name",card["name"]);state["pending_optional_discard"]={"player_id":caster["id"],"source_name":source_name,"source_id":item.get("source_id"),"continuation":optional_discard.group(1).strip()};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} may discard a card for {source_name}.");return
     if re.search(r"you may pay \{x\}\{r\}",effect_text) and "create x 1/1 red elemental creature tokens" in effect_text:
         state["pending_tilonalli"]={"player_id":caster["id"],"source_name":source_permanent.get("name",card["name"]) if source_permanent else card["name"],"source_id":item.get("source_id"),"defender_id":state.get("combat",{}).get("attack_targets",{}).get(item.get("source_id"),opponent(state,caster["id"])["id"])};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} may pay {{X}}{{R}} for {state['pending_tilonalli']['source_name']}.");return
     if "take an extra turn after this one" in effect_text:
@@ -3030,11 +3040,17 @@ def _resolve_spell(state: dict) -> None:
         for affected in [owner for owner in state["players"] if owner["id"]!=caster["id"]]:
             choices=[permanent["instance_id"] for permanent in affected["battlefield"] if "Creature" in permanent.get("type_line","")];required=(len(choices)+1)//2
             if required:state["pending_sacrifice"]={"player_id":affected["id"],"amount":required,"card_ids":choices};state["priority_player_id"]=affected["id"];_log(state,f"{affected['name']} must sacrifice {required} creature(s).")
-    sacrifice_match=None if half_sacrifice else re.search(r"(?:target player|each opponent) sacrifices? (a|one|two|three|four|\d+) (creature|permanent)s?",effect_text)
+    sacrifice_match=None if half_sacrifice else re.search(r"(?:target player|each opponent) sacrifices? (a|one|two|three|four|\d+) (creature or vehicle|creature|permanent)s?",effect_text)
     if sacrifice_match:
         words={"a":1,"one":1,"two":2,"three":3,"four":4};amount=words.get(sacrifice_match.group(1),int(sacrifice_match.group(1)) if sacrifice_match.group(1).isdigit() else 1);affected=target_player if "target player" in sacrifice_match.group(0) and target_player else other;kind=sacrifice_match.group(2)
-        choices=[permanent["instance_id"] for permanent in affected["battlefield"] if kind=="permanent" or "Creature" in permanent.get("type_line","")];required=min(amount,len(choices))
+        choices=[permanent["instance_id"] for permanent in affected["battlefield"] if kind=="permanent" or any(part in permanent.get("type_line","").casefold() for part in kind.split(" or "))];required=min(amount,len(choices))
         if required:state["pending_sacrifice"]={"player_id":affected["id"],"amount":required,"card_ids":choices};state["priority_player_id"]=affected["id"];_log(state,f"{affected['name']} must sacrifice {required} {kind}(s).")
+        elif "who can't discards a card" in effect_text and affected["hand"]:state["pending_discard"]={"player_id":affected["id"],"amount":1,"reason":"effect"};state["priority_player_id"]=affected["id"];_log(state,f"{affected['name']} could not sacrifice and must discard a card.")
+    speed_damage=re.search(r"deals (\d+) damage to each player who (?:doesn't|does not) have max speed",effect_text)
+    if speed_damage:
+        amount=int(speed_damage.group(1))
+        for affected in state["players"]:
+            if affected.get("speed",0)<4:_damage_player(state,affected,amount,source_permanent or card)
     destroy_all = re.search(r"destroy all (creatures|artifacts|enchantments|nonland permanents)", effect_text)
     exile_all = re.search(r"exile all (creatures|artifacts|enchantments|nonland permanents)", effect_text)
     for match,destination in ((destroy_all,"graveyard"),(exile_all,"exile")):
@@ -3524,7 +3540,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
         raw_clauses = re.split(r"(?<=[.!])\s+|\n", text);clauses=[]
         for clause in raw_clauses:
             modal_continuation=bool(clauses and (clause.strip().startswith(("•","-")) or clauses[-1].lstrip().startswith(("•","-")) or re.search(r"\n[•-]\s",clauses[-1]) and not re.match(r"(?:when(?:ever)?\b|at the beginning\b|[+−-]?\d+\s*:|\{[^}]+\}[^:]*:)",clause.strip(),re.IGNORECASE)))
-            top_card_continuation=bool(clauses and "look at the top card of your library" in clauses[-1].casefold() and re.match(r"if (?:it(?:'s| is) a creature card|you don.t put the card into your hand)",clause.strip(),re.IGNORECASE))
+            top_card_continuation=bool(clauses and (("look at the top card of your library" in clauses[-1].casefold() and re.match(r"if (?:it(?:'s| is) a creature card|you don.t put the card into your hand)",clause.strip(),re.IGNORECASE)) or ("each opponent sacrifices" in clauses[-1].casefold() and re.match(r"each opponent who can.t discards a card",clause.strip(),re.IGNORECASE))))
             continuation=bool(clauses and (modal_continuation or top_card_continuation or ("additional combat phase after this phase" in clauses[-1].casefold() and re.match(r"at the beginning of that combat",clause.strip(),re.IGNORECASE)) or ("target" in clauses[-1].casefold() and re.match(r"it gains? [^.]+ until end of turn",clause.strip(),re.IGNORECASE)) or re.match(r"(?:then if|if you do|if you didn't|if you did not|if you have the city's blessing|otherwise),?\b",clause.strip(),re.IGNORECASE) or re.match(r"if you control (?:one|two|three|four|five|six|seven|eight|nine|ten|\d+) or more lands",clause.strip(),re.IGNORECASE) or re.match(r"if that land is (?:a |an )?[a-z]+,",clause.strip(),re.IGNORECASE) or re.match(r"if (?:this is|it(?:'s| is)) the (?:first|second|third|fourth) time(?: this ability has resolved)?(?: this turn)?,",clause.strip(),re.IGNORECASE) or ("target opponent reveals their hand" in clauses[-1].casefold() and re.match(r"you choose an instant or sorcery card from it",clause.strip(),re.IGNORECASE)) or ("you choose an instant or sorcery card from it" in clauses[-1].casefold() and re.match(r"that player discards that card",clause.strip(),re.IGNORECASE)) or ("create " in clauses[-1].casefold() and " creature token" in clauses[-1].casefold() and re.match(r"(?:that token attacks this combat if able|exile (?:that|those) tokens? at the beginning of the next end step)",clause.strip(),re.IGNORECASE)) or ("exile the top card of your library" in clauses[-1].casefold() and re.match(r"you may play that card this turn",clause.strip(),re.IGNORECASE)) or ("exile cards from the top of your library until you exile a nonland card" in clauses[-1].casefold() and re.match(r"you may cast that card this turn",clause.strip(),re.IGNORECASE)) or ("create x 1/1 red elemental creature tokens" in clauses[-1].casefold() and re.match(r"at the beginning of the next end step, exile those tokens",clause.strip(),re.IGNORECASE)) or ("reveal the top card of your library and put that card into your hand" in clauses[-1].casefold() and re.match(r"each opponent loses x life\b",clause.strip(),re.IGNORECASE))))
             if continuation:
                 separator="\n" if modal_continuation else " ";clauses[-1]=f"{clauses[-1]}{separator}{clause.strip()}"
@@ -4090,6 +4106,16 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         victim=_player(state,pending["opponent_id"]);discarded=next((card for card in victim["hand"] if card["instance_id"]==discarded_id),None)
         if not discarded:raise RuleViolation("That revealed card is no longer in the opponent's hand")
         _discard_cards(state,victim,[discarded]);state["pending_revealed_discard"]=None;state["priority_player_id"]=state["active_player_id"];_log(state,f"{player['name']} chose {discarded['name']}; {victim['name']} discarded it.")
+    elif action_type in {"discard_optional_card","decline_optional_discard"}:
+        pending=state.get("pending_optional_discard") or {}
+        if pending.get("player_id")!=player_id:raise RuleViolation("There is no optional discard choice for this player")
+        state["pending_optional_discard"]=None
+        if action_type=="discard_optional_card":
+            discarded=next((card for card in player["hand"] if card["instance_id"]==action.get("card_id")),None)
+            if not discarded:raise RuleViolation("Choose a card in your hand to discard")
+            _discard_cards(state,player,[discarded]);ability={"name":f"{pending['source_name']} discard effect","oracle_text":pending["continuation"],"type_line":"Ability","mana_cost":""};state["stack"].append({"id":_id(),"kind":"trigger","card":ability,"controller_id":player_id,"target_id":None,"source_id":pending.get("source_id")});_resolve_spell(state);_log(state,f"{player['name']} discarded {discarded['name']} for {pending['source_name']}.")
+        else:_log(state,f"{player['name']} declined to discard for {pending['source_name']}.")
+        state["priority_player_id"]=state["active_player_id"]
     elif action_type in {"pay_optional_mana","decline_optional_mana"}:
         pending=state.get("pending_optional_payment") or {}
         if pending.get("player_id")!=player_id:raise RuleViolation("There is no optional mana payment for this player")
