@@ -277,6 +277,8 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
     if "pay_tilonalli" in by_type or "decline_tilonalli" in by_type:
         payment=by_type.get("pay_tilonalli",[None])[0]
         return {"type":"pay_tilonalli","x_value":payment["x_max"]} if payment and payment.get("x_max",0)>0 and difficulty!="beginner" else by_type["decline_tilonalli"][0]
+    if "pay_optional_mana" in by_type or "decline_optional_mana" in by_type:
+        return by_type["pay_optional_mana"][0] if "pay_optional_mana" in by_type and difficulty!="beginner" else by_type["decline_optional_mana"][0]
     if "choose_dungeon_room" in by_type:
         rooms={action.get("room"):action for action in by_type["choose_dungeon_room"]};bot=next(player for player in state["players"] if player["id"]=="bot")
         preferred="Lost Well" if len(bot["hand"])<4 else "Forge" if any("Creature" in card.get("type_line","") for card in bot["battlefield"]) else "Lost Well"

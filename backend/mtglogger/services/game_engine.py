@@ -1705,7 +1705,7 @@ def _multiplayer(state: dict) -> bool:
 def _pending_decision(state:dict)->bool:
     if state.get("pending_explore"):return True
     if state.get("pending_connive"):return True
-    return bool(state.get("pending_tilonalli") or state.get("pending_creature_type") or state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_populate") or state.get("pending_bolster") or state.get("pending_discovery") or state.get("pending_madness") or state.get("pending_rebound") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
+    return bool(state.get("pending_optional_payment") or state.get("pending_tilonalli") or state.get("pending_creature_type") or state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_populate") or state.get("pending_bolster") or state.get("pending_discovery") or state.get("pending_madness") or state.get("pending_rebound") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
 
 
 def _split_second_on_stack(state:dict)->bool:
@@ -1747,6 +1747,12 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
     if state["status"] == "complete":
         return []
     player = _player(state, player_id)
+    pending_payment=state.get("pending_optional_payment")
+    if pending_payment:
+        if pending_payment["player_id"]!=player_id:return []
+        common={"source_name":pending_payment["source_name"],"mana_cost":pending_payment["mana_cost"]};actions=[{"type":"decline_optional_mana","label":"Don't pay",**common},{"type":"concede"}]
+        if _can_pay(player,{"mana_cost":pending_payment["mana_cost"]}):actions.insert(0,{"type":"pay_optional_mana","label":f"Pay {pending_payment['mana_cost']}",**common})
+        return actions
     pending_tilonalli=state.get("pending_tilonalli")
     if pending_tilonalli:
         if pending_tilonalli["player_id"]!=player_id:return []
@@ -2444,6 +2450,10 @@ def _resolve_spell(state: dict) -> None:
     target_stack_item = next((entry for entry in state["stack"] if entry["id"] == target_id), None)
     graveyard_owner=next((player for player in state["players"] if any(graveyard_card["instance_id"]==target_id for graveyard_card in player["graveyard"])),None)
     graveyard_target=next((graveyard_card for player in state["players"] for graveyard_card in player["graveyard"] if graveyard_card["instance_id"]==target_id),None)
+    optional_payment=re.search(r"you may pay ((?:\{[^}]+\})+)\.\s*if you do,\s*(.+)",effect_text,re.DOTALL)
+    if optional_payment and "{x}" not in optional_payment.group(1):
+        mana_cost=optional_payment.group(1).upper();continuation=optional_payment.group(2).strip();source_name=(source_permanent or source_graveyard or card).get("name",card["name"])
+        state["pending_optional_payment"]={"player_id":caster["id"],"source_name":source_name,"source_id":item.get("source_id"),"mana_cost":mana_cost,"continuation":continuation};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} may pay {mana_cost} for {source_name}.");return
     if re.search(r"you may pay \{x\}\{r\}",effect_text) and "create x 1/1 red elemental creature tokens" in effect_text:
         state["pending_tilonalli"]={"player_id":caster["id"],"source_name":source_permanent.get("name",card["name"]) if source_permanent else card["name"],"source_id":item.get("source_id"),"defender_id":state.get("combat",{}).get("attack_targets",{}).get(item.get("source_id"),opponent(state,caster["id"])["id"])};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} may pay {{X}}{{R}} for {state['pending_tilonalli']['source_name']}.");return
     if "take an extra turn after this one" in effect_text:
@@ -2463,7 +2473,7 @@ def _resolve_spell(state: dict) -> None:
     if source_graveyard and "you may cast it from your graveyard this turn" in effect_text:
         if state.get("active_player_id")==caster["id"]:source_graveyard["graveyard_cast_until_turn"]=state["turn"]
         return
-    if source_graveyard and re.search(r"you may return this card from your graveyard to the battlefield",effect_text):
+    if source_graveyard and re.search(r"(?:you may )?return this card from your graveyard to the battlefield",effect_text):
         _leave_graveyard(state,caster,[source_graveyard]);source_graveyard["controller_id"]=caster["id"];source_graveyard["summoning_sick"]=True;_enter_battlefield(state,caster,[source_graveyard],"graveyard");_log(state,f"{source_graveyard['name']} returned from {caster['name']}'s graveyard.");return
     if "reveal the top card of your library and put that card into your hand" in effect_text and "where x is that card's mana value" in effect_text:
         if caster["library"]:
@@ -2979,7 +2989,7 @@ def _enter_battlefield(state:dict,controller:dict,cards:list[dict],origin:str="e
     if any("you may play an additional land on each of your turns" in (card.get("oracle_text") or "").casefold() for card in entering):_refresh_land_plays(state,controller)
     _sync_city_blessing(state)
     ordered_owners=sorted(state["players"],key=lambda owner:owner["id"]!=state.get("active_player_id"));sources=[(owner,permanent) for owner in ordered_owners for permanent in owner["battlefield"]]
-    if any("Land" in card.get("type_line","") for card in entering):sources.extend((owner,card) for owner in ordered_owners for card in owner["graveyard"] if re.search(r"landfall\s*[—-].*whenever a land[^.]+enters[^,]*,\s*(?:you may return this card from your graveyard to the battlefield|if this card is in your graveyard and it(?:'s| is) your turn, you may cast it from your graveyard this turn)",(card.get("oracle_text") or "").replace("\n"," "),re.IGNORECASE) and ("it's your turn" not in (card.get("oracle_text") or "").casefold() or state.get("active_player_id")==owner["id"]))
+    if any("Land" in card.get("type_line","") for card in entering):sources.extend((owner,card) for owner in ordered_owners for card in owner["graveyard"] if re.search(r"landfall\s*[—-].*whenever a land[^.]+enters[^,]*,\s*(?:you may return this card from your graveyard to the battlefield|[^.]*you may pay (?:\{[^}]+\})+\. if you do, return this card from your graveyard to the battlefield|if this card is in your graveyard and it(?:'s| is) your turn, you may cast it from your graveyard this turn)",(card.get("oracle_text") or "").replace("\n"," "),re.IGNORECASE) and ("it's your turn" not in (card.get("oracle_text") or "").casefold() or state.get("active_player_id")==owner["id"]))
     for card in entering:_queue_triggers(state,"enters",card,controller,dedupe,sources)
     for card in entering:
         targets=[{"id":candidate["instance_id"],"name":candidate["name"],"kind":"permanent","controller_id":candidate.get("controller_id",controller["id"])} for owner in state["players"] for candidate in owner["battlefield"] if "Creature" in candidate.get("type_line","")]
@@ -3154,7 +3164,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
     ordered_owners=sorted(state["players"],key=lambda owner:owner["id"]!=state.get("active_player_id"))
     sources = list(sources_override) if sources_override is not None else [(owner, permanent) for owner in ordered_owners for permanent in owner["battlefield"]]
     if sources_override is None and event=="enters" and event_card and "Land" in event_card.get("type_line",""):
-        sources.extend((owner,card) for owner in ordered_owners for card in owner["graveyard"] if re.search(r"landfall\s*[—-].*whenever a land[^.]+enters[^,]*,\s*(?:you may return this card from your graveyard to the battlefield|if this card is in your graveyard and it(?:'s| is) your turn, you may cast it from your graveyard this turn)",(card.get("oracle_text") or "").replace("\n"," "),re.IGNORECASE) and ("it's your turn" not in (card.get("oracle_text") or "").casefold() or state.get("active_player_id")==owner["id"]))
+        sources.extend((owner,card) for owner in ordered_owners for card in owner["graveyard"] if re.search(r"landfall\s*[—-].*whenever a land[^.]+enters[^,]*,\s*(?:you may return this card from your graveyard to the battlefield|[^.]*you may pay (?:\{[^}]+\})+\. if you do, return this card from your graveyard to the battlefield|if this card is in your graveyard and it(?:'s| is) your turn, you may cast it from your graveyard this turn)",(card.get("oracle_text") or "").replace("\n"," "),re.IGNORECASE) and ("it's your turn" not in (card.get("oracle_text") or "").casefold() or state.get("active_player_id")==owner["id"]))
     if event=="upkeep":
         for owner,permanent in sources:
             if permanent.pop("transform_next_upkeep",False):_transform(state,permanent)
@@ -3672,6 +3682,18 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
             _log(state,f"{player['name']} paid {{X}}{{R}} with X={x_value} and created {x_value} tapped and attacking Elemental token(s).")
         else:_log(state,f"{player['name']} declined to pay for {pending.get('source_name') or 'Tilonalli Summoner'}.")
         state["pending_tilonalli"]=None;state["priority_player_id"]=state["active_player_id"]
+    elif action_type in {"pay_optional_mana","decline_optional_mana"}:
+        pending=state.get("pending_optional_payment") or {}
+        if pending.get("player_id")!=player_id:raise RuleViolation("There is no optional mana payment for this player")
+        state["pending_optional_payment"]=None
+        if action_type=="pay_optional_mana":
+            _pay_mana(state,player,{"mana_cost":pending["mana_cost"]});continuation=pending.get("continuation") or "";ability_card={"name":f"{pending['source_name']} paid effect","oracle_text":continuation,"type_line":"Ability","mana_cost":""};trigger={"id":_id(),"kind":"trigger","card":ability_card,"controller_id":player_id,"target_id":None,"source_id":pending.get("source_id")};targets=_targets(state,player_id,ability_card)
+            if _target_kind(ability_card) and targets:state.setdefault("pending_trigger_targets",[]).append({"controller_id":player_id,"source_name":pending["source_name"],"trigger":trigger,"card":ability_card})
+            elif not _target_kind(ability_card):state["stack"].append(trigger);_resolve_spell(state)
+            else:_log(state,f"{pending['source_name']}'s paid effect had no legal target.")
+            _log(state,f"{player['name']} paid {pending['mana_cost']} for {pending['source_name']}.")
+        else:_log(state,f"{player['name']} declined to pay for {pending.get('source_name') or 'the optional effect'}.")
+        state["priority_player_id"]=(state.get("pending_trigger_targets") or [{"controller_id":state["active_player_id"]}])[0]["controller_id"]
     elif action_type=="choose_creature_type":
         pending_list=state.get("pending_creature_type") or [];pending=pending_list[0] if pending_list else None;choice=" ".join(str(action.get("creature_type") or "").strip().split())
         if not pending or pending["player_id"]!=player_id:raise RuleViolation("There is no creature-type choice for this player")
