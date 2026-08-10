@@ -892,7 +892,7 @@ def _aura_allowed_types(card:dict)->set[str]:
 
 
 def _effective_rules_text(state:dict,card:dict)->str:
-    attachment_texts=[attachment.get("oracle_text") or "" for owner in state["players"] for attachment in owner["battlefield"] if attachment.get("attached_to")==card.get("instance_id")]
+    attachment_texts=[_active_level_text(attachment) for owner in state["players"] for attachment in owner["battlefield"] if attachment.get("attached_to")==card.get("instance_id")]
     text="\n".join([_active_level_text(card),*(card.get("temporary_backup_rules") or []),*attachment_texts]);blessed=_player(state,card.get("controller_id",card.get("owner_id"))).get("city_blessing")
     clauses=re.split(r"(?<=[.!])\s+|\n",text);visible=[clause for clause in clauses if blessed or "city's blessing" not in clause.casefold() or "unless you have the city's blessing" in clause.casefold()]
     return "\n".join(visible).casefold()
@@ -2631,7 +2631,7 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
         if blockers:
             legal_blocks = {blocker["instance_id"]:[attacker["instance_id"] for attacker in attackers if _can_block_pair(state,attacker,blocker)] for blocker in player["battlefield"] if blocker["instance_id"] in blockers}
             eligible_blockers=[blocker_id for blocker_id,attacker_ids in legal_blocks.items() if attacker_ids]
-            required_blocks={blocker["instance_id"]:[attacker_id for attacker_id in blocker.get("must_block_source_ids",[]) if attacker_id in legal_blocks.get(blocker["instance_id"],[])] for blocker in player["battlefield"]};required_blocks={blocker_id:attacker_ids for blocker_id,attacker_ids in required_blocks.items() if attacker_ids}
+            required_blocks={blocker["instance_id"]:[attacker_id for attacker_id in legal_blocks.get(blocker["instance_id"],[]) if attacker_id in blocker.get("must_block_source_ids",[]) or "all creatures able to block" in _effective_rules_text(state,next(attacker for attacker in attackers if attacker["instance_id"]==attacker_id))] for blocker in player["battlefield"]};required_blocks={blocker_id:attacker_ids for blocker_id,attacker_ids in required_blocks.items() if attacker_ids}
             if eligible_blockers: actions.append({"type": "declare_blockers", "card_ids": eligible_blockers, "legal_blocks": legal_blocks,"required_blocks":required_blocks})
             if required_blocks:actions=[action for action in actions if action["type"]!="advance_phase"]
     if _split_second_on_stack(state):
@@ -3351,13 +3351,13 @@ def _resolve_spell(state: dict) -> None:
             if destination=="graveyard":_destroy_permanent(state,owner,permanent,"can't be regenerated" in effect_text,trigger_sources,trigger_dedupe)
             else:_leave_battlefield(state,owner,permanent,destination,trigger_sources,trigger_dedupe,caster["id"],len(affected))
         _log(state,f"All {kind} were {'destroyed' if destination=='graveyard' else 'exiled'}.")
-    global_stats=re.search(r"(?:(?:all|each|other) )?creatures?(?: you control| your opponents control)? get ([+-]\d+)/([+-]\d+)(?: and gains? ([^.]+?))? until end of turn",effect_text)
+    global_stats=re.search(r"(?:(?:all|each|other) )?(nonblack )?creatures?(?: you control| your opponents control)? get ([+-]\d+)/([+-]\d+)(?: and gains? ([^.]+?))? until end of turn",effect_text)
     if global_stats:
-        own_only="you control" in global_stats.group(0);opponents_only="opponents control" in global_stats.group(0);other_only=global_stats.group(0).startswith("other ");supported=("flying","first strike","double strike","deathtouch","haste","hexproof","indestructible","lifelink","menace","reach","trample","vigilance");gained={keyword for keyword in supported if global_stats.group(3) and re.search(rf"\b{re.escape(keyword)}\b",global_stats.group(3))}
+        own_only="you control" in global_stats.group(0);opponents_only="opponents control" in global_stats.group(0);other_only=global_stats.group(0).startswith("other ");nonblack=bool(global_stats.group(1));supported=("flying","first strike","double strike","deathtouch","haste","hexproof","indestructible","lifelink","menace","reach","trample","vigilance");gained={keyword for keyword in supported if global_stats.group(4) and re.search(rf"\b{re.escape(keyword)}\b",global_stats.group(4))}
         for owner in state["players"]:
             if own_only and owner["id"]!=caster["id"] or opponents_only and owner["id"]==caster["id"]:continue
             for permanent in owner["battlefield"]:
-                if "Creature" in permanent.get("type_line","") and not (other_only and permanent is source_permanent):permanent["temporary_power"]=permanent.get("temporary_power",0)+int(global_stats.group(1));permanent["temporary_toughness"]=permanent.get("temporary_toughness",0)+int(global_stats.group(2));permanent["temporary_keywords"]=sorted(set(permanent.get("temporary_keywords",[]))|gained)
+                if "Creature" in permanent.get("type_line","") and not (other_only and permanent is source_permanent) and not (nonblack and "B" in _card_colors(permanent)):permanent["temporary_power"]=permanent.get("temporary_power",0)+int(global_stats.group(2));permanent["temporary_toughness"]=permanent.get("temporary_toughness",0)+int(global_stats.group(3));permanent["temporary_keywords"]=sorted(set(permanent.get("temporary_keywords",[]))|gained)
     team_keywords=re.search(r"(?:those creatures|creatures you control) gain ([^.]+?) until end of turn",effect_text)
     if team_keywords:
         supported=("flying","first strike","double strike","deathtouch","haste","hexproof","indestructible","lifelink","menace","reach","trample","vigilance");gained={keyword for keyword in supported if re.search(rf"\b{re.escape(keyword)}\b",team_keywords.group(1))}
@@ -3399,8 +3399,8 @@ def _resolve_spell(state: dict) -> None:
             for token in created:state["combat"]["attackers"].append(token["instance_id"]);state["combat"]["attack_targets"][token["instance_id"]]=source_target
         _enter_battlefield(state,caster,created,"token")
         if global_stats:
-            supported=("flying","first strike","double strike","deathtouch","haste","hexproof","indestructible","lifelink","menace","reach","trample","vigilance");gained={keyword for keyword in supported if global_stats.group(3) and re.search(rf"\b{re.escape(keyword)}\b",global_stats.group(3))}
-            for token in created:token["temporary_power"]=token.get("temporary_power",0)+int(global_stats.group(1));token["temporary_toughness"]=token.get("temporary_toughness",0)+int(global_stats.group(2));token["temporary_keywords"]=sorted(set(token.get("temporary_keywords",[]))|gained)
+            supported=("flying","first strike","double strike","deathtouch","haste","hexproof","indestructible","lifelink","menace","reach","trample","vigilance");gained={keyword for keyword in supported if global_stats.group(4) and re.search(rf"\b{re.escape(keyword)}\b",global_stats.group(4))}
+            for token in created:token["temporary_power"]=token.get("temporary_power",0)+int(global_stats.group(2));token["temporary_toughness"]=token.get("temporary_toughness",0)+int(global_stats.group(3));token["temporary_keywords"]=sorted(set(token.get("temporary_keywords",[]))|gained)
         _log(state, f"{caster['name']} created {amount} token(s){' tapped and attacking' if attacking else ''}.")
     predefined_matches=list(re.finditer(r"create (a|one|two|three|four|five|\d+) (tapped )?(clue|food|treasure|blood|gold) tokens?",effect_text,re.IGNORECASE))
     for predefined in predefined_matches:
@@ -4996,7 +4996,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         eligible = {card_id for entry in legal_actions(state, player_id) if entry["type"] == "declare_attackers" for card_id in entry.get("card_ids", [])}
         if not requested.issubset(eligible): raise RuleViolation("One or more attackers are not eligible")
         goaded={card["instance_id"] for card in player["battlefield"] if card["instance_id"] in eligible and card.get("goaded_until_turn",0)>=state["turn"]}
-        required=goaded|{card["instance_id"] for card in player["battlefield"] if card["instance_id"] in eligible and card.get("must_attack_next_combat")}
+        required=goaded|{card["instance_id"] for card in player["battlefield"] if card["instance_id"] in eligible and (card.get("must_attack_next_combat") or "attacks each combat if able" in _effective_rules_text(state,card))}
         if not required.issubset(requested):raise RuleViolation("Creatures required to attack must attack if able")
         if len(requested)==1:
             lone=next(card for card in player["battlefield"] if card["instance_id"] in requested)
