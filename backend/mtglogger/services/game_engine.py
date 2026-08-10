@@ -678,6 +678,11 @@ def _unearth_ability(card:dict)->dict|None:
     return {"mana_cost":match.group(1).upper(),"energy_cost":0} if match else None
 
 
+def _delirium_graveyard_return(card:dict)->dict|None:
+    match=re.search(r"Delirium\s*[—-]\s*((?:\{[^}]+\})+)\s*:\s*Return this card from your graveyard to the battlefield with a finality counter on it",card.get("oracle_text") or "",re.IGNORECASE)
+    return {"mana_cost":match.group(1).upper(),"effect":"Return this card from your graveyard to the battlefield with a finality counter on it."} if match else None
+
+
 def _plot_cost(card:dict)->str|None:
     match=re.search(r"(?:^|\n)Plot\s+((?:\{[^}]+\})+)",card.get("oracle_text") or "",re.IGNORECASE)
     return match.group(1).upper() if match else None
@@ -1188,7 +1193,11 @@ def _transform(state:dict,card:dict)->bool:
     if len(faces)<2:return False
     previous=card.get("name","This permanent");next_index=1 if int(card.get("current_face",0))==0 else 0
     if not _set_card_face(card,next_index):return False
-    _log(state,f"{previous} transformed into {card['name']}.");return True
+    _log(state,f"{previous} transformed into {card['name']}.")
+    owner=next((owner for owner in state["players"] if card in owner["battlefield"]),None)
+    if owner:
+        _sync_city_blessing(state);_queue_triggers(state,"transformed",card,owner)
+    return True
 
 
 def _set_day_night(state:dict,value:str)->None:
@@ -2377,6 +2386,8 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
             unearth=_unearth_ability(grave_card)
             if unearth and player.get("energy",0)>=unearth["energy_cost"] and _can_pay(player,{"mana_cost":unearth["mana_cost"]}):
                 cost_label=unearth["mana_cost"] or f"{unearth['energy_cost']} energy";actions.append({"type":"unearth","card_id":grave_card["instance_id"],"source":"graveyard","mana_cost":unearth["mana_cost"],"energy_cost":unearth["energy_cost"],"label":f"Unearth {grave_card['name']} · {cost_label}"})
+            delirium_return=_delirium_graveyard_return(grave_card)
+            if delirium_return and _graveyard_card_type_count(player)>=4 and _can_pay(player,{"mana_cost":delirium_return["mana_cost"]}):actions.append({"type":"activate_graveyard","card_id":grave_card["instance_id"],"source":"graveyard","mana_cost":delirium_return["mana_cost"],"label":f"Return {grave_card['name']} with finality · {delirium_return['mana_cost']}"})
         plot_reduction=_plot_reduction(player)
         for hand_card in player["hand"]:
             plot_cost=_plot_cost(hand_card)
@@ -3036,7 +3047,9 @@ def _resolve_spell(state: dict) -> None:
         if state.get("active_player_id")==caster["id"]:source_graveyard["graveyard_cast_until_turn"]=state["turn"]
         return
     if source_graveyard and re.search(r"(?:you may )?return this card(?: from your graveyard)? to the battlefield",effect_text):
-        _leave_graveyard(state,caster,[source_graveyard]);source_graveyard["controller_id"]=caster["id"];source_graveyard["summoning_sick"]=True;_enter_battlefield(state,caster,[source_graveyard],"graveyard");_log(state,f"{source_graveyard['name']} returned from {caster['name']}'s graveyard.");return
+        _leave_graveyard(state,caster,[source_graveyard]);source_graveyard["controller_id"]=caster["id"];source_graveyard["summoning_sick"]=True;_enter_battlefield(state,caster,[source_graveyard],"graveyard")
+        if "with a finality counter on it" in effect_text:_add_counters(state,source_graveyard,"finality",1,caster["id"],"effect")
+        _log(state,f"{source_graveyard['name']} returned from {caster['name']}'s graveyard.");return
     if event_graveyard and "return that card to your hand" in effect_text:
         graveyard_owner=next(owner for owner in state["players"] if event_graveyard in owner["graveyard"]);_leave_graveyard(state,graveyard_owner,[event_graveyard]);caster["hand"].append(event_graveyard);_log(state,f"{event_graveyard['name']} returned to {caster['name']}'s hand.");return
     if "exile cards from the top of your library until you exile a nonland card" in effect_text:
@@ -3567,6 +3580,8 @@ def _resolve_spell(state: dict) -> None:
 
 def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str, trigger_sources:list[tuple[dict,dict]]|None=None, trigger_dedupe:set[str]|None=None, exile_actor_id:str|None=None, exile_batch_size:int|None=None) -> None:
     if card.get("unearthed") and destination!="exile":destination="exile";exile_actor_id=card.get("unearth_controller_id",exile_actor_id)
+    if destination=="graveyard" and card.get("counters",{}).get("finality",0)>0:
+        _remove_counters(card,"finality",card["counters"]["finality"]);destination="exile";exile_actor_id=card.get("controller_id",owner["id"]);_log(state,f"{card['name']}'s finality counter exiled it instead of letting it die.")
     exile_sources=trigger_sources or ([(source_owner,source) for source_owner in state["players"] for source in source_owner["battlefield"]] if destination=="exile" else None)
     if card.get("name")=="Herald of Leshrac":
         for land_controller in state["players"]:
@@ -4112,6 +4127,8 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 controlled=same_controller and re.search(r"whenever (?:a|another) (?:creature|permanent) you control is turned face up",lower) is not None
                 global_event=re.search(r"whenever (?:a|another) (?:creature|permanent) is turned face up",lower) is not None
                 matches=self_event or controlled or global_event
+            elif event=="transformed" and event_card:
+                matches=source is event_card and re.search(r"when this creature transforms into",lower) is not None
             elif event=="targeted" and event_card:
                 matches=source is event_card and re.search(r"when this creature becomes the target of a spell or ability",lower) is not None
             elif event == "leaves" and event_card:
@@ -4240,7 +4257,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
             for _ in range(trigger_count):
                 trigger={"id":_id(),"kind":"trigger","card":ability_card,"controller_id":owner["id"],"target_id":None,"source_id":source["instance_id"]}
                 if event=="mutates":trigger["x_value"]=event_card.get("mutate_count",1)
-                if event_card and event in {"enters","exile","tapped","untapped","counter_added","turned_face_up","dies","discard","graveyard_leave","damage","combat_damage_player","cumulative_unpaid","cast"}:
+                if event_card and event in {"enters","exile","tapped","untapped","counter_added","turned_face_up","transformed","dies","discard","graveyard_leave","damage","combat_damage_player","cumulative_unpaid","cast"}:
                     trigger["event_card_id"]=event_card.get("instance_id");trigger["event_owner_id"]=event_owner.get("id")
                     if event=="enters":trigger["event_card_type_line"]=event_card.get("type_line","")
                 modal_options=_modal_options(ability_card)
@@ -4935,6 +4952,12 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         ability_card={**card,"name":f"{card['name']} — Unearth","type_line":"Ability","mana_cost":"","oracle_text":f"Return {card['name']} from your graveyard to the battlefield. It gains haste. Exile it at the beginning of the next end step or if it would leave the battlefield."};state["stack"].append({"id":_id(),"kind":"unearth_ability","card":ability_card,"controller_id":player_id,"source_id":card["instance_id"]});state["consecutive_passes"]=0;state["pending_phase_advance"]=False
         if _multiplayer(state) or not allow_direct_resolution:state["priority_player_id"]=opponent(state,player_id)["id"]
         _log(state,f"{player['name']} activated {card['name']}'s unearth ability.")
+    elif action_type=="activate_graveyard":
+        card=next((card for card in player["graveyard"] if card["instance_id"]==action.get("card_id")),None);ability=_delirium_graveyard_return(card or {});available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="activate_graveyard" and entry["card_id"]==action.get("card_id")),None)
+        if not card or not ability or not available:raise RuleViolation("That graveyard ability cannot be activated now")
+        _pay_mana(state,player,{"mana_cost":ability["mana_cost"]});ability_card={**card,"name":f"{card['name']} graveyard ability","oracle_text":ability["effect"],"type_line":"Ability","mana_cost":""};state["stack"].append({"id":_id(),"kind":"ability","card":ability_card,"controller_id":player_id,"source_id":card["instance_id"]});state["consecutive_passes"]=0;state["pending_phase_advance"]=False
+        if _multiplayer(state) or not allow_direct_resolution:state["priority_player_id"]=opponent(state,player_id)["id"]
+        _log(state,f"{player['name']} activated {card['name']}'s Delirium graveyard ability.")
     elif action_type == "foretell":
         card=next((card for card in player["hand"] if card["instance_id"]==action.get("card_id")),None);available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="foretell" and entry["card_id"]==action.get("card_id")),None)
         if not card or not _foretell_cost(card) or not available:raise RuleViolation("That card cannot be foretold now")
