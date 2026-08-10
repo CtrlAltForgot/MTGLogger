@@ -1,7 +1,7 @@
 import pytest
 
 from mtglogger.services.game_bot import _choose_blocks, choose_bot_action, run_bot
-from mtglogger.services.game_engine import RuleViolation, _add_counters, _add_saga_lore, _amass, _begin_next_turn, _can_block_pair, _change_control, _combat_damage, _connive, _counter_stack_item, _enter_battlefield, _entered_land_subtype_effect, _explore, _face_down_ability, _has_keyword, _leave_battlefield, _leave_graveyard, _merge_mutate, _parse_stats, _put_into_exile, _queue_triggers, _resolution_order_effect, _set_day_night, _set_tapped, _venture_undercity, _ward_details, legal_actions, new_game, perform_action, public_state
+from mtglogger.services.game_engine import RuleViolation, _add_counters, _add_saga_lore, _amass, _begin_next_turn, _can_block_pair, _change_control, _combat_damage, _connive, _counter_stack_item, _enter_battlefield, _entered_land_subtype_effect, _explore, _face_down_ability, _has_keyword, _land_threshold_effect, _leave_battlefield, _leave_graveyard, _merge_mutate, _parse_stats, _put_into_exile, _queue_triggers, _resolution_order_effect, _set_day_night, _set_tapped, _venture_undercity, _ward_details, legal_actions, new_game, perform_action, public_state
 
 
 def card(index:int,name:str,type_line:str,mana_cost:str="",power:str|None=None,toughness:str|None=None,quantity:int=1):
@@ -1251,6 +1251,15 @@ def test_modal_landfall_trigger_preserves_and_resolves_player_choice():
     landfall(0);action=legal_actions(state,"player")[0];assert action["type"]=="choose_trigger_mode" and [mode["index"] for mode in action["modes"]]==[0,1]
     state=perform_action(state,"player",{"type":"choose_trigger_mode","mode_index":0});state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");assert sum(card.get("token",False) and "Cat Beast" in card["type_line"] for card in player["battlefield"])==1
     landfall(1);state=perform_action(state,"player",{"type":"choose_trigger_mode","mode_index":1});state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");ally=next(card for card in player["battlefield"] if card["instance_id"]=="retreat-ally");assert ally["counters"]["+1/+1"]==1 and "vigilance" in ally["temporary_keywords"]
+
+
+def test_landfall_land_threshold_replaces_base_token_effect():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player");scute={**card(842,"Scute Swarm","Creature — Insect","","1","1"),"oracle_text":"Landfall — Whenever a land you control enters, create a 1/1 green Insect creature token. If you control six or more lands, create a token that's a copy of this creature instead.","instance_id":"scute-swarm","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"]=[scute]+[{**card(843+index,f"Threshold Land {index}","Basic Land — Forest"),"instance_id":f"threshold-land-{index}","owner_id":"player","controller_id":"player"} for index in range(5)]
+    entering={**card(848,"Sixth Land","Basic Land — Island"),"instance_id":"sixth-land","owner_id":"player","controller_id":"player"};_enter_battlefield(state,player,[entering],"hand");state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");copies=[card for card in player["battlefield"] if card.get("token")]
+    assert len(copies)==1 and copies[0]["name"]=="Scute Swarm" and "Landfall" in copies[0]["oracle_text"]
+    necrobloom="Create a 0/1 green Plant creature token. If you control seven or more lands with different names, create a 2/2 black Zombie creature token instead."
+    assert _land_threshold_effect(necrobloom,player)=="Create a 0/1 green Plant creature token."
+    player["battlefield"].append({**card(849,"Unique Seventh","Land — Swamp"),"instance_id":"unique-seventh"});assert _land_threshold_effect(necrobloom,player)=="create a 2/2 black Zombie creature token."
 
 
 def test_attack_triggers_count_attackers_once_or_individually_and_choose_targets():

@@ -2430,6 +2430,8 @@ def _resolve_spell(state: dict) -> None:
         usage[key]={"turn":state.get("turn"),"count":count};effect_text=_resolution_order_effect(effect_text,count)
     if item.get("kind")=="trigger" and "if that land is" in effect_text:
         effect_text=_entered_land_subtype_effect(effect_text,item.get("event_card_type_line",""))
+    if item.get("kind")=="trigger" and re.search(r"if you control (?:one|two|three|four|five|six|seven|eight|nine|ten|\d+) or more lands",effect_text):
+        effect_text=_land_threshold_effect(effect_text,caster)
     other = opponent(state, caster["id"])
     target_player = next((player for player in state["players"] if player["id"] == target_id), None)
     target_owner = next((player for player in state["players"] if any(permanent["instance_id"] == target_id for permanent in player["battlefield"])), None)
@@ -2450,6 +2452,10 @@ def _resolve_spell(state: dict) -> None:
             for key in ("attached_to","attachment_keywords","attachment_rules","temporary_power","temporary_toughness","temporary_keywords","temporary_backup_rules","deathtouch_damage","activated_ability_usage","entered_turn"):token.pop(key,None)
             copies.append(token)
         _enter_battlefield(state,caster,copies,"token");_log(state,f"{caster['name']} created a Cat and copied {len(originals)} token(s) with Ocelot Pride.");return
+    if "create a token that's a copy of this creature" in effect_text and source_permanent and "Creature" in source_permanent.get("type_line",""):
+        token=deepcopy(source_permanent);token["instance_id"]=_id();token["owner_id"]=caster["id"];token["controller_id"]=caster["id"];token["token"]=True;token["damage"]=0;token["counters"]={};token["tapped"]=False;token["summoning_sick"]=True
+        for key in ("attached_to","attachment_keywords","attachment_rules","temporary_power","temporary_toughness","temporary_keywords","temporary_backup_rules","deathtouch_damage","activated_ability_usage","entered_turn"):token.pop(key,None)
+        _enter_battlefield(state,caster,[token],"token");_log(state,f"{caster['name']} created a token copy of {source_permanent['name']}.");return
     if "reveal the top card of your library and put that card into your hand" in effect_text and "where x is that card's mana value" in effect_text:
         if caster["library"]:
             revealed=caster["library"].pop();caster["hand"].append(revealed);amount=int(revealed.get("mana_value") or 0)
@@ -3055,6 +3061,21 @@ def _entered_land_subtype_effect(text:str,type_line:str)->str:
     return " ".join(selected)
 
 
+def _land_threshold_effect(text:str,player:dict)->str:
+    """Select land-count conditional clauses, including differently named land gates."""
+    selected=[];words={"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10}
+    lands=[permanent for permanent in player["battlefield"] if "Land" in permanent.get("type_line","")]
+    for sentence in re.split(r"(?<=[.!])\s+",text.strip()):
+        conditional=re.match(r"if you control (one|two|three|four|five|six|seven|eight|nine|ten|\d+) or more lands( with different names)?,\s*(.+)",sentence,re.IGNORECASE)
+        if not conditional:selected.append(sentence);continue
+        amount=words.get(conditional.group(1).casefold(),int(conditional.group(1)) if conditional.group(1).isdigit() else 0);count=len({land.get("name","") for land in lands}) if conditional.group(2) else len(lands)
+        if count>=amount:
+            body=conditional.group(3)
+            if body.casefold().endswith(" instead."):selected=[];body=re.sub(r"\s+instead(?=\.$)","",body,flags=re.IGNORECASE)
+            selected.append(body)
+    return " ".join(selected)
+
+
 def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owner: dict, dedupe:set[str]|None=None, sources_override:list[tuple[dict,dict]]|None=None) -> None:
     if event in {"earthbend","waterbend","firebend","airbend"}:
         event_owner["bent_this_turn"]=sorted(set(event_owner.get("bent_this_turn",[]))|{event})
@@ -3071,7 +3092,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
         raw_clauses = re.split(r"(?<=[.!])\s+|\n", text);clauses=[]
         for clause in raw_clauses:
             modal_continuation=bool(clauses and (clause.strip().startswith(("•","-")) or clauses[-1].lstrip().startswith(("•","-")) or re.search(r"\n[•-]\s",clauses[-1]) and not re.match(r"(?:when(?:ever)?\b|at the beginning\b|[+−-]?\d+\s*:|\{[^}]+\}[^:]*:)",clause.strip(),re.IGNORECASE)))
-            continuation=bool(clauses and (modal_continuation or re.match(r"(?:then if|if you do|if you have the city's blessing),?\b",clause.strip(),re.IGNORECASE) or re.match(r"if that land is (?:a |an )?[a-z]+,",clause.strip(),re.IGNORECASE) or re.match(r"if (?:this is|it(?:'s| is)) the (?:first|second|third|fourth) time(?: this ability has resolved)?(?: this turn)?,",clause.strip(),re.IGNORECASE) or ("create x 1/1 red elemental creature tokens" in clauses[-1].casefold() and re.match(r"at the beginning of the next end step, exile those tokens",clause.strip(),re.IGNORECASE)) or ("reveal the top card of your library and put that card into your hand" in clauses[-1].casefold() and re.match(r"each opponent loses x life\b",clause.strip(),re.IGNORECASE))))
+            continuation=bool(clauses and (modal_continuation or re.match(r"(?:then if|if you do|if you have the city's blessing),?\b",clause.strip(),re.IGNORECASE) or re.match(r"if you control (?:one|two|three|four|five|six|seven|eight|nine|ten|\d+) or more lands",clause.strip(),re.IGNORECASE) or re.match(r"if that land is (?:a |an )?[a-z]+,",clause.strip(),re.IGNORECASE) or re.match(r"if (?:this is|it(?:'s| is)) the (?:first|second|third|fourth) time(?: this ability has resolved)?(?: this turn)?,",clause.strip(),re.IGNORECASE) or ("create x 1/1 red elemental creature tokens" in clauses[-1].casefold() and re.match(r"at the beginning of the next end step, exile those tokens",clause.strip(),re.IGNORECASE)) or ("reveal the top card of your library and put that card into your hand" in clauses[-1].casefold() and re.match(r"each opponent loses x life\b",clause.strip(),re.IGNORECASE))))
             if continuation:
                 separator="\n" if modal_continuation else " ";clauses[-1]=f"{clauses[-1]}{separator}{clause.strip()}"
             else:clauses.append(clause)
