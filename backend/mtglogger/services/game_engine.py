@@ -203,6 +203,7 @@ def _sync_city_blessing(state:dict)->None:
         for card in owner["battlefield"]:
             controller_id=card.get("controller_id",owner["id"]);controller=_player(state,controller_id);card["controller_city_blessing"]=controller_id in blessed;card["controller_creature_count"]=sum("Creature" in permanent.get("type_line","") for permanent in controller["battlefield"]);card["controller_artifact_count"]=sum("Artifact" in permanent.get("type_line","") for permanent in controller["battlefield"]);card["controller_basic_land_count"]=sum("Basic" in permanent.get("type_line","") and "Land" in permanent.get("type_line","") for permanent in controller["battlefield"]);granted=[]
             card["controller_graveyard_count"]=len(controller["graveyard"])
+            card["controller_graveyard_type_count"]=_graveyard_card_type_count(controller)
             card["opponent_black_permanent_count"]=sum("B" in _card_colors(permanent) for opponent_owner in state["players"] if opponent_owner["id"]!=controller_id for permanent in opponent_owner["battlefield"])
             for source_owner in state["players"]:
                 for source in source_owner["battlefield"]:
@@ -275,9 +276,37 @@ def _level_sections(card:dict)->tuple[list[str],list[tuple[int,int|None,list[str
 
 def _active_level_text(card:dict)->str:
     preamble,sections=_level_sections(card)
-    if not sections:return _active_speed_text(card,_active_threshold_text(card,_active_station_text(card,card.get("oracle_text") or "")))
+    if not sections:return _active_speed_text(card,_active_delirium_text(card,_active_threshold_text(card,_active_station_text(card,card.get("oracle_text") or ""))))
     level=int(card.get("counters",{}).get("level",0));active=next((lines for minimum,maximum,lines in sections if level>=minimum and (maximum is None or level<=maximum)),[])
-    return _active_speed_text(card,_active_threshold_text(card,_active_station_text(card,"\n".join([*preamble,*active]))))
+    return _active_speed_text(card,_active_delirium_text(card,_active_threshold_text(card,_active_station_text(card,"\n".join([*preamble,*active])))))
+
+
+_DELIRIUM_CARD_TYPES=("Artifact","Battle","Creature","Enchantment","Instant","Kindred","Land","Planeswalker","Sorcery","Tribal")
+
+
+def _graveyard_card_type_count(player:dict)->int:
+    types=set()
+    for card in player.get("graveyard",[]):
+        type_line=card.get("type_line","")
+        types.update(card_type for card_type in _DELIRIUM_CARD_TYPES if re.search(rf"\b{card_type}\b",type_line,re.IGNORECASE))
+    if "Kindred" in types and "Tribal" in types:types.discard("Tribal")
+    return len(types)
+
+
+def _active_delirium_text(card:dict,text:str)->str:
+    """Expose Delirium clauses only while the controller has four graveyard card types."""
+    active=int(card.get("controller_graveyard_type_count",0))>=4;visible=[]
+    for line in text.splitlines():
+        if re.match(r"^\s*Delirium\s*[—-]",line,re.IGNORECASE):
+            if active:
+                body=re.sub(r"^\s*Delirium\s*[—-]\s*","",line,flags=re.IGNORECASE)
+                body=re.sub(r"^as long as there are four or more card types among cards in your graveyard,\s*","",body,flags=re.IGNORECASE)
+                body=re.sub(r"^if there are four or more card types among cards in your graveyard,\s*","",body,flags=re.IGNORECASE)
+                body=re.sub(r",\s*if there are four or more card types among cards in your graveyard,",",",body,flags=re.IGNORECASE)
+                body=re.sub(r"\s+as long as there are four or more card types among cards in your graveyard","",body,flags=re.IGNORECASE)
+                visible.append(body)
+        else:visible.append(line)
+    return "\n".join(visible)
 
 
 def _active_threshold_text(card:dict,text:str)->str:
@@ -548,6 +577,8 @@ def _has_keyword(card: dict, keyword: str) -> bool:
     if int(card.get("controller_speed",0))<4 and any(re.search(rf"\b{re.escape(lower_keyword)}\b",line,re.IGNORECASE) for line in speed_conditional):printed.discard(lower_keyword)
     threshold_conditional=[line for line in raw_text.splitlines() if re.match(r"^\s*Threshold\s*[—-]",line,re.IGNORECASE)]
     if int(card.get("controller_graveyard_count",0))<7 and any(re.search(rf"\b{re.escape(lower_keyword)}\b",line,re.IGNORECASE) for line in threshold_conditional):printed.discard(lower_keyword)
+    delirium_conditional=[line for line in raw_text.splitlines() if re.match(r"^\s*Delirium\s*[—-]",line,re.IGNORECASE)]
+    if int(card.get("controller_graveyard_type_count",0))<4 and any(re.search(rf"\b{re.escape(lower_keyword)}\b",line,re.IGNORECASE) for line in delirium_conditional):printed.discard(lower_keyword)
     charge=int(card.get("counters",{}).get("charge",0));_,station_sections=_station_sections(raw_text);inactive_station=[line for minimum,lines in station_sections if charge<minimum for line in lines]
     if any(re.search(rf"\b{re.escape(lower_keyword)}\b",line,re.IGNORECASE) for line in inactive_station):printed.discard(lower_keyword)
     if any(re.search(rf"\b{re.escape(lower_keyword)}\b",clause) for clause in blessing_conditional):printed.discard(lower_keyword)
@@ -787,7 +818,7 @@ def _cumulative_upkeep_cost(card:dict)->dict|None:
 
 
 def _mutate_original(card:dict)->dict:
-    runtime={"tapped","damage","counters","summoning_sick","temporary_power","temporary_toughness","temporary_base_power","temporary_base_toughness","temporary_keywords","temporary_removed_keywords","temporary_protection_colors","attachment_keywords","attached_to","mutate_pile","mutate_count","mutate_top_component_id","effective_power","effective_toughness","entry_trigger_turns","activated_ability_usage","station_graveyard_cast_turn","damage_source_ids_turn"}
+    runtime={"tapped","damage","counters","summoning_sick","temporary_power","temporary_toughness","temporary_base_power","temporary_base_toughness","temporary_keywords","temporary_removed_keywords","temporary_protection_colors","attachment_keywords","attached_to","mutate_pile","mutate_count","mutate_top_component_id","effective_power","effective_toughness","entry_trigger_turns","activated_ability_usage","station_graveyard_cast_turn","damage_source_ids_turn","controller_graveyard_type_count"}
     return {key:deepcopy(value) for key,value in card.items() if key not in runtime}
 
 
@@ -1666,6 +1697,11 @@ def _threshold_rules_card(card:dict,graveyard_count:int)->dict:
     return {**card,"oracle_text":text}
 
 
+def _delirium_rules_card(card:dict,player:dict)->dict:
+    projected={**card,"controller_graveyard_type_count":_graveyard_card_type_count(player)}
+    return {**card,"oracle_text":_active_delirium_text(projected,card.get("oracle_text") or "")}
+
+
 def _library_search_spec(card:dict)->dict|None:
     text=card.get("oracle_text") or "";unrestricted=re.search(r"(?:may )?search your library for a card,\s*put it into your hand",text,re.IGNORECASE)
     if unrestricted:return {"amount":1,"descriptor":"card","destination":"hand","tapped":False,"different_names":False,"shared_land_type":False,"label":unrestricted.group(0)}
@@ -2411,7 +2447,7 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
             if len(modes)<modal_spec["min_modes"] and not modal_spec["repeatable"]:continue
             action.update({"mode_count":modal_spec["min_modes"],"mode_min":modal_spec["min_modes"],"mode_max":min(modal_spec["max_modes"],len(modes) if not modal_spec["repeatable"] else modal_spec["max_modes"]),"mode_repeatable":modal_spec["repeatable"],"mode_distinct_targets":modal_spec["distinct_targets"],"modes":modes})
         else:
-            base_rules=_threshold_rules_card(_kicked_rules_card(card,False),len(player["graveyard"]));fight_steps=_fight_target_steps(state,player_id,base_rules);multi_variants=_multi_target_step_variants(state,player_id,base_rules)
+            base_rules=_delirium_rules_card(_threshold_rules_card(_kicked_rules_card(card,False),len(player["graveyard"])),player);fight_steps=_fight_target_steps(state,player_id,base_rules);multi_variants=_multi_target_step_variants(state,player_id,base_rules)
             if fight_steps:
                 if any(not step["targets"] for step in fight_steps):continue
                 action["target_steps"]=fight_steps
@@ -2795,7 +2831,7 @@ def _resolve_spell(state: dict) -> None:
         _log(state,f"{card['name']} resolved with {len(item['mode_indices'])} modes.");return
     rules_card=_selected_mode_card(card,item.get("mode_indices")) if item.get("kind","spell")=="spell" else card
     if item.get("kind","spell")=="spell":rules_card=_kicked_rules_card(rules_card,bool(item.get("kicked")))
-    rules_card=_threshold_rules_card(rules_card,len(caster["graveyard"]))
+    rules_card=_delirium_rules_card(_threshold_rules_card(rules_card,len(caster["graveyard"])),caster)
     rules_card=_city_blessing_rules_card(rules_card,bool(caster.get("city_blessing")))
     if item.get("blessing_top"):rules_card={**rules_card,"oracle_text":re.sub(r"return target ([^.]+?) to its owner's hand\.\s*if you have the city's blessing, you may put that permanent on top of its owner's library instead\.",r"Put target \1 on top of its owner's library.",rules_card.get("oracle_text") or "",flags=re.IGNORECASE)}
     rules_card=_x_rules_card(rules_card,item.get("x_value"));targeting_card=_spell_targeting_card(rules_card) if item.get("kind","spell")=="spell" else rules_card
@@ -3877,10 +3913,12 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
         if not any(source is event_card for _,source in sources):
             insert_at=max((index+1 for index,(owner,_) in enumerate(sources) if owner["id"]==event_owner["id"]),default=len(sources));sources.insert(insert_at,(event_owner,event_card))
     for owner, source in sources:
-        previous_graveyard_count=source.get("controller_graveyard_count");had_graveyard_count="controller_graveyard_count" in source;source["controller_graveyard_count"]=len(owner["graveyard"])
+        previous_graveyard_count=source.get("controller_graveyard_count");had_graveyard_count="controller_graveyard_count" in source;previous_graveyard_types=source.get("controller_graveyard_type_count");had_graveyard_types="controller_graveyard_type_count" in source;source["controller_graveyard_count"]=len(owner["graveyard"]);source["controller_graveyard_type_count"]=_graveyard_card_type_count(owner)
         text = "\n".join([_active_level_text(source),*(source.get("temporary_backup_rules") or [])])
         if had_graveyard_count:source["controller_graveyard_count"]=previous_graveyard_count
         else:source.pop("controller_graveyard_count",None)
+        if had_graveyard_types:source["controller_graveyard_type_count"]=previous_graveyard_types
+        else:source.pop("controller_graveyard_type_count",None)
         trigger_text=re.sub(r"\bU\.S\.S\.\s+","USS ",text,flags=re.IGNORECASE);raw_clauses = re.split(r"(?<=[.!])\s+|\n", trigger_text);clauses=[]
         for clause in raw_clauses:
             modal_continuation=bool(clauses and (clause.strip().startswith(("•","-")) or clauses[-1].lstrip().startswith(("•","-")) or re.search(r"\n[•-]\s",clauses[-1]) and not re.match(r"(?:when(?:ever)?\b|at the beginning\b|[+−-]?\d+\s*:|\{[^}]+\}[^:]*:)",clause.strip(),re.IGNORECASE)))
