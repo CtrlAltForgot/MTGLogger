@@ -181,6 +181,7 @@ def _continuous_stats(state:dict|None,card:dict)->tuple[int,int]:
                     power+=int(match.group(4));toughness+=int(match.group(5))
                 subtype_bonus=re.search(r"\b(other )?([A-Za-z][A-Za-z'-]+)s you control get ([+-]\d+)/([+-]\d+)",clause,re.IGNORECASE)
                 if subtype_bonus and subtype_bonus.group(2).casefold() not in {"creature","artifact","enchantment","permanent","token"} and controller==source.get("controller_id",owner["id"]) and (not subtype_bonus.group(1) or source.get("instance_id")!=card.get("instance_id")) and re.search(rf"\b{re.escape(subtype_bonus.group(2))}\b",type_line,re.IGNORECASE):power+=int(subtype_bonus.group(3));toughness+=int(subtype_bonus.group(4))
+            if controller==source.get("controller_id",owner["id"]) and "gets +1/+0 for each time it has attacked this turn" in (source.get("oracle_text") or "").casefold():power+=int(card.get("attacks_this_turn",0))
     return power,toughness
 
 
@@ -2489,6 +2490,11 @@ def _resolve_spell(state: dict) -> None:
         state["pending_tilonalli"]={"player_id":caster["id"],"source_name":source_permanent.get("name",card["name"]) if source_permanent else card["name"],"source_id":item.get("source_id"),"defender_id":state.get("combat",{}).get("attack_targets",{}).get(item.get("source_id"),opponent(state,caster["id"])["id"])};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} may pay {{X}}{{R}} for {state['pending_tilonalli']['source_name']}.");return
     if "take an extra turn after this one" in effect_text:
         state.setdefault("extra_turns",[]).append(caster["id"]);_log(state,f"{caster['name']} will take an extra turn after this one.");return
+    if "there's an additional combat phase after this phase" in effect_text:
+        if state.get("active_player_id")==caster["id"] and state.get("phase") in {"precombat_main","postcombat_main"}:
+            state["additional_combats_pending"]=state.get("additional_combats_pending",0)+1;state["additional_combat_origin_phase"]=state["phase"];_log(state,f"{caster['name']} added a combat phase after this main phase.")
+        else:_log(state,f"{card['name']}'s additional combat condition was not met.")
+        return
     if re.search(r"for each token you control that entered (?:the battlefield )?this turn, create a token that's a copy of it",effect_text) and re.search(r"create a 1/1 white cat creature token",effect_text):
         cat={"instance_id":_id(),"scryfall_id":"token-cat","name":"Cat Token","image_url":None,"type_line":"Token Creature — Cat","oracle_text":"","mana_cost":"","mana_value":0,"colors":["W"],"power":"1","toughness":"1","owner_id":caster["id"],"controller_id":caster["id"],"tapped":False,"damage":0,"counters":{},"summoning_sick":True,"token":True,"keywords":[]};_enter_battlefield(state,caster,[cat],"token")
         originals=[token for token in caster["battlefield"] if token.get("token") and token.get("entered_turn")==state["turn"]] if caster.get("city_blessing") else [];copies=[]
@@ -3244,7 +3250,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
         for clause in raw_clauses:
             modal_continuation=bool(clauses and (clause.strip().startswith(("•","-")) or clauses[-1].lstrip().startswith(("•","-")) or re.search(r"\n[•-]\s",clauses[-1]) and not re.match(r"(?:when(?:ever)?\b|at the beginning\b|[+−-]?\d+\s*:|\{[^}]+\}[^:]*:)",clause.strip(),re.IGNORECASE)))
             top_card_continuation=bool(clauses and "look at the top card of your library" in clauses[-1].casefold() and re.match(r"if (?:it(?:'s| is) a creature card|you don.t put the card into your hand)",clause.strip(),re.IGNORECASE))
-            continuation=bool(clauses and (modal_continuation or top_card_continuation or ("target" in clauses[-1].casefold() and re.match(r"it gains? [^.]+ until end of turn",clause.strip(),re.IGNORECASE)) or re.match(r"(?:then if|if you do|if you have the city's blessing|otherwise),?\b",clause.strip(),re.IGNORECASE) or re.match(r"if you control (?:one|two|three|four|five|six|seven|eight|nine|ten|\d+) or more lands",clause.strip(),re.IGNORECASE) or re.match(r"if that land is (?:a |an )?[a-z]+,",clause.strip(),re.IGNORECASE) or re.match(r"if (?:this is|it(?:'s| is)) the (?:first|second|third|fourth) time(?: this ability has resolved)?(?: this turn)?,",clause.strip(),re.IGNORECASE) or ("create " in clauses[-1].casefold() and " creature token" in clauses[-1].casefold() and re.match(r"exile (?:that|those) tokens? at the beginning of the next end step",clause.strip(),re.IGNORECASE)) or ("exile cards from the top of your library until you exile a nonland card" in clauses[-1].casefold() and re.match(r"you may cast that card this turn",clause.strip(),re.IGNORECASE)) or ("create x 1/1 red elemental creature tokens" in clauses[-1].casefold() and re.match(r"at the beginning of the next end step, exile those tokens",clause.strip(),re.IGNORECASE)) or ("reveal the top card of your library and put that card into your hand" in clauses[-1].casefold() and re.match(r"each opponent loses x life\b",clause.strip(),re.IGNORECASE))))
+            continuation=bool(clauses and (modal_continuation or top_card_continuation or ("additional combat phase after this phase" in clauses[-1].casefold() and re.match(r"at the beginning of that combat",clause.strip(),re.IGNORECASE)) or ("target" in clauses[-1].casefold() and re.match(r"it gains? [^.]+ until end of turn",clause.strip(),re.IGNORECASE)) or re.match(r"(?:then if|if you do|if you have the city's blessing|otherwise),?\b",clause.strip(),re.IGNORECASE) or re.match(r"if you control (?:one|two|three|four|five|six|seven|eight|nine|ten|\d+) or more lands",clause.strip(),re.IGNORECASE) or re.match(r"if that land is (?:a |an )?[a-z]+,",clause.strip(),re.IGNORECASE) or re.match(r"if (?:this is|it(?:'s| is)) the (?:first|second|third|fourth) time(?: this ability has resolved)?(?: this turn)?,",clause.strip(),re.IGNORECASE) or ("create " in clauses[-1].casefold() and " creature token" in clauses[-1].casefold() and re.match(r"exile (?:that|those) tokens? at the beginning of the next end step",clause.strip(),re.IGNORECASE)) or ("exile cards from the top of your library until you exile a nonland card" in clauses[-1].casefold() and re.match(r"you may cast that card this turn",clause.strip(),re.IGNORECASE)) or ("create x 1/1 red elemental creature tokens" in clauses[-1].casefold() and re.match(r"at the beginning of the next end step, exile those tokens",clause.strip(),re.IGNORECASE)) or ("reveal the top card of your library and put that card into your hand" in clauses[-1].casefold() and re.match(r"each opponent loses x life\b",clause.strip(),re.IGNORECASE))))
             if continuation:
                 separator="\n" if modal_continuation else " ";clauses[-1]=f"{clauses[-1]}{separator}{clause.strip()}"
             else:clauses.append(clause)
@@ -3490,7 +3496,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
             effect = clause.split(",", 1)[1].strip()
             if owner.get("city_blessing"):effect=re.sub(r"^if you have the city's blessing,\s*","",effect,flags=re.IGNORECASE)
             if event=="enters":
-                etb_effect_boundary=re.search(r",\s*(?=(?:you\b|put\b|create\b|draw\b|each\b|target\b|this\b|that\b|it\b|its\b|gain\b|tap\b|untap\b|exile\b|investigate\b|proliferate\b|scry\b|mill\b|add\b|amass\b|venture\b|manifest\b|cloak\b|look\b|return\b|search\b|[a-z0-9' -]+ deals?\b))",clause,re.IGNORECASE)
+                etb_effect_boundary=re.search(r",\s*(?=(?:if\b|you\b|put\b|create\b|draw\b|each\b|target\b|this\b|that\b|it\b|its\b|gain\b|tap\b|untap\b|exile\b|investigate\b|proliferate\b|scry\b|mill\b|add\b|amass\b|venture\b|manifest\b|cloak\b|look\b|return\b|search\b|[a-z0-9' -]+ deals?\b))",clause,re.IGNORECASE)
                 if etb_effect_boundary:effect=clause[etb_effect_boundary.end():].strip()
             if event in {"tapped","untapped"}:
                 tap_effect_boundary=re.search(r",\s*(?=(?:you\b|put\b|create\b|draw\b|each\b|target\b|this\b|that\b|it\b|its\b|gain\b|tap\b|untap\b|exile\b|investigate\b|proliferate\b|scry\b|mill\b|remove\b|destroy\b|return\b|[a-z0-9' -]+ deals?\b))",clause,re.IGNORECASE)
@@ -3667,7 +3673,7 @@ def _begin_next_turn(state:dict)->None:
     for owner in state["players"]:
         owner["firebending_mana"]=0;owner["any_color_mana"]=0;owner["bent_this_turn"]=[];owner["energy_paid_this_turn"]=0
         for permanent in owner["battlefield"]:
-            permanent.pop("temporary_power",None);permanent.pop("temporary_toughness",None);permanent.pop("temporary_base_power",None);permanent.pop("temporary_base_toughness",None);permanent.pop("temporary_keywords",None);permanent.pop("temporary_removed_keywords",None);permanent.pop("temporary_backup_rules",None);permanent.pop("cant_attack_until_turn",None);permanent.pop("cant_block_until_turn",None);permanent.pop("must_block_source_ids",None);permanent.pop("regeneration_shields",None);permanent.pop("deathtouch_damage",None);permanent.pop("crewed_turn",None);permanent["damage"]=0
+            permanent.pop("temporary_power",None);permanent.pop("temporary_toughness",None);permanent.pop("temporary_base_power",None);permanent.pop("temporary_base_toughness",None);permanent.pop("temporary_keywords",None);permanent.pop("temporary_removed_keywords",None);permanent.pop("temporary_backup_rules",None);permanent.pop("cant_attack_until_turn",None);permanent.pop("cant_block_until_turn",None);permanent.pop("must_block_source_ids",None);permanent.pop("attacks_this_turn",None);permanent.pop("regeneration_shields",None);permanent.pop("deathtouch_damage",None);permanent.pop("crewed_turn",None);permanent["damage"]=0
             if permanent.get("goaded_until_turn",0)<state["turn"]:permanent.pop("goaded_until_turn",None);permanent.pop("goaded_by",None)
             if permanent.get("hexproof_until_turn",0)<state["turn"]:permanent.pop("hexproof_until_turn",None)
             if permanent.get("base_type_line") is not None:permanent["type_line"]=permanent.pop("base_type_line")
@@ -3686,6 +3692,12 @@ def _begin_next_turn(state:dict)->None:
 
 def _advance_turn_phase(state: dict) -> None:
     if state["phase"] == "combat" and state["combat"]["attackers"]: _combat_damage(state)
+    if state["phase"] in {"precombat_main","postcombat_main"} and state.get("additional_combats_pending",0)>0:
+        state["additional_combat_origin_phase"]=state["phase"];state["additional_combats_pending"]-=1;state["additional_combat_active"]=True;state["phase"]="combat";state["combat"]={"attackers":[],"attackers_declared":False,"blocks":{},"attack_targets":{},"block_orders":{},"damage_pending":False,"damage_step":None,"first_strike_damage_ids":[],"block_triggers_pending":False};active=_player(state,state["active_player_id"]);_set_tapped(state,[card for card in active["battlefield"] if "Creature" in card.get("type_line","")],False,active["id"],"moraug_combat");_queue_triggers(state,"beginning_combat",None,active);state["priority_player_id"]=active["id"];state["pending_phase_advance"]=False;state["consecutive_passes"]=0;_log(state,"An additional combat phase began; the active player's creatures untapped.");return
+    if state["phase"]=="combat" and state.get("additional_combat_active"):
+        if state.get("additional_combats_pending",0)>0:
+            state["additional_combats_pending"]-=1;state["combat"]={"attackers":[],"attackers_declared":False,"blocks":{},"attack_targets":{},"block_orders":{},"damage_pending":False,"damage_step":None,"first_strike_damage_ids":[],"block_triggers_pending":False};active=_player(state,state["active_player_id"]);_set_tapped(state,[card for card in active["battlefield"] if "Creature" in card.get("type_line","")],False,active["id"],"moraug_combat");_queue_triggers(state,"beginning_combat",None,active);state["priority_player_id"]=active["id"];state["pending_phase_advance"]=False;state["consecutive_passes"]=0;_log(state,"Another additional combat phase began; the active player's creatures untapped.");return
+        origin=state.pop("additional_combat_origin_phase");state.pop("additional_combat_active",None);state.pop("additional_combats_pending",None);state["phase"]=origin;_advance_turn_phase(state);return
     index = PHASES.index(state["phase"])
     if index == len(PHASES) - 1:
         ending=_player(state,state["active_player_id"]);maximum=_maximum_hand_size(ending);excess=max(0,len(ending["hand"])-maximum) if maximum is not None else 0
@@ -4272,6 +4284,8 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if any(requested_targets.get(attacker_id,default_target) not in defender_ids for attacker_id in requested):raise RuleViolation("Choose a legal defender for every attacker")
         state["combat"]["attackers"] = list(requested);state["combat"]["attackers_declared"]=True
         state["combat"]["attack_targets"]={attacker_id:requested_targets.get(attacker_id,default_target) for attacker_id in requested}
+        for card in player["battlefield"]:
+            if card["instance_id"] in requested:card["attacks_this_turn"]=card.get("attacks_this_turn",0)+1
         for card in player["battlefield"]:card.pop("must_attack_next_combat",None)
         _set_tapped(state,[card for card in player["battlefield"] if card["instance_id"] in requested and not _has_keyword(card,"Vigilance")],True,player_id,"attack")
         if len(requested)==1:_queue_exalted_triggers(state,player,next(card for card in player["battlefield"] if card["instance_id"] in requested))
