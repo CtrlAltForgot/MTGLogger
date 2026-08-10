@@ -2319,7 +2319,9 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
     pending_optional_discard=state.get("pending_optional_discard")
     if pending_optional_discard:
         if pending_optional_discard["player_id"]!=player_id:return []
-        return [{"type":"discard_optional_card","card_id":card["instance_id"],"source_name":pending_optional_discard["source_name"],"label":f"Discard {card['name']}"} for card in player["hand"]]+[{"type":"decline_optional_discard","source_name":pending_optional_discard["source_name"],"label":"Don't discard"},{"type":"concede"}]
+        common={"source_name":pending_optional_discard["source_name"],"mandatory":pending_optional_discard.get("mandatory",False)};actions=[{"type":"discard_optional_card","card_id":card["instance_id"],"label":f"Discard {card['name']}",**common} for card in player["hand"]]
+        if not pending_optional_discard.get("mandatory"):actions.append({"type":"decline_optional_discard","label":"Don't discard",**common})
+        return actions+[{"type":"concede"}]
     pending_payment=state.get("pending_optional_payment")
     if pending_payment:
         if pending_payment["player_id"]!=player_id:return []
@@ -3400,8 +3402,14 @@ def _resolve_spell(state: dict) -> None:
         mana_cost=optional_payment.group(1).upper();continuation=optional_payment.group(2).strip();source_name=(source_permanent or source_graveyard or card).get("name",card["name"])
         state["pending_optional_payment"]={"player_id":caster["id"],"source_name":source_name,"source_id":item.get("source_id"),"event_card_id":item.get("event_card_id"),"mana_cost":mana_cost,"continuation":continuation};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} may pay {mana_cost} for {source_name}.");return
     optional_discard=re.search(r"you may discard a card\.\s*if you do,\s*(.+)",effect_text,re.DOTALL)
+    mandatory_discard=None if optional_discard else re.search(r"(?:^|[.!]\s*)discard a card\.\s*if you do,\s*(.+)",effect_text,re.DOTALL)
     if optional_discard:
         source_name=(source_permanent or card).get("name",card["name"]);state["pending_optional_discard"]={"player_id":caster["id"],"source_name":source_name,"source_id":item.get("source_id"),"continuation":optional_discard.group(1).strip()};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} may discard a card for {source_name}.");return
+    if mandatory_discard:
+        source_name=(source_permanent or card).get("name",card["name"])
+        if caster["hand"]:state["pending_optional_discard"]={"player_id":caster["id"],"source_name":source_name,"source_id":item.get("source_id"),"continuation":mandatory_discard.group(1).strip(),"mandatory":True};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} must discard a card for {source_name}.")
+        else:_log(state,f"{caster['name']} had no card to discard for {source_name}.")
+        return
     if graveyard_target and "you may cast target instant or sorcery card from a graveyard without paying its mana cost" in effect_text:
         graveyard_owner=next(owner for owner in state["players"] if graveyard_target in owner["graveyard"]);source_name=(source_permanent or card).get("name",card["name"]);state["pending_impulsivity"]={"player_id":caster["id"],"source_name":source_name,"card_id":graveyard_target["instance_id"],"owner_id":graveyard_owner["id"]};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} may cast {graveyard_target['name']} from a graveyard without paying its mana cost.");return
     optional_sacrifice=re.search(r"you may sacrifice (a land or lander|another permanent)\.\s*if you do,\s*(.+)",effect_text,re.DOTALL)
@@ -3972,6 +3980,13 @@ def _resolve_spell(state: dict) -> None:
             for permanent in owner["battlefield"]:
                 if "Creature" in permanent.get("type_line","") and not re.search(r"\bElf\b",permanent.get("type_line",""),re.IGNORECASE):permanent["temporary_power"]=permanent.get("temporary_power",0)-3;permanent["temporary_toughness"]=permanent.get("temporary_toughness",0)-3;affected.append(permanent)
         _log(state,f"{len(affected)} non-Elf creature(s) got -3/-3 until end of turn.")
+    non_dragon_stats=re.search(r"each non-dragon creature gets -(\d+)/-(\d+) until end of turn",effect_text)
+    if non_dragon_stats:
+        affected=[]
+        for owner in state["players"]:
+            for permanent in owner["battlefield"]:
+                if "Creature" in permanent.get("type_line","") and not re.search(r"\bDragon\b",permanent.get("type_line",""),re.IGNORECASE):permanent["temporary_power"]=permanent.get("temporary_power",0)-int(non_dragon_stats.group(1));permanent["temporary_toughness"]=permanent.get("temporary_toughness",0)-int(non_dragon_stats.group(2));affected.append(permanent)
+        _log(state,f"{len(affected)} non-Dragon creature(s) got -{non_dragon_stats.group(1)}/-{non_dragon_stats.group(2)} until end of turn.")
     if convert_to_slime:
         destroyed_value=0
         for target_value in valid_multi_ids:
@@ -5251,6 +5266,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
     elif action_type in {"discard_optional_card","decline_optional_discard"}:
         pending=state.get("pending_optional_discard") or {}
         if pending.get("player_id")!=player_id:raise RuleViolation("There is no optional discard choice for this player")
+        if action_type=="decline_optional_discard" and pending.get("mandatory"):raise RuleViolation("This effect requires a discard")
         state["pending_optional_discard"]=None
         if action_type=="discard_optional_card":
             discarded=next((card for card in player["hand"] if card["instance_id"]==action.get("card_id")),None)
