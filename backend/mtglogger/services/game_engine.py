@@ -2356,7 +2356,16 @@ def _pending_decision(state:dict)->bool:
     if state.get("pending_catalyst"):return True
     if state.get("pending_card_type"):return True
     if state.get("pending_headdress"):return True
+    if state.get("pending_grim_captain"):return True
     return bool(state.get("pending_miracle") or state.get("pending_impulsivity") or state.get("pending_library_placement") or state.get("pending_sticktwister") or state.get("pending_eumidian_choice") or state.get("pending_rad_choice") or state.get("pending_tap_choice") or state.get("pending_top_card_choice") or state.get("pending_revealed_discard") or state.get("pending_same_name_search") or state.get("pending_winter_exile") or state.get("pending_optional_discard") or state.get("pending_optional_payment") or state.get("pending_tilonalli") or state.get("pending_creature_type") or state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_populate") or state.get("pending_bolster") or state.get("pending_discovery") or state.get("pending_madness") or state.get("pending_rebound") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
+
+
+def _advance_grim_captain(state:dict,pending:dict)->None:
+    while pending.get("opponent_ids"):
+        opponent_id=pending["opponent_ids"][0];victim=_player(state,opponent_id);choices=[card["instance_id"] for card in victim["battlefield"] if "Land" not in card.get("type_line","")]
+        if choices:pending["stage"]="sacrifice";pending["player_id"]=opponent_id;pending["card_ids"]=choices;state["priority_player_id"]=opponent_id;return
+        pending["opponent_ids"].pop(0);_log(state,f"{victim['name']} controlled no nonland permanent to sacrifice to {pending['source_name']}.")
+    pending["stage"]="return";pending["player_id"]=pending["controller_id"];state["priority_player_id"]=pending["controller_id"]
 
 
 def _split_second_on_stack(state:dict)->bool:
@@ -2706,6 +2715,15 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
     if pending_headdress:
         if pending_headdress["player_id"]!=player_id:return []
         return [{"type":"choose_headdress_card","source_name":pending_headdress["source_name"],"target_id":pending_headdress["target_id"],"card_ids":[card["instance_id"] for card in pending_headdress["cards"]],"cards":pending_headdress["cards"],"label":"Choose the creature for the equipped creature to copy"},{"type":"concede"}]
+    pending_grim=state.get("pending_grim_captain")
+    if pending_grim:
+        if pending_grim["player_id"]!=player_id:return []
+        if pending_grim["stage"]=="sacrifice":
+            cards=[card for card in player["battlefield"] if card["instance_id"] in set(pending_grim["card_ids"])];return [{"type":"choose_grim_sacrifice","source_name":pending_grim["source_name"],"card_ids":pending_grim["card_ids"],"cards":cards,"label":"Choose a nonland permanent to sacrifice"},{"type":"concede"}]
+        source=next((card for card in player["battlefield"] if card["instance_id"]==pending_grim.get("source_id")),None);crafted_ids=set((source or {}).get("crafted_with_ids") or pending_grim.get("crafted_ids") or []);cards=[card for card in player["exile"] if card["instance_id"] in crafted_ids and "Creature" in card.get("type_line","")];defenders=[{"id":owner["id"],"name":owner["name"],"kind":"player","controller_id":owner["id"]} for owner in state["players"] if owner["id"]!=player_id];defenders.extend({"id":card["instance_id"],"name":card["name"],"kind":"permanent","controller_id":owner["id"]} for owner in state["players"] if owner["id"]!=player_id for card in owner["battlefield"] if any(kind in card.get("type_line","") for kind in ("Planeswalker","Battle")))
+        actions=[{"type":"decline_grim_return","source_name":pending_grim["source_name"],"label":"Return no crafted creature"},{"type":"concede"}]
+        if cards and defenders:actions.insert(0,{"type":"choose_grim_return","source_name":pending_grim["source_name"],"card_ids":[card["instance_id"] for card in cards],"cards":cards,"defenders":defenders,"label":"Return a crafted creature tapped and attacking"})
+        return actions
     pending_zethi=state.get("pending_zethi_copies")
     if pending_zethi:
         if pending_zethi["player_id"]!=player_id:return []
@@ -3491,6 +3509,8 @@ def _resolve_spell(state: dict) -> None:
         _log(state,f"{source_permanent['name']} made {caster['name']}'s next {chosen_type or 'chosen-type'} spell this turn free.");return
     if source_permanent and "they can't attack you or planeswalkers you control this turn" in effect_text:
         spell_caster=_player(state,item.get("event_owner_id"));spell_caster["cant_attack_turn"]=state["turn"];spell_caster["cant_attack_defender_ids_turn"]=sorted(set(spell_caster.get("cant_attack_defender_ids_turn",[]))|{caster["id"]});_log(state,f"{source_permanent['name']} prevents {spell_caster['name']} from attacking {caster['name']} or their planeswalkers this turn.");return
+    if source_permanent and source_permanent.get("name")=="The Grim Captain" and "each opponent sacrifices a nonland permanent" in effect_text and "exiled creature card used to craft" in effect_text:
+        pending={"controller_id":caster["id"],"source_id":source_permanent["instance_id"],"source_name":source_permanent["name"],"crafted_ids":list(source_permanent.get("crafted_with_ids") or []),"opponent_ids":[owner["id"] for owner in state["players"] if owner["id"]!=caster["id"]]};state["pending_grim_captain"]=pending;_advance_grim_captain(state,pending);_log(state,f"{source_permanent['name']} requires each opponent to sacrifice a nonland permanent before {caster['name']} chooses a crafted creature.");return
     if source_permanent and "choose an exiled card used to craft" in effect_text and "at random" in effect_text and "cast that card without paying its mana cost" in effect_text:
         crafted_ids=set(source_permanent.get("crafted_with_ids") or []);candidates=[candidate for candidate in caster["exile"] if candidate["instance_id"] in crafted_ids]
         if not candidates:_log(state,f"{source_permanent['name']} had no crafted card remaining in exile to choose.");return
@@ -5619,6 +5639,20 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         permanent=next((card for card in player["battlefield"] if card["instance_id"]==pending["card_id"]),None)
         if not permanent:raise RuleViolation("That permanent is no longer on the battlefield")
         permanent["chosen_creature_type"]=choice.title();pending_list.pop(0);state["pending_creature_type"]=pending_list;_sync_city_blessing(state);state["priority_player_id"]=pending_list[0]["player_id"] if pending_list else state["active_player_id"];_log(state,f"{player['name']} chose {permanent['chosen_creature_type']} for {permanent['name']}.")
+    elif action_type=="choose_grim_sacrifice":
+        pending=state.get("pending_grim_captain") or {};choice_id=action.get("card_id");permanent=next((card for card in player["battlefield"] if card["instance_id"]==choice_id),None)
+        if pending.get("stage")!="sacrifice" or pending.get("player_id")!=player_id or choice_id not in set(pending.get("card_ids",[])) or not permanent or "Land" in permanent.get("type_line",""):raise RuleViolation("Choose a legal nonland permanent for The Grim Captain")
+        _sacrifice_permanents(state,player,[permanent]);pending["opponent_ids"].pop(0);_log(state,f"{player['name']} sacrificed {permanent['name']} to {pending['source_name']}.");_advance_grim_captain(state,pending)
+    elif action_type in {"choose_grim_return","decline_grim_return"}:
+        pending=state.get("pending_grim_captain") or {}
+        if pending.get("stage")!="return" or pending.get("player_id")!=player_id:raise RuleViolation("There is no crafted-creature return choice for this player")
+        if action_type=="decline_grim_return":state["pending_grim_captain"]=None;state["priority_player_id"]=state["active_player_id"];_log(state,f"{player['name']} returned no creature with {pending['source_name']}.")
+        else:
+            source=next((card for card in player["battlefield"] if card["instance_id"]==pending.get("source_id")),None);crafted_ids=set((source or {}).get("crafted_with_ids") or pending.get("crafted_ids") or []);chosen=next((card for card in player["exile"] if card["instance_id"]==action.get("card_id") and card["instance_id"] in crafted_ids and "Creature" in card.get("type_line","")),None);defender_id=action.get("target_id");defender=next((owner for owner in state["players"] if owner["id"]==defender_id and owner["id"]!=player_id),None);defending_permanent=next((card for owner in state["players"] if owner["id"]!=player_id for card in owner["battlefield"] if card["instance_id"]==defender_id and any(kind in card.get("type_line","") for kind in ("Planeswalker","Battle"))),None)
+            if not chosen or not (defender or defending_permanent):raise RuleViolation("Choose an exiled crafted creature and a legal defender")
+            _leave_exile(state,player,[chosen]);chosen["controller_id"]=player_id;chosen["tapped"]=True;chosen["summoning_sick"]=True;chosen["damage"]=0;chosen["counters"]={};_enter_battlefield(state,player,[chosen],"exile");state["combat"]["attackers"].append(chosen["instance_id"]);state["combat"]["attack_targets"][chosen["instance_id"]]=defender_id;state["pending_grim_captain"]=None
+            if not _pending_decision(state):state["priority_player_id"]=state["active_player_id"]
+            _log(state,f"{player['name']} returned {chosen['name']} tapped and attacking {defender['name'] if defender else defending_permanent['name']} with {pending['source_name']}.")
     elif action_type=="choose_headdress_card":
         pending=state.get("pending_headdress") or {};choice_id=action.get("card_id");material=next((card for card in pending.get("cards",[]) if card["instance_id"]==choice_id),None);equipment=next((card for card in player["battlefield"] if card["instance_id"]==pending.get("source_id")),None);target=next((card for owner in state["players"] for card in owner["battlefield"] if card["instance_id"]==pending.get("target_id")),None)
         if pending.get("player_id")!=player_id or not material or not equipment or not target or equipment.get("attached_to")!=target["instance_id"]:raise RuleViolation("That Dinosaur Headdress choice is no longer available")
