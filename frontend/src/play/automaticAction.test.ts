@@ -25,8 +25,8 @@ describe('automatic game actions',()=>{
   })
 
   it('leaves readable time before every automatic transition',()=>{
-    expect(automaticActionDelay(action('pass_priority'))).toBeGreaterThanOrEqual(800)
+    expect(automaticActionDelay(action('pass_priority'))).toBeGreaterThanOrEqual(1000)
     expect(automaticActionDelay(action('advance_phase'))).toBeGreaterThan(automaticActionDelay(action('pass_priority')))
-    expect(automaticActionDelay(action('resolve_combat_damage'))).toBeGreaterThanOrEqual(1500)
+    expect(automaticActionDelay(action('resolve_combat_damage'))).toBeGreaterThanOrEqual(2000)
   })
 })

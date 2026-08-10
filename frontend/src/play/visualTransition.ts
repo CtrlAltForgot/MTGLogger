@@ -3,6 +3,11 @@ import type { GameState } from '../types'
 export type NoticeTone='phase'|'good'|'danger'|'stack'
 export type TableNotice={id:string;text:string;tone:NoticeTone}
 
+export function presentationNoticeDuration(notice:TableNotice){
+  const readingTime=notice.text.trim().split(/\s+/).length*180
+  return Math.min(5000,Math.max(notice.tone==='phase'?1800:2400,readingTime))
+}
+
 export function classifyNoticeTone(message:string,phaseChanged:boolean):NoticeTone{
   if(phaseChanged)return'phase'
   const lower=message.toLowerCase()
