@@ -1952,7 +1952,7 @@ def _target_kind(card: dict) -> str | None:
     if "choose any target, then choose another target for each time" in text:return "any"
     if "choose target creature, then choose another target creature for each time" in text:return "creature"
     if re.search(r"each of up to x targets?",text):return "any"
-    if re.search(r"up to x target creatures?(?! cards?\b)",text):return "creature"
+    if re.search(r"(?:up to )?x target creatures?(?! cards?\b)",text):return "creature"
     if re.search(r"up to one target non-[a-z]+ creature",text):return "creature"
     if re.search(r"up to (?:two|three|four|\d+) target (?:non-[a-z]+ )?creatures?",text):return "creature"
     if re.search(r"up to x target creature cards? from your graveyard",text):return "graveyard_creature"
@@ -2108,7 +2108,7 @@ def _multi_target_step_variants(state:dict,caster_id:str,card:dict)->list[list[d
         return [[steps[index] for index in range(2) if index in selected] for count in range(3) for selected in combinations(range(2),count) if all(steps[index]["targets"] for index in selected)]
     match=re.search(r"\b(tap|untap) (up to )?(two|three|four|\d+) target (creatures|lands)\b",text);damage=re.search(r"deals (\d+) damage to each of up to (two|three|four|\d+) targets?",text)
     if match:
-        maximum=words.get(match.group(3),int(match.group(3)) if match.group(3).isdigit() else 0);minimum=1 if match.group(2) else maximum;kind="creature" if match.group(4)=="creatures" else "land";targeting={**card,"oracle_text":f"{match.group(1).title()} target {kind}."}
+        maximum=words.get(match.group(3),int(match.group(3)) if match.group(3).isdigit() else 0);minimum=0 if match.group(2) else maximum;kind="creature" if match.group(4)=="creatures" else "land";targeting={**card,"oracle_text":f"{match.group(1).title()} target {kind}."}
     elif damage:
         maximum=words.get(damage.group(2),int(damage.group(2)) if damage.group(2).isdigit() else 0);minimum=1;targeting={**card,"oracle_text":f"This spell deals {damage.group(1)} damage to any target."}
     else:return []
@@ -2612,10 +2612,18 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
         if not rules_card:continue
         instant_speed="Instant" in rules_card.get("type_line","") or _has_keyword(rules_card,"Flash")
         if not ((active and main and not state["stack"]) or instant_speed) or not _can_pay(player,{**rules_card,"mana_cost":cost}):continue
-        targets=_targets(state,player_id,_spell_targeting_card(rules_card));required=bool(_target_kind(_spell_targeting_card(rules_card)))
-        if required and not targets:continue
+        cost_card={**rules_card,"mana_cost":cost};targeting_card=_spell_targeting_card(rules_card);targets=_targets(state,player_id,targeting_card);required=bool(_target_kind(targeting_card));multi_variants=_multi_target_step_variants(state,player_id,rules_card)
+        if required and not targets and not multi_variants:continue
         action_type={"disturb":"cast_disturb","adventure":"cast_adventure","after_adventure":"cast_after_adventure"}[source];label={"disturb":f"Disturb as {rules_card['name']}","adventure":f"Adventure — {rules_card['name']}","after_adventure":f"Cast {rules_card['name']} after its Adventure"}[source]
-        actions.append({"type":action_type,"card_id":original["instance_id"],"source":source,"mana_cost":cost,"label":f"{label} · {cost or '{0}'}",**({"targets":targets} if targets else {})})
+        action={"type":action_type,"card_id":original["instance_id"],"source":source,"mana_cost":cost,"label":f"{label} · {cost or '{0}'}",**({"targets":targets} if targets and not multi_variants else {})}
+        if _has_x_cost(cost_card):
+            maximum=_maximum_x(player,cost_card);action.update({"x_min":0,"x_max":maximum})
+            x_targets=re.search(r"\b(?:tap )?X target creatures\b",rules_card.get("oracle_text") or "",re.IGNORECASE)
+            if x_targets:
+                maximum=min(maximum,len(targets));action["x_max"]=maximum;action["target_steps_by_x"]={value:[{"label":f"Choose target {position+1}","targets":targets,"distinct":True} for position in range(value)] for value in range(maximum+1)}
+        if multi_variants:
+            for steps in multi_variants:actions.append({**action,"target_steps":steps,"target_count":len(steps),"allow_zero_targets":not steps,"label":f"{action['label']} · choose {len(steps)} target{'s' if len(steps)!=1 else ''}"})
+        else:actions.append(action)
     castable = [(card, "hand") for card in player["hand"]]
     castable.extend((card, "command") for card in player.get("command", []))
     castable.extend((card,"flashback") for card in player["graveyard"] if _flashback_ability(card))
@@ -2852,7 +2860,7 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
             elif energy_cost=="X":action.update({"x_min":0,"x_max":player.get("energy",0)})
             if fight_steps:action["target_steps"]=fight_steps
             elif targets: action["targets"] = targets
-            if multi_variants:actions.extend({**action,"target_steps":steps,"target_count":len(steps)} for steps in multi_variants)
+            if multi_variants:actions.extend({**action,"target_steps":steps,"target_count":len(steps),"allow_zero_targets":not steps} for steps in multi_variants)
             else:actions.append(action)
     for vehicle in player["battlefield"]:
         required_power=_crew_value(vehicle)
@@ -3220,7 +3228,10 @@ def _resolve_spell(state: dict) -> None:
             if target_owner and target_permanent and "Creature" in target_permanent.get("type_line","") and "Spacecraft" not in target_permanent.get("type_line",""):_leave_battlefield(state,target_owner,target_permanent,"hand");returned+=1
         _log(state,f"{card['name']} returned {returned} creature(s) to their owners' hands.")
     if target_ids and multi_tap:
-        selected=[permanent for owner in state["players"] for permanent in owner["battlefield"] if permanent["instance_id"] in set(target_ids)];_set_tapped(state,selected,multi_tap.group(1).casefold()=="tap",caster["id"],"effect");_log(state,f"{card['name']} {multi_tap.group(1).casefold()}ped {len(selected)} permanent(s).")
+        selected=[permanent for owner in state["players"] for permanent in owner["battlefield"] if permanent["instance_id"] in set(target_ids)];_set_tapped(state,selected,multi_tap.group(1).casefold()=="tap",caster["id"],"effect")
+        if re.search(r"they (?:do not|don't) untap during their controllers?' next untap steps?",effect_text):
+            for permanent in selected:permanent["skip_untap_steps"]=permanent.get("skip_untap_steps",0)+1
+        _log(state,f"{card['name']} {multi_tap.group(1).casefold()}ped {len(selected)} permanent(s).")
     if multi_damage:
         for multi_target_id in target_ids:
             target_player_entry=next((candidate for candidate in state["players"] if candidate["id"]==multi_target_id),None);target_permanent=next((candidate for owner in state["players"] for candidate in owner["battlefield"] if candidate["instance_id"]==multi_target_id),None)
@@ -5303,18 +5314,23 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if (_multiplayer(state) or not allow_direct_resolution) and not state.get("pending_ward"):state["priority_player_id"]=opponent(state,player_id)["id"]
         _log(state,f"{player['name']} channeled {card['name']}{f' with X={x_value}' if has_x else ''}.")
     elif action_type in {"cast_disturb","cast_adventure","cast_after_adventure"}:
-        available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]==action_type and entry["card_id"]==action.get("card_id")),None)
+        requested_target_ids=action.get("target_ids") or [];available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]==action_type and entry["card_id"]==action.get("card_id") and (entry.get("target_count") is None or entry["target_count"]==len(requested_target_ids))),None)
         source_zone="graveyard" if action_type=="cast_disturb" else "hand" if action_type=="cast_adventure" else "exile";original=next((candidate for candidate in player[source_zone] if candidate["instance_id"]==action.get("card_id")),None)
-        rules_index=1 if action_type in {"cast_disturb","cast_adventure"} else 0;rules_card=_face_rules_card(original or {},rules_index);target_id=action.get("target_id")
+        rules_index=1 if action_type in {"cast_disturb","cast_adventure"} else 0;rules_card=_face_rules_card(original or {},rules_index);target_id=action.get("target_id");x_value=int(action.get("x_value") or 0)
         if not available or not original or not rules_card:raise RuleViolation("That alternate-face cast is no longer available")
+        cost_card={**rules_card,"mana_cost":available["mana_cost"]};has_x=_has_x_cost(cost_card)
+        if (has_x and not available.get("x_min",0)<=x_value<=available.get("x_max",0)) or (not has_x and action.get("x_value") is not None):raise RuleViolation("Choose a legal value for X")
         targets=_targets(state,player_id,_spell_targeting_card(rules_card))
-        if _target_kind(_spell_targeting_card(rules_card)) and target_id not in {target["id"] for target in targets}:raise RuleViolation("Choose a legal target for that face")
-        _pay_mana(state,player,{**rules_card,"mana_cost":available["mana_cost"]})
+        target_steps=(available.get("target_steps_by_x") or {}).get(x_value,available.get("target_steps",[]))
+        if target_steps:
+            if len(requested_target_ids)!=len(target_steps) or any(target_value not in {target["id"] for target in target_steps[position]["targets"]} for position,target_value in enumerate(requested_target_ids)) or any(step.get("distinct") and requested_target_ids[position] in requested_target_ids[:position] for position,step in enumerate(target_steps)):raise RuleViolation("Choose each alternate-face target exactly once")
+        elif not available.get("allow_zero_targets") and _target_kind(_spell_targeting_card(rules_card)) and target_id not in {target["id"] for target in targets}:raise RuleViolation("Choose a legal target for that face")
+        _pay_mana(state,player,cost_card,x_value=x_value)
         if source_zone=="graveyard":_leave_graveyard(state,player,[original])
         elif source_zone=="exile":_leave_exile(state,player,[original])
         else:player["hand"].remove(original)
         _set_card_face(original,rules_index);original.pop("adventured",None)
-        stack_item={"id":_id(),"kind":"spell","card":original,"controller_id":player_id,"target_id":target_id,"target_ids":[],"mode_indices":[],"mode_targets":[],"x_value":0,"flashback":action_type=="cast_disturb","disturbed":action_type=="cast_disturb","adventure_cast":action_type=="cast_adventure","cast_source_zone":source_zone};state["stack"].append(stack_item);_record_spell_cast(state,player);original["cast_source_zone"]=source_zone;_queue_triggers(state,"cast",original,player);_queue_cascade_triggers(state,player,original);_queue_storm_trigger(state,player,original,stack_item);original.pop("cast_source_zone",None);_queue_ward(state,player,target_id,stack_item);state["consecutive_passes"]=0;state["pending_phase_advance"]=False
+        stack_item={"id":_id(),"kind":"spell","card":original,"controller_id":player_id,"target_id":target_id,"target_ids":requested_target_ids,"mode_indices":[],"mode_targets":[],"x_value":x_value,"allow_zero_targets":bool(available.get("allow_zero_targets")),"flashback":action_type=="cast_disturb","disturbed":action_type=="cast_disturb","adventure_cast":action_type=="cast_adventure","cast_source_zone":source_zone};state["stack"].append(stack_item);_record_spell_cast(state,player);original["cast_source_zone"]=source_zone;_queue_triggers(state,"cast",original,player);_queue_cascade_triggers(state,player,original);_queue_storm_trigger(state,player,original,stack_item);original.pop("cast_source_zone",None);[_queue_ward(state,player,ward_target,stack_item) for ward_target in [target_id,*requested_target_ids] if ward_target];state["consecutive_passes"]=0;state["pending_phase_advance"]=False
         if (_multiplayer(state) or not allow_direct_resolution) and not state.get("pending_ward") and not state.get("pending_trigger_targets"):state["priority_player_id"]=opponent(state,player_id)["id"]
         _log(state,f"{player['name']} cast {original['name']}{' with Disturb' if action_type=='cast_disturb' else ' as an Adventure' if action_type=='cast_adventure' else ' from exile after its Adventure'}.")
     elif action_type == "cast":
@@ -5375,7 +5391,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
             if target_id not in {target["id"] for target in available.get("targets",[])}:raise RuleViolation("Choose a legal creature to bestow")
         elif requested_overloaded:
             if target_id is not None:raise RuleViolation("An overloaded spell does not target")
-        elif not modal_spec and not target_steps and _target_kind(targeting_card) and target_id not in {target["id"] for target in targets}: raise RuleViolation("Choose a legal target")
+        elif not modal_spec and not target_steps and not available.get("allow_zero_targets") and _target_kind(targeting_card) and target_id not in {target["id"] for target in targets}: raise RuleViolation("Choose a legal target")
         if requested_waterbend:
             _pay_mana(state,player,waterbend_residual or {"mana_cost":""},excluded_ids=set(selected_cost_ids),x_value=x_value if _has_x_cost(cost_card) else 0)
             _set_tapped(state,[permanent for permanent in player["battlefield"] if permanent["instance_id"] in selected_cost_ids],True,player_id,"waterbend")
@@ -5427,7 +5443,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if source=="rebound":state["pending_rebound"]=None
         card.pop("rebound_triggered",None);card.pop("rebound_after_turn",None);card.pop("airbent",None);card.pop("suspended_ready",None);card.pop("suspended",None);card.pop("foretold",None);card.pop("foretold_turn",None);card.pop("plotted",None);card.pop("plotted_turn",None);card.pop("exile_cast_until_turn",None)
         if card.get("commander"): player["commander_casts"] = player.get("commander_casts", 0) + 1
-        effective_target=target_id or (mode_targets[0] if len(mode_targets)==1 else None);stack_item={"id": _id(), "card": card, "controller_id": player_id, "target_id": effective_target,"target_ids":target_ids,"mode_indices":chosen_modes,"mode_targets":mode_targets,"x_value":x_value,"flashback":bool(flashback),"buyback":requested_buyback,"rebound_cast":source=="rebound","escaped":bool(escape),"escape_counters":escape["counters"] if escape else 0,"escape_counter_choice":escape["counter_choice"] if escape else False,"suspended_cast":source=="suspend","kicked":requested_kicked,"multikicker_count":requested_multikicker,"entwined":requested_entwined,"overloaded":requested_overloaded,"blighted":requested_blight,"blessing_top":requested_blessing_top,"evoked":requested_evoked,"dashed":requested_dashed,"bestowing":requested_bestowing,"delved_cards":delved_cards if requested_delve else [],"mutating":requested_mutating,"mutate_position":action.get("mutate_position"),"cast_source_zone":"graveyard" if source in {"flashback","escape","mutate_graveyard","graveyard_permission"} else "exile" if source in {"airbend","suspend","foretell","plot","rebound","exile_permission"} else "hand" if source in {"mutate_hand","evoke","dash_hand","bestow"} else "command" if source in {"mutate_command","dash_command"} else source};state["stack"].append(stack_item);state["stack"].extend(cost_triggers); state["consecutive_passes"] = 0; state["pending_phase_advance"] = False
+        effective_target=target_id or (mode_targets[0] if len(mode_targets)==1 else None);stack_item={"id": _id(), "card": card, "controller_id": player_id, "target_id": effective_target,"target_ids":target_ids,"mode_indices":chosen_modes,"mode_targets":mode_targets,"x_value":x_value,"allow_zero_targets":bool(available.get("allow_zero_targets")),"flashback":bool(flashback),"buyback":requested_buyback,"rebound_cast":source=="rebound","escaped":bool(escape),"escape_counters":escape["counters"] if escape else 0,"escape_counter_choice":escape["counter_choice"] if escape else False,"suspended_cast":source=="suspend","kicked":requested_kicked,"multikicker_count":requested_multikicker,"entwined":requested_entwined,"overloaded":requested_overloaded,"blighted":requested_blight,"blessing_top":requested_blessing_top,"evoked":requested_evoked,"dashed":requested_dashed,"bestowing":requested_bestowing,"delved_cards":delved_cards if requested_delve else [],"mutating":requested_mutating,"mutate_position":action.get("mutate_position"),"cast_source_zone":"graveyard" if source in {"flashback","escape","mutate_graveyard","graveyard_permission"} else "exile" if source in {"airbend","suspend","foretell","plot","rebound","exile_permission"} else "hand" if source in {"mutate_hand","evoke","dash_hand","bestow"} else "command" if source in {"mutate_command","dash_command"} else source};state["stack"].append(stack_item);state["stack"].extend(cost_triggers); state["consecutive_passes"] = 0; state["pending_phase_advance"] = False
         if requested_waterbend:_queue_triggers(state,"waterbend",card,player)
         _record_spell_cast(state,player);card["cast_source_zone"]="graveyard" if source in {"flashback","escape","mutate_graveyard","graveyard_permission"} else "exile" if source in {"airbend","suspend","foretell","plot","exile_permission"} else "hand" if source=="mutate_hand" else "command" if source=="mutate_command" else source
         _queue_triggers(state,"cast",card,player);_queue_cascade_triggers(state,player,card);_queue_storm_trigger(state,player,card,stack_item);card.pop("cast_source_zone",None)
