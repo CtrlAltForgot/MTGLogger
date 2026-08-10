@@ -1024,6 +1024,8 @@ def _can_attack(state:dict,card:dict,attacker:dict,defender:dict)->bool:
 def _can_block_pair(state:dict,attacker:dict,blocker:dict)->bool:
     attacker_text=_effective_rules_text(state,attacker);blocker_text=_effective_rules_text(state,blocker)
     if blocker.get("cant_block_until_turn")==state["turn"]:return False
+    if attacker.get("cant_be_blocked_until_turn")==state["turn"]:return False
+    if attacker.get("max_blocker_power_until_turn")==state["turn"] and _parse_stats(blocker,state)[0]>int(attacker.get("max_blocker_power",99)):return False
     if "can't attack or block unless you have max speed" in blocker_text and _player(state,blocker.get("controller_id")).get("speed",0)<4:return False
     blocker_controller=_player(state,blocker.get("controller_id"));conditional="can't attack or block unless" in blocker_text and not (("unless you have the city's blessing" in blocker_text and blocker_controller.get("city_blessing")) or ("four or more card types among cards in your graveyard" in blocker_text and _graveyard_card_type_count(blocker_controller)>=4))
     if conditional and "you control another creature with power 4 or greater" in blocker_text:
@@ -3681,6 +3683,9 @@ def _resolve_spell(state: dict) -> None:
             if permanent is not regeneration_target and "Creature" in permanent.get("type_line",""):permanent["regeneration_shields"]=permanent.get("regeneration_shields",0)+1
     if target and re.search(r"(?:target|that) creature can(?:not|'t) attack(?: or block)? this turn",effect_text):target["cant_attack_until_turn"]=state["turn"]
     if target and re.search(r"(?:target|that) creature can(?:not|'t) (?:attack or )?block this turn",effect_text):target["cant_block_until_turn"]=state["turn"]
+    if target and re.search(r"(?:it|that creature) can(?:not|'t) be blocked this turn",effect_text):target["cant_be_blocked_until_turn"]=state["turn"]
+    blocker_floor=re.search(r"(?:it|that creature) can(?:not|'t) be blocked by creatures with power (\d+) or greater this turn",effect_text)
+    if target and blocker_floor:target["max_blocker_power_until_turn"]=state["turn"];target["max_blocker_power"]=int(blocker_floor.group(1))-1
     prevention=re.search(r"prevent the next (\d+) damage that would be dealt to any target this turn",effect_text)
     if prevention and (target or target_player):
         protected=target or target_player;protected["damage_prevention"]=protected.get("damage_prevention",0)+int(prevention.group(1));_log(state,f"The next {prevention.group(1)} damage to {protected['name']} this turn will be prevented.")
@@ -3704,6 +3709,11 @@ def _resolve_spell(state: dict) -> None:
     if target and stats_match:
         target["temporary_power"] = target.get("temporary_power", 0) + int(stats_match.group(1))
         target["temporary_toughness"] = target.get("temporary_toughness", 0) + int(stats_match.group(2))
+    aquatic_ingress="up to two target creatures each get +1/+0 until end of turn and can't be blocked this turn" in effect_text
+    if aquatic_ingress:
+        selected=[permanent for owner in state["players"] for permanent in owner["battlefield"] if permanent["instance_id"] in set(target_ids)]
+        for permanent in selected:permanent["temporary_power"]=permanent.get("temporary_power",0)+1;permanent["cant_be_blocked_until_turn"]=state["turn"]
+        _log(state,f"{len(selected)} creature(s) got +1/+0 and can't be blocked this turn.")
     if source_permanent:
         source_name=re.escape(source_permanent.get("name","").casefold());self_reference=rf"(?:this creature|this token|{source_name}{'|it' if not target else ''})";self_stats=re.search(rf"{self_reference} gets ([+-]\d+)/([+-]\d+)(?: and gains? [^.]+?)? until end of turn",effect_text)
         if self_stats:
@@ -4149,7 +4159,7 @@ def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str, t
             else:zone_owner[destination].append(component)
             _queue_commander_zone_choice(state,zone_owner,component,destination)
         return
-    card["damage"] = 0; card["tapped"] = False;card.pop("escaped",None);card.pop("disturbed",None);card.pop("evoked",None);card.pop("echo_due_controller_id",None);card.pop("dashed",None);card.pop("dash_return_triggered",None);card.pop("deathtouch_damage",None);card.pop("crewed_turn",None);card.pop("temporary_control_return_to",None);card.pop("control_while_source_id",None);card.pop("control_return_to_id",None);card.pop("activated_ability_usage",None);card.pop("temporary_power",None);card.pop("temporary_toughness",None);card.pop("temporary_base_power",None);card.pop("temporary_base_toughness",None);card.pop("temporary_keywords",None);card.pop("until_next_turn_keywords",None);card.pop("until_next_turn_player_id",None);card.pop("temporary_removed_keywords",None);card.pop("temporary_backup_rules",None);card.pop("temporary_protection_colors",None);card.pop("unearthed",None);card.pop("unearth_controller_id",None);card.pop("unearth_end_triggered",None);card.pop("populate_sacrifice_turn",None);card.pop("monstrous",None);card.pop("monstrosity_value",None)
+    card["damage"] = 0; card["tapped"] = False;card.pop("escaped",None);card.pop("disturbed",None);card.pop("evoked",None);card.pop("echo_due_controller_id",None);card.pop("dashed",None);card.pop("dash_return_triggered",None);card.pop("deathtouch_damage",None);card.pop("crewed_turn",None);card.pop("temporary_control_return_to",None);card.pop("control_while_source_id",None);card.pop("control_return_to_id",None);card.pop("activated_ability_usage",None);card.pop("temporary_power",None);card.pop("temporary_toughness",None);card.pop("temporary_base_power",None);card.pop("temporary_base_toughness",None);card.pop("temporary_keywords",None);card.pop("until_next_turn_keywords",None);card.pop("until_next_turn_player_id",None);card.pop("cant_be_blocked_until_turn",None);card.pop("max_blocker_power_until_turn",None);card.pop("max_blocker_power",None);card.pop("temporary_removed_keywords",None);card.pop("temporary_backup_rules",None);card.pop("temporary_protection_colors",None);card.pop("unearthed",None);card.pop("unearth_controller_id",None);card.pop("unearth_end_triggered",None);card.pop("populate_sacrifice_turn",None);card.pop("monstrous",None);card.pop("monstrosity_value",None)
     card.pop("damage_prevention",None);card.pop("damage_source_ids_turn",None)
     if card.get("face_down"):
         values=card.pop("face_down_values",{})
@@ -4980,7 +4990,7 @@ def _begin_next_turn(state:dict)->None:
         for permanent in owner["battlefield"]:
             _restore_temporary_copy(permanent)
             if permanent.get("temporary_type_line") is not None:permanent["type_line"]=permanent.pop("temporary_type_line")
-            permanent.pop("temporary_power",None);permanent.pop("temporary_toughness",None);permanent.pop("temporary_base_power",None);permanent.pop("temporary_base_toughness",None);permanent.pop("temporary_keywords",None);permanent.pop("temporary_removed_keywords",None);permanent.pop("temporary_backup_rules",None);permanent.pop("temporary_protection_colors",None);permanent.pop("cant_attack_until_turn",None);permanent.pop("cant_block_until_turn",None);permanent.pop("must_block_source_ids",None);permanent.pop("attacks_this_turn",None);permanent.pop("regeneration_shields",None);permanent.pop("deathtouch_damage",None);permanent.pop("damage_source_ids_turn",None);permanent.pop("crewed_turn",None);permanent["damage"]=0
+            permanent.pop("temporary_power",None);permanent.pop("temporary_toughness",None);permanent.pop("temporary_base_power",None);permanent.pop("temporary_base_toughness",None);permanent.pop("temporary_keywords",None);permanent.pop("temporary_removed_keywords",None);permanent.pop("temporary_backup_rules",None);permanent.pop("temporary_protection_colors",None);permanent.pop("cant_attack_until_turn",None);permanent.pop("cant_block_until_turn",None);permanent.pop("cant_be_blocked_until_turn",None);permanent.pop("max_blocker_power_until_turn",None);permanent.pop("max_blocker_power",None);permanent.pop("must_block_source_ids",None);permanent.pop("attacks_this_turn",None);permanent.pop("regeneration_shields",None);permanent.pop("deathtouch_damage",None);permanent.pop("damage_source_ids_turn",None);permanent.pop("crewed_turn",None);permanent["damage"]=0
             permanent.pop("damage_prevention",None)
             if permanent.get("goaded_until_turn",0)<state["turn"]:permanent.pop("goaded_until_turn",None);permanent.pop("goaded_by",None)
             if permanent.get("hexproof_until_turn",0)<state["turn"]:permanent.pop("hexproof_until_turn",None)
