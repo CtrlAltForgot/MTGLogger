@@ -1405,6 +1405,7 @@ def _continue_explore(state:dict,player:dict)->None:
         state["pending_explore"]={"player_id":player["id"],"creature_id":creature_id,"creature_name":creature["name"],"card_id":revealed["instance_id"],"card":revealed};state["priority_player_id"]=player["id"]
         _log(state,f"{creature['name']} received a +1/+1 counter. {player['name']} may put {revealed['name']} into their graveyard.");return
     state["pending_zone_choice"]=None
+    state["pending_counter_choice"]=None
     state["pending_explore"]=None;state["pending_explore_queue"]=[]
 
 
@@ -1710,6 +1711,7 @@ def _target_kind(card: dict) -> str | None:
     if re.search(r"target (?:nonland permanent |nonland )?card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_card"
     if "target face-down permanent you control" in text:return "permanent"
     if "target artifact or enchantment" in text:return "artifact_or_enchantment"
+    if re.search(r"target artifact\b",text):return "artifact"
     if "target creature or planeswalker" in text:return "creature_or_planeswalker"
     if "target creature or vehicle" in text:return "creature_or_vehicle"
     if re.search(r"target player mills?", text): return "player"
@@ -1795,6 +1797,7 @@ def _targets(state: dict, caster_id: str, card: dict, ignore_target_protection:b
                 if opponent_target_only and player["id"] == caster_id: continue
                 if "target face-down permanent you control" in text and (player["id"]!=caster_id or not permanent.get("face_down")):continue
                 if "other than this creature" in text and permanent["instance_id"]==card.get("instance_id"):continue
+                if re.search(r"\bother target\b",text) and permanent["instance_id"]==card.get("instance_id"):continue
                 if "nonland permanent" in text and "Land" in permanent.get("type_line", ""): continue
                 if "noncreature permanent" in text and "Creature" in permanent.get("type_line", ""): continue
                 if "non-spacecraft" in text and "Spacecraft" in permanent.get("type_line",""):continue
@@ -1879,6 +1882,7 @@ def _pending_decision(state:dict)->bool:
     if state.get("pending_zethi_copies"):return True
     if state.get("pending_counter_payment"):return True
     if state.get("pending_zone_choice"):return True
+    if state.get("pending_counter_choice"):return True
     return bool(state.get("pending_rad_choice") or state.get("pending_top_card_choice") or state.get("pending_revealed_discard") or state.get("pending_optional_discard") or state.get("pending_optional_payment") or state.get("pending_tilonalli") or state.get("pending_creature_type") or state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_populate") or state.get("pending_bolster") or state.get("pending_discovery") or state.get("pending_madness") or state.get("pending_rebound") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
 
 
@@ -2026,6 +2030,11 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
         if action:actions.insert(0,action)
         return actions
     pending_discard=state.get("pending_discard")
+    pending_counter_choice=state.get("pending_counter_choice")
+    if pending_counter_choice:
+        if pending_counter_choice["player_id"]!=player_id:return []
+        common={"source_name":pending_counter_choice["source_name"],"target_id":pending_counter_choice["target_id"]}
+        return [{"type":"choose_counter_effect","counter_name":"+1/+1","amount":1,"label":"Put a +1/+1 counter",**common},{"type":"choose_counter_effect","counter_name":"charge","amount":2,"label":"Put two charge counters",**common},{"type":"concede"}]
     pending_zone=state.get("pending_zone_choice")
     if pending_zone:
         if pending_zone["player_id"]!=player_id:return []
@@ -2714,6 +2723,8 @@ def _resolve_spell(state: dict) -> None:
     target_player = next((player for player in state["players"] if player["id"] == target_id), None)
     target_owner = next((player for player in state["players"] if any(permanent["instance_id"] == target_id for permanent in player["battlefield"])), None)
     target = next((permanent for player in state["players"] for permanent in player["battlefield"] if permanent["instance_id"] == target_id), None)
+    if target and "your choice of a +1/+1 counter or two charge counters on up to one other target artifact" in effect_text:
+        state["pending_counter_choice"]={"player_id":caster["id"],"source_name":source_permanent.get("name",card["name"]) if source_permanent else card["name"],"target_id":target["instance_id"]};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} must choose counters for {target['name']}.");return
     if target_player and "target opponent reveals their hand" in effect_text and "you choose an instant or sorcery card from it" in effect_text:
         choices=[deepcopy(hand_card) for hand_card in target_player["hand"] if any(kind in hand_card.get("type_line","") for kind in ("Instant","Sorcery"))]
         if choices:state["pending_revealed_discard"]={"player_id":caster["id"],"opponent_id":target_player["id"],"opponent_name":target_player["name"],"source_name":card["name"],"cards":choices};state["priority_player_id"]=caster["id"];_log(state,f"{target_player['name']} revealed their hand; {caster['name']} must choose an instant or sorcery to discard.")
@@ -2951,6 +2962,11 @@ def _resolve_spell(state: dict) -> None:
         if target.get("temporary_type_line") is None:target["temporary_type_line"]=target.get("type_line","")
         parts=target["temporary_type_line"].split(" — ",1);subtypes=f"{parts[1]} {animate_land.group(3).title()}" if len(parts)>1 else animate_land.group(3).title();target["type_line"]=f"{parts[0]} Creature — {subtypes}"
         target["temporary_base_power"]=int(animate_land.group(1));target["temporary_base_toughness"]=int(animate_land.group(2));target["temporary_keywords"]=sorted(set(target.get("temporary_keywords",[]))|{"Haste"});_sync_city_blessing(state);_log(state,f"{target['name']} became a {animate_land.group(1)}/{animate_land.group(2)} {animate_land.group(3).title()} land creature with haste until end of turn.")
+    animate_artifact=re.search(r"(?:up to one other )?target artifact you control becomes an artifact creature with base power and toughness (\d+)/(\d+) and gains flying until end of turn",effect_text)
+    if animate_artifact and target and target_owner and "Artifact" in target.get("type_line","") and target.get("controller_id")==caster["id"]:
+        if target.get("temporary_type_line") is None:target["temporary_type_line"]=target.get("type_line","")
+        if "Creature" not in target.get("type_line",""):target["type_line"]=target["type_line"].replace("Artifact —","Artifact Creature —") if "Artifact —" in target["type_line"] else f"{target['type_line']} Creature"
+        target["temporary_base_power"]=int(animate_artifact.group(1));target["temporary_base_toughness"]=int(animate_artifact.group(2));target["temporary_keywords"]=sorted(set(target.get("temporary_keywords",[]))|{"Flying"});_sync_city_blessing(state);_log(state,f"{target['name']} became a {animate_artifact.group(1)}/{animate_artifact.group(2)} flying artifact creature until end of turn.")
     earthbend=_earthbend_value(rules_card,caster)
     if earthbend is not None and target and target_owner and "Land" in target.get("type_line","") and target["controller_id"]==caster["id"]:
         if not target.get("earthbent"):
@@ -3643,6 +3659,7 @@ def _speed_effect(text:str,player:dict)->str:
 
 
 def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owner: dict, dedupe:set[str]|None=None, sources_override:list[tuple[dict,dict]]|None=None) -> None:
+    if event=="begin_combat":event="beginning_combat"
     if event in {"earthbend","waterbend","firebend","airbend"}:
         event_owner["bent_this_turn"]=sorted(set(event_owner.get("bent_this_turn",[]))|{event})
     ordered_owners=sorted(state["players"],key=lambda owner:owner["id"]!=state.get("active_player_id"))
@@ -5014,6 +5031,12 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         player["library"].extend(cards[card_id] for card_id in reversed(top_ids));draw_after=int(pending.get("draw_after",0));state["pending_scry"]=None;state["priority_player_id"]=state["active_player_id"]
         if draw_after:_draw(state,player,draw_after)
         _log(state,f"{player['name']} kept {len(top_ids)} card(s) on top and put {len(away_ids)} in {'the graveyard' if action_type=='surveil' else 'the bottom of the library'}.")
+    elif action_type=="choose_counter_effect":
+        pending=state.get("pending_counter_choice") or {}
+        if pending.get("player_id")!=player_id or action.get("counter_name") not in {"+1/+1","charge"}:raise RuleViolation("There is no counter choice for this player")
+        target=next((card for owner in state["players"] for card in owner["battlefield"] if card["instance_id"]==pending["target_id"]),None)
+        if target:_add_counters(state,target,action["counter_name"],1 if action["counter_name"]=="+1/+1" else 2,player_id,"effect");_log(state,f"{player['name']} put {'a +1/+1 counter' if action['counter_name']=='+1/+1' else 'two charge counters'} on {target['name']}.")
+        state["pending_counter_choice"]=None;state["priority_player_id"]=state["active_player_id"]
     elif action_type in {"choose_zone_card","decline_zone_choice"}:
         pending=state.get("pending_zone_choice") or {}
         if pending.get("player_id")!=player_id:raise RuleViolation("There is no zone choice for this player")
