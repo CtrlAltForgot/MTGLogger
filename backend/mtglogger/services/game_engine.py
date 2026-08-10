@@ -1097,6 +1097,9 @@ def _queue_damage_event(state:dict,source:dict,target:dict,amount:int,combat:boo
 def _damage_player(state:dict,target:dict,amount:int,source:dict,combat:bool=False)->int:
     if amount<=0:return 0
     source_controller=_player(state,source.get("controller_id",source.get("owner_id",state["active_player_id"])))
+    if not combat:
+        doublers=sum("if a source you control would deal noncombat damage to a permanent or player" in _active_level_text(permanent).casefold() and "it deals double that damage instead" in _active_level_text(permanent).casefold() for permanent in source_controller["battlefield"])
+        amount*=2**doublers
     if source_controller.get("speed",0)>=4 and any("it deals that much damage plus 1 instead" in _active_level_text(permanent).casefold() for permanent in source_controller["battlefield"]):amount+=1
     if _player_protected_from(state,target,source):_log(state,f"Protection prevented {amount} damage to {target['name']}.");return 0
     source_text=(source.get("oracle_text") or "").casefold()
@@ -1110,9 +1113,12 @@ def _damage_player(state:dict,target:dict,amount:int,source:dict,combat:bool=Fal
     return amount
 
 
-def _damage_permanent(state:dict,target:dict,amount:int,source:dict)->int:
+def _damage_permanent(state:dict,target:dict,amount:int,source:dict,combat:bool=False)->int:
     if amount<=0:return 0
     source_controller=_player(state,source.get("controller_id",source.get("owner_id",state["active_player_id"])))
+    if not combat:
+        doublers=sum("if a source you control would deal noncombat damage to a permanent or player" in _active_level_text(permanent).casefold() and "it deals double that damage instead" in _active_level_text(permanent).casefold() for permanent in source_controller["battlefield"])
+        amount*=2**doublers
     if target.get("controller_id")!=source_controller["id"] and source_controller.get("speed",0)>=4 and any("it deals that much damage plus 1 instead" in _active_level_text(permanent).casefold() for permanent in source_controller["battlefield"]):amount+=1
     if _protected_from(target,source):
         _log(state,f"Protection prevented {amount} damage to {target['name']}.");return 0
@@ -1132,7 +1138,7 @@ def _damage_permanent(state:dict,target:dict,amount:int,source:dict)->int:
         if source_id not in sources:sources.append(source_id)
     if _has_keyword(source,"Deathtouch"):target["deathtouch_damage"]=True
     if _has_keyword(source,"Lifelink"):_gain_life(state,_player(state,source.get("controller_id",source.get("owner_id"))),amount)
-    _queue_damage_event(state,source,target,amount)
+    _queue_damage_event(state,source,target,amount,combat)
     return amount
 
 
@@ -4201,8 +4207,8 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 target_id=event_card.get("damage_event_target_id");target_kind=event_card.get("damage_event_target_kind");combat=bool(event_card.get("damage_event_combat"));source_name=re.escape(event_card.get("name","").casefold());source_self=source is event_card;controlled_source=event_card.get("controller_id")==owner["id"]
                 target_is_source=source.get("instance_id")==target_id;target_player=next((player for player in state["players"] if player["id"]==target_id),None);opponent_target=bool(target_player and target_player["id"]!=owner["id"])
                 destination_ok="any target" in lower or (target_kind=="player" and (("an opponent" in lower and opponent_target) or "a player" in lower))
-                dealt_by_source=source_self and destination_ok and re.search(rf"whenever (?:~|this (?:creature|permanent)|{source_name}) deals (?:combat |noncombat )?damage to (?:a player|an opponent|any target)",lower) is not None
-                controlled_dealt=source is not event_card and controlled_source and (("whenever a source you control deals damage" in lower) or (destination_ok and "creature" in event_card.get("type_line","").casefold() and re.search(r"whenever a creature you control deals (?:combat |noncombat )?damage to (?:a player|an opponent)",lower) is not None))
+                dealt_by_source=source_self and ((destination_ok and re.search(rf"whenever (?:~|this (?:creature|permanent)|{source_name}) deals (?:combat |noncombat )?damage to (?:a player|an opponent|any target)",lower) is not None) or re.search(rf"whenever (?:~|this (?:creature|permanent)|{source_name}) deals (?:combat |noncombat )?damage(?:,|$)",lower) is not None)
+                controlled_dealt=source is not event_card and controlled_source and ((re.search(r"whenever a source you control deals (?:combat |noncombat )?damage to (?:a player|an opponent)",lower) is not None and destination_ok) or (destination_ok and "creature" in event_card.get("type_line","").casefold() and re.search(r"whenever a creature you control deals (?:combat |noncombat )?damage to (?:a player|an opponent)",lower) is not None))
                 was_dealt=target_is_source and re.search(rf"whenever (?:~|this (?:creature|permanent)|{re.escape(source.get('name','').casefold())}) is dealt damage",lower) is not None
                 player_dealt=target_kind=="player" and ((target_player and target_player["id"]==owner["id"] and "whenever you are dealt damage" in lower) or (opponent_target and "whenever an opponent is dealt damage" in lower))
                 requires_noncombat="noncombat damage" in lower;requires_combat=not requires_noncombat and "combat damage" in lower;qualifier_ok=(not requires_noncombat or not combat) and (not requires_combat or combat)
@@ -4238,6 +4244,11 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
             if event=="counter_added" and re.search(r"\b(?:that many|that much|the same number)\b",effect,re.IGNORECASE):effect=re.sub(r"\b(?:that many|that much|the same number)\b",str(event_card.get("counter_event_amount",1)),effect,flags=re.IGNORECASE)
             if event=="discover" and "same value" in effect.casefold():effect=re.sub(r"discover again for the same value",f"discover {event_owner.get('discover_event_value',0)}",effect,flags=re.IGNORECASE)
             if event=="energy_gain":effect=re.sub(r"\bthat (?:many|much)\b",str(event_owner.get("energy_event_amount",1)),effect,flags=re.IGNORECASE)
+            if event=="damage" and event_card:
+                damage_amount=str(event_card.get("damage_event_amount",0))
+                effect=re.sub(r"\bthat amount of damage\b",f"{damage_amount} damage",effect,flags=re.IGNORECASE)
+                effect=re.sub(r"\bthat amount\b",damage_amount,effect,flags=re.IGNORECASE)
+                if event_card.get("damage_event_target_kind")=="player":effect=re.sub(r"\bthat player controls\b","an opponent controls",effect,flags=re.IGNORECASE)
             if event in {"earthbend","waterbend","firebend","airbend"} and "whenever you waterbend, earthbend, firebend, or airbend" in lower:effect=re.split(r"whenever you waterbend, earthbend, firebend, or airbend,",clause,flags=re.IGNORECASE)[1].strip()
             if event=="enters" and re.match(r"if it was kicked,",effect,re.IGNORECASE):effect=effect.split(",",1)[1].strip()
             if event=="leaves" and "transform" in effect and "next upkeep" in effect:
@@ -4297,7 +4308,7 @@ def _combat_damage(state: dict) -> None:
     originally_blocked = set(state["combat"]["blocks"].values())
     def hit_defender(creature:dict, amount:int,target_id:str,trigger_dedupe:set[str])->None:
         planeswalker=next((card for card in defender["battlefield"] if card["instance_id"]==target_id and "Planeswalker" in card.get("type_line","")),None)
-        if planeswalker:_damage_permanent(state,planeswalker,amount,creature)
+        if planeswalker:_damage_permanent(state,planeswalker,amount,creature,True)
         elif not _damage_player(state,defender,amount,creature,True):return
         toxic=_toxic_value(creature)
         if not planeswalker and amount>0 and toxic:_add_counters(state,defender,"poison",toxic,attacker["id"],"toxic")
@@ -4330,13 +4341,13 @@ def _combat_damage(state: dict) -> None:
                 hit_defender(creature,power,attack_target,trigger_dedupe);continue
             remaining=power
             for blocker in blockers:
-                _,toughness=_parse_stats(blocker,state);lethal=1 if _has_keyword(creature,"Deathtouch") else max(1,toughness-blocker.get("damage",0));assigned=min(remaining,lethal);dealt=_damage_permanent(state,blocker,assigned,creature);remaining-=assigned
+                _,toughness=_parse_stats(blocker,state);lethal=1 if _has_keyword(creature,"Deathtouch") else max(1,toughness-blocker.get("damage",0));assigned=min(remaining,lethal);dealt=_damage_permanent(state,blocker,assigned,creature,True);remaining-=assigned
                 if dealt and _has_keyword(creature,"Deathtouch"):deathtouch_hit.add(blocker["instance_id"])
             if remaining and _has_keyword(creature,"Trample"):hit_defender(creature,remaining,attack_target,trigger_dedupe)
         for blocker_id,attacker_id in state["combat"]["blocks"].items():
             blocker,creature=battlefield.get(blocker_id),battlefield.get(attacker_id)
             if not blocker or not creature or not strikes(blocker):continue
-            amount=max(0,_parse_stats(blocker,state)[0]);dealt=_damage_permanent(state,creature,amount,blocker)
+            amount=max(0,_parse_stats(blocker,state)[0]);dealt=_damage_permanent(state,creature,amount,blocker,True)
             if dealt and _has_keyword(blocker,"Deathtouch"):deathtouch_hit.add(creature["instance_id"])
         for owner in (attacker,defender):
             for creature in list(owner["battlefield"]):
