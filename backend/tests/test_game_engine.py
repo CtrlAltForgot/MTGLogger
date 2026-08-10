@@ -2520,3 +2520,17 @@ def test_legacy_evasion_keywords_enforce_pairwise_block_legality():
     assert not _can_block_pair(state,creature("nonbasic-walker",["Nonbasic landwalk"]),ordinary)
     player["battlefield"].append({**card(2294,"Dream Thrush","Creature — Bird","{1}{U}","1","1"),"oracle_text":"All lands are Islands.","instance_id":"dream-thrush","owner_id":"player","controller_id":"player"})
     assert not _can_block_pair(state,creature("islandwalker",["Islandwalk"]),ordinary)
+
+
+def test_persist_and_undying_return_from_the_graveyard_with_their_counters():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player")
+    persist={**card(2300,"Kitchen Finks","Creature — Ouphe","{1}{G/W}{G/W}","3","2"),"oracle_text":"Persist","keywords":["Persist"],"instance_id":"kitchen-finks","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].append(persist);_leave_battlefield(state,player,persist,"graveyard");assert state["stack"][-1]["kind"]=="revive_trigger" and any(card["instance_id"]=="kitchen-finks" for card in player["graveyard"])
+    state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");returned=next(card for card in player["battlefield"] if card["instance_id"]=="kitchen-finks");assert returned["counters"]=={"-1/-1":1} and returned["summoning_sick"]
+    undying={**card(2301,"Young Wolf","Creature — Wolf","{G}","1","1"),"oracle_text":"Undying","keywords":["Undying"],"instance_id":"young-wolf","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["battlefield"].append(undying);_leave_battlefield(state,player,undying,"graveyard");state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");returned=next(card for card in player["battlefield"] if card["instance_id"]=="young-wolf");assert returned["counters"]=={"+1/+1":1}
+
+
+def test_persist_and_undying_require_the_counter_to_be_absent_and_the_card_to_remain_in_graveyard():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
+    blocked={**card(2310,"Blocked Finks","Creature — Ouphe","","3","2"),"oracle_text":"Persist","keywords":["Persist"],"instance_id":"blocked-finks","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{"-1/-1":1},"summoning_sick":False};player["battlefield"].append(blocked);before=len(state["stack"]);_leave_battlefield(state,player,blocked,"graveyard");assert len(state["stack"])==before
+    stolen={**card(2311,"Stolen Geist","Creature — Spirit","","2","2"),"oracle_text":"Undying","keywords":["Undying"],"instance_id":"stolen-geist","owner_id":"player","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False};bot["battlefield"].append(stolen);_leave_battlefield(state,bot,stolen,"graveyard");assert stolen in player["graveyard"] and state["stack"][-1]["controller_id"]=="bot"
+    player["graveyard"].remove(stolen);player["exile"].append(stolen);state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");assert any(card["instance_id"]=="stolen-geist" for card in player["exile"]) and not any(card["instance_id"]=="stolen-geist" for card in player["battlefield"])

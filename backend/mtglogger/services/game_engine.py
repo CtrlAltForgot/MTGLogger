@@ -2033,6 +2033,10 @@ def _resolve_spell(state: dict) -> None:
         candidate=next((candidate for candidate in caster["graveyard"] if candidate["instance_id"]==item.get("source_id")),None)
         if not candidate:_log(state,f"{card['name']} did not resolve because the card left the graveyard.");return
         _leave_graveyard(state,caster,[candidate]);candidate["summoning_sick"]=True;candidate.setdefault("temporary_keywords",[]).append("Haste");candidate["unearthed"]=True;candidate["unearth_controller_id"]=caster["id"];_enter_battlefield(state,caster,[candidate],"graveyard");_log(state,f"{candidate['name']} returned with haste. It will be exiled at the beginning of the next end step.");return
+    if item.get("kind")=="revive_trigger":
+        zone_owner=_player(state,item.get("owner_id",caster["id"]));candidate=next((candidate for candidate in zone_owner["graveyard"] if candidate["instance_id"]==item.get("source_id")),None)
+        if not candidate:_log(state,f"{card['name']} resolved, but the card was no longer in its owner's graveyard.");return
+        _leave_graveyard(state,zone_owner,[candidate]);candidate["controller_id"]=zone_owner["id"];candidate["summoning_sick"]=True;candidate["counters"]={};counter="-1/-1" if item.get("revive_keyword")=="persist" else "+1/+1";candidate["counters"][counter]=1;_enter_battlefield(state,zone_owner,[candidate],"graveyard");_log(state,f"{candidate['name']} returned with a {counter} counter from {item.get('revive_keyword')}.");return
     if item.get("kind")=="unearth_exile_trigger":
         permanent=next((permanent for owner in state["players"] for permanent in owner["battlefield"] if permanent["instance_id"]==item.get("source_id") and permanent.get("unearthed")),None)
         if permanent:
@@ -2407,6 +2411,10 @@ def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str, t
     for attachment_owner,attachment in attachments:
         _detach(state,attachment,restore_control=False)
         if "Aura" in attachment.get("type_line",""):_leave_battlefield(state,attachment_owner,attachment,"graveyard")
+    revive_keyword=None
+    if destination=="graveyard" and "Creature" in card.get("type_line","") and not card.get("token"):
+        if _has_keyword(card,"Persist") and card.get("counters",{}).get("-1/-1",0)<=0:revive_keyword="persist"
+        elif _has_keyword(card,"Undying") and card.get("counters",{}).get("+1/+1",0)<=0:revive_keyword="undying"
     if card in owner["battlefield"]: owner["battlefield"].remove(card)
     earthbend_controller=card.get("earthbend_controller") if destination in {"graveyard","exile"} else None
     _queue_triggers(state,"leaves",card,owner,trigger_dedupe,trigger_sources)
@@ -2436,6 +2444,8 @@ def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str, t
     if destination=="exile":card["controller_id"]=previous_controller;_put_into_exile(state,zone_owner,[card],"battlefield",exile_actor_id,trigger_dedupe,exile_sources,exile_batch_size);card["controller_id"]=zone_owner["id"]
     else:zone_owner[destination].append(card)
     _queue_commander_zone_choice(state,zone_owner,card,destination)
+    if revive_keyword and destination=="graveyard":
+        ability={"name":f"{card['name']} — {revive_keyword.title()}","oracle_text":f"Return {card['name']} to the battlefield under its owner's control with a {'-1/-1' if revive_keyword=='persist' else '+1/+1'} counter on it.","type_line":"Ability","mana_cost":""};state["stack"].append({"id":_id(),"kind":"revive_trigger","card":ability,"controller_id":previous_controller,"owner_id":zone_owner["id"],"source_id":card["instance_id"],"revive_keyword":revive_keyword});_log(state,f"{card['name']}'s {revive_keyword} ability triggered.")
     if earthbend_controller:
         if destination=="exile":_leave_exile(state,zone_owner,[card])
         else:zone_owner[destination].remove(card)
