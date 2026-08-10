@@ -274,6 +274,9 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
     if "choose_creature_type" in by_type:
         action=by_type["choose_creature_type"][0];bot=next(player for player in state["players"] if player["id"]=="bot");suggestions=action.get("suggested_types") or ["Human"]
         choice=max(suggestions,key=lambda subtype:sum(re.search(rf"\b{re.escape(subtype)}\b",card.get("type_line",""),re.IGNORECASE) is not None for zone in (bot["hand"],bot["battlefield"],bot["graveyard"],bot.get("exile",[]),bot.get("command",[]),bot.get("library",[])) for card in zone));return {"type":"choose_creature_type","creature_type":choice}
+    if "pay_tilonalli" in by_type or "decline_tilonalli" in by_type:
+        payment=by_type.get("pay_tilonalli",[None])[0]
+        return {"type":"pay_tilonalli","x_value":payment["x_max"]} if payment and payment.get("x_max",0)>0 and difficulty!="beginner" else by_type["decline_tilonalli"][0]
     if "choose_dungeon_room" in by_type:
         rooms={action.get("room"):action for action in by_type["choose_dungeon_room"]};bot=next(player for player in state["players"] if player["id"]=="bot")
         preferred="Lost Well" if len(bot["hand"])<4 else "Forge" if any("Creature" in card.get("type_line","") for card in bot["battlefield"]) else "Lost Well"

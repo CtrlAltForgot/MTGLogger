@@ -1703,7 +1703,7 @@ def _multiplayer(state: dict) -> bool:
 def _pending_decision(state:dict)->bool:
     if state.get("pending_explore"):return True
     if state.get("pending_connive"):return True
-    return bool(state.get("pending_creature_type") or state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_populate") or state.get("pending_bolster") or state.get("pending_discovery") or state.get("pending_madness") or state.get("pending_rebound") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
+    return bool(state.get("pending_tilonalli") or state.get("pending_creature_type") or state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_populate") or state.get("pending_bolster") or state.get("pending_discovery") or state.get("pending_madness") or state.get("pending_rebound") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
 
 
 def _split_second_on_stack(state:dict)->bool:
@@ -1745,6 +1745,13 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
     if state["status"] == "complete":
         return []
     player = _player(state, player_id)
+    pending_tilonalli=state.get("pending_tilonalli")
+    if pending_tilonalli:
+        if pending_tilonalli["player_id"]!=player_id:return []
+        actions=[{"type":"decline_tilonalli","source_name":pending_tilonalli["source_name"],"label":"Create no Elementals"},{"type":"concede"}]
+        maximum=_maximum_x(player,{"mana_cost":"{X}{R}"})
+        if _can_pay(player,{"mana_cost":"{R}"}):actions.insert(0,{"type":"pay_tilonalli","source_name":pending_tilonalli["source_name"],"x_min":0,"x_max":maximum,"label":f"Pay {{X}}{{R}} · create up to {maximum} Elementals"})
+        return actions
     pending_types=state.get("pending_creature_type") or []
     if pending_types:
         pending=pending_types[0]
@@ -2273,6 +2280,16 @@ def _resolve_spell(state: dict) -> None:
         if permanent:
             owner=next(owner for owner in state["players"] if permanent in owner["battlefield"]);_leave_battlefield(state,owner,permanent,"graveyard");_log(state,f"{permanent['name']} was sacrificed after its temporary population.")
         return
+    if item.get("kind")=="tilonalli_exile_trigger":
+        tokens=[permanent for owner in state["players"] for permanent in list(owner["battlefield"]) if permanent["instance_id"] in set(item.get("token_ids",[]))]
+        if caster.get("city_blessing"):
+            for token in tokens:token.pop("tilonalli_exile_group",None)
+            _log(state,f"{caster['name']}'s {len(tokens)} Elemental token(s) remained because of the city's blessing.")
+        else:
+            for token in tokens:
+                owner=next(owner for owner in state["players"] if token in owner["battlefield"]);_leave_battlefield(state,owner,token,"exile",exile_actor_id=caster["id"])
+            _log(state,f"{len(tokens)} Elemental token(s) were exiled by Tilonalli's Summoner.")
+        return
     if card.get("growth_mechanic"):
         permanent=next((permanent for owner in state["players"] for permanent in owner["battlefield"] if permanent["instance_id"]==item.get("source_id")),None);mechanic=card["growth_mechanic"]
         if not permanent:_log(state,f"{card['name']} resolved, but its source was no longer on the battlefield.");return
@@ -2414,6 +2431,8 @@ def _resolve_spell(state: dict) -> None:
     target_stack_item = next((entry for entry in state["stack"] if entry["id"] == target_id), None)
     graveyard_owner=next((player for player in state["players"] if any(graveyard_card["instance_id"]==target_id for graveyard_card in player["graveyard"])),None)
     graveyard_target=next((graveyard_card for player in state["players"] for graveyard_card in player["graveyard"] if graveyard_card["instance_id"]==target_id),None)
+    if re.search(r"you may pay \{x\}\{r\}",effect_text) and "create x 1/1 red elemental creature tokens" in effect_text:
+        state["pending_tilonalli"]={"player_id":caster["id"],"source_name":source_permanent.get("name",card["name"]) if source_permanent else card["name"],"source_id":item.get("source_id"),"defender_id":state.get("combat",{}).get("attack_targets",{}).get(item.get("source_id"),opponent(state,caster["id"])["id"])};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} may pay {{X}}{{R}} for {state['pending_tilonalli']['source_name']}.");return
     if "take an extra turn after this one" in effect_text:
         state.setdefault("extra_turns",[]).append(caster["id"]);_log(state,f"{caster['name']} will take an extra turn after this one.");return
     if re.search(r"for each token you control that entered (?:the battlefield )?this turn, create a token that's a copy of it",effect_text) and re.search(r"create a 1/1 white cat creature token",effect_text):
@@ -2999,7 +3018,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
         text = "\n".join([source.get("oracle_text") or "",*(source.get("temporary_backup_rules") or [])])
         raw_clauses = re.split(r"(?<=[.!])\s+|\n", text);clauses=[]
         for clause in raw_clauses:
-            continuation=bool(clauses and (re.match(r"(?:then if|if you do|if you have the city's blessing),?\b",clause.strip(),re.IGNORECASE) or ("reveal the top card of your library and put that card into your hand" in clauses[-1].casefold() and re.match(r"each opponent loses x life\b",clause.strip(),re.IGNORECASE))))
+            continuation=bool(clauses and (re.match(r"(?:then if|if you do|if you have the city's blessing),?\b",clause.strip(),re.IGNORECASE) or ("create x 1/1 red elemental creature tokens" in clauses[-1].casefold() and re.match(r"at the beginning of the next end step, exile those tokens",clause.strip(),re.IGNORECASE)) or ("reveal the top card of your library and put that card into your hand" in clauses[-1].casefold() and re.match(r"each opponent loses x life\b",clause.strip(),re.IGNORECASE))))
             if continuation:clauses[-1]=f"{clauses[-1]} {clause.strip()}"
             else:clauses.append(clause)
         for clause in clauses:
@@ -3462,6 +3481,9 @@ def _advance_turn_phase(state: dict) -> None:
                 permanent["unearth_end_triggered"]=True;controller=_player(state,permanent.get("unearth_controller_id",permanent["controller_id"]));ability_card={**permanent,"name":f"{permanent['name']} — Unearth exile","type_line":"Ability","mana_cost":"","oracle_text":f"Exile {permanent['name']}."};state["stack"].append({"id":_id(),"kind":"unearth_exile_trigger","card":ability_card,"controller_id":controller["id"],"source_id":permanent["instance_id"]});_log(state,f"{permanent['name']}'s unearth exile trigger was put on the stack.")
             for permanent in [card for owner in state["players"] for card in owner["battlefield"] if card.get("populate_sacrifice_turn")==state["turn"]]:
                 permanent.pop("populate_sacrifice_turn",None);controller=_player(state,permanent["controller_id"]);ability={"name":f"{permanent['name']} — Populate sacrifice","type_line":"Ability","mana_cost":"","oracle_text":f"Sacrifice {permanent['name']}."};state["stack"].append({"id":_id(),"kind":"populate_sacrifice_trigger","card":ability,"controller_id":controller["id"],"source_id":permanent["instance_id"]});_log(state,f"{permanent['name']}'s population sacrifice triggered.")
+            tilonalli_groups={card.get("tilonalli_exile_group") for owner in state["players"] for card in owner["battlefield"] if card.get("tilonalli_exile_group")}
+            for group in tilonalli_groups:
+                tokens=[card for owner in state["players"] for card in owner["battlefield"] if card.get("tilonalli_exile_group")==group];controller=_player(state,tokens[0]["owner_id"]);[token.pop("tilonalli_exile_group",None) for token in tokens];ability={"name":"Tilonalli's Summoner — delayed exile","type_line":"Ability","mana_cost":"","oracle_text":"Exile those Elemental tokens unless you have the city's blessing."};state["stack"].append({"id":_id(),"kind":"tilonalli_exile_trigger","card":ability,"controller_id":controller["id"],"token_ids":[token["instance_id"] for token in tokens]});_log(state,f"Tilonalli's Summoner's delayed exile triggered for {len(tokens)} token(s).")
             for permanent in [card for owner in state["players"] for card in owner["battlefield"] if card.get("dashed") and not card.get("dash_return_triggered")]:
                 permanent["dash_return_triggered"]=True;controller=_player(state,permanent["controller_id"]);ability_card={"name":f"{permanent['name']} — Dash return","type_line":"Ability","mana_cost":"","oracle_text":f"Return {permanent['name']} to its owner's hand."};state["stack"].append({"id":_id(),"kind":"dash_return_trigger","card":ability_card,"controller_id":controller["id"],"source_id":permanent["instance_id"]});_log(state,f"{permanent['name']}'s dash return trigger was put on the stack.")
             if state.get("monarch_id")==active["id"]:
@@ -3483,7 +3505,20 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
     manual_actions = {"adjust_life", "add_counter", "create_token", "move_zone"}
     if action_type not in allowed and action_type not in manual_actions:
         raise RuleViolation(f"{action_type} is not legal right now")
-    if action_type=="choose_creature_type":
+    if action_type in {"pay_tilonalli","decline_tilonalli"}:
+        pending=state.get("pending_tilonalli") or {}
+        if pending.get("player_id")!=player_id:raise RuleViolation("There is no Tilonalli payment decision for this player")
+        if action_type=="pay_tilonalli":
+            x_value=int(action.get("x_value") or 0);maximum=_maximum_x(player,{"mana_cost":"{X}{R}"})
+            if not 0<=x_value<=maximum:raise RuleViolation("Choose a payable X value for Tilonalli's Summoner")
+            _pay_mana(state,player,{"mana_cost":"{X}{R}"},x_value=x_value);group=_id();tokens=[]
+            for _ in range(x_value):tokens.append({"instance_id":_id(),"scryfall_id":"token-elemental","name":"Elemental Token","image_url":None,"type_line":"Token Creature — Elemental","oracle_text":"","mana_cost":"","mana_value":0,"colors":["R"],"power":"1","toughness":"1","owner_id":player_id,"controller_id":player_id,"tapped":True,"damage":0,"counters":{},"summoning_sick":True,"token":True,"keywords":[],"tilonalli_exile_group":group})
+            _enter_battlefield(state,player,tokens,"token");defender_id=pending.get("defender_id") or opponent(state,player_id)["id"]
+            for token in tokens:state["combat"]["attackers"].append(token["instance_id"]);state["combat"]["attack_targets"][token["instance_id"]]=defender_id
+            _log(state,f"{player['name']} paid {{X}}{{R}} with X={x_value} and created {x_value} tapped and attacking Elemental token(s).")
+        else:_log(state,f"{player['name']} declined to pay for {pending.get('source_name') or 'Tilonalli Summoner'}.")
+        state["pending_tilonalli"]=None;state["priority_player_id"]=state["active_player_id"]
+    elif action_type=="choose_creature_type":
         pending_list=state.get("pending_creature_type") or [];pending=pending_list[0] if pending_list else None;choice=" ".join(str(action.get("creature_type") or "").strip().split())
         if not pending or pending["player_id"]!=player_id:raise RuleViolation("There is no creature-type choice for this player")
         if not re.fullmatch(r"[A-Za-z][A-Za-z' -]{0,39}",choice):raise RuleViolation("Choose a valid creature type")
