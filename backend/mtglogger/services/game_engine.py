@@ -719,6 +719,16 @@ def _reconfigure_costs(card:dict)->list[dict]:
     return result
 
 
+def _transmute_cost(card:dict)->str|None:
+    match=re.search(r"(?:^|\n)Transmute\s+((?:\{[^}]+\})+)",card.get("oracle_text") or "",re.IGNORECASE)
+    return match.group(1).upper() if match else None
+
+
+def _mana_value(card:dict)->int:
+    value=card.get("mana_value")
+    return int(value) if value is not None else _prototype_mana_value(card.get("mana_cost") or "")
+
+
 def _crew_value(card:dict)->int|None:
     match=re.search(r"(?:^|\n)Crew\s+(\d+)\b",card.get("oracle_text") or "",re.IGNORECASE)
     return int(match.group(1)) if match else None
@@ -3156,6 +3166,9 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
                 ability=_ninjutsu_ability(ninja)
                 if ability and _can_pay(player,{"mana_cost":ability["mana_cost"]}):actions.append({"type":"ninjutsu","card_id":ninja["instance_id"],"source":source,"mana_cost":ability["mana_cost"],"targets":targets,"label":f"{'Commander ' if ability['commander'] else ''}Ninjutsu {ninja['name']} · {ability['mana_cost']} · return an unblocked attacker"})
     if active and main and not state["stack"]:
+        for candidate in player["hand"]:
+            transmute_cost=_transmute_cost(candidate)
+            if transmute_cost and _can_pay(player,{"mana_cost":transmute_cost}):actions.append({"type":"transmute","card_id":candidate["instance_id"],"mana_cost":transmute_cost,"mana_value":_mana_value(candidate),"label":f"Transmute {candidate['name']} · {transmute_cost} · find mana value {_mana_value(candidate)}"})
         for permanent in player["battlefield"]:
             craft=_craft_ability(permanent)
             if not craft or not _can_pay(player,{"mana_cost":craft["mana_cost"]}):continue
@@ -3416,6 +3429,8 @@ def _resolve_spell(state: dict) -> None:
         target=next((permanent for permanent in caster["battlefield"] if permanent["instance_id"]==item.get("target_id") and "Creature" in permanent.get("type_line","")),None)
         if not target or _has_keyword(target,"Shroud") or _protected_from(target,equipment):_log(state,f"{card['name']} did not resolve because its target was no longer legal.");return
         _attach(state,equipment,target);_log(state,f"{caster['name']} reconfigured {equipment['name']} onto {target['name']}; it is no longer a creature while attached.");return
+    if item.get("kind")=="transmute_ability":
+        mana_value=int(item.get("mana_value") or 0);eligible=[candidate["instance_id"] for candidate in caster["library"] if _mana_value(candidate)==mana_value];state["pending_library_search"]={"player_id":caster["id"],"source_name":item.get("source_name",card["name"]),"card_ids":eligible,"min_amount":0,"max_amount":min(1,len(eligible)),"destination":"hand","label":f"Transmute — choose a mana value {mana_value} card"};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} may reveal a mana value {mana_value} card for Transmute, then shuffle.");return
     if item.get("kind")=="crew_ability":
         vehicle=next((permanent for permanent in caster["battlefield"] if permanent["instance_id"]==item.get("source_id") and _crew_value(permanent) is not None),None)
         if not vehicle:_log(state,f"{card['name']} did not resolve because its Vehicle left the battlefield.");return
@@ -6272,6 +6287,12 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="station" and entry["card_id"]==action.get("card_id")),None)
         if not permanent or not available or len(selected)!=1 or selected[0] not in available["cost_options"]:raise RuleViolation("Choose one other untapped creature to station this permanent")
         crew=next(card for card in player["battlefield"] if card["instance_id"]==selected[0]);amount=max(0,_parse_stats(crew,state)[0]);_ensure_land_play_tracking(player);_set_tapped(state,[crew],True,player_id,"station");_add_counters(state,permanent,"charge",amount,player_id,"station");_sync_station_state(permanent);_refresh_land_plays(state,player);state["consecutive_passes"]=0;state["pending_phase_advance"]=False;_log(state,f"{player['name']} tapped {crew['name']} to station {permanent['name']} for {amount} charge counter(s).")
+    elif action_type == "transmute":
+        card=next((candidate for candidate in player["hand"] if candidate["instance_id"]==action.get("card_id")),None);available=next((entry for entry in legal_actions(state,player_id) if entry["type"]=="transmute" and entry["card_id"]==action.get("card_id")),None)
+        if not card or not available:raise RuleViolation("That card cannot be transmuted now")
+        _pay_mana(state,player,{"mana_cost":available["mana_cost"]});_discard_cards(state,player,[card]);ability={"name":f"{card['name']} — Transmute","oracle_text":f"Search your library for a card with mana value {available['mana_value']}, reveal it, put it into your hand, then shuffle.","type_line":"Ability","mana_cost":""};state["stack"].append({"id":_id(),"kind":"transmute_ability","card":ability,"controller_id":player_id,"source_id":card["instance_id"],"source_name":card["name"],"mana_value":available["mana_value"]});state["consecutive_passes"]=0;state["pending_phase_advance"]=False
+        if _multiplayer(state) or not allow_direct_resolution:state["priority_player_id"]=opponent(state,player_id)["id"]
+        _log(state,f"{player['name']} discarded {card['name']} to activate Transmute for mana value {available['mana_value']}.")
     elif action_type == "reconfigure":
         cost_index=int(action.get("cost_index") or 0);requested_detach=bool(action.get("detach"));available=next((entry for entry in legal_actions(state,player_id) if entry["type"]=="reconfigure" and entry["card_id"]==action.get("card_id") and entry["cost_index"]==cost_index and bool(entry.get("detach"))==requested_detach),None);target_id=action.get("target_id")
         if not available or not requested_detach and target_id not in {target["id"] for target in available.get("targets",[])}:raise RuleViolation("That Reconfigure action is no longer legal")
