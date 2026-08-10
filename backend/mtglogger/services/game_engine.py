@@ -2107,6 +2107,14 @@ def _fight_target_steps(state:dict,caster_id:str,card:dict,source:dict|None=None
 def _multi_target_step_variants(state:dict,caster_id:str,card:dict)->list[list[dict]]:
     """Build deliberate, distinct target steps for common fixed and up-to-N effects."""
     text=(card.get("oracle_text") or "").casefold();words={"two":2,"three":3,"four":4}
+    if "exchange control of two target nonland permanents that share a card type" in text:
+        candidates=[candidate for owner in state["players"] for candidate in owner["battlefield"] if "Land" not in candidate.get("type_line","") and not _has_keyword(candidate,"Shroud") and not (owner["id"]!=caster_id and _has_keyword(candidate,"Hexproof")) and not _protected_from(candidate,card)]
+        pairs=[]
+        for first,second in combinations(candidates,2):
+            first_types={kind for kind in _DELIRIUM_CARD_TYPES if kind not in {"Instant","Land","Sorcery"} and re.search(rf"\b{kind}\b",first.get("type_line",""),re.IGNORECASE)};second_types={kind for kind in _DELIRIUM_CARD_TYPES if kind not in {"Instant","Land","Sorcery"} and re.search(rf"\b{kind}\b",second.get("type_line",""),re.IGNORECASE)}
+            if first["controller_id"]==second["controller_id"] or not first_types&second_types:continue
+            pairs.append([{"label":f"Exchange {first['name']}","targets":[{"id":first["instance_id"],"name":first["name"],"kind":"permanent","controller_id":first["controller_id"]}]},{"label":f"with {second['name']}","targets":[{"id":second["instance_id"],"name":second["name"],"kind":"permanent","controller_id":second["controller_id"]}],"distinct":True}])
+        return pairs
     if "destroy up to one target artifact, up to one target creature, and up to one target enchantment" in text:
         steps=[]
         for kind in ("artifact","creature","enchantment"):
@@ -3113,8 +3121,8 @@ def _resolve_spell(state: dict) -> None:
     if multi_damage_target:targeting_card={**targeting_card,"oracle_text":f"This spell deals {multi_damage_target.group(1)} damage to any target."}
     target_kind=_target_kind(targeting_card);target_id=item.get("target_id")
     source_permanent=next((permanent for player in state["players"] for permanent in player["battlefield"] if permanent["instance_id"]==item.get("source_id")),None);target_ids=item.get("target_ids") or [];fight_steps=_fight_target_steps(state,caster["id"],rules_card,source_permanent);valid_fight_ids=[target_value for position,target_value in enumerate(target_ids) if position<len(fight_steps) and target_value in {target["id"] for target in fight_steps[position]["targets"]}]
-    rules_text=(rules_card.get("oracle_text") or "").casefold();convert_to_slime="destroy up to one target artifact, up to one target creature, and up to one target enchantment" in rules_text;crop_sigil_return="return up to one target creature card and up to one target land card from your graveyard to your hand" in rules_text;castigator_shuffle="shuffle up to three target cards from your graveyard into your library" in rules_text;flytrap_distribution="distribute two +1/+1 counters among one or two target creatures" in rules_text
-    valid_pool={permanent["instance_id"] for owner in state["players"] for permanent in owner["battlefield"] if not flytrap_distribution or "Creature" in permanent.get("type_line","")} if convert_to_slime or flytrap_distribution else {candidate["instance_id"] for candidate in caster["graveyard"] if castigator_shuffle or any(kind in candidate.get("type_line","") for kind in ("Creature","Land"))} if crop_sigil_return or castigator_shuffle else {target["id"] for target in _targets(state,caster["id"],targeting_card)}
+    rules_text=(rules_card.get("oracle_text") or "").casefold();convert_to_slime="destroy up to one target artifact, up to one target creature, and up to one target enchantment" in rules_text;crop_sigil_return="return up to one target creature card and up to one target land card from your graveyard to your hand" in rules_text;castigator_shuffle="shuffle up to three target cards from your graveyard into your library" in rules_text;flytrap_distribution="distribute two +1/+1 counters among one or two target creatures" in rules_text;control_exchange="exchange control of two target nonland permanents that share a card type" in rules_text
+    valid_pool={permanent["instance_id"] for owner in state["players"] for permanent in owner["battlefield"] if (not flytrap_distribution or "Creature" in permanent.get("type_line","")) and (not control_exchange or "Land" not in permanent.get("type_line",""))} if convert_to_slime or flytrap_distribution or control_exchange else {candidate["instance_id"] for candidate in caster["graveyard"] if castigator_shuffle or any(kind in candidate.get("type_line","") for kind in ("Creature","Land"))} if crop_sigil_return or castigator_shuffle else {target["id"] for target in _targets(state,caster["id"],targeting_card)}
     valid_multi_ids=[target_value for target_value in target_ids if target_value in valid_pool] if target_ids and not fight_steps else []
     if item.get("kind")=="trigger" and source_permanent and "sacrifice it unless it escaped" in (card.get("oracle_text") or "").casefold():
         if not source_permanent.get("escaped"):
@@ -3135,6 +3143,11 @@ def _resolve_spell(state: dict) -> None:
     if valid_multi_ids:target_ids=valid_multi_ids
     is_permanent_spell = item.get("kind", "spell") in {"spell","storm_copy"} and any(kind in card.get("type_line", "") for kind in ("Creature", "Artifact", "Enchantment", "Planeswalker", "Battle"))
     effect_text = "" if is_permanent_spell and re.search(r"\b(?:when|whenever|at the beginning)\b", text) else text
+    if "exchange control of two target nonland permanents that share a card type" in effect_text and len(target_ids)==2:
+        first=next((candidate for owner in state["players"] for candidate in owner["battlefield"] if candidate["instance_id"]==target_ids[0]),None);second=next((candidate for owner in state["players"] for candidate in owner["battlefield"] if candidate["instance_id"]==target_ids[1]),None)
+        if first and second:
+            first_controller=_player(state,first["controller_id"]);second_controller=_player(state,second["controller_id"]);_change_control(state,first,second_controller);_change_control(state,second,first_controller);_log(state,f"{first_controller['name']} and {second_controller['name']} exchanged control of {first['name']} and {second['name']}.")
+        effect_text=""
     if source_permanent and "if this creature has two or fewer judgment counters on it, put a judgment counter on it" in effect_text:
         if source_permanent.get("counters",{}).get("judgment",0)<=2:_add_counters(state,source_permanent,"judgment",1,caster["id"],"upkeep")
         _log(state,f"{source_permanent['name']} has {source_permanent.get('counters',{}).get('judgment',0)} judgment counter(s).");return
@@ -5408,7 +5421,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if (_multiplayer(state) or not allow_direct_resolution) and not state.get("pending_ward"):state["priority_player_id"]=opponent(state,player_id)["id"]
         _log(state,f"{player['name']} channeled {card['name']}{f' with X={x_value}' if has_x else ''}.")
     elif action_type in {"cast_disturb","cast_adventure","cast_after_adventure"}:
-        requested_target_ids=action.get("target_ids") or [];available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]==action_type and entry["card_id"]==action.get("card_id") and (entry.get("target_count") is None or entry["target_count"]==len(requested_target_ids))),None)
+        requested_target_ids=action.get("target_ids") or [];available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]==action_type and entry["card_id"]==action.get("card_id") and (entry.get("target_count") is None or entry["target_count"]==len(requested_target_ids)) and (not entry.get("target_steps") or all(position<len(requested_target_ids) and requested_target_ids[position] in {target["id"] for target in step["targets"]} for position,step in enumerate(entry["target_steps"])))),None)
         source_zone="graveyard" if action_type=="cast_disturb" else "hand" if action_type=="cast_adventure" else "exile";original=next((candidate for candidate in player[source_zone] if candidate["instance_id"]==action.get("card_id")),None)
         rules_index=1 if action_type in {"cast_disturb","cast_adventure"} else 0;rules_card=_face_rules_card(original or {},rules_index);target_id=action.get("target_id");x_value=int(action.get("x_value") or 0)
         if not available or not original or not rules_card:raise RuleViolation("That alternate-face cast is no longer available")
