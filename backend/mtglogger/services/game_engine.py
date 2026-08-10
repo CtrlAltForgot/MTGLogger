@@ -1528,6 +1528,8 @@ def public_state(state: dict, viewer_id: str = "player") -> dict:
             item["card"].pop("face_down_values",None);item["card"].pop("disguised",None)
     pending_search=visible.get("pending_library_search")
     if pending_search and pending_search.get("player_id")!=viewer_id:pending_search["card_ids"]=[]
+    pending_top=visible.get("pending_top_card_choice")
+    if pending_top and pending_top.get("player_id")!=viewer_id:pending_top.pop("card",None)
     pending_dungeon=visible.get("pending_dungeon")
     if pending_dungeon and pending_dungeon.get("player_id")!=viewer_id:
         pending_dungeon.pop("cards",None);pending_dungeon["card_ids"]=[];pending_dungeon.pop("top_ids",None)
@@ -1711,7 +1713,7 @@ def _multiplayer(state: dict) -> bool:
 def _pending_decision(state:dict)->bool:
     if state.get("pending_explore"):return True
     if state.get("pending_connive"):return True
-    return bool(state.get("pending_optional_payment") or state.get("pending_tilonalli") or state.get("pending_creature_type") or state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_populate") or state.get("pending_bolster") or state.get("pending_discovery") or state.get("pending_madness") or state.get("pending_rebound") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
+    return bool(state.get("pending_top_card_choice") or state.get("pending_optional_payment") or state.get("pending_tilonalli") or state.get("pending_creature_type") or state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_populate") or state.get("pending_bolster") or state.get("pending_discovery") or state.get("pending_madness") or state.get("pending_rebound") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
 
 
 def _split_second_on_stack(state:dict)->bool:
@@ -1753,6 +1755,13 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
     if state["status"] == "complete":
         return []
     player = _player(state, player_id)
+    pending_top=state.get("pending_top_card_choice")
+    if pending_top:
+        if pending_top["player_id"]!=player_id:return []
+        common={"source_name":pending_top["source_name"],"card":pending_top["card"]};actions=[]
+        if pending_top.get("allow_hand"):actions.append({"type":"take_top_card","label":f"Reveal and put {pending_top['card']['name']} into your hand",**common})
+        if pending_top.get("allow_graveyard"):actions.append({"type":"mill_top_card","label":f"Put {pending_top['card']['name']} into your graveyard",**common})
+        return actions+[{"type":"keep_top_card","label":"Leave it on top",**common},{"type":"concede"}]
     pending_payment=state.get("pending_optional_payment")
     if pending_payment:
         if pending_payment["player_id"]!=player_id:return []
@@ -2570,6 +2579,10 @@ def _resolve_spell(state: dict) -> None:
     discover_match=re.search(r"\bdiscover (\d+)\b",keyword_text)
     if discover_match:_start_discovery(state,caster,int(discover_match.group(1)),"discover",source_permanent.get("name",card["name"]) if source_permanent else card["name"])
     face_down_text=re.sub(r"\([^()]*(?:to manifest|to cloak)[^()]*\)","",effect_text);source_name=source_permanent.get("name",card["name"]) if source_permanent else card["name"]
+    if "look at the top card of your library" in effect_text:
+        if caster["library"]:
+            top=caster["library"][-1];creature="Creature" in top.get("type_line","");state["pending_top_card_choice"]={"player_id":caster["id"],"source_name":source_name,"card_id":top["instance_id"],"card":deepcopy(top),"allow_hand":creature and "if it's a creature card" in effect_text,"allow_graveyard":"put it into your graveyard" in effect_text};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} looked at the top card of their library for {source_name}.")
+        return
     dread_match=re.search(r"\bmanifest dread(?: (twice|three times))?\b",face_down_text)
     if dread_match:_start_manifest_dread(state,caster,source_name,{"twice":2,"three times":3}.get(dread_match.group(1),1))
     elif re.search(r"\bmanifest(?:s)? the top card of (?:your|their|that player's) library\b",face_down_text):
@@ -3220,7 +3233,8 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
         raw_clauses = re.split(r"(?<=[.!])\s+|\n", text);clauses=[]
         for clause in raw_clauses:
             modal_continuation=bool(clauses and (clause.strip().startswith(("•","-")) or clauses[-1].lstrip().startswith(("•","-")) or re.search(r"\n[•-]\s",clauses[-1]) and not re.match(r"(?:when(?:ever)?\b|at the beginning\b|[+−-]?\d+\s*:|\{[^}]+\}[^:]*:)",clause.strip(),re.IGNORECASE)))
-            continuation=bool(clauses and (modal_continuation or ("target" in clauses[-1].casefold() and re.match(r"it gains? [^.]+ until end of turn",clause.strip(),re.IGNORECASE)) or re.match(r"(?:then if|if you do|if you have the city's blessing|otherwise),?\b",clause.strip(),re.IGNORECASE) or re.match(r"if you control (?:one|two|three|four|five|six|seven|eight|nine|ten|\d+) or more lands",clause.strip(),re.IGNORECASE) or re.match(r"if that land is (?:a |an )?[a-z]+,",clause.strip(),re.IGNORECASE) or re.match(r"if (?:this is|it(?:'s| is)) the (?:first|second|third|fourth) time(?: this ability has resolved)?(?: this turn)?,",clause.strip(),re.IGNORECASE) or ("exile cards from the top of your library until you exile a nonland card" in clauses[-1].casefold() and re.match(r"you may cast that card this turn",clause.strip(),re.IGNORECASE)) or ("create x 1/1 red elemental creature tokens" in clauses[-1].casefold() and re.match(r"at the beginning of the next end step, exile those tokens",clause.strip(),re.IGNORECASE)) or ("reveal the top card of your library and put that card into your hand" in clauses[-1].casefold() and re.match(r"each opponent loses x life\b",clause.strip(),re.IGNORECASE))))
+            top_card_continuation=bool(clauses and "look at the top card of your library" in clauses[-1].casefold() and re.match(r"if (?:it(?:'s| is) a creature card|you don.t put the card into your hand)",clause.strip(),re.IGNORECASE))
+            continuation=bool(clauses and (modal_continuation or top_card_continuation or ("target" in clauses[-1].casefold() and re.match(r"it gains? [^.]+ until end of turn",clause.strip(),re.IGNORECASE)) or re.match(r"(?:then if|if you do|if you have the city's blessing|otherwise),?\b",clause.strip(),re.IGNORECASE) or re.match(r"if you control (?:one|two|three|four|five|six|seven|eight|nine|ten|\d+) or more lands",clause.strip(),re.IGNORECASE) or re.match(r"if that land is (?:a |an )?[a-z]+,",clause.strip(),re.IGNORECASE) or re.match(r"if (?:this is|it(?:'s| is)) the (?:first|second|third|fourth) time(?: this ability has resolved)?(?: this turn)?,",clause.strip(),re.IGNORECASE) or ("exile cards from the top of your library until you exile a nonland card" in clauses[-1].casefold() and re.match(r"you may cast that card this turn",clause.strip(),re.IGNORECASE)) or ("create x 1/1 red elemental creature tokens" in clauses[-1].casefold() and re.match(r"at the beginning of the next end step, exile those tokens",clause.strip(),re.IGNORECASE)) or ("reveal the top card of your library and put that card into your hand" in clauses[-1].casefold() and re.match(r"each opponent loses x life\b",clause.strip(),re.IGNORECASE))))
             if continuation:
                 separator="\n" if modal_continuation else " ";clauses[-1]=f"{clauses[-1]}{separator}{clause.strip()}"
             else:clauses.append(clause)
@@ -3466,7 +3480,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
             effect = clause.split(",", 1)[1].strip()
             if owner.get("city_blessing"):effect=re.sub(r"^if you have the city's blessing,\s*","",effect,flags=re.IGNORECASE)
             if event=="enters":
-                etb_effect_boundary=re.search(r",\s*(?=(?:you\b|put\b|create\b|draw\b|each\b|target\b|this\b|that\b|it\b|its\b|gain\b|tap\b|untap\b|exile\b|investigate\b|proliferate\b|scry\b|mill\b|add\b|amass\b|venture\b|manifest\b|cloak\b|return\b|search\b|[a-z0-9' -]+ deals?\b))",clause,re.IGNORECASE)
+                etb_effect_boundary=re.search(r",\s*(?=(?:you\b|put\b|create\b|draw\b|each\b|target\b|this\b|that\b|it\b|its\b|gain\b|tap\b|untap\b|exile\b|investigate\b|proliferate\b|scry\b|mill\b|add\b|amass\b|venture\b|manifest\b|cloak\b|look\b|return\b|search\b|[a-z0-9' -]+ deals?\b))",clause,re.IGNORECASE)
                 if etb_effect_boundary:effect=clause[etb_effect_boundary.end():].strip()
             if event in {"tapped","untapped"}:
                 tap_effect_boundary=re.search(r",\s*(?=(?:you\b|put\b|create\b|draw\b|each\b|target\b|this\b|that\b|it\b|its\b|gain\b|tap\b|untap\b|exile\b|investigate\b|proliferate\b|scry\b|mill\b|remove\b|destroy\b|return\b|[a-z0-9' -]+ deals?\b))",clause,re.IGNORECASE)
@@ -3727,6 +3741,19 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
             _log(state,f"{player['name']} paid {{X}}{{R}} with X={x_value} and created {x_value} tapped and attacking Elemental token(s).")
         else:_log(state,f"{player['name']} declined to pay for {pending.get('source_name') or 'Tilonalli Summoner'}.")
         state["pending_tilonalli"]=None;state["priority_player_id"]=state["active_player_id"]
+    elif action_type in {"take_top_card","mill_top_card","keep_top_card"}:
+        pending=state.get("pending_top_card_choice") or {}
+        if pending.get("player_id")!=player_id:raise RuleViolation("There is no top-card choice for this player")
+        top=player["library"][-1] if player["library"] else None
+        if not top or top["instance_id"]!=pending.get("card_id"):raise RuleViolation("The top of the library changed before the choice was completed")
+        if action_type=="take_top_card":
+            if not pending.get("allow_hand"):raise RuleViolation("That card cannot be put into your hand")
+            player["library"].pop();player["hand"].append(top);_log(state,f"{player['name']} revealed {top['name']} and put it into their hand.")
+        elif action_type=="mill_top_card":
+            if not pending.get("allow_graveyard"):raise RuleViolation("That card cannot be put into your graveyard")
+            player["library"].pop();player["graveyard"].append(top);_log(state,f"{player['name']} put the top card of their library into their graveyard.")
+        else:_log(state,f"{player['name']} left the card on top of their library.")
+        state["pending_top_card_choice"]=None;state["priority_player_id"]=state["active_player_id"]
     elif action_type in {"pay_optional_mana","decline_optional_mana"}:
         pending=state.get("pending_optional_payment") or {}
         if pending.get("player_id")!=player_id:raise RuleViolation("There is no optional mana payment for this player")

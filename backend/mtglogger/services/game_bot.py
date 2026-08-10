@@ -212,6 +212,9 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
     by_type = {kind: [action for action in actions if action["type"] == kind] for kind in {action["type"] for action in actions}}
     if "keep" in by_type:
         return by_type.get("mulligan",by_type["keep"])[0] if _should_mulligan(state,difficulty) else by_type["keep"][0]
+    if "take_top_card" in by_type or "mill_top_card" in by_type or "keep_top_card" in by_type:
+        if "take_top_card" in by_type:return by_type["take_top_card"][0]
+        return by_type["keep_top_card"][0] if difficulty=="beginner" else by_type.get("mill_top_card",by_type["keep_top_card"])[0]
     if "pay_cumulative_upkeep" in by_type or "sacrifice_cumulative_upkeep" in by_type:
         if "pay_cumulative_upkeep" not in by_type or difficulty=="beginner" and random.random()<.2:return by_type["sacrifice_cumulative_upkeep"][0]
         action=by_type["pay_cumulative_upkeep"][0];options=action.get("cost_options",[]);amount=action.get("cost_amount",0)
