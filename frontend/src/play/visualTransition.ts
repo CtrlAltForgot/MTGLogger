@@ -4,8 +4,8 @@ export type NoticeTone='phase'|'good'|'danger'|'stack'
 export type TableNotice={id:string;text:string;tone:NoticeTone}
 
 export function presentationNoticeDuration(notice:TableNotice){
-  const readingTime=notice.text.trim().split(/\s+/).length*180
-  return Math.min(5000,Math.max(notice.tone==='phase'?1800:2400,readingTime))
+  const readingTime=notice.text.trim().split(/\s+/).length*240
+  return Math.min(8000,Math.max(notice.tone==='phase'?2400:3000,readingTime))
 }
 
 export function classifyNoticeTone(message:string,phaseChanged:boolean):NoticeTone{

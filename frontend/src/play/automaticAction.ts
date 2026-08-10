@@ -18,8 +18,8 @@ export const automaticGameAction=(actions:LegalGameAction[])=>{
 }
 
 export const automaticActionDelay=(action:LegalGameAction)=>({
-  resolve_combat_damage:2200,
-  resolve:1800,
-  advance_phase:1500,
-  pass_priority:1000,
-}[action.type]||1500)
+  resolve_combat_damage:3400,
+  resolve:2800,
+  advance_phase:2200,
+  pass_priority:1600,
+}[action.type]||2200)
