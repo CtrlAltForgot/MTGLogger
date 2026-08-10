@@ -841,6 +841,24 @@ def _mutate_original(card:dict)->dict:
     return {key:deepcopy(value) for key,value in card.items() if key not in runtime}
 
 
+_COPYABLE_CARD_KEYS=("scryfall_id","name","image_url","type_line","oracle_text","mana_cost","mana_value","power","toughness","loyalty","colors","keywords","card_faces","rules_name")
+
+
+def _become_temporary_copy(permanent:dict,source:dict)->None:
+    if "temporary_copy_original" not in permanent:
+        permanent["temporary_copy_original"]={key:deepcopy(permanent[key]) for key in _COPYABLE_CARD_KEYS if key in permanent};permanent["temporary_copy_missing"]=[key for key in _COPYABLE_CARD_KEYS if key not in permanent]
+    for key in _COPYABLE_CARD_KEYS:
+        if key in source:permanent[key]=deepcopy(source[key])
+        else:permanent.pop(key,None)
+
+
+def _restore_temporary_copy(permanent:dict)->None:
+    original=permanent.pop("temporary_copy_original",None)
+    if original is None:return
+    for key in permanent.pop("temporary_copy_missing",[]):permanent.pop(key,None)
+    for key,value in original.items():permanent[key]=value
+
+
 def _merge_mutate(target:dict,card:dict,position:str)->None:
     pile=deepcopy(target.get("mutate_pile") or [_mutate_original(target)]);component=_mutate_original(card);pile=[component,*pile] if position=="over" else [*pile,component];top=pile[0]
     stable={key:deepcopy(target.get(key)) for key in ("instance_id","controller_id","owner_id","tapped","damage","counters","summoning_sick","attached_to","attachment_keywords") if key in target}
@@ -1883,6 +1901,7 @@ def _target_kind(card: dict) -> str | None:
     if re.search(r"up to x target instant cards? from your graveyard",text):return "graveyard_card"
     if re.search(r"target creature or enchantment card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_creature_or_enchantment"
     if re.search(r"target creature card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_creature"
+    if re.search(r"target permanent card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_permanent"
     if re.search(r"target (?:nonland permanent |nonland )?card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_card"
     if "target face-down permanent you control" in text:return "permanent"
     if "target artifact or enchantment" in text:return "artifact_or_enchantment"
@@ -1955,12 +1974,12 @@ def _targets(state: dict, caster_id: str, card: dict, ignore_target_protection:b
         return [{"id":item["id"],"name":item["card"]["name"],"kind":"spell" if item.get("kind","spell")=="spell" else "ability","controller_id":item["controller_id"]} for item in state["stack"] if allowed(item) and not ("you don't control" in text and item["controller_id"]==caster_id)]
     if kind == "creature_or_spell":
         targets=[{"id":item["id"],"name":item["card"]["name"],"kind":"spell","controller_id":item["controller_id"]} for item in state["stack"]]
-    if kind in {"graveyard_creature","graveyard_creature_or_enchantment","graveyard_card"}:
+    if kind in {"graveyard_creature","graveyard_creature_or_enchantment","graveyard_card","graveyard_permanent"}:
         own_only="your graveyard" in text
         soulshift=card.get("soulshift_value")
         instant_or_sorcery="instant or sorcery" in text;instant_only=bool(re.search(r"target instant cards?",text))
         nonland_permanent="nonland permanent card" in text
-        return [{"id":graveyard_card["instance_id"],"name":graveyard_card["name"],"kind":"card","controller_id":owner["id"]} for owner in state["players"] if not own_only or owner["id"]==caster_id for graveyard_card in owner["graveyard"] if (kind=="graveyard_card" or "Creature" in graveyard_card.get("type_line","") or kind=="graveyard_creature_or_enchantment" and "Enchantment" in graveyard_card.get("type_line","")) and (not nonland_permanent or ("Land" not in graveyard_card.get("type_line","") and any(card_type in graveyard_card.get("type_line","") for card_type in ("Artifact","Battle","Creature","Enchantment","Planeswalker")))) and (not instant_or_sorcery or any(kind_name in graveyard_card.get("type_line","") for kind_name in ("Instant","Sorcery"))) and (not instant_only or "Instant" in graveyard_card.get("type_line","")) and (soulshift is None or (re.search(r"\bSpirit\b",graveyard_card.get("type_line",""),re.IGNORECASE) and float(graveyard_card.get("mana_value") or 0)<=float(soulshift)))]
+        return [{"id":graveyard_card["instance_id"],"name":graveyard_card["name"],"kind":"card","controller_id":owner["id"]} for owner in state["players"] if not own_only or owner["id"]==caster_id for graveyard_card in owner["graveyard"] if (kind=="graveyard_card" or kind=="graveyard_permanent" and any(card_type in graveyard_card.get("type_line","") for card_type in ("Artifact","Battle","Creature","Enchantment","Land","Planeswalker")) or "Creature" in graveyard_card.get("type_line","") or kind=="graveyard_creature_or_enchantment" and "Enchantment" in graveyard_card.get("type_line","")) and (not nonland_permanent or ("Land" not in graveyard_card.get("type_line","") and any(card_type in graveyard_card.get("type_line","") for card_type in ("Artifact","Battle","Creature","Enchantment","Planeswalker")))) and (not instant_or_sorcery or any(kind_name in graveyard_card.get("type_line","") for kind_name in ("Instant","Sorcery"))) and (not instant_only or "Instant" in graveyard_card.get("type_line","")) and (soulshift is None or (re.search(r"\bSpirit\b",graveyard_card.get("type_line",""),re.IGNORECASE) and float(graveyard_card.get("mana_value") or 0)<=float(soulshift)))]
     for player in state["players"]:
         aura_types=_aura_allowed_types(card)
         if (kind in {"any", "player","player_or_planeswalker"} or (kind=="permanent" and "player" in aura_types)) and not ("target opponent" in text and player["id"]==caster_id) and not _player_protected_from(state,player,card): targets.append({"id": player["id"], "name": player["name"], "kind": "player", "controller_id": player["id"]})
@@ -2989,6 +3008,8 @@ def _resolve_spell(state: dict) -> None:
     target_stack_item = next((entry for entry in state["stack"] if entry["id"] == target_id), None)
     graveyard_owner=next((player for player in state["players"] if any(graveyard_card["instance_id"]==target_id for graveyard_card in player["graveyard"])),None)
     graveyard_target=next((graveyard_card for player in state["players"] for graveyard_card in player["graveyard"] if graveyard_card["instance_id"]==target_id),None)
+    if source_permanent and graveyard_target and "becomes a copy of target permanent card in your graveyard until end of turn" in effect_text:
+        _become_temporary_copy(source_permanent,graveyard_target);_sync_city_blessing(state);_log(state,f"{source_permanent['name']} became a copy of {graveyard_target['name']} until end of turn.");return
     if crop_sigil_return:
         returning=[candidate for candidate in list(caster["graveyard"]) if candidate["instance_id"] in set(target_ids) and any(kind in candidate.get("type_line","") for kind in ("Creature","Land"))]
         if returning:_leave_graveyard(state,caster,returning);caster["hand"].extend(returning)
@@ -3719,6 +3740,7 @@ def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str, t
     earthbend_controller=card.get("earthbend_controller") if destination in {"graveyard","exile"} else None
     _queue_triggers(state,"leaves",card,owner,trigger_dedupe,trigger_sources)
     if destination=="graveyard":_queue_triggers(state,"dies",card,owner,trigger_dedupe,trigger_sources)
+    _restore_temporary_copy(card)
     if was_bestowed:
         card["type_line"]=card.pop("bestow_original_type_line",card.get("type_line","").replace(" — Aura",""));card.pop("bestowed",None)
     mutate_pile=card.pop("mutate_pile",None)
@@ -4532,6 +4554,7 @@ def _begin_next_turn(state:dict)->None:
     for owner in state["players"]:
         owner.pop("damage_prevention",None);owner["firebending_mana"]=0;owner["any_color_mana"]=0;owner["bent_this_turn"]=[];owner["energy_paid_this_turn"]=0
         for permanent in owner["battlefield"]:
+            _restore_temporary_copy(permanent)
             if permanent.get("temporary_type_line") is not None:permanent["type_line"]=permanent.pop("temporary_type_line")
             permanent.pop("temporary_power",None);permanent.pop("temporary_toughness",None);permanent.pop("temporary_base_power",None);permanent.pop("temporary_base_toughness",None);permanent.pop("temporary_keywords",None);permanent.pop("temporary_removed_keywords",None);permanent.pop("temporary_backup_rules",None);permanent.pop("temporary_protection_colors",None);permanent.pop("cant_attack_until_turn",None);permanent.pop("cant_block_until_turn",None);permanent.pop("must_block_source_ids",None);permanent.pop("attacks_this_turn",None);permanent.pop("regeneration_shields",None);permanent.pop("deathtouch_damage",None);permanent.pop("damage_source_ids_turn",None);permanent.pop("crewed_turn",None);permanent["damage"]=0
             permanent.pop("damage_prevention",None)
