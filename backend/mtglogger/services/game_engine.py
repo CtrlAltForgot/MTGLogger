@@ -2393,6 +2393,14 @@ def _resolve_spell(state: dict) -> None:
     graveyard_target=next((graveyard_card for player in state["players"] for graveyard_card in player["graveyard"] if graveyard_card["instance_id"]==target_id),None)
     if "take an extra turn after this one" in effect_text:
         state.setdefault("extra_turns",[]).append(caster["id"]);_log(state,f"{caster['name']} will take an extra turn after this one.");return
+    if "for each token you control that entered the battlefield this turn, create a token that's a copy of it" in effect_text and re.search(r"create a 1/1 white cat creature token",effect_text):
+        cat={"instance_id":_id(),"scryfall_id":"token-cat","name":"Cat Token","image_url":None,"type_line":"Token Creature — Cat","oracle_text":"","mana_cost":"","mana_value":0,"colors":["W"],"power":"1","toughness":"1","owner_id":caster["id"],"controller_id":caster["id"],"tapped":False,"damage":0,"counters":{},"summoning_sick":True,"token":True,"keywords":[]};_enter_battlefield(state,caster,[cat],"token")
+        originals=[token for token in caster["battlefield"] if token.get("token") and token.get("entered_turn")==state["turn"]] if caster.get("city_blessing") else [];copies=[]
+        for original in originals:
+            token=deepcopy(original);token["instance_id"]=_id();token["owner_id"]=caster["id"];token["controller_id"]=caster["id"];token["damage"]=0;token["counters"]={};token["tapped"]=False;token["summoning_sick"]=True
+            for key in ("attached_to","attachment_keywords","attachment_rules","temporary_power","temporary_toughness","temporary_keywords","temporary_backup_rules","deathtouch_damage","activated_ability_usage","entered_turn"):token.pop(key,None)
+            copies.append(token)
+        _enter_battlefield(state,caster,copies,"token");_log(state,f"{caster['name']} created a Cat and copied {len(originals)} token(s) with Ocelot Pride.");return
     if "reveal the top card of your library and put that card into your hand" in effect_text and "where x is that card's mana value" in effect_text:
         if caster["library"]:
             revealed=caster["library"].pop();caster["hand"].append(revealed);amount=int(revealed.get("mana_value") or 0)
@@ -2850,7 +2858,7 @@ def _enter_battlefield(state:dict,controller:dict,cards:list[dict],origin:str="e
         if _has_keyword(card,"Daybound"):
             if state.get("day_night") is None:_set_day_night(state,"day")
             elif state.get("day_night")=="night":_set_card_face(card,1)
-        card["controller_id"]=controller["id"];card["entry_event_origin"]=origin;card["entry_event_was_cast"]=was_cast;card["entry_event_played"]=played;card["entry_event_batch_size"]=batch_size
+        card["controller_id"]=controller["id"];card["entered_turn"]=state["turn"];card["entry_event_origin"]=origin;card["entry_event_was_cast"]=was_cast;card["entry_event_played"]=played;card["entry_event_batch_size"]=batch_size
         if _echo_cost(card):card["echo_due_controller_id"]=controller["id"]
         controller["battlefield"].append(card)
     if any("you may play an additional land on each of your turns" in (card.get("oracle_text") or "").casefold() for card in entering):_refresh_land_plays(state,controller)
@@ -3134,6 +3142,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 matches = "at the beginning of each upkeep" in lower or "at the beginning of each player's upkeep" in lower or (owner["id"] == event_owner["id"] and "at the beginning of your upkeep" in lower) or (owner["id"] != event_owner["id"] and "at the beginning of each opponent's upkeep" in lower)
             elif event == "end_step":
                 matches = "at the beginning of each end step" in lower or (owner["id"] == event_owner["id"] and "at the beginning of your end step" in lower) or (owner["id"] != event_owner["id"] and "at the beginning of each opponent's end step" in lower)
+                if matches and "if you gained life this turn" in lower:matches=owner.get("life_gain_event_turn")==state["turn"] and owner.get("life_gain_events_this_turn",0)>0
             elif event == "beginning_combat":
                 matches = owner["id"]==event_owner["id"] and re.search(r"at the beginning of combat on your turn",lower) is not None
             elif event == "cast" and event_card:
@@ -3203,7 +3212,8 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
             elif event in {"earthbend","waterbend","firebend","airbend"}:
                 multi_bend="whenever you waterbend, earthbend, firebend, or airbend" in lower
                 matches=owner["id"]==event_owner["id"] and (f"whenever you {event}" in lower or multi_bend)
-            if matches and "if you have the city's blessing" in lower and not owner.get("city_blessing"):continue
+            blessing_gate=re.search(r"^(?:when|whenever|at the beginning)[^.]*?,\s*if you have the city's blessing,",lower) is not None
+            if matches and blessing_gate and not owner.get("city_blessing"):continue
             if not matches or "," not in clause: continue
             effect = clause.split(",", 1)[1].strip()
             if owner.get("city_blessing"):effect=re.sub(r"^if you have the city's blessing,\s*","",effect,flags=re.IGNORECASE)
