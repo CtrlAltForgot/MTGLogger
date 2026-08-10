@@ -2642,6 +2642,14 @@ def _resolve_spell(state: dict) -> None:
         supported=("flying","first strike","double strike","deathtouch","haste","hexproof","indestructible","lifelink","menace","reach","trample","vigilance")
         gained=[keyword for keyword in supported if re.search(rf"\b{re.escape(keyword)}\b",keyword_match.group(1))]
         target["temporary_keywords"]=sorted(set(target.get("temporary_keywords",[]))|set(gained));_log(state,f"{target['name']} gained {', '.join(gained)} until end of turn.")
+    if source_permanent:
+        source_name=re.escape(source_permanent.get("name","").casefold());self_keyword_only=re.search(rf"(?:this creature|this permanent|this token|{source_name}) gains? ([^.]+?) until end of turn",effect_text)
+        if self_keyword_only:
+            supported=("flying","first strike","double strike","deathtouch","haste","hexproof","indestructible","lifelink","menace","reach","trample","vigilance");gained={keyword for keyword in supported if re.search(rf"\b{re.escape(keyword)}\b",self_keyword_only.group(1))};source_permanent["temporary_keywords"]=sorted(set(source_permanent.get("temporary_keywords",[]))|gained)
+    target_pronoun_counter=re.search(r"put (a|one|two|three|four|\d+) ([+−-]\d+/[+−-]\d+|[a-z][a-z-]*) counters? on (?:it|that creature|that permanent)",effect_text)
+    if target and target_pronoun_counter:
+        words={"a":1,"one":1,"two":2,"three":3,"four":4};amount=words.get(target_pronoun_counter.group(1),int(target_pronoun_counter.group(1)) if target_pronoun_counter.group(1).isdigit() else 1);_add_counters(state,target,target_pronoun_counter.group(2).replace("−","-"),amount,caster["id"],"effect")
+    if target and re.search(r"does(?: not|n't) untap during its controller'?s next untap step",effect_text):target["skip_untap_steps"]=target.get("skip_untap_steps",0)+1
     mill_match = re.search(r"target player mills? (\d+|one|two|three|four|five|six|seven|eight|nine|ten) cards?", effect_text)
     if mill_match and target_player:
         words={"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10}; amount=words.get(mill_match.group(1),int(mill_match.group(1)) if mill_match.group(1).isdigit() else 0)
@@ -2947,6 +2955,18 @@ def _enter_battlefield(state:dict,controller:dict,cards:list[dict],origin:str="e
 
 
 def _set_tapped(state:dict,cards:list[dict],tapped:bool,actor_id:str|None=None,cause:str="effect")->list[dict]:
+    if not tapped:
+        eligible=[]
+        for card in cards:
+            if not card.get("tapped"):continue
+            if card.get("counters",{}).get("stun",0)>0:
+                _remove_counters(card,"stun",1);_log(state,f"A stun counter was removed from {card['name']} instead of untapping it.");continue
+            if cause=="untap_step" and card.get("skip_untap_steps",0)>0:
+                card["skip_untap_steps"]-=1
+                if card["skip_untap_steps"]<=0:card.pop("skip_untap_steps",None)
+                _log(state,f"{card['name']} did not untap during its controller's untap step.");continue
+            eligible.append(card)
+        cards=eligible
     changing=[card for card in cards if bool(card.get("tapped"))!=tapped and any(card in owner["battlefield"] for owner in state["players"])]
     if not changing:return []
     event="tapped" if tapped else "untapped";dedupe:set[str]=set()
