@@ -225,6 +225,7 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
     if "take_top_card" in by_type or "mill_top_card" in by_type or "keep_top_card" in by_type:
         if "take_top_card" in by_type:return by_type["take_top_card"][0]
         return by_type["keep_top_card"][0] if difficulty=="beginner" else by_type.get("mill_top_card",by_type["keep_top_card"])[0]
+    if "place_target_bottom" in by_type:return by_type["place_target_bottom"][0]
     if "choose_revealed_discard" in by_type:
         return max(by_type["choose_revealed_discard"],key=lambda action:float((action.get("card") or {}).get("mana_value") or 0))
     if "choose_same_name_cards" in by_type:

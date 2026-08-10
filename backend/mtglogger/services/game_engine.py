@@ -1987,7 +1987,7 @@ def _target_kind(card: dict) -> str | None:
     if re.search(r"(?:target player gains?|target player loses|goad each creature target player controls)",text):return "player"
     if re.search(r"deals (?:\d+|x) damage to target (?:opponent|player)",text):return "player"
     if re.search(r"(?:destroy|exile|gain control of) target (?:artifact, creature, enchantment, planeswalker|noncreature permanent|nonland permanent|permanent)", text): return "permanent"
-    if re.search(r"(?:destroy|exile|tap|untap|return|regenerate|gain control of|double the power of) target (?:(?:white|blue|black|red|green) )?creature", text) or re.search(r"(?:have )?target creature (?:block|.*(?:gets [+-](?:\d+|x)/[+-](?:\d+|x)|has base power and toughness|gains? [^.]+ until end of turn|attacks during|can(?:not|'t) (?:attack|block)))", text) or re.search(r"(?:deals (?:\d+|x) damage|put .+ counters?) (?:to|on) target creature", text): return "creature"
+    if "owner of target attacking creature" in text or re.search(r"(?:destroy|exile|tap|untap|return|regenerate|gain control of|double the power of) target (?:(?:white|blue|black|red|green) )?creature", text) or re.search(r"(?:have )?target creature (?:block|.*(?:gets [+-](?:\d+|x)/[+-](?:\d+|x)|has base power and toughness|gains? [^.]+ until end of turn|attacks during|can(?:not|'t) (?:attack|block)))", text) or re.search(r"(?:deals (?:\d+|x) damage|put .+ counters?) (?:to|on) target creature", text): return "creature"
     for kind in ("artifact","enchantment","land","planeswalker"):
         if re.search(rf"(?:destroy|exile|tap|untap|return) target {kind}\b",text):return kind
     if re.search(r"return target (?:nonland )?permanent", text): return "permanent"
@@ -2076,6 +2076,7 @@ def _targets(state: dict, caster_id: str, card: dict, ignore_target_protection:b
                 if "noncreature artifact" in text and "Creature" in permanent.get("type_line", ""): continue
                 if "creature without flying" in text and _has_keyword(permanent,"Flying"):continue
                 if "creature you don't control that was dealt damage this turn" in text and (player["id"]==caster_id or not permanent.get("damage_source_ids_turn")):continue
+                if "target attacking creature" in text and permanent["instance_id"] not in state.get("combat",{}).get("attackers",[]):continue
                 if "non-salamander creature" in text and re.search(r"\bSalamander\b",permanent.get("type_line",""),re.IGNORECASE):continue
                 if not ignore_target_protection and (_has_keyword(permanent,"Shroud") or (player["id"] != caster_id and (_has_keyword(permanent,"Hexproof") or permanent.get("hexproof_until_turn",0)>=state["turn"]))): continue
                 if not ignore_target_protection and _protected_from(permanent,card): continue
@@ -2201,7 +2202,7 @@ def _pending_decision(state:dict)->bool:
     if state.get("pending_zone_choice"):return True
     if state.get("pending_counter_choice"):return True
     if state.get("pending_color_choice"):return True
-    return bool(state.get("pending_impulsivity") or state.get("pending_sticktwister") or state.get("pending_eumidian_choice") or state.get("pending_rad_choice") or state.get("pending_top_card_choice") or state.get("pending_revealed_discard") or state.get("pending_same_name_search") or state.get("pending_winter_exile") or state.get("pending_optional_discard") or state.get("pending_optional_payment") or state.get("pending_tilonalli") or state.get("pending_creature_type") or state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_populate") or state.get("pending_bolster") or state.get("pending_discovery") or state.get("pending_madness") or state.get("pending_rebound") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
+    return bool(state.get("pending_impulsivity") or state.get("pending_library_placement") or state.get("pending_sticktwister") or state.get("pending_eumidian_choice") or state.get("pending_rad_choice") or state.get("pending_top_card_choice") or state.get("pending_revealed_discard") or state.get("pending_same_name_search") or state.get("pending_winter_exile") or state.get("pending_optional_discard") or state.get("pending_optional_payment") or state.get("pending_tilonalli") or state.get("pending_creature_type") or state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_populate") or state.get("pending_bolster") or state.get("pending_discovery") or state.get("pending_madness") or state.get("pending_rebound") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
 
 
 def _split_second_on_stack(state:dict)->bool:
@@ -2256,6 +2257,10 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
     if state["status"] == "complete":
         return []
     player = _player(state, player_id)
+    pending_placement=state.get("pending_library_placement")
+    if pending_placement:
+        if pending_placement["player_id"]!=player_id:return []
+        common={"source_name":pending_placement["source_name"],"card_id":pending_placement["card_id"],"card_name":pending_placement["card_name"]};return [{"type":"place_target_top","label":f"Put {pending_placement['card_name']} on top",**common},{"type":"place_target_bottom","label":f"Put {pending_placement['card_name']} on bottom",**common},{"type":"concede"}]
     pending_sticktwister=state.get("pending_sticktwister")
     if pending_sticktwister:
         position=len(pending_sticktwister.get("selections",[]));choices=pending_sticktwister.get("choices",[]);current=choices[position] if position<len(choices) else None
@@ -3143,6 +3148,11 @@ def _resolve_spell(state: dict) -> None:
     if valid_multi_ids:target_ids=valid_multi_ids
     is_permanent_spell = item.get("kind", "spell") in {"spell","storm_copy"} and any(kind in card.get("type_line", "") for kind in ("Creature", "Artifact", "Enchantment", "Planeswalker", "Battle"))
     effect_text = "" if is_permanent_spell and re.search(r"\b(?:when|whenever|at the beginning)\b", text) else text
+    if "owner of target attacking creature you don't control puts it on their choice of the top or bottom of their library" in effect_text:
+        placement_target=next((candidate for owner in state["players"] for candidate in owner["battlefield"] if candidate["instance_id"]==target_id),None);placement_controller=next((owner for owner in state["players"] if placement_target in owner["battlefield"]),None) if placement_target else None
+        if placement_target and placement_controller:
+            chooser=_player(state,placement_target.get("owner_id",placement_controller["id"]));state["pending_library_placement"]={"player_id":chooser["id"],"source_name":card["name"],"card_id":placement_target["instance_id"],"card_name":placement_target["name"]};state["priority_player_id"]=chooser["id"];_log(state,f"{chooser['name']} must choose whether {placement_target['name']} goes on top or bottom of their library.")
+        effect_text=""
     if "exchange control of two target nonland permanents that share a card type" in effect_text and len(target_ids)==2:
         first=next((candidate for owner in state["players"] for candidate in owner["battlefield"] if candidate["instance_id"]==target_ids[0]),None);second=next((candidate for owner in state["players"] for candidate in owner["battlefield"] if candidate["instance_id"]==target_ids[1]),None)
         if first and second:
@@ -5073,6 +5083,14 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if action_type=="accept_rad_counters":player["rad"]=player.get("rad",0)+int(pending["amount"]);_log(state,f"{player['name']} got {pending['amount']} rad counter(s) from {pending['source_name']}.")
         else:_log(state,f"{player['name']} declined the rad counters from {pending.get('source_name','the effect')}.")
         state["pending_rad_choice"]=None;state["priority_player_id"]=state["active_player_id"]
+    elif action_type in {"place_target_top","place_target_bottom"}:
+        pending=state.get("pending_library_placement") or {}
+        if pending.get("player_id")!=player_id:raise RuleViolation("There is no library-placement choice for this player")
+        target_owner=next((owner for owner in state["players"] if any(card["instance_id"]==pending.get("card_id") for card in owner["battlefield"])),None);target=next((card for card in (target_owner or {}).get("battlefield",[]) if card["instance_id"]==pending.get("card_id")),None)
+        if not target:raise RuleViolation("The targeted creature left the battlefield before its owner chose")
+        _leave_battlefield(state,target_owner,target,"library");owner=_player(state,target.get("owner_id",player_id))
+        if action_type=="place_target_bottom":owner["library"].remove(target);owner["library"].insert(0,target)
+        destination="top" if action_type=="place_target_top" else "bottom";state["pending_library_placement"]=None;state["priority_player_id"]=state["active_player_id"];_log(state,f"{player['name']} put {target['name']} on the {destination} of their library.")
     elif action_type in {"take_top_card","put_top_card_battlefield","mill_top_card","keep_top_card"}:
         pending=state.get("pending_top_card_choice") or {}
         if pending.get("player_id")!=player_id:raise RuleViolation("There is no top-card choice for this player")

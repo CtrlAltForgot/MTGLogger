@@ -24,6 +24,7 @@ describe('automatic game actions',()=>{
     expect(automaticGameAction([action('advance_phase'),action('declare_attackers',{card_ids:['attacker']})])).toBeUndefined()
     expect(automaticGameAction([action('accept_trigger'),action('skip_trigger')])).toBeUndefined()
     expect(automaticGameAction([action('choose_color',{label:'Red'})])).toBeUndefined()
+    expect(automaticGameAction([action('place_target_top'),action('place_target_bottom')])).toBeUndefined()
   })
 
   it('leaves readable time before every automatic transition',()=>{
