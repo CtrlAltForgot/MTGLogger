@@ -171,6 +171,7 @@ def _continuous_stats(state:dict|None,card:dict)->tuple[int,int]:
                 lower=clause.casefold()
                 blessing_static="as long as you have the city's blessing" in lower and owner.get("city_blessing")
                 if ":" in clause or "until end of turn" in lower or ("as long as" in lower and not blessing_static) or re.match(r"\s*(?:when|whenever|if)\b",lower):continue
+                if "for each +1/+1 counter on this creature" in lower:continue
                 for match in re.finditer(r"\b(other )?((?:[a-z]+ )?creatures|creature tokens) (you|your opponents) control get ([+-]\d+)/([+-]\d+)",clause,re.IGNORECASE):
                     other,group,scope=bool(match.group(1)),match.group(2).casefold(),match.group(3).casefold();source_controller=source.get("controller_id",owner["id"])
                     if other and source["instance_id"]==card.get("instance_id"):continue
@@ -179,9 +180,10 @@ def _continuous_stats(state:dict|None,card:dict)->tuple[int,int]:
                     qualifier=group.removesuffix(" creatures")
                     if qualifier not in {"creature","creatures"} and group!="creature tokens" and qualifier not in type_line:continue
                     power+=int(match.group(4));toughness+=int(match.group(5))
-                subtype_bonus=re.search(r"\b(other )?([A-Za-z][A-Za-z'-]+)s you control get ([+-]\d+)/([+-]\d+)",clause,re.IGNORECASE)
+                subtype_bonus=None if "for each +1/+1 counter" in lower else re.search(r"\b(other )?([A-Za-z][A-Za-z'-]+)s you control get ([+-]\d+)/([+-]\d+)",clause,re.IGNORECASE)
                 if subtype_bonus and subtype_bonus.group(2).casefold() not in {"creature","artifact","enchantment","permanent","token"} and controller==source.get("controller_id",owner["id"]) and (not subtype_bonus.group(1) or source.get("instance_id")!=card.get("instance_id")) and re.search(rf"\b{re.escape(subtype_bonus.group(2))}\b",type_line,re.IGNORECASE):power+=int(subtype_bonus.group(3));toughness+=int(subtype_bonus.group(4))
             if controller==source.get("controller_id",owner["id"]) and "gets +1/+0 for each time it has attacked this turn" in (source.get("oracle_text") or "").casefold():power+=int(card.get("attacks_this_turn",0))
+            if controller==source.get("controller_id",owner["id"]) and source is not card and re.search(r"\bElf\b",card.get("type_line","")) and "other elf creatures you control get +1/+1 for each +1/+1 counter on this creature" in (source.get("oracle_text") or "").casefold():power+=source.get("counters",{}).get("+1/+1",0);toughness+=source.get("counters",{}).get("+1/+1",0)
     return power,toughness
 
 
@@ -328,6 +330,11 @@ def _mana_source_options(card: dict) -> list[dict]:
         if "if you don't have the city's blessing, you lose 1 life" in text.casefold() and not card.get("controller_city_blessing"):life_cost+=1
         residual=re.sub(r"\{t\}|pay \d+ life|sacrifice (?:this (?:artifact|creature|permanent)|%s)|[,. ]"%re.escape(card.get("name","")),"",cost,flags=re.IGNORECASE)
         if residual:continue
+        charge_output=re.search(r"add \{([WUBRGC])\} for each charge counter on this (?:artifact|permanent)",effect,re.IGNORECASE)
+        if charge_output:
+            amount=max(0,int(card.get("counters",{}).get("charge",0)));symbol=charge_output.group(1).upper()
+            if amount:options.append({"pool":tuple(amount if color==symbol else 0 for color in _MANA_COLORS),"taps":taps,"life_cost":life_cost,"self_sacrifice":self_sacrifice})
+            continue
         options.extend({"pool":pool,"taps":taps,"life_cost":life_cost,"self_sacrifice":self_sacrifice} for pool in _mana_pools(effect))
 
     if any(kind in type_line for kind in ("Treasure","Gold")) and not options:
@@ -1574,6 +1581,10 @@ def _target_kind(card: dict) -> str | None:
     if re.search(r"\btarget land you control become a \d+/\d+",text):return "land"
     if "choose any target, then choose another target for each time" in text:return "any"
     if "choose target creature, then choose another target creature for each time" in text:return "creature"
+    if re.search(r"each of up to x targets?",text):return "any"
+    if re.search(r"up to x target creatures?(?! cards?\b)",text):return "creature"
+    if re.search(r"up to x target creature cards? from your graveyard",text):return "graveyard_creature"
+    if re.search(r"up to x target instant cards? from your graveyard",text):return "graveyard_card"
     if re.search(r"target creature card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_creature"
     if re.search(r"target (?:nonland permanent |nonland )?card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_card"
     if "target face-down permanent you control" in text:return "permanent"
@@ -1581,6 +1592,7 @@ def _target_kind(card: dict) -> str | None:
     if re.search(r"target player sacrifices?",text):return "player"
     if re.search(r"target player discards?",text):return "player"
     if re.search(r"deals? (?:\d+|x)?\s*damage[^.]*to target player or planeswalker",text):return "player_or_planeswalker"
+    if re.search(r"deals? damage equal to (?:its|his|her) power to target creature",text):return "creature"
     if re.search(r"(?:target player gains?|target player loses|goad each creature target player controls)",text):return "player"
     if re.search(r"deals (?:\d+|x) damage to target (?:opponent|player)",text):return "player"
     if re.search(r"(?:destroy|exile|gain control of) target (?:artifact, creature, enchantment, planeswalker|nonland permanent|permanent)", text): return "permanent"
@@ -1643,9 +1655,9 @@ def _targets(state: dict, caster_id: str, card: dict, ignore_target_protection:b
     if kind in {"graveyard_creature","graveyard_card"}:
         own_only="your graveyard" in text
         soulshift=card.get("soulshift_value")
-        instant_or_sorcery="instant or sorcery" in text
+        instant_or_sorcery="instant or sorcery" in text;instant_only=bool(re.search(r"target instant cards?",text))
         nonland_permanent="nonland permanent card" in text
-        return [{"id":graveyard_card["instance_id"],"name":graveyard_card["name"],"kind":"card","controller_id":owner["id"]} for owner in state["players"] if not own_only or owner["id"]==caster_id for graveyard_card in owner["graveyard"] if (kind=="graveyard_card" or "Creature" in graveyard_card.get("type_line","")) and (not nonland_permanent or ("Land" not in graveyard_card.get("type_line","") and any(card_type in graveyard_card.get("type_line","") for card_type in ("Artifact","Battle","Creature","Enchantment","Planeswalker")))) and (not instant_or_sorcery or any(kind_name in graveyard_card.get("type_line","") for kind_name in ("Instant","Sorcery"))) and (soulshift is None or (re.search(r"\bSpirit\b",graveyard_card.get("type_line",""),re.IGNORECASE) and float(graveyard_card.get("mana_value") or 0)<=float(soulshift)))]
+        return [{"id":graveyard_card["instance_id"],"name":graveyard_card["name"],"kind":"card","controller_id":owner["id"]} for owner in state["players"] if not own_only or owner["id"]==caster_id for graveyard_card in owner["graveyard"] if (kind=="graveyard_card" or "Creature" in graveyard_card.get("type_line","")) and (not nonland_permanent or ("Land" not in graveyard_card.get("type_line","") and any(card_type in graveyard_card.get("type_line","") for card_type in ("Artifact","Battle","Creature","Enchantment","Planeswalker")))) and (not instant_or_sorcery or any(kind_name in graveyard_card.get("type_line","") for kind_name in ("Instant","Sorcery"))) and (not instant_only or "Instant" in graveyard_card.get("type_line","")) and (soulshift is None or (re.search(r"\bSpirit\b",graveyard_card.get("type_line",""),re.IGNORECASE) and float(graveyard_card.get("mana_value") or 0)<=float(soulshift)))]
     for player in state["players"]:
         aura_types=_aura_allowed_types(card)
         if (kind in {"any", "player","player_or_planeswalker"} or (kind=="permanent" and "player" in aura_types)) and not ("target opponent" in text and player["id"]==caster_id) and not _player_protected_from(state,player,card): targets.append({"id": player["id"], "name": player["name"], "kind": "player", "controller_id": player["id"]})
@@ -2001,7 +2013,7 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
         pending=pending_triggers[0]
         if pending["controller_id"]!=player_id:return []
         if pending.get("mode_options"):return [{"type":"choose_trigger_mode","modes":pending["mode_options"],"label":pending["card"]["oracle_text"],"source_name":pending["source_name"]},{"type":"concede"}]
-        if pending.get("target_steps"):return [{"type":"choose_trigger_targets","target_steps":pending["target_steps"],"label":pending["card"]["oracle_text"],"source_name":pending["source_name"]},{"type":"concede"}]
+        if pending.get("target_steps"):return [{"type":"choose_trigger_targets","target_steps":pending["target_steps"],"min_targets":pending.get("min_targets",len(pending["target_steps"])),"label":pending["card"]["oracle_text"],"source_name":pending["source_name"]},{"type":"concede"}]
         targets=_targets(state,player_id,pending["card"])
         actions=[{"type":"choose_trigger_target","targets":targets,"label":pending["card"]["oracle_text"],"source_name":pending["source_name"]}] if targets else []
         if pending.get("optional") or not targets:actions.append({"type":"skip_trigger","source_name":pending["source_name"]})
@@ -2496,7 +2508,7 @@ def _resolve_spell(state: dict) -> None:
         if item.get("kind","spell")=="spell":_countered_spell_destination(state,caster,card,item.get("flashback",False))
         _finish_saga_final_chapter(state,item)
         _log(state,f"{card['name']} was countered because all of its fight targets were no longer legal.");return
-    if item.get("kind")!="overload_effect" and target_kind and not target_ids and target_id not in {target["id"] for target in _targets(state,caster["id"],targeting_card)}:
+    if item.get("kind")!="overload_effect" and target_kind and not item.get("allow_zero_targets") and not target_ids and target_id not in {target["id"] for target in _targets(state,caster["id"],targeting_card)}:
         if item.get("kind","spell")=="spell":_countered_spell_destination(state,caster,card,item.get("flashback",False))
         _finish_saga_final_chapter(state,item)
         _log(state,f"{card['name']} was countered because its target was no longer legal.");return
@@ -2506,6 +2518,7 @@ def _resolve_spell(state: dict) -> None:
     effect_text = "" if is_permanent_spell and re.search(r"\b(?:when|whenever|at the beginning)\b", text) else text
     times_kicked=int(item.get("multikicker_count") or (source_permanent or {}).get("times_kicked",0))
     if times_kicked:effect_text=_multikicker_effect(effect_text,times_kicked)
+    if source_permanent and re.search(r"deals damage equal to (?:its|his|her) power",effect_text):effect_text=re.sub(r"deals damage equal to (?:its|his|her) power",f"deals {_parse_stats(source_permanent,state)[0]} damage",effect_text)
     if "if you had a land enter" in effect_text:effect_text=_landfall_spell_effect(effect_text,caster.get("land_entered_turn")==state.get("turn"))
     if item.get("kind")=="trigger" and re.search(r"\b(?:first|second|third|fourth) time(?: this ability has resolved)? this turn\b",effect_text):
         usage=state.setdefault("trigger_resolution_usage",{});key=f"{item.get('source_id')}:{card.get('oracle_text','')}";record=usage.get(key,{})
@@ -2523,7 +2536,7 @@ def _resolve_spell(state: dict) -> None:
     target_stack_item = next((entry for entry in state["stack"] if entry["id"] == target_id), None)
     graveyard_owner=next((player for player in state["players"] if any(graveyard_card["instance_id"]==target_id for graveyard_card in player["graveyard"])),None)
     graveyard_target=next((graveyard_card for player in state["players"] for graveyard_card in player["graveyard"] if graveyard_card["instance_id"]==target_id),None)
-    multi_damage=re.search(r"deals (\d+) damage to each of them",effect_text)
+    multi_damage=re.search(r"deals (\d+) damage to each of (?:them|up to \d+ targets?)",effect_text)
     if multi_damage:
         for multi_target_id in target_ids:
             target_player_entry=next((candidate for candidate in state["players"] if candidate["id"]==multi_target_id),None);target_permanent=next((candidate for owner in state["players"] for candidate in owner["battlefield"] if candidate["instance_id"]==multi_target_id),None)
@@ -2535,6 +2548,18 @@ def _resolve_spell(state: dict) -> None:
         for multi_target_id in target_ids:
             target_permanent=next((candidate for owner in state["players"] for candidate in owner["battlefield"] if candidate["instance_id"]==multi_target_id),None)
             if target_permanent:_add_counters(state,target_permanent,"+1/+1",int(multi_counters.group(1)),caster["id"],"multikicker")
+    multi_flying=re.search(r"up to \d+ target creatures? gain flying until end of turn",effect_text)
+    if multi_flying:
+        for multi_target_id in target_ids:
+            target_permanent=next((candidate for owner in state["players"] for candidate in owner["battlefield"] if candidate["instance_id"]==multi_target_id),None)
+            if target_permanent:target_permanent["temporary_keywords"]=sorted(set(target_permanent.get("temporary_keywords",[]))|{"Flying"})
+    multi_return=re.search(r"return up to \d+ target creature cards? from your graveyard to the battlefield",effect_text)
+    if multi_return:
+        returning=[candidate for candidate in list(caster["graveyard"]) if candidate["instance_id"] in set(target_ids) and "Creature" in candidate.get("type_line","")]
+        if returning:
+            _leave_graveyard(state,caster,returning)
+            for candidate in returning:candidate["controller_id"]=caster["id"];candidate["summoning_sick"]=True
+            _enter_battlefield(state,caster,returning,"graveyard")
     if "add one mana of any color" in effect_text:caster["any_color_mana"]=caster.get("any_color_mana",0)+1;_log(state,f"{caster['name']} added one mana of any color.")
     if re.search(r"reveal cards from the top of your library until you reveal an elf or elemental card",effect_text):
         revealed=[];found=None
@@ -3338,6 +3363,7 @@ def _multikicker_effect(text:str,count:int)->str:
     text=re.sub(r"discards? a card for each time (?:this creature|[^.]+?) was kicked",f"discards {count} cards",text,flags=re.IGNORECASE)
     text=re.sub(rf"deals damage to target player or planeswalker equal to twice (?:the number of times [^.]+? was kicked|{count})",f"deals {count*2} damage to target player or planeswalker",text,flags=re.IGNORECASE)
     text=re.sub(rf"damage equal to twice (?:the number|{count})",f"{count*2} damage",text,flags=re.IGNORECASE)
+    if re.search(rf"where x is {count}\b",text,re.IGNORECASE):text=re.sub(r"\bx\b",str(count),text,flags=re.IGNORECASE)
     return text
 
 
@@ -3377,7 +3403,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 is_creature="creature" in type_line;is_land="land" in type_line;is_artifact="artifact" in type_line;is_enchantment="enchantment" in type_line;is_token=bool(event_card.get("token"));is_permanent=any(kind in type_line for kind in ("artifact","battle","creature","enchantment","land","planeswalker"))
                 kind_ok=(("token" in condition and is_token) or ("creature" in condition and is_creature) or ("land" in condition and is_land) or ("artifact" in condition and is_artifact) or ("enchantment" in condition and is_enchantment) or ("permanent" in condition and is_permanent))
                 kind_ok=kind_ok and not (("nontoken" in condition and is_token) or ("noncreature" in condition and is_creature) or ("nonland" in condition and is_land) or ("artifact creature" in condition and not (is_artifact and is_creature)))
-                source_name=(source.get("name") or "").casefold();short_source_name=source_name.split(",",1)[0];self_reference="this creature" in condition or "this token" in condition or "this permanent" in condition or "this artifact" in condition or "this enchantment" in condition or "this land" in condition or bool(source_name and source_name in condition) or bool(short_source_name and short_source_name in condition);self_enters=source is event_card and self_reference and "enter" in condition
+                source_name=(source.get("name") or "").casefold();short_source_name=source_name.split(",",1)[0];first_name=source_name.split()[0] if source_name else "";named_first=bool(first_name and re.search(rf"\bwhen {re.escape(first_name)} enters\b",condition));self_reference="this creature" in condition or "this token" in condition or "this permanent" in condition or "this artifact" in condition or "this enchantment" in condition or "this land" in condition or bool(source_name and source_name in condition) or bool(short_source_name and short_source_name in condition) or named_first;self_enters=source is event_card and self_reference and "enter" in condition
                 kind_ok=kind_ok or self_enters
                 controlled_scope=("you control" in condition or "under your control" in condition) and under_control;owned_scope="you own" in condition and owned;opponent_scope=("opponent controls" in condition or "opponents control" in condition or "under an opponent's control" in condition) and not under_control;enchanted_scope="enchanted player controls" in condition and source.get("attached_to")==event_card.get("controller_id")
                 global_scope=not self_reference and not any(phrase in condition for phrase in ("you control","under your control","you own","opponent controls","opponents control","under an opponent's control","enchanted player controls"))
@@ -3627,7 +3653,21 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 source["transform_next_upkeep"]=True;_log(state,f"{source['name']} will transform at the beginning of the next upkeep.");continue
             ability_card = {**source, "name": f"{source['name']} trigger", "oracle_text": effect, "source_type_line":source.get("type_line",""),"source_mana_cost":source.get("mana_cost",""), "type_line": "Ability", "mana_cost": ""}
             if event=="attackers_declared" and "firebending" in lower and re.search(r"\badd\b[^.]*\{r\}",lower):ability_card["firebending_trigger"]=True
-            fight_steps=_fight_target_steps(state,owner["id"],ability_card,source);targets=[] if fight_steps else _targets(state, owner["id"], ability_card)
+            fight_steps=_fight_target_steps(state,owner["id"],ability_card,source);dynamic_steps=[];dynamic_min=None;times_kicked=int(source.get("times_kicked",0))
+            if times_kicked and re.search(r"each of up to x targets?[^.]*x is the number of times",effect,re.IGNORECASE):
+                candidates=[{"id":candidate["id"],"name":candidate["name"],"kind":"player","controller_id":candidate["id"]} for candidate in state["players"]]
+                candidates.extend({"id":candidate["instance_id"],"name":candidate["name"],"kind":"permanent","controller_id":candidate["controller_id"]} for candidate_owner in state["players"] for candidate in candidate_owner["battlefield"])
+                dynamic_steps=[{"label":f"Choose target {position+1} (or finish)","targets":candidates,"distinct":True} for position in range(times_kicked)];dynamic_min=0
+            elif times_kicked and re.search(r"up to x target creatures?(?! cards?\b)[^.]*x is the number of times",effect,re.IGNORECASE):
+                candidates=[{"id":candidate["instance_id"],"name":candidate["name"],"kind":"permanent","controller_id":candidate["controller_id"]} for candidate_owner in state["players"] for candidate in candidate_owner["battlefield"] if "Creature" in candidate.get("type_line","")]
+                dynamic_steps=[{"label":f"Choose creature {position+1} (or finish)","targets":candidates,"distinct":True} for position in range(min(times_kicked,len(candidates)))];dynamic_min=0
+            elif times_kicked and re.search(r"up to x target creature cards? from your graveyard[^.]*x is the number of times",effect,re.IGNORECASE):
+                candidates=[{"id":candidate["instance_id"],"name":candidate["name"],"kind":"card","controller_id":owner["id"]} for candidate in owner["graveyard"] if "Creature" in candidate.get("type_line","")]
+                dynamic_steps=[{"label":f"Choose creature card {position+1} (or finish)","targets":candidates,"distinct":True} for position in range(min(times_kicked,len(candidates)))];dynamic_min=0
+            elif times_kicked and re.search(r"up to x target instant cards? from your graveyard[^.]*x is the number of times",effect,re.IGNORECASE):
+                candidates=[{"id":candidate["instance_id"],"name":candidate["name"],"kind":"card","controller_id":owner["id"]} for candidate in owner["graveyard"] if "Instant" in candidate.get("type_line","")]
+                dynamic_steps=[{"label":f"Choose instant card {position+1} (or finish)","targets":candidates,"distinct":True} for position in range(min(times_kicked,len(candidates)))];dynamic_min=0
+            targets=[] if fight_steps or dynamic_steps else _targets(state, owner["id"], ability_card)
             for _ in range(trigger_count):
                 trigger={"id":_id(),"kind":"trigger","card":ability_card,"controller_id":owner["id"],"target_id":None,"source_id":source["instance_id"]}
                 if event=="mutates":trigger["x_value"]=event_card.get("mutate_count",1)
@@ -3637,6 +3677,8 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 modal_options=_modal_options(ability_card)
                 if modal_options:
                     state.setdefault("pending_trigger_targets",[]).append({"controller_id":owner["id"],"source_name":source["name"],"trigger":trigger,"card":ability_card,"mode_options":modal_options});state["priority_player_id"]=state["pending_trigger_targets"][0]["controller_id"]
+                elif dynamic_steps:
+                    state.setdefault("pending_trigger_targets",[]).append({"controller_id":owner["id"],"source_name":source["name"],"trigger":trigger,"card":ability_card,"target_steps":dynamic_steps,"min_targets":dynamic_min});state["priority_player_id"]=state["pending_trigger_targets"][0]["controller_id"]
                 elif fight_steps:
                     if all(step["targets"] for step in fight_steps):state.setdefault("pending_trigger_targets",[]).append({"controller_id":owner["id"],"source_name":source["name"],"trigger":trigger,"card":ability_card,"target_steps":fight_steps});state["priority_player_id"]=state["pending_trigger_targets"][0]["controller_id"]
                     else:_log(state,f"{source['name']}'s fight trigger had no legal targets and was removed.")
@@ -4558,8 +4600,9 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
             else:state["stack"].append(trigger);_log(state,f"{player['name']} chose {options[mode_index]['label']} for {pending['source_name']}'s trigger.")
         elif action_type=="choose_trigger_targets":
             steps=pending.get("target_steps") or [];target_ids=action.get("target_ids") or []
-            if len(target_ids)!=len(steps) or any(target_value not in {target["id"] for target in steps[position]["targets"]} for position,target_value in enumerate(target_ids)) or any(step.get("distinct") and target_ids[position] in target_ids[:position] for position,step in enumerate(steps)):raise RuleViolation("Choose legal targets for the fight trigger")
-            trigger=pending["trigger"];trigger["target_ids"]=target_ids;state["stack"].append(trigger);_log(state,f"{player['name']} chose the fighters for {pending['source_name']}'s trigger.")
+            minimum=int(pending.get("min_targets",len(steps)))
+            if not minimum<=len(target_ids)<=len(steps) or any(target_value not in {target["id"] for target in steps[position]["targets"]} for position,target_value in enumerate(target_ids)) or any(step.get("distinct") and target_ids[position] in target_ids[:position] for position,step in enumerate(steps[:len(target_ids)])):raise RuleViolation("Choose a legal number of distinct targets")
+            trigger=pending["trigger"];trigger["target_ids"]=target_ids;trigger["allow_zero_targets"]=minimum==0;state["stack"].append(trigger);_log(state,f"{player['name']} chose {len(target_ids)} target(s) for {pending['source_name']}'s trigger.")
         elif action_type=="choose_trigger_target":
             if target_id not in {target["id"] for target in targets}:raise RuleViolation("Choose a legal target for the triggered ability")
             trigger=pending["trigger"];trigger["target_id"]=target_id;state["stack"].append(trigger);_log(state,f"{player['name']} chose {next(target['name'] for target in targets if target['id']==target_id)} for {pending['source_name']}'s trigger.")
