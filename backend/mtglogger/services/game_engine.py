@@ -3558,6 +3558,10 @@ def _resolve_spell(state: dict) -> None:
     if source_graveyard and "you may cast it from your graveyard this turn" in effect_text:
         if state.get("active_player_id")==caster["id"]:source_graveyard["graveyard_cast_until_turn"]=state["turn"]
         return
+    if source_graveyard and "exile it and the top six cards of your library in a face-down pile" in effect_text:
+        _leave_graveyard(state,caster,[source_graveyard]);pile=[source_graveyard]
+        for _ in range(min(6,len(caster["library"]))):pile.append(caster["library"].pop())
+        random.SystemRandom().shuffle(pile);caster["library"].extend(pile);_log(state,f"{source_graveyard['name']} and {len(pile)-1} card(s) were shuffled into a face-down pile on top of {caster['name']}'s library.");return
     if source_graveyard and re.search(r"(?:you may )?return this card(?: from your graveyard)? to the battlefield",effect_text):
         _leave_graveyard(state,caster,[source_graveyard]);source_graveyard["controller_id"]=caster["id"];source_graveyard["summoning_sick"]=True;_enter_battlefield(state,caster,[source_graveyard],"graveyard")
         if "with a finality counter on it" in effect_text:_add_counters(state,source_graveyard,"finality",1,caster["id"],"effect")
@@ -4014,8 +4018,9 @@ def _resolve_spell(state: dict) -> None:
             _log(state, f"{countered['name']} was countered.")
             if card.get("name")=="Invasive Surgery" and _graveyard_card_type_count(caster)>=4:_start_same_name_search(state,caster,countered_controller,countered["name"],card["name"])
     if graveyard_target and graveyard_owner:
-        if re.search(r"(?:return|put) (?:target|that) (?:(?:creature or enchantment|creature|permanent|nonland permanent) )?card (?:.*graveyard )?(?:to|into|onto) (?:the battlefield|play)",effect_text):
+        if re.search(r"(?:return|put) (?:up to one )?(?:target|that) (?:(?:creature or enchantment|creature|permanent|nonland permanent) )?card (?:.*graveyard )?(?:to|into|onto) (?:the battlefield|play)",effect_text):
             _leave_graveyard(state,graveyard_owner,[graveyard_target]);graveyard_target["controller_id"]=caster["id"];graveyard_target["summoning_sick"]=True;_enter_battlefield(state,caster,[graveyard_target],"graveyard");_log(state,f"{graveyard_target['name']} returned to the battlefield under {caster['name']}'s control.")
+            if "with a lifelink counter on it" in effect_text:_add_counters(state,graveyard_target,"lifelink",1,caster["id"],"effect");_log(state,f"{graveyard_target['name']} received a lifelink counter.")
         elif re.search(r"return (?:target|that) (?:creature |nonland permanent )?card .*graveyard to (?:your|its owner'?s) hand",effect_text):
             _leave_graveyard(state,graveyard_owner,[graveyard_target]);graveyard_target["controller_id"]=graveyard_target.get("owner_id",graveyard_owner["id"]);_player(state,graveyard_target["controller_id"])["hand"].append(graveyard_target);_log(state,f"{graveyard_target['name']} returned to its owner's hand.")
         elif re.search(r"exile target (?:creature )?card .*graveyard",effect_text):
@@ -4699,7 +4704,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 if matches and one_or_more and dedupe is not None:dedupe.add(dedupe_key)
                 if matches and once_each_turn:source.setdefault("entry_trigger_turns",{})[condition]=state.get("turn")
             elif event == "dies" and event_card:
-                is_creature="creature" in event_card.get("type_line","").casefold();same_controller=event_card.get("controller_id")==source.get("controller_id",owner["id"]);self_dies=source is event_card and re.search(r"when (?:~|this creature|[^,]+) dies",lower) is not None
+                is_creature="creature" in event_card.get("type_line","").casefold();same_controller=event_card.get("controller_id")==source.get("controller_id",owner["id"]);self_dies=source is event_card and (re.search(r"when (?:~|this creature|[^,]+) dies",lower) is not None or re.search(r"when this creature is put into your graveyard from the battlefield",lower) is not None)
                 another=source is not event_card and "whenever another creature dies" in lower
                 controlled=is_creature and same_controller and re.search(r"whenever (?:another |a )?creature you control dies",lower) is not None and ("another creature" not in lower or source is not event_card)
                 graveyard_entry=is_creature and not event_card.get("token") and same_controller and re.search(r"whenever a nontoken creature is put into your graveyard from the battlefield",lower) is not None
