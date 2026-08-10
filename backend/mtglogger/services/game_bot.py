@@ -7,7 +7,7 @@ from .game_engine import _can_block_pair, _effective_rules_text, _has_keyword, _
 
 def _card(state: dict, player_id: str, instance_id: str) -> dict:
     player = next(player for player in state["players"] if player["id"] == player_id)
-    return next(card for zone in (player["hand"],player["battlefield"],player["graveyard"],player.get("exile",[]),player.get("command",[])) for card in zone if card["instance_id"] == instance_id)
+    return next(card for zone in (player["hand"],player["battlefield"],player["graveyard"],player.get("exile",[]),player.get("command",[]),player.get("library",[])) for card in zone if card["instance_id"] == instance_id)
 
 
 def _stats(state:dict,card:dict)->tuple[int,int]:
@@ -210,6 +210,36 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
     if not actions:
         return None
     by_type = {kind: [action for action in actions if action["type"] == kind] for kind in {action["type"] for action in actions}}
+    if "choose_plot_card" in by_type:
+        action=by_type["choose_plot_card"][0];choice=max(action.get("cards",[]),key=lambda card:_threat_score(state,card),default=None)
+        return {"type":"choose_plot_card","card_id":choice["instance_id"]} if choice and difficulty!="beginner" else by_type.get("decline_plot_card",[None])[0]
+    if "choose_locus_copy_target" in by_type:
+        action=by_type["choose_locus_copy_target"][0];return {"type":"choose_locus_copy_target","target_id":_choose_target(state,action)}
+    if "choose_blunderbuss_sacrifice" in by_type:
+        action=by_type["choose_blunderbuss_sacrifice"][0];choice=min(action.get("cards",[]),key=lambda card:_threat_score(state,card),default=None);return {"type":"choose_blunderbuss_sacrifice","card_id":choice["instance_id"]} if choice else None
+    if "choose_blunderbuss_target" in by_type:
+        action=by_type["choose_blunderbuss_target"][0];return {"type":"choose_blunderbuss_target","target_id":_choose_target(state,{**action,"label":"deal damage to target creature"})}
+    if "finish_blunderbuss" in by_type:return by_type["finish_blunderbuss"][0]
+    if "choose_headdress_card" in by_type:
+        action=by_type["choose_headdress_card"][0];choice=max(action.get("cards",[]),key=lambda card:_threat_score(state,card),default=None);return {"type":"choose_headdress_card","card_id":choice["instance_id"]} if choice else None
+    if "choose_grim_sacrifice" in by_type:
+        action=by_type["choose_grim_sacrifice"][0];choice=min(action.get("cards",[]),key=lambda card:_threat_score(state,card),default=None);return {"type":"choose_grim_sacrifice","card_id":choice["instance_id"]} if choice else None
+    if "choose_grim_return" in by_type:
+        action=by_type["choose_grim_return"][0];choice=max(action.get("cards",[]),key=lambda card:_threat_score(state,card),default=None);defender=(action.get("defenders") or [None])[0];return {"type":"choose_grim_return","card_id":choice["instance_id"],"target_id":defender["id"]} if choice and defender and difficulty!="beginner" else by_type.get("decline_grim_return",[None])[0]
+    if "cast_catalyst" in by_type or "decline_catalyst" in by_type:return by_type.get("cast_catalyst",by_type.get("decline_catalyst",[None]))[0] if difficulty!="beginner" else by_type.get("decline_catalyst",by_type.get("cast_catalyst",[None]))[0]
+    if "choose_escape_counter" in by_type:return max(by_type["choose_escape_counter"],key=lambda action:action.get("amount",0))
+    if "choose_card_type" in by_type:
+        action=by_type["choose_card_type"][0];return {"type":"choose_card_type","card_type":action.get("card_types",["Creature"])[0]}
+    if "choose_color" in by_type:return by_type["choose_color"][0]
+    if "choose_counter_effect" in by_type:return by_type["choose_counter_effect"][0]
+    if "choose_tap_target" in by_type or "choose_untap_target" in by_type:
+        kind="choose_untap_target" if "choose_untap_target" in by_type else "choose_tap_target";action=by_type[kind][0];return {"type":kind,"target_id":_choose_target(state,action)}
+    if "choose_zone_card" in by_type:
+        action=by_type["choose_zone_card"][0]
+        if action.get("card_id"):return max(by_type["choose_zone_card"],key=lambda entry:_threat_score(state,entry.get("card") or _card(state,"bot",entry["card_id"])))
+        cards=action.get("cards",[]);choice=max(cards,key=lambda card:_threat_score(state,card),default=None);return {"type":"choose_zone_card","card_id":choice["instance_id"]} if choice else by_type.get("decline_zone_choice",[None])[0]
+    if "decline_zone_choice" in by_type:return by_type["decline_zone_choice"][0]
+    if "put_top_card_battlefield" in by_type:return by_type["put_top_card_battlefield"][0]
     if "sticktwister_discard" in by_type or "sticktwister_sacrifice" in by_type:
         discard=min(by_type.get("sticktwister_discard",[]),key=lambda action:float((action.get("card") or {}).get("mana_value") or 0),default=None);sacrifice=min(by_type.get("sticktwister_sacrifice",[]),key=lambda action:_threat_score(state,action.get("card") or {}),default=None)
         if discard and (not sacrifice or float((discard.get("card") or {}).get("mana_value") or 0)<=_threat_score(state,sacrifice.get("card") or {})):return {"type":"sticktwister_discard","card_id":discard["card_id"]}
@@ -450,6 +480,8 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
         choice=max(by_type["unearth"],key=lambda action:_threat_score(state,_card(state,"bot",action["card_id"])))
         best_cast=max((_threat_score(state,_card(state,"bot",action["card_id"])) for action in by_type.get("cast",[])),default=-1)
         if difficulty=="beginner" and random.random()<.5 or "cast" not in by_type or _threat_score(state,_card(state,"bot",choice["card_id"]))>=best_cast:return choice
+    if "transmute" in by_type and "cast" not in by_type:
+        return max(by_type["transmute"],key=lambda action:action.get("mana_value",0))
     if "channel" in by_type:
         choice=max(by_type["channel"],key=lambda action:_ability_score(state,action))
         if choice.get("x_max") is not None:
@@ -496,6 +528,10 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
             if equipment.get("attached_to")!=target_id:candidates.append((action,target_id,_threat_score(state,_target_card(state,target_id) or {})))
         if candidates:
             action,target_id,_=max(candidates,key=lambda candidate:candidate[2]);return {**action,"target_id":target_id}
+    if "reconfigure" in by_type:
+        attach=[action for action in by_type["reconfigure"] if not action.get("detach") and action.get("targets")]
+        if attach:
+            action=max(attach,key=lambda candidate:_threat_score(state,_card(state,"bot",candidate["card_id"])));return {**action,"target_id":_choose_target(state,{**action,"label":"attach to target creature you control"})}
     if "activate" in by_type:
         choices=by_type["activate"];choice=max(choices,key=lambda action:_ability_score(state,action))
         if (difficulty=="beginner" and _ability_score(state,choice)>-.5) or _ability_score(state,choice)>0:
