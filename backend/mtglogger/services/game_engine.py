@@ -683,10 +683,13 @@ def _detach(state:dict,attachment:dict,restore_control:bool=True)->None:
         if attachment["instance_id"] in target.get("attachment_copy_layers",{}):_remove_attachment_copy(target,attachment["instance_id"])
         target.get("attachment_keywords",{}).pop(attachment["instance_id"],None);target.get("attachment_rules",{}).pop(attachment["instance_id"],None)
         if restore_control and return_to:_change_control(state,target,_player(state,return_to))
+    if attachment.get("reconfigure_base_type_line"):attachment["type_line"]=attachment.pop("reconfigure_base_type_line")
 
 
 def _attach(state:dict,attachment:dict,target:dict)->None:
     _detach(state,attachment);attachment["attached_to"]=target.get("instance_id",target.get("id"));keywords=_attachment_keywords(attachment)
+    if _reconfigure_costs(attachment) and "Creature" in attachment.get("type_line",""):
+        attachment["reconfigure_base_type_line"]=attachment["type_line"];attachment["type_line"]=attachment["type_line"].replace("Artifact Creature","Artifact")
     if target.get("instance_id"):
         target.setdefault("attachment_rules",{})[attachment["instance_id"]]=attachment.get("oracle_text") or ""
         if keywords:target.setdefault("attachment_keywords",{})[attachment["instance_id"]]=keywords
@@ -702,6 +705,18 @@ def _attach(state:dict,attachment:dict,target:dict)->None:
 def _equip_cost(card:dict)->str|None:
     match=re.search(r"(?:^|\n)Equip\s+((?:\{[^}]+\})+)",card.get("oracle_text") or "",re.IGNORECASE)
     return match.group(1).upper() if match else None
+
+
+def _reconfigure_costs(card:dict)->list[dict]:
+    match=re.search(r"(?:^|\n)Reconfigure\s*[—-]?\s*(.+?)(?:\s*\(|\n|$)",card.get("oracle_text") or "",re.IGNORECASE)
+    if not match:return []
+    result=[]
+    for choice in re.split(r"\s+or\s+",match.group(1).rstrip(". "),flags=re.IGNORECASE):
+        mana=re.fullmatch(r"(?:pay\s+)?((?:\{[WUBRGCEX0-9]+\})+)",choice.strip(),re.IGNORECASE)
+        if not mana:continue
+        symbols=_mana_symbols({"mana_cost":mana.group(1).upper()});energy=sum(symbol=="E" for symbol in symbols)
+        result.append({"mana_cost":"" if energy else mana.group(1).upper(),"energy_cost":energy})
+    return result
 
 
 def _crew_value(card:dict)->int|None:
@@ -3208,6 +3223,14 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
             if not equip_cost or not _can_pay(player,{"mana_cost":equip_cost}):continue
             targets=[{"id":creature["instance_id"],"name":creature["name"],"kind":"permanent","controller_id":player_id} for creature in player["battlefield"] if "Creature" in creature.get("type_line","") and not _has_keyword(creature,"Shroud") and not _protected_from(creature,equipment)]
             if targets:actions.append({"type":"equip","card_id":equipment["instance_id"],"label":f"Equip {equipment['name']} · {equip_cost}","mana_cost":equip_cost,"targets":targets})
+        for equipment in player["battlefield"]:
+            for cost_index,cost in enumerate(_reconfigure_costs(equipment)):
+                if cost["mana_cost"] and not _can_pay(player,{"mana_cost":cost["mana_cost"]}) or cost["energy_cost"] and player.get("energy",0)<cost["energy_cost"]:continue
+                cost_label=cost["mana_cost"] or f"{cost['energy_cost']} energy"
+                if equipment.get("attached_to"):actions.append({"type":"reconfigure","card_id":equipment["instance_id"],"cost_index":cost_index,"detach":True,"mana_cost":cost["mana_cost"],"energy_cost":cost["energy_cost"],"label":f"Unattach {equipment['name']} · {cost_label}"})
+                else:
+                    targets=[{"id":creature["instance_id"],"name":creature["name"],"kind":"permanent","controller_id":player_id} for creature in player["battlefield"] if creature["instance_id"]!=equipment["instance_id"] and "Creature" in creature.get("type_line","") and not _has_keyword(creature,"Shroud") and not _protected_from(creature,equipment)]
+                    if targets:actions.append({"type":"reconfigure","card_id":equipment["instance_id"],"cost_index":cost_index,"detach":False,"mana_cost":cost["mana_cost"],"energy_cost":cost["energy_cost"],"targets":targets,"label":f"Reconfigure {equipment['name']} · {cost_label}"})
     suspended_casts=[action for action in actions if action.get("type")=="cast" and action.get("source")=="suspend"]
     if suspended_casts:return suspended_casts+[{"type":"concede"}]
     if _multiplayer(state) or not allow_direct_resolution:
@@ -3386,6 +3409,13 @@ def _resolve_spell(state: dict) -> None:
         equipment=next((permanent for permanent in caster["battlefield"] if permanent["instance_id"]==item.get("source_id") and "Equipment" in permanent.get("type_line","")),None);target=next((permanent for permanent in caster["battlefield"] if permanent["instance_id"]==item.get("target_id") and "Creature" in permanent.get("type_line","")),None)
         if not equipment or not target or _has_keyword(target,"Shroud") or _protected_from(target,equipment):_log(state,f"{card['name']} did not resolve because its source or target was no longer legal.");return
         _attach(state,equipment,target);_log(state,f"{caster['name']} equipped {target['name']} with {equipment['name']}.");return
+    if item.get("kind")=="reconfigure_ability":
+        equipment=next((permanent for permanent in caster["battlefield"] if permanent["instance_id"]==item.get("source_id") and _reconfigure_costs(permanent)),None)
+        if not equipment:_log(state,f"{card['name']} did not resolve because its source left the battlefield.");return
+        if item.get("detach"):_detach(state,equipment);_log(state,f"{caster['name']} unattached {equipment['name']}; it is a creature again.");return
+        target=next((permanent for permanent in caster["battlefield"] if permanent["instance_id"]==item.get("target_id") and "Creature" in permanent.get("type_line","")),None)
+        if not target or _has_keyword(target,"Shroud") or _protected_from(target,equipment):_log(state,f"{card['name']} did not resolve because its target was no longer legal.");return
+        _attach(state,equipment,target);_log(state,f"{caster['name']} reconfigured {equipment['name']} onto {target['name']}; it is no longer a creature while attached.");return
     if item.get("kind")=="crew_ability":
         vehicle=next((permanent for permanent in caster["battlefield"] if permanent["instance_id"]==item.get("source_id") and _crew_value(permanent) is not None),None)
         if not vehicle:_log(state,f"{card['name']} did not resolve because its Vehicle left the battlefield.");return
@@ -6242,6 +6272,12 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="station" and entry["card_id"]==action.get("card_id")),None)
         if not permanent or not available or len(selected)!=1 or selected[0] not in available["cost_options"]:raise RuleViolation("Choose one other untapped creature to station this permanent")
         crew=next(card for card in player["battlefield"] if card["instance_id"]==selected[0]);amount=max(0,_parse_stats(crew,state)[0]);_ensure_land_play_tracking(player);_set_tapped(state,[crew],True,player_id,"station");_add_counters(state,permanent,"charge",amount,player_id,"station");_sync_station_state(permanent);_refresh_land_plays(state,player);state["consecutive_passes"]=0;state["pending_phase_advance"]=False;_log(state,f"{player['name']} tapped {crew['name']} to station {permanent['name']} for {amount} charge counter(s).")
+    elif action_type == "reconfigure":
+        cost_index=int(action.get("cost_index") or 0);requested_detach=bool(action.get("detach"));available=next((entry for entry in legal_actions(state,player_id) if entry["type"]=="reconfigure" and entry["card_id"]==action.get("card_id") and entry["cost_index"]==cost_index and bool(entry.get("detach"))==requested_detach),None);target_id=action.get("target_id")
+        if not available or not requested_detach and target_id not in {target["id"] for target in available.get("targets",[])}:raise RuleViolation("That Reconfigure action is no longer legal")
+        equipment=next(card for card in player["battlefield"] if card["instance_id"]==action["card_id"]);_pay_mana(state,player,{"mana_cost":available.get("mana_cost","")});_pay_energy(state,player,int(available.get("energy_cost") or 0));state["stack"].append({"id":_id(),"kind":"reconfigure_ability","card":{**equipment,"name":f"{equipment['name']} reconfigure ability","type_line":"Ability"},"controller_id":player_id,"target_id":target_id,"source_id":equipment["instance_id"],"detach":requested_detach});state["consecutive_passes"]=0;state["pending_phase_advance"]=False
+        if _multiplayer(state) or not allow_direct_resolution:state["priority_player_id"]=opponent(state,player_id)["id"]
+        _log(state,f"{player['name']} activated {equipment['name']}'s Reconfigure ability to {'unattach it' if requested_detach else 'attach it to '+next(target['name'] for target in available['targets'] if target['id']==target_id)}.")
     elif action_type == "equip":
         available=next((entry for entry in legal_actions(state,player_id) if entry["type"]=="equip" and entry["card_id"]==action.get("card_id")),None);target_id=action.get("target_id")
         if not available or target_id not in {target["id"] for target in available["targets"]}:raise RuleViolation("That Equipment cannot be attached to that creature now")
