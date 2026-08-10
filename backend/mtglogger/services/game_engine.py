@@ -231,7 +231,7 @@ def _check_ascend(state:dict,player:dict,spell:dict|None=None)->None:
 
 
 def _additional_land_plays(player:dict)->int:
-    return sum(len(re.findall(r"you may play an additional land on each of your turns",card.get("oracle_text") or "",re.IGNORECASE)) for card in player["battlefield"])
+    return sum(len(re.findall(r"you may play an additional land on each of your turns",_active_level_text(card),re.IGNORECASE)) for card in player["battlefield"])
 
 
 def _ensure_land_play_tracking(player:dict)->None:
@@ -1678,6 +1678,8 @@ def _target_kind(card: dict) -> str | None:
     if re.search(r"target creature card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_creature"
     if re.search(r"target (?:nonland permanent |nonland )?card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_card"
     if "target face-down permanent you control" in text:return "permanent"
+    if "target artifact or enchantment" in text:return "artifact_or_enchantment"
+    if "target creature or planeswalker" in text:return "creature_or_planeswalker"
     if "target creature or vehicle" in text:return "creature_or_vehicle"
     if re.search(r"target player mills?", text): return "player"
     if re.search(r"target player sacrifices?",text):return "player"
@@ -1755,7 +1757,7 @@ def _targets(state: dict, caster_id: str, card: dict, ignore_target_protection:b
         aura_types=_aura_allowed_types(card)
         if (kind in {"any", "player","player_or_planeswalker"} or (kind=="permanent" and "player" in aura_types)) and not ("target opponent" in text and player["id"]==caster_id) and not _player_protected_from(state,player,card): targets.append({"id": player["id"], "name": player["name"], "kind": "player", "controller_id": player["id"]})
         for permanent in player["battlefield"]:
-            if kind in {"any", "permanent"} or (kind=="player_or_planeswalker" and "Planeswalker" in permanent.get("type_line","")) or (kind=="creature_or_spell" and "Creature" in permanent.get("type_line","")) or (kind=="creature_or_vehicle" and any(value in permanent.get("type_line","") for value in ("Creature","Vehicle"))) or (kind in {"creature","artifact","enchantment","land","planeswalker"} and kind in permanent.get("type_line", "").casefold()):
+            if kind in {"any", "permanent"} or (kind=="player_or_planeswalker" and "Planeswalker" in permanent.get("type_line","")) or (kind=="creature_or_planeswalker" and any(value in permanent.get("type_line","") for value in ("Creature","Planeswalker"))) or (kind=="artifact_or_enchantment" and any(value in permanent.get("type_line","") for value in ("Artifact","Enchantment"))) or (kind=="creature_or_spell" and "Creature" in permanent.get("type_line","")) or (kind=="creature_or_vehicle" and any(value in permanent.get("type_line","") for value in ("Creature","Vehicle"))) or (kind in {"creature","artifact","enchantment","land","planeswalker"} and kind in permanent.get("type_line", "").casefold()):
                 aura_types=_aura_allowed_types(card)
                 if "Aura" in card.get("type_line","") and aura_types and not any(allowed in permanent.get("type_line","").casefold() for allowed in aura_types if allowed!="player"):continue
                 if own_target_only and player["id"] != caster_id: continue
@@ -2646,6 +2648,7 @@ def _resolve_spell(state: dict) -> None:
     times_kicked=int(item.get("multikicker_count") or (source_permanent or {}).get("times_kicked",0))
     if times_kicked:effect_text=_multikicker_effect(effect_text,times_kicked)
     if caster.get("speed",0):effect_text=_speed_effect(effect_text,caster)
+    effect_text=re.sub(r"\bto up to one target\b","to target",effect_text,flags=re.IGNORECASE)
     if source_permanent and re.search(r"deals damage equal to (?:its|his|her) power",effect_text):effect_text=re.sub(r"deals damage equal to (?:its|his|her) power",f"deals {_parse_stats(source_permanent,state)[0]} damage",effect_text)
     if "copy target spell you control" in effect_text:
         original=next((stack_item for stack_item in state["stack"] if stack_item["id"]==target_id and stack_item.get("controller_id")==caster["id"] and stack_item.get("kind","spell")=="spell"),None)
@@ -2751,6 +2754,11 @@ def _resolve_spell(state: dict) -> None:
         token=deepcopy(source_permanent);token["instance_id"]=_id();token["owner_id"]=caster["id"];token["controller_id"]=caster["id"];token["token"]=True;token["damage"]=0;token["counters"]={};token["tapped"]=False;token["summoning_sick"]=True
         for key in ("attached_to","attachment_keywords","attachment_rules","temporary_power","temporary_toughness","temporary_keywords","temporary_backup_rules","deathtouch_damage","activated_ability_usage","entered_turn"):token.pop(key,None)
         _enter_battlefield(state,caster,[token],"token");_log(state,f"{caster['name']} created a token copy of {source_permanent['name']}.");return
+    if "create a token that's a copy of target artifact or enchantment you control" in effect_text and target:
+        token=deepcopy(target);token["instance_id"]=_id();token["owner_id"]=caster["id"];token["controller_id"]=caster["id"];token["token"]=True;token["damage"]=0;token["counters"]={};token["tapped"]=False;token["summoning_sick"]=True
+        for key in ("attached_to","attachment_keywords","attachment_rules","temporary_power","temporary_toughness","temporary_keywords","temporary_backup_rules","continuous_keywords","deathtouch_damage","activated_ability_usage","entered_turn","station_base_type_line"):token.pop(key,None)
+        if "except it's legendary" in effect_text and "Legendary" not in token.get("type_line",""):token["type_line"]=f"Legendary {token['type_line']}"
+        _enter_battlefield(state,caster,[token],"token");_log(state,f"{caster['name']} created a legendary token copy of {target['name']}.");return
     if "create a token that's a copy of enchanted creature" in effect_text and source_permanent:
         enchanted=next((permanent for permanent in caster["battlefield"] if permanent.get("instance_id")==source_permanent.get("attached_to")),None)
         if enchanted:
@@ -3570,7 +3578,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
             insert_at=max((index+1 for index,(owner,_) in enumerate(sources) if owner["id"]==event_owner["id"]),default=len(sources));sources.insert(insert_at,(event_owner,event_card))
     for owner, source in sources:
         text = "\n".join([_active_level_text(source),*(source.get("temporary_backup_rules") or [])])
-        raw_clauses = re.split(r"(?<=[.!])\s+|\n", text);clauses=[]
+        trigger_text=re.sub(r"\bU\.S\.S\.\s+","USS ",text,flags=re.IGNORECASE);raw_clauses = re.split(r"(?<=[.!])\s+|\n", trigger_text);clauses=[]
         for clause in raw_clauses:
             modal_continuation=bool(clauses and (clause.strip().startswith(("•","-")) or clauses[-1].lstrip().startswith(("•","-")) or re.search(r"\n[•-]\s",clauses[-1]) and not re.match(r"(?:when(?:ever)?\b|at the beginning\b|[+−-]?\d+\s*:|\{[^}]+\}[^:]*:)",clause.strip(),re.IGNORECASE)))
             top_card_continuation=bool(clauses and (("look at the top card of your library" in clauses[-1].casefold() and re.match(r"if (?:it(?:'s| is) a creature card|you don.t put the card into your hand)",clause.strip(),re.IGNORECASE)) or ("each opponent sacrifices" in clauses[-1].casefold() and re.match(r"each opponent who can.t discards a card",clause.strip(),re.IGNORECASE))))
@@ -3871,7 +3879,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                     if all(step["targets"] for step in fight_steps):state.setdefault("pending_trigger_targets",[]).append({"controller_id":owner["id"],"source_name":source["name"],"trigger":trigger,"card":ability_card,"target_steps":fight_steps});state["priority_player_id"]=state["pending_trigger_targets"][0]["controller_id"]
                     else:_log(state,f"{source['name']}'s fight trigger had no legal targets and was removed.")
                 elif _target_kind(ability_card):
-                    if targets:state.setdefault("pending_trigger_targets",[]).append({"controller_id":owner["id"],"source_name":source["name"],"trigger":trigger,"card":ability_card,"optional":re.match(r"(?:otherwise,\s*)?you may\b",effect,re.IGNORECASE) is not None});state["priority_player_id"]=state["pending_trigger_targets"][0]["controller_id"]
+                    if targets:state.setdefault("pending_trigger_targets",[]).append({"controller_id":owner["id"],"source_name":source["name"],"trigger":trigger,"card":ability_card,"optional":re.match(r"(?:otherwise,\s*)?you may\b",effect,re.IGNORECASE) is not None or "up to one target" in effect.casefold()});state["priority_player_id"]=state["pending_trigger_targets"][0]["controller_id"]
                     else:_log(state,f"{source['name']}'s trigger had no legal target and was removed.")
                 else:state["stack"].append(trigger)
                 _log(state, f"{source['name']} triggered: {effect}")
@@ -4572,7 +4580,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         permanent=next((card for card in player["battlefield"] if card["instance_id"]==action.get("card_id") and re.search(r"(?:^|\n)Station\b",card.get("oracle_text") or "",re.IGNORECASE)),None);selected=action.get("cost_card_ids") or []
         available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="station" and entry["card_id"]==action.get("card_id")),None)
         if not permanent or not available or len(selected)!=1 or selected[0] not in available["cost_options"]:raise RuleViolation("Choose one other untapped creature to station this permanent")
-        crew=next(card for card in player["battlefield"] if card["instance_id"]==selected[0]);amount=max(0,_parse_stats(crew,state)[0]);_set_tapped(state,[crew],True,player_id,"station");_add_counters(state,permanent,"charge",amount,player_id,"station");_sync_station_state(permanent);state["consecutive_passes"]=0;state["pending_phase_advance"]=False;_log(state,f"{player['name']} tapped {crew['name']} to station {permanent['name']} for {amount} charge counter(s).")
+        crew=next(card for card in player["battlefield"] if card["instance_id"]==selected[0]);amount=max(0,_parse_stats(crew,state)[0]);_ensure_land_play_tracking(player);_set_tapped(state,[crew],True,player_id,"station");_add_counters(state,permanent,"charge",amount,player_id,"station");_sync_station_state(permanent);_refresh_land_plays(state,player);state["consecutive_passes"]=0;state["pending_phase_advance"]=False;_log(state,f"{player['name']} tapped {crew['name']} to station {permanent['name']} for {amount} charge counter(s).")
     elif action_type == "equip":
         available=next((entry for entry in legal_actions(state,player_id) if entry["type"]=="equip" and entry["card_id"]==action.get("card_id")),None);target_id=action.get("target_id")
         if not available or target_id not in {target["id"] for target in available["targets"]}:raise RuleViolation("That Equipment cannot be attached to that creature now")
