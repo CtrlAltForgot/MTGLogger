@@ -2092,8 +2092,13 @@ def _targets(state: dict, caster_id: str, card: dict, ignore_target_protection:b
 
 def _fight_target_steps(state:dict,caster_id:str,card:dict,source:dict|None=None)->list[dict]:
     text=(card.get("oracle_text") or "").casefold()
+    burn_together=bool(re.search(r"target creature you control deals damage equal to its power to any other target\.\s*then sacrifice it",text))
     one_way=bool(re.search(r"choose target creature you control and target creature an opponent controls",text) and "deals damage equal to its power to the creature an opponent controls" in text)
-    if "fight" not in text and not one_way:return []
+    if "fight" not in text and not one_way and not burn_together:return []
+    if burn_together:
+        source_targets=_targets(state,caster_id,{**card,"oracle_text":"Put a +1/+1 counter on target creature you control."})
+        damage_targets=_targets(state,caster_id,{**card,"oracle_text":"This spell deals 1 damage to any target."})
+        return [{"label":"Choose your creature that will deal damage","targets":source_targets},{"label":"Choose any other target to receive its power in damage","targets":damage_targets,"distinct":True}]
     source_fight=bool(source and (re.search(r"(?:this creature|this permanent|it) fights? (?:up to one )?target creature",text) or re.search(rf"\b{re.escape(source.get('name','').casefold())}\b fights? (?:up to one )?target creature",text)))
     two_target=one_way or bool(re.search(r"target creature(?: you control)? fights? (?:another )?target creature",text) or re.search(r"two target creatures fight",text) or "fight each other" in text)
     if not source_fight and not two_target:return []
@@ -3148,8 +3153,11 @@ def _resolve_spell(state: dict) -> None:
     multi_damage_target=re.search(r"deals (\d+) damage to each of up to (?:two|three|four|\d+) targets?",targeting_card.get("oracle_text") or "",re.IGNORECASE)
     if multi_damage_target:targeting_card={**targeting_card,"oracle_text":f"This spell deals {multi_damage_target.group(1)} damage to any target."}
     target_kind=_target_kind(targeting_card);target_id=item.get("target_id")
-    source_permanent=next((permanent for player in state["players"] for permanent in player["battlefield"] if permanent["instance_id"]==item.get("source_id")),None);target_ids=item.get("target_ids") or [];fight_steps=_fight_target_steps(state,caster["id"],rules_card,source_permanent);valid_fight_ids=[target_value for position,target_value in enumerate(target_ids) if position<len(fight_steps) and target_value in {target["id"] for target in fight_steps[position]["targets"]}]
-    rules_text=(rules_card.get("oracle_text") or "").casefold();convert_to_slime="destroy up to one target artifact, up to one target creature, and up to one target enchantment" in rules_text;crop_sigil_return="return up to one target creature card and up to one target land card from your graveyard to your hand" in rules_text;castigator_shuffle="shuffle up to three target cards from your graveyard into your library" in rules_text;flytrap_distribution="distribute two +1/+1 counters among one or two target creatures" in rules_text and "omnivorous flytrap" in f"{card.get('name','')} {(source_permanent or {}).get('name','')}".casefold();control_exchange="exchange control of two target nonland permanents that share a card type" in rules_text;adventure_distribution=re.search(r"distribute (?:\d+|two|three|four) \+1/\+1 counters among (?:any number of|one or two) target creatures(?: you control)?",rules_text);adventure_divided_damage=re.search(r"deals \d+ damage divided as you choose among any number of targets",rules_text)
+    source_permanent=next((permanent for player in state["players"] for permanent in player["battlefield"] if permanent["instance_id"]==item.get("source_id")),None);target_ids=item.get("target_ids") or [];fight_steps=_fight_target_steps(state,caster["id"],rules_card,source_permanent);rules_text=(rules_card.get("oracle_text") or "").casefold();burn_together=bool(re.search(r"target creature you control deals damage equal to its power to any other target\.\s*then sacrifice it",rules_text));valid_fight_ids=[target_value for position,target_value in enumerate(target_ids) if position<len(fight_steps) and target_value in {target["id"] for target in fight_steps[position]["targets"]}]
+    if burn_together and len(target_ids)==2 and target_ids[0]!=target_ids[1]:
+        source_candidate=next((permanent for permanent in caster["battlefield"] if permanent["instance_id"]==target_ids[0] and "Creature" in permanent.get("type_line","")),None);damage_ids={target["id"] for target in _targets(state,caster["id"],{**rules_card,"oracle_text":"This spell deals 1 damage to any target."})}
+        valid_fight_ids=target_ids if source_candidate and target_ids[1] in damage_ids else []
+    convert_to_slime="destroy up to one target artifact, up to one target creature, and up to one target enchantment" in rules_text;crop_sigil_return="return up to one target creature card and up to one target land card from your graveyard to your hand" in rules_text;castigator_shuffle="shuffle up to three target cards from your graveyard into your library" in rules_text;flytrap_distribution="distribute two +1/+1 counters among one or two target creatures" in rules_text and "omnivorous flytrap" in f"{card.get('name','')} {(source_permanent or {}).get('name','')}".casefold();control_exchange="exchange control of two target nonland permanents that share a card type" in rules_text;adventure_distribution=re.search(r"distribute (?:\d+|two|three|four) \+1/\+1 counters among (?:any number of|one or two) target creatures(?: you control)?",rules_text);adventure_divided_damage=re.search(r"deals \d+ damage divided as you choose among any number of targets",rules_text)
     if adventure_divided_damage:valid_pool={target["id"] for target in _targets(state,caster["id"],{**targeting_card,"oracle_text":"This spell deals 1 damage to any target."})}
     elif adventure_distribution:
         scope=" you control" if "you control" in adventure_distribution.group(0) else "";valid_pool={target["id"] for target in _targets(state,caster["id"],{**targeting_card,"oracle_text":f"Put a +1/+1 counter on target creature{scope}."})}
@@ -3681,10 +3689,16 @@ def _resolve_spell(state: dict) -> None:
         defender_id=state.get("combat",{}).get("attack_targets",{}).get(item.get("source_id"),opponent(state,caster["id"])["id"]);defender=_player(state,defender_id);amount=int(defending_creature_damage.group(1))
         for permanent in [candidate for candidate in list(defender["battlefield"]) if "Creature" in candidate.get("type_line","")]:_damage_permanent(state,permanent,amount,source_permanent or card)
     if fight_steps and len(valid_fight_ids)==len(fight_steps):
-        fighters=([source_permanent,next((permanent for owner in state["players"] for permanent in owner["battlefield"] if permanent["instance_id"]==valid_fight_ids[0]),None)] if len(fight_steps)==1 else [next((permanent for owner in state["players"] for permanent in owner["battlefield"] if permanent["instance_id"]==fighter_id),None) for fighter_id in valid_fight_ids[:2]])
+        fighters=([source_permanent,next((permanent for owner in state["players"] for permanent in owner["battlefield"] if permanent["instance_id"]==valid_fight_ids[0]),None)] if len(fight_steps)==1 else [next((owner for owner in state["players"] if owner["id"]==fighter_id),None) or next((permanent for owner in state["players"] for permanent in owner["battlefield"] if permanent["instance_id"]==fighter_id),None) for fighter_id in valid_fight_ids[:2]])
         if all(fighters) and fighters[0] is not fighters[1]:
             first,second=fighters
-            if "deals damage equal to its power to the creature an opponent controls" in effect_text:
+            if re.search(r"deals damage equal to its power to any other target\.\s*then sacrifice it",effect_text):
+                first_power=max(0,_parse_stats(first,state)[0])
+                if second in state["players"]:_damage_player(state,second,first_power,first)
+                else:_damage_permanent(state,second,first_power,first)
+                first_owner=next(owner for owner in state["players"] if first in owner["battlefield"])
+                _sacrifice_permanents(state,first_owner,[first]);_log(state,f"{first['name']} dealt {first_power} damage to {second['name']}, then was sacrificed.")
+            elif "deals damage equal to its power to the creature an opponent controls" in effect_text:
                 if "put two +1/+1 counters on the creature you control" in effect_text:_add_counters(state,first,"+1/+1",2,caster["id"],"delirium")
                 first_power=max(0,_parse_stats(first,state)[0]);_damage_permanent(state,second,first_power,first);_log(state,f"{first['name']} dealt {first_power} damage to {second['name']}.")
             else:
