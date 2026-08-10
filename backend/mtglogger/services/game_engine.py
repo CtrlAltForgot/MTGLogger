@@ -181,7 +181,7 @@ def _continuous_stats(state:dict|None,card:dict)->tuple[int,int]:
                     qualifier=group.removesuffix(" creatures")
                     if qualifier not in {"creature","creatures"} and group!="creature tokens" and qualifier not in type_line:continue
                     power+=int(match.group(4));toughness+=int(match.group(5))
-                subtype_bonus=None if "for each +1/+1 counter" in lower or re.search(r"\b[A-Za-z][A-Za-z'-]+s and [A-Za-z][A-Za-z'-]+s you control get",clause,re.IGNORECASE) else re.search(r"\b(other )?([A-Za-z][A-Za-z'-]+)s you control get ([+-]\d+)/([+-]\d+)",clause,re.IGNORECASE)
+                subtype_bonus=None if "for each +1/+1 counter" in lower or re.search(r"\b[A-Za-z][A-Za-z'-]+s and [A-Za-z][A-Za-z'-]+s you control get",clause,re.IGNORECASE) else re.search(r"\b(other )?([A-Za-z][A-Za-z'-]+?)(?:s)? you control get ([+-]\d+)/([+-]\d+)",clause,re.IGNORECASE)
                 if subtype_bonus and subtype_bonus.group(2).casefold() not in {"creature","artifact","enchantment","permanent","token"} and controller==source.get("controller_id",owner["id"]) and (not subtype_bonus.group(1) or source.get("instance_id")!=card.get("instance_id")) and re.search(rf"\b{re.escape(subtype_bonus.group(2))}\b",type_line,re.IGNORECASE):power+=int(subtype_bonus.group(3));toughness+=int(subtype_bonus.group(4))
                 grouped_subtype_bonus=re.search(r"\b([A-Za-z][A-Za-z'-]+)s and ([A-Za-z][A-Za-z'-]+)s you control get ([+-]\d+)/([+-]\d+)",clause,re.IGNORECASE)
                 if grouped_subtype_bonus and controller==source.get("controller_id",owner["id"]) and any(re.search(rf"\b{re.escape(grouped_subtype_bonus.group(position))}\b",type_line,re.IGNORECASE) for position in (1,2)):power+=int(grouped_subtype_bonus.group(3));toughness+=int(grouped_subtype_bonus.group(4))
@@ -201,9 +201,11 @@ def _has_ascend(card:dict)->bool:
 
 def _sync_city_blessing(state:dict)->None:
     blessed={player["id"] for player in state["players"] if player.get("city_blessing")}
+    for player in state["players"]:player["current_turn"]=state["turn"]
     for owner in state["players"]:
         for card in owner["battlefield"]:
             controller_id=card.get("controller_id",owner["id"]);controller=_player(state,controller_id);card["controller_city_blessing"]=controller_id in blessed;card["controller_creature_count"]=sum("Creature" in permanent.get("type_line","") for permanent in controller["battlefield"]);card["controller_artifact_count"]=sum("Artifact" in permanent.get("type_line","") for permanent in controller["battlefield"]);card["controller_basic_land_count"]=sum("Basic" in permanent.get("type_line","") and "Land" in permanent.get("type_line","") for permanent in controller["battlefield"]);granted=[]
+            card["controller_life"]=controller["life"]
             card["controller_graveyard_count"]=len(controller["graveyard"])
             card["controller_graveyard_type_count"]=_graveyard_card_type_count(controller)
             card["opponent_black_permanent_count"]=sum("B" in _card_colors(permanent) for opponent_owner in state["players"] if opponent_owner["id"]!=controller_id for permanent in opponent_owner["battlefield"])
@@ -213,7 +215,7 @@ def _sync_city_blessing(state:dict)->None:
                     if chosen and source.get("controller_id",source_owner["id"])==controller_id and controller_id in blessed and "they also have vigilance" in (source.get("oracle_text") or "").casefold() and re.search(rf"\b{re.escape(chosen)}\b",card.get("type_line","").casefold()):granted.append("Vigilance")
                     text=_active_level_text(source).casefold();card_types=card.get("type_line","").casefold()
                     if source.get("controller_id",source_owner["id"])==controller_id and ("creature" in card_types or "artifact" in card_types):
-                        for keyword in ("haste","first strike","double strike","deathtouch","hexproof","indestructible","lifelink","menace","trample","vigilance"):
+                        for keyword in ("flying","haste","first strike","double strike","deathtouch","hexproof","indestructible","lifelink","menace","trample","vigilance"):
                             if keyword=="indestructible" and "other tapped legendary creatures you control have indestructible" in text:
                                 if source.get("instance_id")!=card.get("instance_id") and card.get("tapped") and "legendary" in card_types and "creature" in card_types:granted.append("Indestructible")
                                 continue
@@ -223,6 +225,8 @@ def _sync_city_blessing(state:dict)->None:
                             if subtype_keyword and re.search(rf"\b{re.escape(subtype_keyword.group(2))}s?\b",card_types) and (not subtype_keyword.group(1) or source.get("instance_id")!=card.get("instance_id")):granted.append(keyword.title())
                             grouped_keyword=re.search(r"\b(other )?([a-z]+)s you control have ([^.]+)",text)
                             if grouped_keyword and re.search(rf"\b{re.escape(grouped_keyword.group(2))}s?\b",card_types) and re.search(rf"\b{re.escape(keyword)}\b",grouped_keyword.group(3)) and (not grouped_keyword.group(1) or source.get("instance_id")!=card.get("instance_id")):granted.append(keyword.title())
+                            subtype_get_keyword=re.search(r"\b(other )?([a-z]+?)(?:s)? you control get [^.]+ and have ([^.]+)",text)
+                            if subtype_get_keyword and re.search(rf"\b{re.escape(subtype_get_keyword.group(2))}s?\b",card_types) and re.search(rf"\b{re.escape(keyword)}\b",subtype_get_keyword.group(3)) and (not subtype_get_keyword.group(1) or source.get("instance_id")!=card.get("instance_id")):granted.append(keyword.title())
                             paired_keyword=re.search(r"\b([a-z]+)s and ([a-z]+)s you control get [^.]+ and have ([^.]+)",text)
                             if paired_keyword and any(re.search(rf"\b{re.escape(paired_keyword.group(position))}s?\b",card_types) for position in (1,2)) and re.search(rf"\b{re.escape(keyword)}\b",paired_keyword.group(3)):granted.append(keyword.title())
                     if source.get("controller_id",source_owner["id"])==controller_id and "land" in card_types and "creature" in card_types:
@@ -419,7 +423,7 @@ def _parse_stats(card: dict,state:dict|None=None) -> tuple[int, int]:
     try:
         plus = card.get("counters", {}).get("+1/+1", 0); minus = card.get("counters", {}).get("-1/-1", 0)
         static_power,static_toughness=_continuous_stats(state,card)
-        raw_text=(card.get("oracle_text") or "").casefold();speed=int(card.get("controller_speed",0));speed_power="power is equal to your speed" in raw_text;artifact_power="power is equal to the number of artifacts you control" in raw_text;level_stats=_level_stats(card);dynamic_power=speed if speed_power else int(card.get("controller_artifact_count",0)) if artifact_power else None;base_power,base_toughness=level_stats or (dynamic_power if dynamic_power is not None else int(card.get("temporary_base_power",card.get("power") or 0)),int(card.get("temporary_base_toughness",card.get("toughness") or 0)))
+        raw_text=(card.get("oracle_text") or "").casefold();speed=int(card.get("controller_speed",0));speed_power="power is equal to your speed" in raw_text;artifact_power="power is equal to the number of artifacts you control" in raw_text;life_stats="power and toughness are each equal to your life total" in raw_text;life_total=_player(state,card.get("controller_id",card.get("owner_id")))["life"] if state and life_stats else int(card.get("controller_life",0));level_stats=_level_stats(card);dynamic_power=speed if speed_power else int(card.get("controller_artifact_count",0)) if artifact_power else life_total if life_stats else None;base_power,base_toughness=level_stats or ((dynamic_power,dynamic_power) if life_stats else (dynamic_power if dynamic_power is not None else int(card.get("temporary_base_power",card.get("power") or 0)),int(card.get("temporary_base_toughness",card.get("toughness") or 0))))
         active_text=_active_level_text(card);static_clauses=[clause for clause in re.split(r"(?<=[.!])\s+|\n",active_text) if "until end of turn" not in clause.casefold() and "as long as" not in clause.casefold() and "for each" not in clause.casefold()];self_name=re.escape(card.get("name","").split(" ability",1)[0]);self_static=next((match for clause in static_clauses if (match:=re.search(rf"(?:this creature|{self_name}) gets ([+-]\d+)/([+-]\d+)",clause,re.IGNORECASE))),None);speed_static=(int(self_static.group(1)),int(self_static.group(2))) if self_static else (0,0)
         blessing_power=blessing_toughness=0
         if card.get("controller_city_blessing"):
@@ -923,6 +927,7 @@ def _speed_cost_reduction(player:dict,card:dict)->int:
         text=_active_level_text(permanent).casefold()
         if "spells you cast cost {1} less to cast" in text:reduction+=1
         if "noncreature spells you cast cost {x} less to cast, where x is your speed" in text and "Creature" not in card.get("type_line",""):reduction+=int(player.get("speed",0))
+    if player.get("instant_sorcery_reduction_turn")==player.get("current_turn") and any(kind in card.get("type_line","") for kind in ("Instant","Sorcery")):reduction+=int(player.get("instant_sorcery_reduction",0))
     return reduction
 
 
@@ -1005,10 +1010,12 @@ def _can_block_pair(state:dict,attacker:dict,blocker:dict)->bool:
         if not conditional:return False
     elif conditional:return False
     if "can't block" in blocker_text and "can't attack or block alone" not in blocker_text and "can't attack or block unless" not in blocker_text and "can't block or be blocked by non-spirit creatures" not in blocker_text:return False
-    if "can't be blocked" in attacker_text or "unblockable" in attacker_text:return False
+    if "can't be blocked" in attacker_text and "can't be blocked by" not in attacker_text or "unblockable" in attacker_text:return False
     attacker_controller=_player(state,attacker.get("controller_id"));attacker_type=attacker.get("type_line","").casefold()
     if attacker_controller.get("city_blessing") and any("detectives you control can't be blocked" in (source.get("oracle_text") or "").casefold() for source in attacker_controller["battlefield"]) and "detective" in attacker_type:return False
     if "can't be blocked by non-spirit creatures" in attacker_text and "spirit" not in blocker.get("type_line","").casefold():return False
+    if "can't be blocked by walls" in attacker_text and re.search(r"\bWall\b",blocker.get("type_line",""),re.IGNORECASE):return False
+    if "can't be blocked by creatures with power 2 or less" in attacker_text and _parse_stats(blocker,state)[0]<=2:return False
     if "can't block or be blocked by non-spirit creatures" in blocker_text and "spirit" not in attacker.get("type_line","").casefold():return False
     defender=opponent(state,attacker_controller["id"]);defender_lands=[card for card in defender["battlefield"] if "Land" in card.get("type_line","")]
     global_text="\n".join(card.get("oracle_text") or "" for owner in state["players"] for card in owner["battlefield"]).casefold()
@@ -3073,6 +3080,8 @@ def _resolve_spell(state: dict) -> None:
         if defending_player:_damage_player(state,defending_player,amount,source_permanent)
         elif defending_planeswalker:_damage_permanent(state,defending_planeswalker,amount,source_permanent)
         _log(state,f"{source_permanent['name']} dealt {amount} damage to the defender it is attacking.");return
+    if "instant and sorcery spells you cast this turn cost {1} less to cast" in effect_text:
+        caster["instant_sorcery_reduction_turn"]=state["turn"];caster["instant_sorcery_reduction"]=caster.get("instant_sorcery_reduction",0)+1;_log(state,f"{caster['name']}'s instant and sorcery spells cost {{1}} less this turn.");return
     if "each opponent may sacrifice a nonland permanent of their choice or discard a card" in effect_text and "each opponent who didn't sacrifice a permanent or discard a card this way" in effect_text:
         if _graveyard_card_type_count(caster)<4:_log(state,f"{card['name']} did not resolve because its Delirium condition was no longer true.");return
         source=source_permanent or card;choices=[{"player_id":owner["id"]} for owner in state["players"] if owner["id"]!=caster["id"]]
@@ -3679,6 +3688,12 @@ def _resolve_spell(state: dict) -> None:
             if destination=="graveyard":_destroy_permanent(state,owner,permanent,"can't be regenerated" in effect_text,trigger_sources,trigger_dedupe)
             else:_leave_battlefield(state,owner,permanent,destination,trigger_sources,trigger_dedupe,caster["id"],len(affected))
         _log(state,f"All {kind} were {'destroyed' if destination=='graveyard' else 'exiled'}.")
+    if "non-elf creatures get -3/-3 until end of turn" in effect_text:
+        affected=[]
+        for owner in state["players"]:
+            for permanent in owner["battlefield"]:
+                if "Creature" in permanent.get("type_line","") and not re.search(r"\bElf\b",permanent.get("type_line",""),re.IGNORECASE):permanent["temporary_power"]=permanent.get("temporary_power",0)-3;permanent["temporary_toughness"]=permanent.get("temporary_toughness",0)-3;affected.append(permanent)
+        _log(state,f"{len(affected)} non-Elf creature(s) got -3/-3 until end of turn.")
     if convert_to_slime:
         destroyed_value=0
         for target_value in valid_multi_ids:
@@ -3695,7 +3710,7 @@ def _resolve_spell(state: dict) -> None:
         for attacker_id in state.get("combat",{}).get("attackers",[]):
             permanent=next((candidate for owner in state["players"] for candidate in owner["battlefield"] if candidate["instance_id"]==attacker_id),None)
             if permanent and (not attacking_stats.group(2) or _has_keyword(permanent,attacking_stats.group(2))) and not (attacking_stats.group(1) and permanent.get("instance_id")==item.get("source_id")):permanent["temporary_power"]=permanent.get("temporary_power",0)+int(attacking_stats.group(3));permanent["temporary_toughness"]=permanent.get("temporary_toughness",0)+int(attacking_stats.group(4));permanent["temporary_keywords"]=sorted(set(permanent.get("temporary_keywords",[]))|gained)
-    global_stats=None if attacking_stats else re.search(r"(?:(?:all|each|other) )?(nonblack )?creatures?(?: you control| your opponents control)? get ([+-]\d+)/([+-]\d+)(?: and gains? ([^.]+?))? until end of turn",effect_text)
+    global_stats=None if attacking_stats or "non-elf creatures" in effect_text else re.search(r"(?:(?:all|each|other) )?(nonblack )?creatures?(?: you control| your opponents control)? get ([+-]\d+)/([+-]\d+)(?: and gains? ([^.]+?))? until end of turn",effect_text)
     if global_stats:
         own_only="you control" in global_stats.group(0);opponents_only="opponents control" in global_stats.group(0);other_only=global_stats.group(0).startswith("other ");nonblack=bool(global_stats.group(1));supported=("flying","first strike","double strike","deathtouch","haste","hexproof","indestructible","lifelink","menace","reach","trample","vigilance");gained={keyword for keyword in supported if global_stats.group(4) and re.search(rf"\b{re.escape(keyword)}\b",global_stats.group(4))}
         for owner in state["players"]:
