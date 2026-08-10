@@ -2093,6 +2093,8 @@ def public_state(state: dict, viewer_id: str = "player") -> dict:
     if pending_search and pending_search.get("player_id")!=viewer_id:pending_search["card_ids"]=[]
     pending_zone=visible.get("pending_zone_choice")
     if pending_zone and pending_zone.get("player_id")!=viewer_id:pending_zone["card_ids"]=[]
+    pending_plot=visible.get("pending_plot_choice")
+    if pending_plot and pending_plot.get("player_id")!=viewer_id:pending_plot["card_ids"]=[];pending_plot.pop("looked_ids",None)
     pending_top=visible.get("pending_top_card_choice")
     if pending_top and pending_top.get("player_id")!=viewer_id:pending_top.pop("card",None)
     pending_miracle=visible.get("pending_miracle")
@@ -2413,6 +2415,7 @@ def _pending_decision(state:dict)->bool:
     if state.get("pending_grim_captain"):return True
     if state.get("pending_blunderbuss"):return True
     if state.get("pending_locus_copy"):return True
+    if state.get("pending_plot_choice"):return True
     return bool(state.get("pending_miracle") or state.get("pending_impulsivity") or state.get("pending_library_placement") or state.get("pending_sticktwister") or state.get("pending_eumidian_choice") or state.get("pending_rad_choice") or state.get("pending_tap_choice") or state.get("pending_top_card_choice") or state.get("pending_revealed_discard") or state.get("pending_same_name_search") or state.get("pending_winter_exile") or state.get("pending_optional_discard") or state.get("pending_optional_payment") or state.get("pending_tilonalli") or state.get("pending_creature_type") or state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_populate") or state.get("pending_bolster") or state.get("pending_discovery") or state.get("pending_madness") or state.get("pending_rebound") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
 
 
@@ -2791,6 +2794,10 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
     if pending_locus:
         if pending_locus["player_id"]!=player_id:return []
         return [{"type":"choose_locus_copy_target","source_name":"Locus of Enlightenment","targets":pending_locus["targets"],"current_target_id":pending_locus.get("current_target_id"),"label":"Choose a target for the copied ability"},{"type":"concede"}]
+    pending_plot=state.get("pending_plot_choice")
+    if pending_plot:
+        if pending_plot["player_id"]!=player_id:return []
+        zone=player[pending_plot["zone"]];cards=[card for card in zone if card["instance_id"] in set(pending_plot["card_ids"])];return [{"type":"choose_plot_card","source_name":pending_plot["source_name"],"cards":cards,"card_ids":[card["instance_id"] for card in cards],"label":pending_plot["label"]},{"type":"decline_plot_card","source_name":pending_plot["source_name"],"label":"Plot no card"},{"type":"concede"}]
     pending_zethi=state.get("pending_zethi_copies")
     if pending_zethi:
         if pending_zethi["player_id"]!=player_id:return []
@@ -2888,6 +2895,9 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
             plot_cost=_plot_cost(hand_card)
             if plot_cost and _can_pay(player,{"mana_cost":plot_cost},-plot_reduction):
                 reduction_label=f" · reduced by {plot_reduction}" if plot_reduction else "";actions.append({"type":"plot","card_id":hand_card["instance_id"],"source":"hand","mana_cost":plot_cost,"plot_reduction":plot_reduction,"label":f"Plot {hand_card['name']} · {plot_cost}{reduction_label}"})
+        if any(card.get("name")=="Fblthp, Lost on the Range" for card in player["battlefield"]) and player["library"]:
+            top=player["library"][-1]
+            if "Land" not in top.get("type_line","") and _can_pay(player,top):actions.append({"type":"plot","card_id":top["instance_id"],"card":top,"source":"library_top","mana_cost":top.get("mana_cost") or "{0}","label":f"Plot {top['name']} from the top of your library · {top.get('mana_cost') or '{0}'}"})
     mutate_sources=[(card,"mutate_hand") for card in player["hand"] if _mutate_cost(card)]
     mutate_sources.extend((card,"mutate_command") for card in player.get("command",[]) if _mutate_cost(card))
     mutate_sources.extend((card,"mutate_graveyard") for card in player["graveyard"] if _mutate_cost(card) and card.get("name")=="Brokkos, Apex of Forever")
@@ -2969,6 +2979,7 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
     castable.extend((card,"plot") for card in player["exile"] if card.get("plotted") and state["turn"]>card.get("plotted_turn",state["turn"]))
     for card, source in castable:
         card_action_start=len(actions)
+        if card.get("name")=="Jace Reawakened" and state.get("turn",1)<=3:continue
         flashback=_flashback_ability(card) if source=="flashback" else None;escape=_escape_ability(card) if source=="escape" else None;foretell_cost=_foretell_cost(card) if source=="foretell" else None;apex_free=player.get("apex_free_spell_turn")==state["turn"] and player.get("apex_free_spell_type") in _craft_card_types(card);cost_card={**card,"mana_cost":"{0}"} if apex_free else {**card,"mana_cost":foretell_cost} if foretell_cost else {**card,"mana_cost":"{0}"} if source in {"suspend","plot"} else {**card,"mana_cost":"{2}"} if source=="airbend" else {**card,"mana_cost":flashback["mana_cost"]} if flashback else {**card,"mana_cost":escape["mana_cost"]} if escape else card;kicker_cost=_kicker_cost(card)
         instant_speed = source!="plot" and ("Instant" in card.get("type_line", "") or _has_keyword(card, "Flash"))
         total_tax=_commander_tax(player,card) if source=="command" else 0;affinity_reduction=_affinity_reduction(player,card);delirium_reduction=_delirium_cost_reduction(player,card);speed_reduction=_speed_cost_reduction(player,card);generic_adjustment=total_tax-affinity_reduction-delirium_reduction-speed_reduction
@@ -3561,6 +3572,18 @@ def _resolve_spell(state: dict) -> None:
     if source_permanent and "gain life equal to the mana value of the exiled card used to craft it" in effect_text:
         crafted=source_permanent.get("crafted_with_cards") or [];effect_text=re.sub(r"gain life equal to the mana value of the exiled card used to craft it",f"gain {int((crafted[0] if crafted else {}).get('mana_value') or 0)} life",effect_text,flags=re.IGNORECASE)
     if source_permanent:effect_text=re.sub(r"gain life equal to (?:its|this creature's) power",f"gain {_parse_stats(source_permanent,state)[0]} life",effect_text,flags=re.IGNORECASE)
+    if "exile target spell" in effect_text and "it becomes plotted" in effect_text:
+        target_item=next((stack_item for stack_item in state["stack"] if stack_item["id"]==target_id and stack_item.get("kind","spell")=="spell"),None)
+        if not target_item:_log(state,f"{card['name']} could not exile its target spell.");return
+        state["stack"].remove(target_item);plotted_card=target_item["card"];spell_owner=_player(state,plotted_card.get("owner_id",target_item["controller_id"]));plotted_card["controller_id"]=spell_owner["id"];plotted_card["plotted"]=True;plotted_card["plotted_turn"]=state["turn"];
+        _put_into_exile(state,spell_owner,[plotted_card],"stack",caster["id"]);_queue_triggers(state,"plotted",plotted_card,spell_owner);_log(state,f"{plotted_card['name']} was exiled and became plotted by {card['name']}.");return
+    if "exile a nonland card with mana value 3 or less from your hand" in effect_text and "it becomes plotted" in effect_text:
+        choices=[candidate["instance_id"] for candidate in caster["hand"] if "Land" not in candidate.get("type_line","") and _mana_value(candidate)<=3];source_name=source_permanent.get("name",card["name"]) if source_permanent else card["name"]
+        if choices:state["pending_plot_choice"]={"player_id":caster["id"],"source_name":source_name,"zone":"hand","card_ids":choices,"label":"Choose a nonland card with mana value 3 or less to plot"};state["priority_player_id"]=caster["id"]
+        else:_log(state,f"{caster['name']} had no eligible card to plot for {source_name}.")
+        return
+    if "look at the top three cards of your library" in effect_text and "it becomes plotted" in effect_text and "put the rest into your hand" in effect_text:
+        looked=list(caster["library"][-3:]);choices=[candidate["instance_id"] for candidate in looked if "Land" not in candidate.get("type_line","")];state["pending_plot_choice"]={"player_id":caster["id"],"source_name":card["name"],"zone":"library","card_ids":choices,"looked_ids":[candidate["instance_id"] for candidate in looked],"rest_to_hand":True,"label":"Choose a nonland card from the top three to plot"};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} looked at the top {len(looked)} cards for {card['name']}.");return
     effect_text=re.sub(r"\bto up to one target\b","to target",effect_text,flags=re.IGNORECASE)
     if source_permanent and re.search(r"deals damage equal to (?:its|his|her) power",effect_text):effect_text=re.sub(r"deals damage equal to (?:its|his|her) power",f"deals {_parse_stats(source_permanent,state)[0]} damage",effect_text)
     if "copy target spell you control" in effect_text:
@@ -4556,7 +4579,11 @@ def _resolve_spell(state: dict) -> None:
             card["type_line"]=card.pop("bestow_original_type_line",card.get("type_line","").replace(" — Aura",""));card.pop("bestowed",None)
         entered = True
     elif item.get("kind", "spell") == "spell":
-        if rebound_from_hand:
+        lilah_plot=item.get("cast_source_zone")=="hand" and any(permanent.get("name")=="Lilah, Undefeated Slickshot" for permanent in caster["battlefield"]) and any(kind in card.get("type_line","") for kind in ("Instant","Sorcery")) and len(_card_colors(card))>1
+        if lilah_plot:
+            spell_owner=_player(state,card.get("owner_id",caster["id"]));card["controller_id"]=spell_owner["id"];card["plotted"]=True;card["plotted_turn"]=state["turn"];
+            _put_into_exile(state,spell_owner,[card],"stack",caster["id"]);_queue_triggers(state,"plotted",card,spell_owner);_log(state,f"{card['name']} became plotted through Lilah instead of going to the graveyard.")
+        elif rebound_from_hand:
             card["rebound_pending"]=True;card["rebound_after_turn"]=state["turn"];_put_into_exile(state,caster,[card],"rebound",caster["id"])
         elif item.get("buyback"):caster["hand"].append(card)
         elif item.get("omen_cast"):
@@ -4954,7 +4981,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
     if event=="upkeep":
         for owner,permanent in sources:
             if permanent.pop("transform_next_upkeep",False):_transform(state,permanent)
-    if event in {"dies","cycling","discard","cast","damage"} and event_card:
+    if event in {"dies","cycling","plotted","discard","cast","damage"} and event_card:
         if not any(source is event_card for _,source in sources):
             insert_at=max((index+1 for index,(owner,_) in enumerate(sources) if owner["id"]==event_owner["id"]),default=len(sources));sources.insert(insert_at,(event_owner,event_card))
     for owner, source in sources:
@@ -5218,6 +5245,8 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
             elif event == "cycling" and event_card:
                 cycled_name=re.escape(event_card.get("name","").casefold());same_card=source is event_card and re.search(rf"when you cycle (?:~|this card|{cycled_name})\b",lower) is not None
                 matches=same_card or (source is not event_card and owner["id"]==event_owner["id"] and "whenever you cycle a card" in lower)
+            elif event == "plotted" and event_card:
+                matches=source is event_card and "when this card becomes plotted" in lower
             elif event == "connive" and event_card:
                 controlled=event_owner["id"]==owner["id"];self_event=source is event_card and re.search(r"whenever (?:~|this creature|[^,]+) connives?\b",lower) is not None
                 controlled_event=source is not event_card and controlled and re.search(r"whenever (?:a|another) creature you control connives?\b",lower) is not None
@@ -6245,9 +6274,9 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if not card or not _foretell_cost(card) or not available:raise RuleViolation("That card cannot be foretold now")
         _pay_mana(state,player,{"mana_cost":"{2}"});player["hand"].remove(card);card["foretold"]=True;card["foretold_turn"]=state["turn"];_put_into_exile(state,player,[card],"hand",player_id);state["consecutive_passes"]=0;state["pending_phase_advance"]=False;_log(state,f"{player['name']} foretold a card face down.")
     elif action_type == "plot":
-        card=next((card for card in player["hand"] if card["instance_id"]==action.get("card_id")),None);cost=_plot_cost(card or {});available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="plot" and entry["card_id"]==action.get("card_id")),None)
-        if not card or not cost or not available:raise RuleViolation("That card cannot be plotted now")
-        reduction=_plot_reduction(player);_pay_mana(state,player,{"mana_cost":cost},-reduction);player["hand"].remove(card);card["plotted"]=True;card["plotted_turn"]=state["turn"];_put_into_exile(state,player,[card],"hand",player_id);state["consecutive_passes"]=0;state["pending_phase_advance"]=False;reduction_label=f" with {reduction} cost reduction" if reduction else "";_log(state,f"{player['name']} plotted {card['name']} face up for {cost}{reduction_label}.")
+        source=action.get("source","hand");zone=player["library"] if source=="library_top" else player["hand"];card=next((card for card in zone if card["instance_id"]==action.get("card_id")),None);available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="plot" and entry["card_id"]==action.get("card_id") and entry.get("source")==source),None);cost=(card.get("mana_cost") or "{0}") if source=="library_top" else _plot_cost(card or {})
+        if not card or not cost or not available or source=="library_top" and (not player["library"] or player["library"][-1] is not card):raise RuleViolation("That card cannot be plotted now")
+        reduction=_plot_reduction(player);_pay_mana(state,player,{"mana_cost":cost},-reduction);zone.remove(card);card["plotted"]=True;card["plotted_turn"]=state["turn"];_put_into_exile(state,player,[card],source,player_id);_queue_triggers(state,"plotted",card,player);state["consecutive_passes"]=0;state["pending_phase_advance"]=False;reduction_label=f" with {reduction} cost reduction" if reduction else "";_log(state,f"{player['name']} plotted {card['name']} face up{' from the top of their library' if source=='library_top' else ''} for {cost}{reduction_label}.")
     elif action_type == "ninjutsu":
         available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="ninjutsu" and entry["card_id"]==action.get("card_id") and entry["source"]==action.get("source")),None);attacker_id=action.get("target_id")
         if not available or attacker_id not in {target["id"] for target in available["targets"]}:raise RuleViolation("Choose an unblocked attacker to return for ninjutsu")
@@ -6287,6 +6316,18 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="station" and entry["card_id"]==action.get("card_id")),None)
         if not permanent or not available or len(selected)!=1 or selected[0] not in available["cost_options"]:raise RuleViolation("Choose one other untapped creature to station this permanent")
         crew=next(card for card in player["battlefield"] if card["instance_id"]==selected[0]);amount=max(0,_parse_stats(crew,state)[0]);_ensure_land_play_tracking(player);_set_tapped(state,[crew],True,player_id,"station");_add_counters(state,permanent,"charge",amount,player_id,"station");_sync_station_state(permanent);_refresh_land_plays(state,player);state["consecutive_passes"]=0;state["pending_phase_advance"]=False;_log(state,f"{player['name']} tapped {crew['name']} to station {permanent['name']} for {amount} charge counter(s).")
+    elif action_type in {"choose_plot_card","decline_plot_card"}:
+        pending=state.get("pending_plot_choice") or {};zone=player.get(pending.get("zone","hand"),[]);choice_id=action.get("card_id");chosen=next((card for card in zone if card["instance_id"]==choice_id),None)
+        if pending.get("player_id")!=player_id or action_type=="choose_plot_card" and (not chosen or choice_id not in set(pending.get("card_ids",[]))):raise RuleViolation("Choose an eligible card to plot")
+        if chosen:
+            zone.remove(chosen);chosen["plotted"]=True;chosen["plotted_turn"]=state["turn"];
+            _put_into_exile(state,player,[chosen],pending["zone"],player_id);_queue_triggers(state,"plotted",chosen,player);_log(state,f"{player['name']} plotted {chosen['name']} with {pending['source_name']}.")
+        if pending.get("rest_to_hand"):
+            for candidate in list(player["library"]):
+                if candidate["instance_id"] in set(pending.get("looked_ids",[])):
+                    player["library"].remove(candidate);player["hand"].append(candidate)
+            _log(state,f"{player['name']} put the other cards looked at with {pending['source_name']} into their hand.")
+        state["pending_plot_choice"]=None;state["priority_player_id"]=(state.get("pending_trigger_targets") or [{"controller_id":state["active_player_id"]}])[0]["controller_id"]
     elif action_type == "transmute":
         card=next((candidate for candidate in player["hand"] if candidate["instance_id"]==action.get("card_id")),None);available=next((entry for entry in legal_actions(state,player_id) if entry["type"]=="transmute" and entry["card_id"]==action.get("card_id")),None)
         if not card or not available:raise RuleViolation("That card cannot be transmuted now")
