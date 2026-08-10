@@ -625,12 +625,39 @@ def _attachment_keywords(card:dict)->list[str]:
     return [keyword for keyword in supported if any(re.search(rf"\b{re.escape(keyword)}\b",clause) for clause in clauses)]
 
 
+def _apply_attachment_copy(target:dict,source_id:str,material:dict)->None:
+    if "attachment_copy_original" not in target:
+        target["attachment_copy_original"]={key:deepcopy(target[key]) for key in _COPYABLE_CARD_KEYS if key in target};target["attachment_copy_missing"]=[key for key in _COPYABLE_CARD_KEYS if key not in target]
+    layers=target.setdefault("attachment_copy_layers",{});layers[source_id]=deepcopy(material);order=target.setdefault("attachment_copy_order",[])
+    if source_id in order:order.remove(source_id)
+    order.append(source_id)
+    for key in _COPYABLE_CARD_KEYS:
+        if key in material:target[key]=deepcopy(material[key])
+        else:target.pop(key,None)
+
+
+def _remove_attachment_copy(target:dict,source_id:str)->None:
+    layers=target.get("attachment_copy_layers",{});order=target.get("attachment_copy_order",[])
+    layers.pop(source_id,None);order[:]=[item for item in order if item!=source_id]
+    original=target.get("attachment_copy_original",{});missing=target.get("attachment_copy_missing",[])
+    for key in missing:target.pop(key,None)
+    for key,value in original.items():target[key]=deepcopy(value)
+    if order:
+        material=layers[order[-1]]
+        for key in _COPYABLE_CARD_KEYS:
+            if key in material:target[key]=deepcopy(material[key])
+            else:target.pop(key,None)
+    else:
+        target.pop("attachment_copy_original",None);target.pop("attachment_copy_missing",None);target.pop("attachment_copy_layers",None);target.pop("attachment_copy_order",None)
+
+
 def _detach(state:dict,attachment:dict,restore_control:bool=True)->None:
     target_id=attachment.pop("attached_to",None)
     if not target_id:return
     target=next((permanent for owner in state["players"] for permanent in owner["battlefield"] if permanent["instance_id"]==target_id),None)
     return_to=attachment.pop("control_aura_return_to",None)
     if target:
+        if attachment["instance_id"] in target.get("attachment_copy_layers",{}):_remove_attachment_copy(target,attachment["instance_id"])
         target.get("attachment_keywords",{}).pop(attachment["instance_id"],None);target.get("attachment_rules",{}).pop(attachment["instance_id"],None)
         if restore_control and return_to:_change_control(state,target,_player(state,return_to))
 
@@ -644,6 +671,9 @@ def _attach(state:dict,attachment:dict,target:dict)->None:
             current=next(owner for owner in state["players"] if target in owner["battlefield"]);controller=_player(state,attachment["controller_id"])
             attachment["control_aura_return_to"]=current["id"]
             _change_control(state,target,controller)
+        if "as this equipment becomes attached to a creature, choose an exiled creature card used to craft this equipment" in (attachment.get("oracle_text") or "").casefold():
+            cards=[deepcopy(card) for card in attachment.get("crafted_with_cards",[]) if "Creature" in card.get("type_line","")]
+            if cards:state["pending_headdress"]={"player_id":attachment["controller_id"],"source_id":attachment["instance_id"],"source_name":attachment["name"],"target_id":target["instance_id"],"cards":cards};state["priority_player_id"]=attachment["controller_id"]
 
 
 def _equip_cost(card:dict)->str|None:
@@ -2325,6 +2355,7 @@ def _pending_decision(state:dict)->bool:
     if state.get("pending_color_choice"):return True
     if state.get("pending_catalyst"):return True
     if state.get("pending_card_type"):return True
+    if state.get("pending_headdress"):return True
     return bool(state.get("pending_miracle") or state.get("pending_impulsivity") or state.get("pending_library_placement") or state.get("pending_sticktwister") or state.get("pending_eumidian_choice") or state.get("pending_rad_choice") or state.get("pending_tap_choice") or state.get("pending_top_card_choice") or state.get("pending_revealed_discard") or state.get("pending_same_name_search") or state.get("pending_winter_exile") or state.get("pending_optional_discard") or state.get("pending_optional_payment") or state.get("pending_tilonalli") or state.get("pending_creature_type") or state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_populate") or state.get("pending_bolster") or state.get("pending_discovery") or state.get("pending_madness") or state.get("pending_rebound") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
 
 
@@ -2671,6 +2702,10 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
             targeting_card=_spell_targeting_card(candidate);targets=_targets(state,player_id,targeting_card);required=bool(_target_kind(targeting_card))
             if not _modal_spec(candidate) and (not required or targets):actions.insert(0,{"type":"cast_catalyst","label":f"Cast {candidate['name']} without paying its mana cost",**common,**({"targets":targets} if targets else {})})
         return actions
+    pending_headdress=state.get("pending_headdress")
+    if pending_headdress:
+        if pending_headdress["player_id"]!=player_id:return []
+        return [{"type":"choose_headdress_card","source_name":pending_headdress["source_name"],"target_id":pending_headdress["target_id"],"card_ids":[card["instance_id"] for card in pending_headdress["cards"]],"cards":pending_headdress["cards"],"label":"Choose the creature for the equipped creature to copy"},{"type":"concede"}]
     pending_zethi=state.get("pending_zethi_copies")
     if pending_zethi:
         if pending_zethi["player_id"]!=player_id:return []
@@ -5584,6 +5619,10 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         permanent=next((card for card in player["battlefield"] if card["instance_id"]==pending["card_id"]),None)
         if not permanent:raise RuleViolation("That permanent is no longer on the battlefield")
         permanent["chosen_creature_type"]=choice.title();pending_list.pop(0);state["pending_creature_type"]=pending_list;_sync_city_blessing(state);state["priority_player_id"]=pending_list[0]["player_id"] if pending_list else state["active_player_id"];_log(state,f"{player['name']} chose {permanent['chosen_creature_type']} for {permanent['name']}.")
+    elif action_type=="choose_headdress_card":
+        pending=state.get("pending_headdress") or {};choice_id=action.get("card_id");material=next((card for card in pending.get("cards",[]) if card["instance_id"]==choice_id),None);equipment=next((card for card in player["battlefield"] if card["instance_id"]==pending.get("source_id")),None);target=next((card for owner in state["players"] for card in owner["battlefield"] if card["instance_id"]==pending.get("target_id")),None)
+        if pending.get("player_id")!=player_id or not material or not equipment or not target or equipment.get("attached_to")!=target["instance_id"]:raise RuleViolation("That Dinosaur Headdress choice is no longer available")
+        _apply_attachment_copy(target,equipment["instance_id"],material);equipment["chosen_crafted_card_id"]=material["instance_id"];state["pending_headdress"]=None;_sync_city_blessing(state);state["priority_player_id"]=state["active_player_id"];_log(state,f"{player['name']} chose {material['name']}; {target['name']} is now that creature's copy while equipped by {equipment['name']}.")
     elif action_type=="choose_card_type":
         pending_list=state.get("pending_card_type") or [];pending=pending_list[0] if pending_list else None;choice=str(action.get("card_type") or "").title()
         if not pending or pending["player_id"]!=player_id or choice not in pending["card_types"]:raise RuleViolation("Choose a card type shared by the cards used to craft this permanent")
