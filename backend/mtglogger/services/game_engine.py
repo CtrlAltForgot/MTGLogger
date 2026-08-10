@@ -1168,9 +1168,9 @@ def _damage_player(state:dict,target:dict,amount:int,source:dict,combat:bool=Fal
         doublers=sum("if a source you control would deal noncombat damage to a permanent or player" in _active_level_text(permanent).casefold() and "it deals double that damage instead" in _active_level_text(permanent).casefold() for permanent in source_controller["battlefield"])
         amount*=2**doublers
     if source_controller.get("speed",0)>=4 and any("it deals that much damage plus 1 instead" in _active_level_text(permanent).casefold() for permanent in source_controller["battlefield"]):amount+=1
-    if _player_protected_from(state,target,source):_log(state,f"Protection prevented {amount} damage to {target['name']}.");return 0
-    source_text=(source.get("oracle_text") or "").casefold()
-    if not ("damage" in source_text and "can't be prevented" in source_text) and target.get("damage_prevention",0)>0:
+    source_text=(source.get("oracle_text") or "").casefold();unpreventable=state.get("damage_cant_be_prevented_until_turn")==state["turn"] or "damage" in source_text and "can't be prevented" in source_text
+    if not unpreventable and _player_protected_from(state,target,source):_log(state,f"Protection prevented {amount} damage to {target['name']}.");return 0
+    if not unpreventable and target.get("damage_prevention",0)>0:
         prevented=min(amount,target["damage_prevention"]);target["damage_prevention"]-=prevented;amount-=prevented;_log(state,f"A prevention effect prevented {prevented} damage to {target['name']}.")
         if amount<=0:return 0
     if _has_keyword(source,"Infect"):_add_counters(state,target,"poison",amount,source.get("controller_id"),"damage")
@@ -1187,13 +1187,13 @@ def _damage_permanent(state:dict,target:dict,amount:int,source:dict,combat:bool=
         doublers=sum("if a source you control would deal noncombat damage to a permanent or player" in _active_level_text(permanent).casefold() and "it deals double that damage instead" in _active_level_text(permanent).casefold() for permanent in source_controller["battlefield"])
         amount*=2**doublers
     if target.get("controller_id")!=source_controller["id"] and source_controller.get("speed",0)>=4 and any("it deals that much damage plus 1 instead" in _active_level_text(permanent).casefold() for permanent in source_controller["battlefield"]):amount+=1
-    if _protected_from(target,source):
+    source_text=(source.get("oracle_text") or "").casefold();unpreventable=state.get("damage_cant_be_prevented_until_turn")==state["turn"] or "damage" in source_text and "can't be prevented" in source_text
+    if not unpreventable and _protected_from(target,source):
         _log(state,f"Protection prevented {amount} damage to {target['name']}.");return 0
-    source_text=(source.get("oracle_text") or "").casefold()
-    if not ("damage" in source_text and "can't be prevented" in source_text) and target.get("damage_prevention",0)>0:
+    if not unpreventable and target.get("damage_prevention",0)>0:
         prevented=min(amount,target["damage_prevention"]);target["damage_prevention"]-=prevented;amount-=prevented;_log(state,f"A prevention effect prevented {prevented} damage to {target['name']}.")
         if amount<=0:return 0
-    if _consume_shield(state,target,"damage"):return 0
+    if not unpreventable and _consume_shield(state,target,"damage"):return 0
     if _has_keyword(source,"Infect") or _has_keyword(source,"Wither"):
         _add_counters(state,target,"-1/-1",amount,source.get("controller_id"),"damage")
     elif "Planeswalker" in target.get("type_line",""):
@@ -3155,6 +3155,7 @@ def _resolve_spell(state: dict) -> None:
     if valid_multi_ids:target_ids=valid_multi_ids
     is_permanent_spell = item.get("kind", "spell") in {"spell","storm_copy"} and any(kind in card.get("type_line", "") for kind in ("Creature", "Artifact", "Enchantment", "Planeswalker", "Battle"))
     effect_text = "" if is_permanent_spell and re.search(r"\b(?:when|whenever|at the beginning)\b", text) else text
+    if "damage can't be prevented this turn" in effect_text:state["damage_cant_be_prevented_until_turn"]=state["turn"]
     if re.search(r"create \d+ map tokens?, where \d+ is one plus the number of opponents who control an artifact",effect_text):
         map_count=1+sum(any("Artifact" in permanent.get("type_line","") for permanent in owner["battlefield"]) for owner in state["players"] if owner["id"]!=caster["id"]);effect_text=re.sub(r"create \d+ map tokens?",f"create {map_count} Map tokens",effect_text,count=1)
     if re.search(r"you gain \d+ life and each opponent loses \d+ life, where \d+ is the number of knights you control",effect_text):
@@ -4963,7 +4964,7 @@ def _state_based_actions(state: dict) -> None:
 
 def _begin_next_turn(state:dict)->None:
     previous_active=_player(state,state["active_player_id"]);previous_spells=previous_active.get("spells_cast_this_turn",0) if previous_active.get("cast_event_turn")==state["turn"] else 0
-    state["pending_discard"]=None;state["turn"] += 1; state["phase"] = PHASES[0];state["beginning_draw_pending"]=True;state["active_player_id"]=(state.get("extra_turns") or []).pop() if state.get("extra_turns") else opponent(state,state["active_player_id"])["id"]
+    state["pending_discard"]=None;state["turn"] += 1;state.pop("damage_cant_be_prevented_until_turn",None);state["phase"] = PHASES[0];state["beginning_draw_pending"]=True;state["active_player_id"]=(state.get("extra_turns") or []).pop() if state.get("extra_turns") else opponent(state,state["active_player_id"])["id"]
     active = _player(state, state["active_player_id"]);active["lands_played_this_turn"]=0;_refresh_land_plays(state,active)
     for owner in state["players"]:
         for permanent in owner["battlefield"]:
