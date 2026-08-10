@@ -1709,7 +1709,7 @@ def _target_kind(card: dict) -> str | None:
     if re.search(r"target player discards?",text):return "player"
     if "target opponent reveals their hand" in text:return "player"
     if re.search(r"deals? (?:\d+|x)?\s*damage[^.]*to target player or planeswalker",text):return "player_or_planeswalker"
-    if re.search(r"deals? damage equal to (?:its|his|her) power to target creature",text):return "creature"
+    if re.search(r"deals? damage equal to [^.]+ to target creature",text):return "creature"
     if re.search(r"(?:target player gains?|target player loses|goad each creature target player controls)",text):return "player"
     if re.search(r"deals (?:\d+|x) damage to target (?:opponent|player)",text):return "player"
     if re.search(r"(?:destroy|exile|gain control of) target (?:artifact, creature, enchantment, planeswalker|nonland permanent|permanent)", text): return "permanent"
@@ -2671,6 +2671,11 @@ def _resolve_spell(state: dict) -> None:
     times_kicked=int(item.get("multikicker_count") or (source_permanent or {}).get("times_kicked",0))
     if times_kicked:effect_text=_multikicker_effect(effect_text,times_kicked)
     if caster.get("speed",0):effect_text=_speed_effect(effect_text,caster)
+    multicolored_count=sum(len(set(permanent.get("colors") or []))>=2 for permanent in caster["battlefield"])
+    artifact_count=sum("Artifact" in permanent.get("type_line","") for permanent in caster["battlefield"])
+    effect_text=re.sub(r"create a (tapped \d+/\d+ [^.]+? creature token) for each multicolored permanent you control",lambda match:f"create {multicolored_count} {match.group(1)}",effect_text,flags=re.IGNORECASE)
+    effect_text=re.sub(r"draw a card for each multicolored permanent you control",f"draw {multicolored_count} cards",effect_text,flags=re.IGNORECASE)
+    effect_text=re.sub(r"deals damage equal to the number of artifacts you control",f"deals {artifact_count} damage",effect_text,flags=re.IGNORECASE)
     effect_text=re.sub(r"\bto up to one target\b","to target",effect_text,flags=re.IGNORECASE)
     if source_permanent and re.search(r"deals damage equal to (?:its|his|her) power",effect_text):effect_text=re.sub(r"deals damage equal to (?:its|his|her) power",f"deals {_parse_stats(source_permanent,state)[0]} damage",effect_text)
     if "copy target spell you control" in effect_text:
