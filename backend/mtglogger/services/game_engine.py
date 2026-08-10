@@ -1051,6 +1051,10 @@ def _damage_player(state:dict,target:dict,amount:int,source:dict,combat:bool=Fal
     source_controller=_player(state,source.get("controller_id",source.get("owner_id",state["active_player_id"])))
     if source_controller.get("speed",0)>=4 and any("it deals that much damage plus 1 instead" in _active_level_text(permanent).casefold() for permanent in source_controller["battlefield"]):amount+=1
     if _player_protected_from(state,target,source):_log(state,f"Protection prevented {amount} damage to {target['name']}.");return 0
+    source_text=(source.get("oracle_text") or "").casefold()
+    if not ("damage" in source_text and "can't be prevented" in source_text) and target.get("damage_prevention",0)>0:
+        prevented=min(amount,target["damage_prevention"]);target["damage_prevention"]-=prevented;amount-=prevented;_log(state,f"A prevention effect prevented {prevented} damage to {target['name']}.")
+        if amount<=0:return 0
     if _has_keyword(source,"Infect"):_add_counters(state,target,"poison",amount,source.get("controller_id"),"damage")
     else:target["life"]-=amount
     if _has_keyword(source,"Lifelink"):_gain_life(state,_player(state,source.get("controller_id",source.get("owner_id"))),amount)
@@ -1064,6 +1068,10 @@ def _damage_permanent(state:dict,target:dict,amount:int,source:dict)->int:
     if target.get("controller_id")!=source_controller["id"] and source_controller.get("speed",0)>=4 and any("it deals that much damage plus 1 instead" in _active_level_text(permanent).casefold() for permanent in source_controller["battlefield"]):amount+=1
     if _protected_from(target,source):
         _log(state,f"Protection prevented {amount} damage to {target['name']}.");return 0
+    source_text=(source.get("oracle_text") or "").casefold()
+    if not ("damage" in source_text and "can't be prevented" in source_text) and target.get("damage_prevention",0)>0:
+        prevented=min(amount,target["damage_prevention"]);target["damage_prevention"]-=prevented;amount-=prevented;_log(state,f"A prevention effect prevented {prevented} damage to {target['name']}.")
+        if amount<=0:return 0
     if _consume_shield(state,target,"damage"):return 0
     if _has_keyword(source,"Infect") or _has_keyword(source,"Wither"):
         _add_counters(state,target,"-1/-1",amount,source.get("controller_id"),"damage")
@@ -3182,6 +3190,9 @@ def _resolve_spell(state: dict) -> None:
             if permanent is not regeneration_target and "Creature" in permanent.get("type_line",""):permanent["regeneration_shields"]=permanent.get("regeneration_shields",0)+1
     if target and re.search(r"(?:target|that) creature can(?:not|'t) attack(?: or block)? this turn",effect_text):target["cant_attack_until_turn"]=state["turn"]
     if target and re.search(r"(?:target|that) creature can(?:not|'t) (?:attack or )?block this turn",effect_text):target["cant_block_until_turn"]=state["turn"]
+    prevention=re.search(r"prevent the next (\d+) damage that would be dealt to any target this turn",effect_text)
+    if prevention and (target or target_player):
+        protected=target or target_player;protected["damage_prevention"]=protected.get("damage_prevention",0)+int(prevention.group(1));_log(state,f"The next {prevention.group(1)} damage to {protected['name']} this turn will be prevented.")
     if target and source_permanent and re.search(r"target creature block this creature this turn if able",effect_text):target["must_block_source_ids"]=sorted(set(target.get("must_block_source_ids",[]))|{source_permanent["instance_id"]})
     global_no_blocks=re.search(r"(?:other )?creatures(?: controlled by that player| without flying)? can(?:not|'t) block this turn",effect_text)
     if global_no_blocks:
@@ -3363,6 +3374,12 @@ def _resolve_spell(state: dict) -> None:
         supported=("flying","first strike","double strike","deathtouch","haste","hexproof","indestructible","lifelink","menace","reach","trample","vigilance");gained={keyword for keyword in supported if re.search(rf"\b{re.escape(keyword)}\b",team_keywords.group(1))}
         for permanent in caster["battlefield"]:
             if "Creature" in permanent.get("type_line",""):permanent["temporary_keywords"]=sorted(set(permanent.get("temporary_keywords",[]))|gained)
+    global_keywords=re.search(r"all creatures gain ([^.]+?) until end of turn",effect_text)
+    if global_keywords:
+        supported=("flying","first strike","double strike","deathtouch","haste","hexproof","indestructible","lifelink","menace","reach","trample","vigilance");gained={keyword for keyword in supported if re.search(rf"\b{re.escape(keyword)}\b",global_keywords.group(1))}
+        for owner in state["players"]:
+            for permanent in owner["battlefield"]:
+                if "Creature" in permanent.get("type_line",""):permanent["temporary_keywords"]=sorted(set(permanent.get("temporary_keywords",[]))|gained)
     protection_color=re.search(r"creatures you control gain protection from (white|blue|black|red|green) until end of turn",effect_text)
     if protection_color:
         color={"white":"W","blue":"U","black":"B","red":"R","green":"G"}[protection_color.group(1)]
@@ -3527,6 +3544,7 @@ def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str, t
             _queue_commander_zone_choice(state,zone_owner,component,destination)
         return
     card["damage"] = 0; card["tapped"] = False;card.pop("escaped",None);card.pop("evoked",None);card.pop("echo_due_controller_id",None);card.pop("dashed",None);card.pop("dash_return_triggered",None);card.pop("deathtouch_damage",None);card.pop("crewed_turn",None);card.pop("temporary_control_return_to",None);card.pop("control_while_source_id",None);card.pop("control_return_to_id",None);card.pop("activated_ability_usage",None);card.pop("temporary_power",None);card.pop("temporary_toughness",None);card.pop("temporary_base_power",None);card.pop("temporary_base_toughness",None);card.pop("temporary_keywords",None);card.pop("temporary_removed_keywords",None);card.pop("temporary_backup_rules",None);card.pop("temporary_protection_colors",None);card.pop("unearthed",None);card.pop("unearth_controller_id",None);card.pop("unearth_end_triggered",None);card.pop("populate_sacrifice_turn",None);card.pop("monstrous",None);card.pop("monstrosity_value",None)
+    card.pop("damage_prevention",None)
     if card.get("face_down"):
         values=card.pop("face_down_values",{})
         for key,value in values.items():card[key]=value
@@ -4304,10 +4322,11 @@ def _begin_next_turn(state:dict)->None:
             if "you may play an additional land on each of your turns" in (permanent.get("oracle_text") or "").casefold():_refresh_land_plays(state,current);_refresh_land_plays(state,return_to)
             _log(state,f"{permanent['name']} returned to {return_to['name']}'s control.")
     for owner in state["players"]:
-        owner["firebending_mana"]=0;owner["any_color_mana"]=0;owner["bent_this_turn"]=[];owner["energy_paid_this_turn"]=0
+        owner.pop("damage_prevention",None);owner["firebending_mana"]=0;owner["any_color_mana"]=0;owner["bent_this_turn"]=[];owner["energy_paid_this_turn"]=0
         for permanent in owner["battlefield"]:
             if permanent.get("temporary_type_line") is not None:permanent["type_line"]=permanent.pop("temporary_type_line")
             permanent.pop("temporary_power",None);permanent.pop("temporary_toughness",None);permanent.pop("temporary_base_power",None);permanent.pop("temporary_base_toughness",None);permanent.pop("temporary_keywords",None);permanent.pop("temporary_removed_keywords",None);permanent.pop("temporary_backup_rules",None);permanent.pop("temporary_protection_colors",None);permanent.pop("cant_attack_until_turn",None);permanent.pop("cant_block_until_turn",None);permanent.pop("must_block_source_ids",None);permanent.pop("attacks_this_turn",None);permanent.pop("regeneration_shields",None);permanent.pop("deathtouch_damage",None);permanent.pop("crewed_turn",None);permanent["damage"]=0
+            permanent.pop("damage_prevention",None)
             if permanent.get("goaded_until_turn",0)<state["turn"]:permanent.pop("goaded_until_turn",None);permanent.pop("goaded_by",None)
             if permanent.get("hexproof_until_turn",0)<state["turn"]:permanent.pop("hexproof_until_turn",None)
             if permanent.get("base_type_line") is not None:permanent["type_line"]=permanent.pop("base_type_line")
