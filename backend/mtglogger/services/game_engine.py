@@ -495,6 +495,13 @@ def _evoke_ability(card:dict)->dict|None:
     return None
 
 
+def _backup_specs(card:dict)->list[dict]:
+    lines=(card.get("oracle_text") or "").splitlines();index=next((index for index,line in enumerate(lines) if re.match(r"^Backup\b",line.strip(),re.IGNORECASE)),None)
+    if index is None:return []
+    amounts=[int(value) for value in re.findall(r"\bbackup\s+(\d+)\b",lines[index],re.IGNORECASE)];granted="\n".join(lines[index+1:]).strip()
+    return [{"amount":amount,"granted_text":granted} for amount in amounts]
+
+
 def _mutate_original(card:dict)->dict:
     runtime={"tapped","damage","counters","summoning_sick","temporary_power","temporary_toughness","temporary_keywords","attachment_keywords","attached_to","mutate_pile","mutate_count","mutate_top_component_id","effective_power","effective_toughness","entry_trigger_turns","activated_ability_usage"}
     return {key:deepcopy(value) for key,value in card.items() if key not in runtime}
@@ -585,7 +592,7 @@ def _aura_allowed_types(card:dict)->set[str]:
 
 def _effective_rules_text(state:dict,card:dict)->str:
     attachment_texts=[attachment.get("oracle_text") or "" for owner in state["players"] for attachment in owner["battlefield"] if attachment.get("attached_to")==card.get("instance_id")]
-    return "\n".join([card.get("oracle_text") or "",*attachment_texts]).casefold()
+    return "\n".join([card.get("oracle_text") or "",*(card.get("temporary_backup_rules") or []),*attachment_texts]).casefold()
 
 
 def _can_attack(state:dict,card:dict,attacker:dict,defender:dict)->bool:
@@ -849,7 +856,7 @@ def _activation_timing_legal(state:dict,player_id:str,permanent:dict,index:int,a
 
 def _permanent_abilities(state:dict,card:dict)->list[dict]:
     granted=[ability for rules in card.get("attachment_rules",{}).values() for ability in re.findall(r'"([^"]+:[^"]+)"',rules)]
-    return _activated_abilities({**card,"oracle_text":"\n".join([card.get("oracle_text") or "",*granted])})
+    return _activated_abilities({**card,"oracle_text":"\n".join([card.get("oracle_text") or "",*(card.get("temporary_backup_rules") or []),*granted])})
 
 
 def _loyalty_abilities(card:dict)->list[dict]:
@@ -1888,6 +1895,15 @@ def _resolve_spell(state: dict) -> None:
         if permanent:
             permanent_owner=next(owner for owner in state["players"] if permanent in owner["battlefield"]);permanent.pop("evoked",None);_leave_battlefield(state,permanent_owner,permanent,"graveyard");_log(state,f"{permanent['name']} was sacrificed to evoke.")
         return
+    if item.get("kind")=="backup_trigger":
+        target=next((permanent for owner in state["players"] for permanent in owner["battlefield"] if permanent["instance_id"]==item.get("target_id") and "Creature" in permanent.get("type_line","")),None)
+        source=next((permanent for owner in state["players"] for permanent in owner["battlefield"] if permanent["instance_id"]==item.get("source_id")),None)
+        if not target:_log(state,f"{card['name']} had no legal target.");return
+        _add_counters(state,target,"+1/+1",int(item.get("amount") or 0),caster["id"],"backup")
+        granted=item.get("granted_text") or ""
+        if source is not target and granted:
+            target.setdefault("temporary_backup_rules",[]).append(granted);supported=("flying","first strike","double strike","deathtouch","haste","hexproof","indestructible","lifelink","menace","reach","trample","vigilance");keywords=[keyword.title() for keyword in supported if re.search(rf"\b{re.escape(keyword)}\b",granted,re.IGNORECASE)];target["temporary_keywords"]=sorted(set(target.get("temporary_keywords",[]))|set(keywords))
+        _log(state,f"{target['name']} received backup {item.get('amount',0)} from {source['name'] if source else card['name']}.");return
     if item.get("mutating"):
         target=next((permanent for owner in state["players"] for permanent in owner["battlefield"] if permanent["instance_id"]==item.get("target_id") and permanent.get("owner_id")==caster["id"] and "Creature" in permanent.get("type_line","") and not re.search(r"\bHuman\b",permanent.get("type_line",""),re.IGNORECASE)),None)
         if target:
@@ -2288,7 +2304,7 @@ def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str, t
             else:zone_owner[destination].append(component)
             _queue_commander_zone_choice(state,zone_owner,component,destination)
         return
-    card["damage"] = 0; card["tapped"] = False;card.pop("escaped",None);card.pop("evoked",None);card.pop("deathtouch_damage",None);card.pop("crewed_turn",None);card.pop("temporary_control_return_to",None);card.pop("activated_ability_usage",None);card.pop("temporary_power",None);card.pop("temporary_toughness",None);card.pop("temporary_keywords",None);card.pop("unearthed",None);card.pop("unearth_controller_id",None);card.pop("unearth_end_triggered",None)
+    card["damage"] = 0; card["tapped"] = False;card.pop("escaped",None);card.pop("evoked",None);card.pop("deathtouch_damage",None);card.pop("crewed_turn",None);card.pop("temporary_control_return_to",None);card.pop("activated_ability_usage",None);card.pop("temporary_power",None);card.pop("temporary_toughness",None);card.pop("temporary_keywords",None);card.pop("temporary_backup_rules",None);card.pop("unearthed",None);card.pop("unearth_controller_id",None);card.pop("unearth_end_triggered",None)
     if card.get("face_down"):
         values=card.pop("face_down_values",{})
         for key,value in values.items():card[key]=value
@@ -2379,6 +2395,11 @@ def _enter_battlefield(state:dict,controller:dict,cards:list[dict],origin:str="e
         controller["battlefield"].append(card)
     ordered_owners=sorted(state["players"],key=lambda owner:owner["id"]!=state.get("active_player_id"));sources=[(owner,permanent) for owner in ordered_owners for permanent in owner["battlefield"]]
     for card in entering:_queue_triggers(state,"enters",card,controller,dedupe,sources)
+    for card in entering:
+        targets=[{"id":candidate["instance_id"],"name":candidate["name"],"kind":"permanent","controller_id":candidate.get("controller_id",controller["id"])} for owner in state["players"] for candidate in owner["battlefield"] if "Creature" in candidate.get("type_line","")]
+        for spec in _backup_specs(card):
+            ability={"name":f"{card['name']} — Backup {spec['amount']}","oracle_text":"Put a +1/+1 counter on target creature.","type_line":"Ability","mana_cost":""};trigger={"id":_id(),"kind":"backup_trigger","card":ability,"controller_id":controller["id"],"target_id":None,"source_id":card["instance_id"],**spec}
+            if targets:state.setdefault("pending_trigger_targets",[]).append({"controller_id":controller["id"],"source_name":card["name"],"trigger":trigger,"card":ability});state["priority_player_id"]=state["pending_trigger_targets"][0]["controller_id"]
     for card in entering:
         for key in ("entry_event_origin","entry_event_was_cast","entry_event_played","entry_event_batch_size"):card.pop(key,None)
     return entering
@@ -2478,13 +2499,14 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
         if not any(source is event_card for _,source in sources):
             insert_at=max((index+1 for index,(owner,_) in enumerate(sources) if owner["id"]==event_owner["id"]),default=len(sources));sources.insert(insert_at,(event_owner,event_card))
     for owner, source in sources:
-        text = source.get("oracle_text") or ""
+        text = "\n".join([source.get("oracle_text") or "",*(source.get("temporary_backup_rules") or [])])
         raw_clauses = re.split(r"(?<=[.!])\s+|\n", text);clauses=[]
         for clause in raw_clauses:
             if clauses and re.match(r"(?:then if|if you do),?\b",clause.strip(),re.IGNORECASE):clauses[-1]=f"{clauses[-1]} {clause.strip()}"
             else:clauses.append(clause)
         for clause in clauses:
             lower = clause.casefold(); matches = False
+            if event=="enters" and re.match(r"^backup\b",lower):continue
             trigger_count = 1
             if event == "enters" and event_card:
                 etb_boundary=re.search(r",\s*(?=(?:you\b|put\b|create\b|draw\b|each\b|target\b|this\b|that\b|it\b|its\b|gain\b|tap\b|untap\b|exile\b|investigate\b|proliferate\b|scry\b|mill\b|add\b|amass\b|venture\b|return\b|search\b|[a-z0-9' -]+ deals?\b))",lower);condition=lower[:etb_boundary.start()] if etb_boundary else lower.split(",",1)[0];type_line=event_card.get("type_line","").casefold();under_control=event_card.get("controller_id")==owner["id"];owned=event_card.get("owner_id")==owner["id"];one_or_more="one or more" in condition;dedupe_key=f"enters:{source.get('instance_id')}:{condition}"
@@ -2868,7 +2890,7 @@ def _begin_next_turn(state:dict)->None:
     for owner in state["players"]:
         owner["firebending_mana"]=0;owner["bent_this_turn"]=[];owner["energy_paid_this_turn"]=0
         for permanent in owner["battlefield"]:
-            permanent.pop("temporary_power",None);permanent.pop("temporary_toughness",None);permanent.pop("temporary_keywords",None);permanent.pop("cant_attack_until_turn",None);permanent.pop("cant_block_until_turn",None);permanent.pop("regeneration_shields",None);permanent.pop("deathtouch_damage",None);permanent.pop("crewed_turn",None);permanent["damage"]=0
+            permanent.pop("temporary_power",None);permanent.pop("temporary_toughness",None);permanent.pop("temporary_keywords",None);permanent.pop("temporary_backup_rules",None);permanent.pop("cant_attack_until_turn",None);permanent.pop("cant_block_until_turn",None);permanent.pop("regeneration_shields",None);permanent.pop("deathtouch_damage",None);permanent.pop("crewed_turn",None);permanent["damage"]=0
             if permanent.get("goaded_until_turn",0)<state["turn"]:permanent.pop("goaded_until_turn",None);permanent.pop("goaded_by",None)
             if permanent.get("hexproof_until_turn",0)<state["turn"]:permanent.pop("hexproof_until_turn",None)
             if permanent.get("base_type_line") is not None:permanent["type_line"]=permanent.pop("base_type_line")
