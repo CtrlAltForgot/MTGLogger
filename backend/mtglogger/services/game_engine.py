@@ -197,18 +197,20 @@ def _sync_city_blessing(state:dict)->None:
     blessed={player["id"] for player in state["players"] if player.get("city_blessing")}
     for owner in state["players"]:
         for card in owner["battlefield"]:
-            controller_id=card.get("controller_id",owner["id"]);card["controller_city_blessing"]=controller_id in blessed;granted=[]
+            controller_id=card.get("controller_id",owner["id"]);controller=_player(state,controller_id);card["controller_city_blessing"]=controller_id in blessed;card["controller_creature_count"]=sum("Creature" in permanent.get("type_line","") for permanent in controller["battlefield"]);card["controller_artifact_count"]=sum("Artifact" in permanent.get("type_line","") for permanent in controller["battlefield"]);card["controller_basic_land_count"]=sum("Basic" in permanent.get("type_line","") and "Land" in permanent.get("type_line","") for permanent in controller["battlefield"]);granted=[]
             for source_owner in state["players"]:
                 for source in source_owner["battlefield"]:
                     chosen=(source.get("chosen_creature_type") or "").casefold()
                     if chosen and source.get("controller_id",source_owner["id"])==controller_id and controller_id in blessed and "they also have vigilance" in (source.get("oracle_text") or "").casefold() and re.search(rf"\b{re.escape(chosen)}\b",card.get("type_line","").casefold()):granted.append("Vigilance")
                     text=_active_level_text(source).casefold();card_types=card.get("type_line","").casefold()
-                    if source.get("controller_id",source_owner["id"])==controller_id and "creature" in card_types:
-                        for keyword in ("haste","first strike","double strike","deathtouch","lifelink","menace","trample","vigilance"):
+                    if source.get("controller_id",source_owner["id"])==controller_id and ("creature" in card_types or "artifact" in card_types):
+                        for keyword in ("haste","first strike","double strike","deathtouch","hexproof","indestructible","lifelink","menace","trample","vigilance"):
                             global_keyword=re.search(rf"\b(other )?(?:[a-z]+ )?creatures you control have {re.escape(keyword)}\b",text)
                             if global_keyword and (not global_keyword.group(1) or source.get("instance_id")!=card.get("instance_id")):granted.append(keyword.title())
                             subtype_keyword=re.search(rf"\b(other )?([a-z]+)s you control have {re.escape(keyword)}\b",text)
                             if subtype_keyword and re.search(rf"\b{re.escape(subtype_keyword.group(2))}s?\b",card_types) and (not subtype_keyword.group(1) or source.get("instance_id")!=card.get("instance_id")):granted.append(keyword.title())
+                            grouped_keyword=re.search(r"\b(other )?([a-z]+)s you control have ([^.]+)",text)
+                            if grouped_keyword and re.search(rf"\b{re.escape(grouped_keyword.group(2))}s?\b",card_types) and re.search(rf"\b{re.escape(keyword)}\b",grouped_keyword.group(3)) and (not grouped_keyword.group(1) or source.get("instance_id")!=card.get("instance_id")):granted.append(keyword.title())
                     if source.get("controller_id",source_owner["id"])==controller_id and "land" in card_types and "creature" in card_types:
                         for keyword in ("trample","vigilance"):
                             if f"land creatures you control have {keyword}" in text:granted.append(keyword.title())
@@ -260,14 +262,25 @@ def _active_level_text(card:dict)->str:
     return _active_speed_text(card,_active_station_text(card,"\n".join([*preamble,*active])))
 
 
-def _active_station_text(card:dict,text:str)->str:
-    """Expose every Station threshold reached by the permanent's charge counters."""
-    charge=int(card.get("counters",{}).get("charge",0));visible=[]
+def _station_sections(text:str)->tuple[list[str],list[tuple[int,list[str]]]]:
+    """Split Station reminder text into its preamble and cumulative charge tiers."""
+    preamble=[];sections=[];current=None
     for line in text.splitlines():
-        match=re.match(r"^\s*(\d+)\+\s*\|\s*(.+)$",line)
-        if not match:visible.append(line)
-        elif charge>=int(match.group(1)):visible.append(match.group(2))
-    return "\n".join(visible)
+        match=re.match(r"^\s*(\d+)\+\s*\|\s*(.*)$",line)
+        if match:
+            current=(int(match.group(1)),[]);sections.append(current)
+            if match.group(2):current[1].append(match.group(2))
+            continue
+        (current[1] if current else preamble).append(line)
+    return preamble,sections
+
+
+def _active_station_text(card:dict,text:str)->str:
+    """Expose every complete Station tier reached by the permanent's charge counters."""
+    preamble,sections=_station_sections(text)
+    if not sections:return text
+    charge=int(card.get("counters",{}).get("charge",0))
+    return "\n".join([*preamble,*(line for minimum,lines in sections if charge>=minimum for line in lines)])
 
 
 def _station_threshold(card:dict)->int|None:
@@ -329,13 +342,14 @@ def _parse_stats(card: dict,state:dict|None=None) -> tuple[int, int]:
     try:
         plus = card.get("counters", {}).get("+1/+1", 0); minus = card.get("counters", {}).get("-1/-1", 0)
         static_power,static_toughness=_continuous_stats(state,card)
-        speed=int(card.get("controller_speed",0));speed_power="power is equal to your speed" in (card.get("oracle_text") or "").casefold();level_stats=_level_stats(card);base_power,base_toughness=level_stats or (speed if speed_power else int(card.get("temporary_base_power",card.get("power") or 0)),int(card.get("temporary_base_toughness",card.get("toughness") or 0)))
+        raw_text=(card.get("oracle_text") or "").casefold();speed=int(card.get("controller_speed",0));speed_power="power is equal to your speed" in raw_text;artifact_power="power is equal to the number of artifacts you control" in raw_text;level_stats=_level_stats(card);dynamic_power=speed if speed_power else int(card.get("controller_artifact_count",0)) if artifact_power else None;base_power,base_toughness=level_stats or (dynamic_power if dynamic_power is not None else int(card.get("temporary_base_power",card.get("power") or 0)),int(card.get("temporary_base_toughness",card.get("toughness") or 0)))
         active_text=_active_level_text(card);static_clauses=[clause for clause in re.split(r"(?<=[.!])\s+|\n",active_text) if "until end of turn" not in clause.casefold() and "as long as" not in clause.casefold()];self_static=next((match for clause in static_clauses if (match:=re.search(r"this creature gets ([+-]\d+)/([+-]\d+)",clause,re.IGNORECASE))),None);speed_static=(int(self_static.group(1)),int(self_static.group(2))) if self_static else (0,0)
         blessing_power=blessing_toughness=0
         if card.get("controller_city_blessing"):
             blessing=re.search(r"(?:this creature|[A-Z][^.\n]+) gets ([+-]\d+)/([+-]\d+) as long as you have the city's blessing",card.get("oracle_text") or "",re.IGNORECASE)
             if blessing:blessing_power,blessing_toughness=int(blessing.group(1)),int(blessing.group(2))
-        return base_power + plus - minus + card.get("temporary_power", 0)+static_power+blessing_power+speed_static[0], base_toughness + plus - minus + card.get("temporary_toughness", 0)+static_toughness+blessing_toughness+speed_static[1]
+        basic_bonus=int(card.get("controller_basic_land_count",0)) if "gets +1/+1 for each basic land you control" in _active_level_text(card).casefold() else 0;artifact_bonus=int(card.get("controller_artifact_count",0)) if "gets +1/+0 for each artifact you control" in _active_level_text(card).casefold() else 0
+        return base_power + plus - minus + card.get("temporary_power", 0)+static_power+blessing_power+speed_static[0]+basic_bonus+artifact_bonus, base_toughness + plus - minus + card.get("temporary_toughness", 0)+static_toughness+blessing_toughness+speed_static[1]+basic_bonus
     except ValueError:
         return 0, 0
 
@@ -390,13 +404,21 @@ def _mana_source_options(card: dict) -> list[dict]:
         self_sacrifice=re.search(r"\bsacrifice (?:this (?:artifact|creature|permanent)|%s)\b"%re.escape(card.get("name","")),cost,re.IGNORECASE) is not None
         life_match=re.search(r"\bpay (\d+) life\b",cost,re.IGNORECASE);life_cost=int(life_match.group(1)) if life_match else 0
         if "if you don't have the city's blessing, you lose 1 life" in text.casefold() and not card.get("controller_city_blessing"):life_cost+=1
-        residual=re.sub(r"\{t\}|pay \d+ life|sacrifice (?:this (?:artifact|creature|permanent)|%s)|[,. ]"%re.escape(card.get("name","")),"",cost,flags=re.IGNORECASE)
+        residual=re.sub(r"\{[WUBRGC]\}|\{t\}|pay \d+ life|sacrifice (?:this (?:artifact|creature|permanent)|%s)|[,. ]"%re.escape(card.get("name","")),"",cost,flags=re.IGNORECASE)
         if residual:continue
         charge_output=re.search(r"add \{([WUBRGC])\} for each charge counter on this (?:artifact|permanent)",effect,re.IGNORECASE)
         if charge_output:
             amount=max(0,int(card.get("counters",{}).get("charge",0)));symbol=charge_output.group(1).upper()
             if amount:options.append({"pool":tuple(amount if color==symbol else 0 for color in _MANA_COLORS),"taps":taps,"life_cost":life_cost,"self_sacrifice":self_sacrifice})
             continue
+        counted_output=re.search(r"add \{([WUBRGC])\} for each (creature|artifact) you control",effect,re.IGNORECASE)
+        if counted_output:
+            amount=int(card.get(f"controller_{counted_output.group(2).casefold()}_count",0));symbol=counted_output.group(1).upper()
+            if amount:options.append({"pool":tuple(amount if color==symbol else 0 for color in _MANA_COLORS),"taps":taps,"life_cost":life_cost,"self_sacrifice":self_sacrifice})
+            continue
+        variable_charge=re.search(r"add x mana of any one color, where x is the number of charge counters",effect,re.IGNORECASE)
+        if variable_charge:
+            amount=int(card.get("counters",{}).get("charge",0));options.extend({"pool":tuple(amount if color==choice else 0 for color in _MANA_COLORS),"taps":taps,"life_cost":life_cost,"self_sacrifice":self_sacrifice} for choice in "WUBRG");continue
         options.extend({"pool":pool,"taps":taps,"life_cost":life_cost,"self_sacrifice":self_sacrifice} for pool in _mana_pools(effect))
 
     if any(kind in type_line for kind in ("Treasure","Gold")) and not options:
@@ -489,12 +511,13 @@ def _has_keyword(card: dict, keyword: str) -> bool:
     if level_sections and any(re.search(rf"\b{re.escape(keyword)}\b","\n".join(lines),re.IGNORECASE) for _,_,lines in level_sections):printed.discard(keyword.casefold())
     lower_keyword=keyword.casefold();raw_text=card.get("oracle_text") or "";speed_conditional=[line for line in raw_text.splitlines() if re.match(r"^\s*Max speed\s*[—-]",line,re.IGNORECASE)];text=_active_level_text(card).casefold();conditional=[clause for clause in re.split(r"(?<=[.!])\s+|\n",text) if "as long as this creature is monstrous" in clause];blessing_conditional=[clause for clause in re.split(r"(?<=[.!])\s+|\n",text) if "city's blessing" in clause];unconditional="\n".join(clause for clause in re.split(r"(?<=[.!])\s+|\n",text) if clause not in conditional and clause not in blessing_conditional)
     if int(card.get("controller_speed",0))<4 and any(re.search(rf"\b{re.escape(lower_keyword)}\b",line,re.IGNORECASE) for line in speed_conditional):printed.discard(lower_keyword)
-    charge=int(card.get("counters",{}).get("charge",0));inactive_station=[match.group(2) for line in raw_text.splitlines() if (match:=re.match(r"^\s*(\d+)\+\s*\|\s*(.+)$",line)) and charge<int(match.group(1))]
+    charge=int(card.get("counters",{}).get("charge",0));_,station_sections=_station_sections(raw_text);inactive_station=[line for minimum,lines in station_sections if charge<minimum for line in lines]
     if any(re.search(rf"\b{re.escape(lower_keyword)}\b",line,re.IGNORECASE) for line in inactive_station):printed.discard(lower_keyword)
     if any(re.search(rf"\b{re.escape(lower_keyword)}\b",clause) for clause in blessing_conditional):printed.discard(lower_keyword)
     monstrous_match=card.get("monstrous") and any(re.search(rf"\b{re.escape(lower_keyword)}\b",clause) for clause in conditional)
     blessing_match=card.get("controller_city_blessing") and any(re.search(rf"\b{re.escape(lower_keyword)}\b",clause) for clause in blessing_conditional)
-    return lower_keyword in printed|temporary|continuous|attached|counter_keywords or (lower_keyword=="haste" and bool(card.get("earthbent") or card.get("suspend_haste"))) or bool(monstrous_match) or bool(blessing_match) or re.search(rf"\b{re.escape(lower_keyword)}\b",unconditional) is not None
+    self_excluded=re.search(rf"\bother [^.\n]+ you control (?:have|gain) [^.\n]*\b{re.escape(lower_keyword)}\b",unconditional) is not None
+    return lower_keyword in printed|temporary|continuous|attached|counter_keywords or (lower_keyword=="haste" and bool(card.get("earthbent") or card.get("suspend_haste"))) or bool(monstrous_match) or bool(blessing_match) or (not self_excluded and re.search(rf"\b{re.escape(lower_keyword)}\b",unconditional) is not None)
 
 
 def _attachment_keywords(card:dict)->list[str]:
