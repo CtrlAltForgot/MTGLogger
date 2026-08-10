@@ -3633,7 +3633,7 @@ def _resolve_spell(state: dict) -> None:
         if re.search(r"this creature loses defender until end of turn",effect_text):source_permanent["temporary_removed_keywords"]=sorted(set(source_permanent.get("temporary_removed_keywords",[]))|{"defender"})
         if re.search(rf"(?:untap this creature|untap {source_name})",effect_text):_set_tapped(state,[source_permanent],False,caster["id"],"effect")
     target_pronoun_counter=re.search(r"put (a|one|two|three|four|\d+) ([+−-]\d+/[+−-]\d+|[a-z][a-z-]*) counters? on (?:it|that creature|that permanent)",effect_text)
-    if target and target_pronoun_counter:
+    if target and target_pronoun_counter and "for each creature card milled this way" not in effect_text:
         words={"a":1,"one":1,"two":2,"three":3,"four":4};amount=words.get(target_pronoun_counter.group(1),int(target_pronoun_counter.group(1)) if target_pronoun_counter.group(1).isdigit() else 1);_add_counters(state,target,target_pronoun_counter.group(2).replace("−","-"),amount,caster["id"],"effect")
     if target and re.search(r"does(?: not|n't) untap during its controller'?s next untap step",effect_text):target["skip_untap_steps"]=target.get("skip_untap_steps",0)+1
     if target and re.search(r"target creature[^.]* attacks during its controller'?s next combat phase if able",effect_text):target["must_attack_next_combat"]=True
@@ -3673,11 +3673,28 @@ def _resolve_spell(state: dict) -> None:
         words={"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10}; amount=words.get(mill_match.group(1),int(mill_match.group(1)) if mill_match.group(1).isdigit() else 0)
         for _ in range(min(amount,len(target_player["library"]))): target_player["graveyard"].append(target_player["library"].pop())
         _log(state, f"{target_player['name']} milled {amount} card(s).")
-    self_mill=re.search(r"(?<!target player )\bmill (\d+|one|two|three|four|five|six|seven|eight|nine|ten) cards?",effect_text)
+    self_mill=re.search(r"(?<!target player )\bmill (\d+|one|two|three|four|five|six|seven|eight|nine|ten) cards?",effect_text);milled_cards=[]
     if self_mill:
         words={"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10};amount=words.get(self_mill.group(1),int(self_mill.group(1)) if self_mill.group(1).isdigit() else 0)
-        for _ in range(min(amount,len(caster["library"]))):caster["graveyard"].append(caster["library"].pop())
+        for _ in range(min(amount,len(caster["library"]))):milled_cards.append(caster["library"].pop());caster["graveyard"].append(milled_cards[-1])
         _log(state,f"{caster['name']} milled {amount} card(s).")
+    if milled_cards:
+        all_adventures="put all cards that have an adventure from among the milled cards into your hand" in effect_text
+        all_spells="put all instant and sorcery cards from among them into your hand" in effect_text
+        if all_adventures or all_spells:
+            selected=[candidate for candidate in milled_cards if (_adventure_ability(candidate) if all_adventures else any(kind in candidate.get("type_line","") for kind in ("Instant","Sorcery")))]
+            if selected:_leave_graveyard(state,caster,selected);caster["hand"].extend(selected);_log(state,f"{caster['name']} put {len(selected)} card(s) milled by {source_name} into their hand.")
+        milled_choice=None
+        if "put a creature, enchantment, or land card from among the milled cards onto the battlefield" in effect_text:milled_choice=({"Creature","Enchantment","Land"},"battlefield",False,1)
+        elif "return a creature card milled this way to your hand" in effect_text:milled_choice=({"Creature"},"hand",False,1)
+        elif re.search(r"put an instant(?:, sorcery, or faerie)? card from among (?:them|the milled cards) into your hand",effect_text):milled_choice=({"Instant","Sorcery","Faerie"} if "faerie" in effect_text else {"Instant","Sorcery"},"hand",False,1)
+        elif "put up to two land cards from among them into your hand" in effect_text:milled_choice=({"Land"},"hand",True,2)
+        if milled_choice:
+            allowed,destination,optional,remaining=milled_choice;choices=[candidate["instance_id"] for candidate in milled_cards if any(kind in candidate.get("type_line","") for kind in allowed)]
+            if choices:state["pending_zone_choice"]={"player_id":caster["id"],"source_name":source_name,"zone":"graveyard","destination":destination,"card_ids":choices,"optional":optional,"remaining":min(remaining,len(choices))};state["priority_player_id"]=caster["id"]
+        if target and "put a +1/+1 counter on that creature for each creature card milled this way" in effect_text:
+            count=sum("Creature" in candidate.get("type_line","") for candidate in milled_cards)
+            if count:_add_counters(state,target,"+1/+1",count,caster["id"],"effect");_log(state,f"{target['name']} received {count} +1/+1 counter(s) for creature cards milled by {source_name}.")
     if "return a creature or spacecraft card from your graveyard to your hand" in effect_text:
         choices=[candidate["instance_id"] for candidate in caster["graveyard"] if "Creature" in candidate.get("type_line","") or "Spacecraft" in candidate.get("type_line","")]
         if choices:state["pending_zone_choice"]={"player_id":caster["id"],"source_name":source_name,"zone":"graveyard","destination":"hand","card_ids":choices,"optional":False};state["priority_player_id"]=caster["id"]
