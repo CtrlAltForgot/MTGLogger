@@ -298,8 +298,11 @@ def _active_delirium_text(card:dict,text:str)->str:
     active=int(card.get("controller_graveyard_type_count",0))>=4;visible=[]
     for line in text.splitlines():
         if re.match(r"^\s*Delirium\s*[—-]",line,re.IGNORECASE):
+            body=re.sub(r"^\s*Delirium\s*[—-]\s*","",line,flags=re.IGNORECASE)
+            if "can't attack or block unless there are four or more card types among cards in your graveyard" in body.casefold():
+                if not active:visible.append(body)
+                continue
             if active:
-                body=re.sub(r"^\s*Delirium\s*[—-]\s*","",line,flags=re.IGNORECASE)
                 body=re.sub(r"^as long as there are four or more card types among cards in your graveyard,\s*","",body,flags=re.IGNORECASE)
                 body=re.sub(r"^if there are four or more card types among cards in your graveyard,\s*","",body,flags=re.IGNORECASE)
                 body=re.sub(r",\s*if there are four or more card types among cards in your graveyard,",",",body,flags=re.IGNORECASE)
@@ -937,11 +940,12 @@ def _can_attack(state:dict,card:dict,attacker:dict,defender:dict)->bool:
     text=_effective_rules_text(state,card)
     if card.get("cant_attack_until_turn")==state["turn"]:return False
     if "can't attack or block unless you have max speed" in text and attacker.get("speed",0)<4:return False
-    defender_override="defender" in text and "can attack as though it didn't have defender" in text and any("Creature" in permanent.get("type_line","") and _parse_stats(permanent,state)[0]>=4 for permanent in attacker["battlefield"])
+    defender_override="defender" in text and "can attack as though it didn't have defender" in text and ("as long as you control a creature with power 4 or greater" not in text or any("Creature" in permanent.get("type_line","") and _parse_stats(permanent,state)[0]>=4 for permanent in attacker["battlefield"]))
     if _has_keyword(card,"Defender") and not defender_override:return False
     if "can't attack unless" in text or "can't attack or block unless" in text:
         if "unless you have the city's blessing" in text and attacker.get("city_blessing"):return True
         if "seven or more cards in your graveyard" in text and len(attacker["graveyard"])<7:return False
+        if "four or more card types among cards in your graveyard" in text and _graveyard_card_type_count(attacker)<4:return False
         if "there is a mountain on the battlefield" in text and not any("mountain" in permanent.get("type_line","").casefold() for owner in state["players"] for permanent in owner["battlefield"]):return False
         if "defending player controls an enchantment or an enchanted permanent" in text and not any("Enchantment" in permanent.get("type_line","") or permanent.get("attached_to") for permanent in defender["battlefield"]):return False
         if "you control another creature with power 4 or greater" in text and not any(permanent["instance_id"]!=card["instance_id"] and "Creature" in permanent.get("type_line","") and _parse_stats(permanent,state)[0]>=4 for permanent in attacker["battlefield"]):return False
@@ -954,7 +958,7 @@ def _can_block_pair(state:dict,attacker:dict,blocker:dict)->bool:
     attacker_text=_effective_rules_text(state,attacker);blocker_text=_effective_rules_text(state,blocker)
     if blocker.get("cant_block_until_turn")==state["turn"]:return False
     if "can't attack or block unless you have max speed" in blocker_text and _player(state,blocker.get("controller_id")).get("speed",0)<4:return False
-    conditional="can't attack or block unless" in blocker_text and not ("unless you have the city's blessing" in blocker_text and _player(state,blocker.get("controller_id")).get("city_blessing"))
+    blocker_controller=_player(state,blocker.get("controller_id"));conditional="can't attack or block unless" in blocker_text and not (("unless you have the city's blessing" in blocker_text and blocker_controller.get("city_blessing")) or ("four or more card types among cards in your graveyard" in blocker_text and _graveyard_card_type_count(blocker_controller)>=4))
     if conditional and "you control another creature with power 4 or greater" in blocker_text:
         controller=_player(state,blocker.get("controller_id"));conditional=any(permanent["instance_id"]!=blocker["instance_id"] and "Creature" in permanent.get("type_line","") and _parse_stats(permanent,state)[0]>=4 for permanent in controller["battlefield"])
         if not conditional:return False
@@ -3422,7 +3426,13 @@ def _resolve_spell(state: dict) -> None:
             if destination=="graveyard":_destroy_permanent(state,owner,permanent,"can't be regenerated" in effect_text,trigger_sources,trigger_dedupe)
             else:_leave_battlefield(state,owner,permanent,destination,trigger_sources,trigger_dedupe,caster["id"],len(affected))
         _log(state,f"All {kind} were {'destroyed' if destination=='graveyard' else 'exiled'}.")
-    global_stats=re.search(r"(?:(?:all|each|other) )?(nonblack )?creatures?(?: you control| your opponents control)? get ([+-]\d+)/([+-]\d+)(?: and gains? ([^.]+?))? until end of turn",effect_text)
+    attacking_stats=re.search(r"(other )?attacking creatures get ([+-]\d+)/([+-]\d+)(?: and gains? ([^.]+?))? until end of turn",effect_text)
+    if attacking_stats:
+        supported=("flying","first strike","double strike","deathtouch","haste","hexproof","indestructible","lifelink","menace","reach","trample","vigilance");gained={keyword for keyword in supported if attacking_stats.group(4) and re.search(rf"\b{re.escape(keyword)}\b",attacking_stats.group(4))}
+        for attacker_id in state.get("combat",{}).get("attackers",[]):
+            permanent=next((candidate for owner in state["players"] for candidate in owner["battlefield"] if candidate["instance_id"]==attacker_id),None)
+            if permanent and not (attacking_stats.group(1) and permanent.get("instance_id")==item.get("source_id")):permanent["temporary_power"]=permanent.get("temporary_power",0)+int(attacking_stats.group(2));permanent["temporary_toughness"]=permanent.get("temporary_toughness",0)+int(attacking_stats.group(3));permanent["temporary_keywords"]=sorted(set(permanent.get("temporary_keywords",[]))|gained)
+    global_stats=None if attacking_stats else re.search(r"(?:(?:all|each|other) )?(nonblack )?creatures?(?: you control| your opponents control)? get ([+-]\d+)/([+-]\d+)(?: and gains? ([^.]+?))? until end of turn",effect_text)
     if global_stats:
         own_only="you control" in global_stats.group(0);opponents_only="opponents control" in global_stats.group(0);other_only=global_stats.group(0).startswith("other ");nonblack=bool(global_stats.group(1));supported=("flying","first strike","double strike","deathtouch","haste","hexproof","indestructible","lifelink","menace","reach","trample","vigilance");gained={keyword for keyword in supported if global_stats.group(4) and re.search(rf"\b{re.escape(keyword)}\b",global_stats.group(4))}
         for owner in state["players"]:
