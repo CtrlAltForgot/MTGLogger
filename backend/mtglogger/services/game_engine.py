@@ -1553,9 +1553,10 @@ def _target_kind(card: dict) -> str | None:
     if re.search(r"target player mills?", text): return "player"
     if re.search(r"target player sacrifices?",text):return "player"
     if re.search(r"target player discards?",text):return "player"
+    if re.search(r"(?:target player gains?|target player loses|goad each creature target player controls)",text):return "player"
     if re.search(r"deals (?:\d+|x) damage to target (?:opponent|player)",text):return "player"
     if re.search(r"(?:destroy|exile|gain control of) target (?:artifact, creature, enchantment, planeswalker|nonland permanent|permanent)", text): return "permanent"
-    if re.search(r"(?:destroy|exile|tap|untap|return|regenerate|gain control of|double the power of) target creature", text) or re.search(r"target creature .*(?:gets [+-](?:\d+|x)/[+-](?:\d+|x)|has base power and toughness|gains? [^.]+ until end of turn|can(?:not|'t) (?:attack|block))", text) or re.search(r"(?:deals (?:\d+|x) damage|put .+ counters?) (?:to|on) target creature", text): return "creature"
+    if re.search(r"(?:destroy|exile|tap|untap|return|regenerate|gain control of|double the power of) target creature", text) or re.search(r"target creature .*(?:gets [+-](?:\d+|x)/[+-](?:\d+|x)|has base power and toughness|gains? [^.]+ until end of turn|attacks during|can(?:not|'t) (?:attack|block))", text) or re.search(r"(?:deals (?:\d+|x) damage|put .+ counters?) (?:to|on) target creature", text): return "creature"
     for kind in ("artifact","enchantment","land","planeswalker"):
         if re.search(rf"(?:destroy|exile|tap|untap|return) target {kind}\b",text):return kind
     if re.search(r"return target (?:nonland )?permanent", text): return "permanent"
@@ -2661,6 +2662,10 @@ def _resolve_spell(state: dict) -> None:
     if target and target_pronoun_counter:
         words={"a":1,"one":1,"two":2,"three":3,"four":4};amount=words.get(target_pronoun_counter.group(1),int(target_pronoun_counter.group(1)) if target_pronoun_counter.group(1).isdigit() else 1);_add_counters(state,target,target_pronoun_counter.group(2).replace("−","-"),amount,caster["id"],"effect")
     if target and re.search(r"does(?: not|n't) untap during its controller'?s next untap step",effect_text):target["skip_untap_steps"]=target.get("skip_untap_steps",0)+1
+    if target and re.search(r"target creature[^.]* attacks during its controller'?s next combat phase if able",effect_text):target["must_attack_next_combat"]=True
+    if target_player and re.search(r"goad each creature target player controls",effect_text):
+        for permanent in target_player["battlefield"]:
+            if "Creature" in permanent.get("type_line",""):permanent["goaded_until_turn"]=state["turn"]+1;permanent["goaded_by"]=caster["id"]
     base_stats=re.search(r"(?:target creature|that creature) has base power and toughness (\d+)/(\d+) until end of turn",effect_text)
     if target and base_stats:target["temporary_base_power"]=int(base_stats.group(1));target["temporary_base_toughness"]=int(base_stats.group(2))
     self_base_stats=re.search(r"this (?:creature|permanent)'?s base power and toughness (?:become|becomes) (\d+)/(\d+) until end of turn",effect_text)
@@ -4142,7 +4147,8 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         eligible = {card_id for entry in legal_actions(state, player_id) if entry["type"] == "declare_attackers" for card_id in entry.get("card_ids", [])}
         if not requested.issubset(eligible): raise RuleViolation("One or more attackers are not eligible")
         goaded={card["instance_id"] for card in player["battlefield"] if card["instance_id"] in eligible and card.get("goaded_until_turn",0)>=state["turn"]}
-        if not goaded.issubset(requested):raise RuleViolation("Goaded creatures must attack if able")
+        required=goaded|{card["instance_id"] for card in player["battlefield"] if card["instance_id"] in eligible and card.get("must_attack_next_combat")}
+        if not required.issubset(requested):raise RuleViolation("Creatures required to attack must attack if able")
         if len(requested)==1:
             lone=next(card for card in player["battlefield"] if card["instance_id"] in requested)
             if "can't attack or block alone" in _effective_rules_text(state,lone):raise RuleViolation(f"{lone['name']} can't attack alone")
@@ -4150,6 +4156,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if any(requested_targets.get(attacker_id,default_target) not in defender_ids for attacker_id in requested):raise RuleViolation("Choose a legal defender for every attacker")
         state["combat"]["attackers"] = list(requested);state["combat"]["attackers_declared"]=True
         state["combat"]["attack_targets"]={attacker_id:requested_targets.get(attacker_id,default_target) for attacker_id in requested}
+        for card in player["battlefield"]:card.pop("must_attack_next_combat",None)
         _set_tapped(state,[card for card in player["battlefield"] if card["instance_id"] in requested and not _has_keyword(card,"Vigilance")],True,player_id,"attack")
         if len(requested)==1:_queue_exalted_triggers(state,player,next(card for card in player["battlefield"] if card["instance_id"] in requested))
         _queue_triggers(state,"attackers_declared",None,player)
