@@ -424,6 +424,8 @@ def _parse_stats(card: dict,state:dict|None=None) -> tuple[int, int]:
         plus = card.get("counters", {}).get("+1/+1", 0); minus = card.get("counters", {}).get("-1/-1", 0)
         static_power,static_toughness=_continuous_stats(state,card)
         raw_text=(card.get("oracle_text") or "").casefold();speed=int(card.get("controller_speed",0));speed_power="power is equal to your speed" in raw_text;artifact_power="power is equal to the number of artifacts you control" in raw_text;life_stats="power and toughness are each equal to your life total" in raw_text;spirit_enchantment_stats="power and toughness are each equal to the number of permanents you control that are spirits and/or enchantments" in raw_text;controller=_player(state,card.get("controller_id",card.get("owner_id"))) if state and (life_stats or spirit_enchantment_stats) else None;life_total=controller["life"] if controller and life_stats else int(card.get("controller_life",0));spirit_enchantment_total=sum("Spirit" in permanent.get("type_line","") or "Enchantment" in permanent.get("type_line","") for permanent in controller["battlefield"]) if controller and spirit_enchantment_stats else 0;level_stats=_level_stats(card);dynamic_power=speed if speed_power else int(card.get("controller_artifact_count",0)) if artifact_power else life_total if life_stats else spirit_enchantment_total if spirit_enchantment_stats else None;base_power,base_toughness=level_stats or ((dynamic_power,dynamic_power) if life_stats or spirit_enchantment_stats else (dynamic_power if dynamic_power is not None else int(card.get("temporary_base_power",card.get("power") or 0)),int(card.get("temporary_base_toughness",card.get("toughness") or 0))))
+        attached_base=next((match for rules in card.get("attachment_rules",{}).values() if (match:=re.search(r"enchanted creature (?:is|has base power and toughness) (\d+)/(\d+)",rules,re.IGNORECASE))),None)
+        if attached_base:base_power,base_toughness=int(attached_base.group(1)),int(attached_base.group(2))
         active_text=_active_level_text(card);static_clauses=[clause for clause in re.split(r"(?<=[.!])\s+|\n",active_text) if "until end of turn" not in clause.casefold() and "as long as" not in clause.casefold() and "for each" not in clause.casefold()];self_name=re.escape(card.get("name","").split(" ability",1)[0]);self_static=next((match for clause in static_clauses if (match:=re.search(rf"(?:this creature|{self_name}) gets ([+-]\d+)/([+-]\d+)",clause,re.IGNORECASE))),None);speed_static=(int(self_static.group(1)),int(self_static.group(2))) if self_static else (0,0)
         blessing_power=blessing_toughness=0
         if card.get("controller_city_blessing"):
@@ -1223,7 +1225,7 @@ def _destroy_permanent(state:dict,owner:dict,card:dict,cant_regenerate:bool=Fals
 
 def _ward_details(card:dict)->dict|None:
     if card.get("face_down") and (card.get("cloaked") or card.get("disguised")):return {"cost_type":"mana","mana_cost":"{2}","amount":0,"label":"{2}"}
-    text=card.get("oracle_text") or "";mana=re.search(r"\bward\s*[—-]?\s*((?:\{[^}]+\})+)",text,re.IGNORECASE)
+    text="\n".join([card.get("oracle_text") or "",*card.get("attachment_rules",{}).values()]);mana=re.search(r"\bward\s*[—-]?\s*((?:\{[^}]+\})+)",text,re.IGNORECASE)
     if mana:return {"cost_type":"mana","mana_cost":mana.group(1).upper(),"amount":0,"label":mana.group(1).upper()}
     life=re.search(r"\bward\s*[—-]?\s*pay (\d+) life\b",text,re.IGNORECASE)
     if life:return {"cost_type":"life","mana_cost":"","amount":int(life.group(1)),"label":f"Pay {life.group(1)} life"}
@@ -1515,6 +1517,11 @@ def _maximum_waterbend_x(player:dict,base_card:dict,excluded_ids:set[str]|None=N
 def _predefined_token(owner:dict,kind:str,tapped:bool=False)->dict:
     oracle={"Clue":"{2}, Sacrifice this artifact: Draw a card.","Food":"{2}, {T}, Sacrifice this artifact: You gain 3 life.","Treasure":"{T}, Sacrifice this artifact: Add one mana of any color.","Blood":"{1}, {T}, Discard a card, Sacrifice this artifact: Draw a card.","Gold":"Sacrifice this artifact: Add one mana of any color."}[kind]
     return {"instance_id":_id(),"scryfall_id":f"token-{kind.casefold()}","name":f"{kind} Token","image_url":None,"type_line":f"Token Artifact — {kind}","oracle_text":oracle,"mana_cost":"","mana_value":0,"power":None,"toughness":None,"owner_id":owner["id"],"controller_id":owner["id"],"tapped":tapped,"damage":0,"counters":{},"summoning_sick":True,"token":True,"keywords":[]}
+
+
+def _role_token(owner:dict,kind:str)->dict:
+    oracle={"Royal":"Enchant creature\nEnchanted creature gets +1/+1 and has ward {1}.","Wicked":"Enchant creature\nEnchanted creature gets +1/+1.\nWhen this Aura is put into a graveyard from the battlefield, each opponent loses 1 life.","Monster":"Enchant creature\nEnchanted creature gets +1/+1 and has trample.","Cursed":"Enchant creature\nEnchanted creature has base power and toughness 1/1."}[kind]
+    return {"instance_id":_id(),"scryfall_id":f"token-{kind.casefold()}-role","name":f"{kind} Role Token","image_url":None,"type_line":"Token Enchantment — Aura Role","oracle_text":oracle,"mana_cost":"","mana_value":0,"power":None,"toughness":None,"owner_id":owner["id"],"controller_id":owner["id"],"tapped":False,"damage":0,"counters":{},"summoning_sick":False,"token":True,"keywords":[]}
 
 
 def _incubator_token(owner:dict)->dict:
@@ -1967,6 +1974,7 @@ def _target_kind(card: dict) -> str | None:
     if re.search(r"target artifact\b",text):return "artifact"
     if "target creature or planeswalker" in text:return "creature_or_planeswalker"
     if "target creature or vehicle" in text:return "creature_or_vehicle"
+    if re.search(r"role token attached to target creature",text):return "creature"
     if re.search(r"target player mills?", text): return "player"
     if re.search(r"target player sacrifices?",text):return "player"
     if re.search(r"target player discards?",text):return "player"
@@ -3498,6 +3506,9 @@ def _resolve_spell(state: dict) -> None:
         if target.get("temporary_type_line") is None:target["temporary_type_line"]=target.get("type_line","")
         if "Creature" not in target.get("type_line",""):target["type_line"]=target["type_line"].replace("Artifact —","Artifact Creature —") if "Artifact —" in target["type_line"] else f"{target['type_line']} Creature"
         target["temporary_base_power"]=int(animate_artifact.group(1));target["temporary_base_toughness"]=int(animate_artifact.group(2));target["temporary_keywords"]=sorted(set(target.get("temporary_keywords",[]))|{"Flying"});_sync_city_blessing(state);_log(state,f"{target['name']} became a {animate_artifact.group(1)}/{animate_artifact.group(2)} flying artifact creature until end of turn.")
+    permanent_artifact_animation=re.search(r"target noncreature artifact you control becomes a (\d+)/(\d+) artifact creature",effect_text)
+    if permanent_artifact_animation and target and "Artifact" in target.get("type_line","") and "Creature" not in target.get("type_line",""):
+        target["type_line"]=target["type_line"].replace("Artifact —","Artifact Creature —") if "Artifact —" in target["type_line"] else f"{target['type_line']} Creature";target["power"]=permanent_artifact_animation.group(1);target["toughness"]=permanent_artifact_animation.group(2);target["summoning_sick"]=True;_sync_city_blessing(state);_log(state,f"{target['name']} permanently became a {target['power']}/{target['toughness']} artifact creature.")
     earthbend=_earthbend_value(rules_card,caster)
     if earthbend is not None and target and target_owner and "Land" in target.get("type_line","") and target["controller_id"]==caster["id"]:
         if not target.get("earthbent"):
@@ -3863,6 +3874,14 @@ def _resolve_spell(state: dict) -> None:
         words={"a":1,"one":1,"two":2,"three":3,"four":4};amount=words.get(team_counters.group(1),int(team_counters.group(1)) if team_counters.group(1).isdigit() else 1)
         for permanent in caster["battlefield"]:
             if "Creature" in permanent.get("type_line",""):_add_counters(state,permanent,team_counters.group(2),amount,caster["id"],"effect")
+    role_match=re.search(r"create a (royal|wicked|monster|cursed) role token attached to (?:target creature|it)",effect_text)
+    if role_match and target:
+        old_roles=[permanent for permanent in list(caster["battlefield"]) if "Role" in permanent.get("type_line","") and permanent.get("attached_to")==target["instance_id"]]
+        for old_role in old_roles:
+            wicked="when this aura is put into a graveyard from the battlefield, each opponent loses 1 life" in (old_role.get("oracle_text") or "").casefold();_leave_battlefield(state,caster,old_role,"graveyard")
+            if wicked:
+                ability={"name":f"{old_role['name']} trigger","type_line":"Ability","mana_cost":"","oracle_text":"Each opponent loses 1 life."};state["stack"].append({"id":_id(),"kind":"trigger","card":ability,"controller_id":caster["id"],"target_id":None,"source_id":old_role["instance_id"]});_log(state,f"{old_role['name']}'s graveyard trigger was put on the stack.")
+        role=_role_token(caster,role_match.group(1).title());_enter_battlefield(state,caster,[role],"token");_attach(state,role,target);_sync_city_blessing(state);_log(state,f"{caster['name']} created a {role['name']} attached to {target['name']}.")
     named_legendary_token=re.search(r"create ([^,]+), a legendary (\d+)/(\d+) ([^.]*?) creature token",effect_text)
     if named_legendary_token:
         descriptor=named_legendary_token.group(4).strip();colors=[symbol for name,symbol in {"white":"W","blue":"U","black":"B","red":"R","green":"G"}.items() if re.search(rf"\b{name}\b",descriptor)];subtype=re.sub(r"\b(?:white|blue|black|red|green|colorless|and)\b"," ",descriptor);subtype=re.sub(r"\s+"," ",subtype).strip() or "Creature";token_name=named_legendary_token.group(1).strip().title().replace(" Of "," of ").replace(" The "," the ");token={"instance_id":_id(),"scryfall_id":"token","name":token_name,"image_url":None,"type_line":f"Legendary Token Creature — {subtype.title()}","oracle_text":"","mana_cost":"","mana_value":0,"colors":colors,"power":named_legendary_token.group(2),"toughness":named_legendary_token.group(3),"owner_id":caster["id"],"controller_id":caster["id"],"tapped":False,"damage":0,"counters":{},"summoning_sick":True,"token":True,"keywords":[]};_enter_battlefield(state,caster,[token],"token")
