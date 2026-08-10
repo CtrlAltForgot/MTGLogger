@@ -1739,6 +1739,8 @@ def _delirium_rules_card(card:dict,player:dict)->dict:
             "might beyond reason":"Put three +1/+1 counters on target creature.",
             "unholy heat":"Unholy Heat deals 6 damage to target creature or planeswalker.",
             "violent urge":"Target creature gets +1/+0 and gains first strike and double strike until end of turn.",
+            "demonic counsel":"Search your library for a card, put it into your hand, then shuffle.",
+            "traverse the ulvenwald":"Search your library for a creature or land card, reveal it, put it into your hand, then shuffle.",
         }
         name=(card.get("name") or "").casefold()
         if name in replacements:text=replacements[name]
@@ -1764,14 +1766,17 @@ def _matches_library_search(card:dict,descriptor:str)->bool:
     if named:return name==named.group(1).strip()
     value=re.search(r"mana value (\d+) or less",descriptor)
     if value and float(card.get("mana_value") or 0)>int(value.group(1)):return False
+    creature_or_land="creature or land" in descriptor
+    if creature_or_land and not any(kind in type_line for kind in ("creature","land")):return False
     if "basic " in descriptor and "basic" not in type_line:return False
     if "basic land" in descriptor and not ("basic" in type_line and "land" in type_line):return False
-    elif "land" in descriptor and "land" not in type_line:return False
-    if "creature" in descriptor and "creature" not in type_line:return False
+    elif "land" in descriptor and not creature_or_land and "land" not in type_line:return False
+    if "creature" in descriptor and not creature_or_land and "creature" not in type_line:return False
+    if re.fullmatch(r"demon(?: card)?",descriptor) and not re.search(r"\bDemon\b",card.get("type_line",""),re.IGNORECASE):return False
     if "legendary" in descriptor and "legendary" not in type_line:return False
     qualities=[quality for quality in ("aura","equipment","shrine","lesson","noble","forest","island","mountain","plains","swamp","cave") if re.search(rf"\b{quality}\b",descriptor)]
     if qualities and not any(quality in type_line for quality in qualities):return False
-    return any(term in descriptor for term in ("card","land","creature","aura","equipment","shrine","lesson","noble","forest","island","mountain","plains","swamp","cave"))
+    return bool(re.fullmatch(r"demon(?: card)?",descriptor)) or any(term in descriptor for term in ("card","land","creature","aura","equipment","shrine","lesson","noble","forest","island","mountain","plains","swamp","cave"))
 
 
 def _new_player(player_id: str, name: str, deck: list[dict], is_bot: bool, format_name: str = "") -> dict:
