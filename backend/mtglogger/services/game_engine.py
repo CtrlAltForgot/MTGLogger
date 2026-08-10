@@ -420,7 +420,7 @@ def _parse_stats(card: dict,state:dict|None=None) -> tuple[int, int]:
         plus = card.get("counters", {}).get("+1/+1", 0); minus = card.get("counters", {}).get("-1/-1", 0)
         static_power,static_toughness=_continuous_stats(state,card)
         raw_text=(card.get("oracle_text") or "").casefold();speed=int(card.get("controller_speed",0));speed_power="power is equal to your speed" in raw_text;artifact_power="power is equal to the number of artifacts you control" in raw_text;level_stats=_level_stats(card);dynamic_power=speed if speed_power else int(card.get("controller_artifact_count",0)) if artifact_power else None;base_power,base_toughness=level_stats or (dynamic_power if dynamic_power is not None else int(card.get("temporary_base_power",card.get("power") or 0)),int(card.get("temporary_base_toughness",card.get("toughness") or 0)))
-        active_text=_active_level_text(card);static_clauses=[clause for clause in re.split(r"(?<=[.!])\s+|\n",active_text) if "until end of turn" not in clause.casefold() and "as long as" not in clause.casefold() and "for each" not in clause.casefold()];self_static=next((match for clause in static_clauses if (match:=re.search(r"this creature gets ([+-]\d+)/([+-]\d+)",clause,re.IGNORECASE))),None);speed_static=(int(self_static.group(1)),int(self_static.group(2))) if self_static else (0,0)
+        active_text=_active_level_text(card);static_clauses=[clause for clause in re.split(r"(?<=[.!])\s+|\n",active_text) if "until end of turn" not in clause.casefold() and "as long as" not in clause.casefold() and "for each" not in clause.casefold()];self_name=re.escape(card.get("name","").split(" ability",1)[0]);self_static=next((match for clause in static_clauses if (match:=re.search(rf"(?:this creature|{self_name}) gets ([+-]\d+)/([+-]\d+)",clause,re.IGNORECASE))),None);speed_static=(int(self_static.group(1)),int(self_static.group(2))) if self_static else (0,0)
         blessing_power=blessing_toughness=0
         if card.get("controller_city_blessing"):
             blessing=re.search(r"(?:this creature|[A-Z][^.\n]+) gets ([+-]\d+)/([+-]\d+) as long as you have the city's blessing",card.get("oracle_text") or "",re.IGNORECASE)
@@ -1575,7 +1575,7 @@ def _cascade_count(card:dict)->int:
 
 
 def _queue_cascade_triggers(state:dict,player:dict,card:dict)->None:
-    for _ in range(_cascade_count(card)):
+    for _ in range(_cascade_count(_delirium_rules_card(card,player))):
         ability={"name":f"{card['name']} — Cascade","oracle_text":"Cascade","source_type_line":card.get("type_line",""),"source_mana_cost":card.get("mana_cost",""),"type_line":"Ability","mana_cost":""}
         state["stack"].append({"id":_id(),"kind":"cascade","card":ability,"controller_id":player["id"],"target_id":None,"source_id":card["instance_id"],"cascade_value":int(float(card.get("mana_value") or 0))})
         _log(state,f"{card['name']}'s cascade ability triggered.")
