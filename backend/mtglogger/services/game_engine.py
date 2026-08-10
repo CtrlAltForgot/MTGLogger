@@ -181,8 +181,10 @@ def _continuous_stats(state:dict|None,card:dict)->tuple[int,int]:
                     qualifier=group.removesuffix(" creatures")
                     if qualifier not in {"creature","creatures"} and group!="creature tokens" and qualifier not in type_line:continue
                     power+=int(match.group(4));toughness+=int(match.group(5))
-                subtype_bonus=None if "for each +1/+1 counter" in lower else re.search(r"\b(other )?([A-Za-z][A-Za-z'-]+)s you control get ([+-]\d+)/([+-]\d+)",clause,re.IGNORECASE)
+                subtype_bonus=None if "for each +1/+1 counter" in lower or re.search(r"\b[A-Za-z][A-Za-z'-]+s and [A-Za-z][A-Za-z'-]+s you control get",clause,re.IGNORECASE) else re.search(r"\b(other )?([A-Za-z][A-Za-z'-]+)s you control get ([+-]\d+)/([+-]\d+)",clause,re.IGNORECASE)
                 if subtype_bonus and subtype_bonus.group(2).casefold() not in {"creature","artifact","enchantment","permanent","token"} and controller==source.get("controller_id",owner["id"]) and (not subtype_bonus.group(1) or source.get("instance_id")!=card.get("instance_id")) and re.search(rf"\b{re.escape(subtype_bonus.group(2))}\b",type_line,re.IGNORECASE):power+=int(subtype_bonus.group(3));toughness+=int(subtype_bonus.group(4))
+                grouped_subtype_bonus=re.search(r"\b([A-Za-z][A-Za-z'-]+)s and ([A-Za-z][A-Za-z'-]+)s you control get ([+-]\d+)/([+-]\d+)",clause,re.IGNORECASE)
+                if grouped_subtype_bonus and controller==source.get("controller_id",owner["id"]) and any(re.search(rf"\b{re.escape(grouped_subtype_bonus.group(position))}\b",type_line,re.IGNORECASE) for position in (1,2)):power+=int(grouped_subtype_bonus.group(3));toughness+=int(grouped_subtype_bonus.group(4))
                 global_subtype=re.search(r"\ball ([A-Za-z][A-Za-z'-]+)s get ([+-]\d+)/([+-]\d+)",clause,re.IGNORECASE)
                 if global_subtype and re.search(rf"\b{re.escape(global_subtype.group(1))}\b",type_line,re.IGNORECASE):power+=int(global_subtype.group(2));toughness+=int(global_subtype.group(3))
                 color_bonus=re.search(r"\b(white|blue|black|red|green) creatures get (?:an additional )?([+-]\d+)/([+-]\d+)",clause,re.IGNORECASE);color_symbols={"white":"W","blue":"U","black":"B","red":"R","green":"G"}
@@ -221,6 +223,8 @@ def _sync_city_blessing(state:dict)->None:
                             if subtype_keyword and re.search(rf"\b{re.escape(subtype_keyword.group(2))}s?\b",card_types) and (not subtype_keyword.group(1) or source.get("instance_id")!=card.get("instance_id")):granted.append(keyword.title())
                             grouped_keyword=re.search(r"\b(other )?([a-z]+)s you control have ([^.]+)",text)
                             if grouped_keyword and re.search(rf"\b{re.escape(grouped_keyword.group(2))}s?\b",card_types) and re.search(rf"\b{re.escape(keyword)}\b",grouped_keyword.group(3)) and (not grouped_keyword.group(1) or source.get("instance_id")!=card.get("instance_id")):granted.append(keyword.title())
+                            paired_keyword=re.search(r"\b([a-z]+)s and ([a-z]+)s you control get [^.]+ and have ([^.]+)",text)
+                            if paired_keyword and any(re.search(rf"\b{re.escape(paired_keyword.group(position))}s?\b",card_types) for position in (1,2)) and re.search(rf"\b{re.escape(keyword)}\b",paired_keyword.group(3)):granted.append(keyword.title())
                     if source.get("controller_id",source_owner["id"])==controller_id and "land" in card_types and "creature" in card_types:
                         for keyword in ("trample","vigilance"):
                             if f"land creatures you control have {keyword}" in text:granted.append(keyword.title())
@@ -3307,6 +3311,10 @@ def _resolve_spell(state: dict) -> None:
             for permanent in owner["battlefield"]:
                 if "Creature" not in permanent.get("type_line","") or ("other creatures" in global_no_blocks.group(0) and target and permanent["instance_id"]==target["instance_id"]) or ("without flying" in global_no_blocks.group(0) and _has_keyword(permanent,"Flying")):continue
                 permanent["cant_block_until_turn"]=state["turn"]
+    if "creatures with power 2 or less can't block this turn" in effect_text:
+        for owner in state["players"]:
+            for permanent in owner["battlefield"]:
+                if "Creature" in permanent.get("type_line","") and _parse_stats(permanent,state)[0]<=2:permanent["cant_block_until_turn"]=state["turn"]
     stats_match = re.search(r"(?:target|that) creature[^.]*? gets ([+-]\d+)/([+-]\d+)[^.]* until end of turn", effect_text)
     if target and stats_match:
         target["temporary_power"] = target.get("temporary_power", 0) + int(stats_match.group(1))
