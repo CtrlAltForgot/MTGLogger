@@ -46,7 +46,7 @@ export default function App(){
   const toggleTheme=()=>setDark(value=>{localStorage.setItem('mtglogger-theme',value?'light':'dark');return !value})
   const changePage=(value:number)=>{setPage(value);history.replaceState(null,'',`?page=${pages[value].name.toLowerCase()}`)}
   const install=async()=>{if(!installPrompt)return;await installPrompt.prompt();await installPrompt.userChoice;setInstallPrompt(undefined)}
-  return <ThemeProvider theme={theme}><CssBaseline/><CardDetailsProvider>
+  return <ThemeProvider theme={theme}><CssBaseline/><CardDetailsProvider><Box className={`app-frame ${page===6?'is-play':''}`}>
     <AppBar position="sticky"><Toolbar sx={{position:'relative',minHeight:{xs:54,md:64},px:{xs:1.25,md:2},gap:{xs:.75,md:1.5}}}>
       <Box component="img" src="/mtglogger-card-stack.png" alt="" sx={{width:{xs:34,md:40},height:{xs:34,md:40},objectFit:'contain',flex:'0 0 auto',filter:'drop-shadow(0 8px 18px rgba(190,35,54,.3))'}}/>
       <Box sx={{flex:'0 0 auto',display:{xs:'none',lg:'block'},minWidth:150}}><Typography variant="h6" lineHeight={1}>MTGLogger</Typography><Typography variant="caption" color="text.secondary">Log your TCG collection</Typography></Box>
@@ -54,6 +54,6 @@ export default function App(){
       {installPrompt&&<Button startIcon={<Download/>} onClick={()=>void install()} sx={{display:{xs:'none',xl:'inline-flex'},flex:'0 0 auto'}}>Install</Button>}
       <Tooltip title={dark?'Use light appearance':'Use dark appearance'}><IconButton aria-label={dark?'Use light appearance':'Use dark appearance'} onClick={toggleTheme} sx={{ml:{lg:'auto'},flex:'0 0 auto',border:'1px solid',borderColor:'divider',bgcolor:'action.hover'}}>{dark?<LightMode/>:<DarkMode/>}</IconButton></Tooltip>
     </Toolbar></AppBar>
-    <Box component="main" sx={{maxWidth:page===6?'none':1580,mx:'auto',px:page===6?0:{xs:2,sm:3,lg:3.5},py:page===6?0:{xs:2.5,md:3},minHeight:'calc(100vh - 64px)'}}><Suspense fallback={<Box minHeight="50vh" display="grid" sx={{placeItems:'center'}}><CircularProgress/></Box>}>{pages[page].content}</Suspense></Box>
-  </CardDetailsProvider></ThemeProvider>
+    <Box component="main" sx={{maxWidth:page===6?'none':1580,mx:'auto',px:page===6?0:{xs:2,sm:3,lg:3.5},py:page===6?0:{xs:2.5,md:3},minHeight:page===6?0:'calc(100vh - 64px)',flex:page===6?'1 1 auto':undefined,width:'100%'}}><Suspense fallback={<Box minHeight="50vh" display="grid" sx={{placeItems:'center'}}><CircularProgress/></Box>}>{pages[page].content}</Suspense></Box>
+  </Box></CardDetailsProvider></ThemeProvider>
 }
