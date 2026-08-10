@@ -261,7 +261,7 @@ def _parse_stats(card: dict,state:dict|None=None) -> tuple[int, int]:
     try:
         plus = card.get("counters", {}).get("+1/+1", 0); minus = card.get("counters", {}).get("-1/-1", 0)
         static_power,static_toughness=_continuous_stats(state,card)
-        level_stats=_level_stats(card);base_power,base_toughness=level_stats or (int(card.get("power") or 0),int(card.get("toughness") or 0))
+        level_stats=_level_stats(card);base_power,base_toughness=level_stats or (int(card.get("temporary_base_power",card.get("power") or 0)),int(card.get("temporary_base_toughness",card.get("toughness") or 0)))
         blessing_power=blessing_toughness=0
         if card.get("controller_city_blessing"):
             blessing=re.search(r"(?:this creature|[A-Z][^.\n]+) gets ([+-]\d+)/([+-]\d+) as long as you have the city's blessing",card.get("oracle_text") or "",re.IGNORECASE)
@@ -643,7 +643,7 @@ def _cumulative_upkeep_cost(card:dict)->dict|None:
 
 
 def _mutate_original(card:dict)->dict:
-    runtime={"tapped","damage","counters","summoning_sick","temporary_power","temporary_toughness","temporary_keywords","attachment_keywords","attached_to","mutate_pile","mutate_count","mutate_top_component_id","effective_power","effective_toughness","entry_trigger_turns","activated_ability_usage"}
+    runtime={"tapped","damage","counters","summoning_sick","temporary_power","temporary_toughness","temporary_base_power","temporary_base_toughness","temporary_keywords","attachment_keywords","attached_to","mutate_pile","mutate_count","mutate_top_component_id","effective_power","effective_toughness","entry_trigger_turns","activated_ability_usage"}
     return {key:deepcopy(value) for key,value in card.items() if key not in runtime}
 
 
@@ -1554,7 +1554,7 @@ def _target_kind(card: dict) -> str | None:
     if re.search(r"target player discards?",text):return "player"
     if re.search(r"deals (?:\d+|x) damage to target (?:opponent|player)",text):return "player"
     if re.search(r"(?:destroy|exile|gain control of) target (?:artifact, creature, enchantment, planeswalker|nonland permanent|permanent)", text): return "permanent"
-    if re.search(r"(?:destroy|exile|tap|untap|return|regenerate|gain control of) target creature", text) or re.search(r"target creature .*(?:gets [+-](?:\d+|x)/[+-](?:\d+|x)|gains? [^.]+ until end of turn|can(?:not|'t) (?:attack|block))", text) or re.search(r"(?:deals (?:\d+|x) damage|put .+ counters?) (?:to|on) target creature", text): return "creature"
+    if re.search(r"(?:destroy|exile|tap|untap|return|regenerate|gain control of|double the power of) target creature", text) or re.search(r"target creature .*(?:gets [+-](?:\d+|x)/[+-](?:\d+|x)|has base power and toughness|gains? [^.]+ until end of turn|can(?:not|'t) (?:attack|block))", text) or re.search(r"(?:deals (?:\d+|x) damage|put .+ counters?) (?:to|on) target creature", text): return "creature"
     for kind in ("artifact","enchantment","land","planeswalker"):
         if re.search(rf"(?:destroy|exile|tap|untap|return) target {kind}\b",text):return kind
     if re.search(r"return target (?:nonland )?permanent", text): return "permanent"
@@ -2650,6 +2650,16 @@ def _resolve_spell(state: dict) -> None:
     if target and target_pronoun_counter:
         words={"a":1,"one":1,"two":2,"three":3,"four":4};amount=words.get(target_pronoun_counter.group(1),int(target_pronoun_counter.group(1)) if target_pronoun_counter.group(1).isdigit() else 1);_add_counters(state,target,target_pronoun_counter.group(2).replace("−","-"),amount,caster["id"],"effect")
     if target and re.search(r"does(?: not|n't) untap during its controller'?s next untap step",effect_text):target["skip_untap_steps"]=target.get("skip_untap_steps",0)+1
+    base_stats=re.search(r"(?:target creature|that creature) has base power and toughness (\d+)/(\d+) until end of turn",effect_text)
+    if target and base_stats:target["temporary_base_power"]=int(base_stats.group(1));target["temporary_base_toughness"]=int(base_stats.group(2))
+    self_base_stats=re.search(r"this (?:creature|permanent)'?s base power and toughness (?:become|becomes) (\d+)/(\d+) until end of turn",effect_text)
+    if source_permanent and self_base_stats:source_permanent["temporary_base_power"]=int(self_base_stats.group(1));source_permanent["temporary_base_toughness"]=int(self_base_stats.group(2))
+    if target and "double the power of target creature" in effect_text:target["temporary_power"]=target.get("temporary_power",0)+_parse_stats(target,state)[0]
+    if "double the number of +1/+1 counters on each creature you control" in effect_text:
+        for permanent in caster["battlefield"]:
+            if "Creature" in permanent.get("type_line",""):_add_counters(state,permanent,"+1/+1",permanent.get("counters",{}).get("+1/+1",0),caster["id"],"effect")
+    elif "double the number of +1/+1 counters on that creature" in effect_text and target:_add_counters(state,target,"+1/+1",target.get("counters",{}).get("+1/+1",0),caster["id"],"effect")
+    elif source_permanent and "double the number of +1/+1 counters on this creature" in effect_text:_add_counters(state,source_permanent,"+1/+1",source_permanent.get("counters",{}).get("+1/+1",0),caster["id"],"effect")
     mill_match = re.search(r"target player mills? (\d+|one|two|three|four|five|six|seven|eight|nine|ten) cards?", effect_text)
     if mill_match and target_player:
         words={"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10}; amount=words.get(mill_match.group(1),int(mill_match.group(1)) if mill_match.group(1).isdigit() else 0)
@@ -2841,7 +2851,7 @@ def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str, t
             else:zone_owner[destination].append(component)
             _queue_commander_zone_choice(state,zone_owner,component,destination)
         return
-    card["damage"] = 0; card["tapped"] = False;card.pop("escaped",None);card.pop("evoked",None);card.pop("echo_due_controller_id",None);card.pop("dashed",None);card.pop("dash_return_triggered",None);card.pop("deathtouch_damage",None);card.pop("crewed_turn",None);card.pop("temporary_control_return_to",None);card.pop("activated_ability_usage",None);card.pop("temporary_power",None);card.pop("temporary_toughness",None);card.pop("temporary_keywords",None);card.pop("temporary_backup_rules",None);card.pop("unearthed",None);card.pop("unearth_controller_id",None);card.pop("unearth_end_triggered",None);card.pop("populate_sacrifice_turn",None);card.pop("monstrous",None);card.pop("monstrosity_value",None)
+    card["damage"] = 0; card["tapped"] = False;card.pop("escaped",None);card.pop("evoked",None);card.pop("echo_due_controller_id",None);card.pop("dashed",None);card.pop("dash_return_triggered",None);card.pop("deathtouch_damage",None);card.pop("crewed_turn",None);card.pop("temporary_control_return_to",None);card.pop("activated_ability_usage",None);card.pop("temporary_power",None);card.pop("temporary_toughness",None);card.pop("temporary_base_power",None);card.pop("temporary_base_toughness",None);card.pop("temporary_keywords",None);card.pop("temporary_backup_rules",None);card.pop("unearthed",None);card.pop("unearth_controller_id",None);card.pop("unearth_end_triggered",None);card.pop("populate_sacrifice_turn",None);card.pop("monstrous",None);card.pop("monstrosity_value",None)
     if card.get("face_down"):
         values=card.pop("face_down_values",{})
         for key,value in values.items():card[key]=value
@@ -3536,7 +3546,7 @@ def _begin_next_turn(state:dict)->None:
     for owner in state["players"]:
         owner["firebending_mana"]=0;owner["bent_this_turn"]=[];owner["energy_paid_this_turn"]=0
         for permanent in owner["battlefield"]:
-            permanent.pop("temporary_power",None);permanent.pop("temporary_toughness",None);permanent.pop("temporary_keywords",None);permanent.pop("temporary_backup_rules",None);permanent.pop("cant_attack_until_turn",None);permanent.pop("cant_block_until_turn",None);permanent.pop("regeneration_shields",None);permanent.pop("deathtouch_damage",None);permanent.pop("crewed_turn",None);permanent["damage"]=0
+            permanent.pop("temporary_power",None);permanent.pop("temporary_toughness",None);permanent.pop("temporary_base_power",None);permanent.pop("temporary_base_toughness",None);permanent.pop("temporary_keywords",None);permanent.pop("temporary_backup_rules",None);permanent.pop("cant_attack_until_turn",None);permanent.pop("cant_block_until_turn",None);permanent.pop("regeneration_shields",None);permanent.pop("deathtouch_damage",None);permanent.pop("crewed_turn",None);permanent["damage"]=0
             if permanent.get("goaded_until_turn",0)<state["turn"]:permanent.pop("goaded_until_turn",None);permanent.pop("goaded_by",None)
             if permanent.get("hexproof_until_turn",0)<state["turn"]:permanent.pop("hexproof_until_turn",None)
             if permanent.get("base_type_line") is not None:permanent["type_line"]=permanent.pop("base_type_line")
