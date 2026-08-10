@@ -1743,6 +1743,7 @@ def _delirium_rules_card(card:dict,player:dict)->dict:
             "traverse the ulvenwald":"Search your library for a creature or land card, reveal it, put it into your hand, then shuffle.",
             "whispers of emrakul":"Target opponent discards two cards at random.",
             "impossible inferno":"Impossible Inferno deals 6 damage to target creature. Exile the top card of your library. You may play it until the end of your next turn.",
+            "to the slaughter":"Target player sacrifices a creature and a planeswalker of their choice.",
         }
         name=(card.get("name") or "").casefold()
         if name in replacements:text=replacements[name]
@@ -3457,7 +3458,14 @@ def _resolve_spell(state: dict) -> None:
         for affected in [owner for owner in state["players"] if owner["id"]!=caster["id"]]:
             choices=[permanent["instance_id"] for permanent in affected["battlefield"] if "Creature" in permanent.get("type_line","")];required=(len(choices)+1)//2
             if required:state["pending_sacrifice"]={"player_id":affected["id"],"amount":required,"card_ids":choices};state["priority_player_id"]=affected["id"];_log(state,f"{affected['name']} must sacrifice {required} creature(s).")
-    sacrifice_match=None if half_sacrifice else re.search(r"(?:target player|each opponent) sacrifices? (a|one|two|three|four|\d+) (nontoken )?(creature or vehicle|creature|permanent)s?",effect_text)
+    slaughter_match=re.search(r"target player sacrifices a creature (or|and) (?:a )?planeswalker of their choice",effect_text)
+    if slaughter_match and target_player:
+        creatures=[permanent["instance_id"] for permanent in target_player["battlefield"] if "Creature" in permanent.get("type_line","")];planeswalkers=[permanent["instance_id"] for permanent in target_player["battlefield"] if "Planeswalker" in permanent.get("type_line","")]
+        if slaughter_match.group(1)=="or":groups=[{"player_id":target_player["id"],"amount":1,"card_ids":[*creatures,*planeswalkers]}] if creatures or planeswalkers else []
+        else:groups=[{"player_id":target_player["id"],"amount":1,"card_ids":choices,"choice_label":kind} for kind,choices in (("creature",creatures),("planeswalker",planeswalkers)) if choices]
+        if groups:
+            current,*remaining=groups;current["remaining_sacrifice_choices"]=remaining;state["pending_sacrifice"]=current;state["priority_player_id"]=target_player["id"];_log(state,f"{target_player['name']} must make {len(groups)} sacrifice choice(s).")
+    sacrifice_match=None if half_sacrifice or slaughter_match else re.search(r"(?:target player|each opponent) sacrifices? (a|one|two|three|four|\d+) (nontoken )?(creature or vehicle|creature|permanent)s?",effect_text)
     if sacrifice_match:
         words={"a":1,"one":1,"two":2,"three":3,"four":4};amount=words.get(sacrifice_match.group(1),int(sacrifice_match.group(1)) if sacrifice_match.group(1).isdigit() else 1);affected=target_player if "target player" in sacrifice_match.group(0) and target_player else other;kind=sacrifice_match.group(3)
         choices=[permanent["instance_id"] for permanent in affected["battlefield"] if (not sacrifice_match.group(2) or not permanent.get("token")) and (kind=="permanent" or any(part in permanent.get("type_line","").casefold() for part in kind.split(" or ")))];required=min(amount,len(choices))
@@ -5384,7 +5392,11 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         chosen=[card for card in player["battlefield"] if card["instance_id"] in set(requested)]
         if len(chosen)!=required:raise RuleViolation("One or more selected permanents are no longer available")
         _sacrifice_permanents(state,player,chosen)
-        state["pending_sacrifice"]=None;state["priority_player_id"]=state["active_player_id"];_log(state,f"{player['name']} sacrificed {required} permanent(s).")
+        battlefield_ids={permanent["instance_id"] for permanent in player["battlefield"]};remaining=[{**choice,"card_ids":[card_id for card_id in choice.get("card_ids",[]) if card_id in battlefield_ids]} for choice in pending.get("remaining_sacrifice_choices") or []];remaining=[choice for choice in remaining if choice["card_ids"]];state["pending_sacrifice"]=None
+        if remaining:
+            next_choice,*rest=remaining;next_choice["remaining_sacrifice_choices"]=rest;state["pending_sacrifice"]=next_choice;state["priority_player_id"]=next_choice["player_id"]
+        else:state["priority_player_id"]=state["active_player_id"]
+        _log(state,f"{player['name']} sacrificed {required} permanent(s).")
     elif action_type == "choose_legendary":
         pending=state.get("pending_legendary") or {};requested=action.get("card_ids") or []
         if pending.get("player_id")!=player_id or len(requested)!=1 or requested[0] not in pending.get("card_ids",[]):raise RuleViolation("Choose exactly one legendary permanent to keep")
