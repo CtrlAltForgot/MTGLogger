@@ -1877,6 +1877,8 @@ def public_state(state: dict, viewer_id: str = "player") -> dict:
     if pending_revealed and pending_revealed.get("player_id")!=viewer_id:pending_revealed["cards"]=[]
     pending_same_name=visible.get("pending_same_name_search")
     if pending_same_name and pending_same_name.get("player_id")!=viewer_id:pending_same_name["cards"]=[]
+    pending_winter=visible.get("pending_winter_exile")
+    if pending_winter and pending_winter.get("player_id")!=viewer_id:pending_winter["cards"]=[]
     pending_sticktwister=visible.get("pending_sticktwister")
     if pending_sticktwister:
         for selection in pending_sticktwister.get("selections",[]):
@@ -2120,7 +2122,7 @@ def _pending_decision(state:dict)->bool:
     if state.get("pending_zone_choice"):return True
     if state.get("pending_counter_choice"):return True
     if state.get("pending_color_choice"):return True
-    return bool(state.get("pending_sticktwister") or state.get("pending_rad_choice") or state.get("pending_top_card_choice") or state.get("pending_revealed_discard") or state.get("pending_same_name_search") or state.get("pending_optional_discard") or state.get("pending_optional_payment") or state.get("pending_tilonalli") or state.get("pending_creature_type") or state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_populate") or state.get("pending_bolster") or state.get("pending_discovery") or state.get("pending_madness") or state.get("pending_rebound") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
+    return bool(state.get("pending_sticktwister") or state.get("pending_rad_choice") or state.get("pending_top_card_choice") or state.get("pending_revealed_discard") or state.get("pending_same_name_search") or state.get("pending_winter_exile") or state.get("pending_optional_discard") or state.get("pending_optional_payment") or state.get("pending_tilonalli") or state.get("pending_creature_type") or state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_populate") or state.get("pending_bolster") or state.get("pending_discovery") or state.get("pending_madness") or state.get("pending_rebound") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
 
 
 def _split_second_on_stack(state:dict)->bool:
@@ -2200,6 +2202,10 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
         if pending_same_name["player_id"]!=player_id:return []
         if pending_same_name.get("stage")=="seed":return [{"type":"choose_same_name_cards","card_id":card["instance_id"],"card":card,"source_name":pending_same_name["source_name"],"victim_name":pending_same_name["victim_name"],"label":f"Exile {card['name']}"} for card in pending_same_name["cards"]]+[{"type":"concede"}]
         return [{"type":"choose_same_name_cards","card_ids":[card["instance_id"] for card in pending_same_name["cards"]],"cards":pending_same_name["cards"],"source_name":pending_same_name["source_name"],"card_name":pending_same_name["card_name"],"victim_name":pending_same_name["victim_name"],"label":f"Choose any cards named {pending_same_name['card_name']} to exile"},{"type":"concede"}]
+    pending_winter=state.get("pending_winter_exile")
+    if pending_winter:
+        if pending_winter["player_id"]!=player_id:return []
+        common={"source_name":pending_winter["source_name"]};return [{"type":"choose_winter_exile","card_ids":[card["instance_id"] for card in pending_winter["cards"]],"cards":pending_winter["cards"],"label":"Choose graveyard cards containing at least four card types",**common},{"type":"decline_winter_exile","label":"Exile no cards",**common},{"type":"concede"}]
     pending_optional_discard=state.get("pending_optional_discard")
     if pending_optional_discard:
         if pending_optional_discard["player_id"]!=player_id:return []
@@ -3015,6 +3021,9 @@ def _resolve_spell(state: dict) -> None:
         if choices:
             state["pending_sticktwister"]={"controller_id":caster["id"],"source_name":source.get("name",card["name"]).removesuffix(" trigger"),"source_card":deepcopy(source),"source_power":_parse_stats(source,state)[0],"choices":choices,"selections":[]};state["priority_player_id"]=choices[0]["player_id"];_log(state,f"Each opponent must choose whether to discard, sacrifice a nonland permanent, or take damage from {state['pending_sticktwister']['source_name']}.")
         return
+    if "you may exile any number of cards from your graveyard with four or more card types among them" in effect_text and "put a permanent card from among them onto the battlefield with a finality counter" in effect_text:
+        choices=[deepcopy(candidate) for candidate in caster["graveyard"]]
+        state["pending_winter_exile"]={"player_id":caster["id"],"source_name":source_permanent.get("name",card["name"]).removesuffix(" trigger") if source_permanent else card["name"].removesuffix(" trigger"),"cards":choices};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} may choose graveyard cards containing four or more card types to exile for Winter.");return
     target_player = next((player for player in state["players"] if player["id"] == target_id), None)
     target_owner = next((player for player in state["players"] if any(permanent["instance_id"] == target_id for permanent in player["battlefield"])), None)
     target = next((permanent for player in state["players"] for permanent in player["battlefield"] if permanent["instance_id"] == target_id), None)
@@ -4776,6 +4785,21 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
                 if selected:_put_into_exile(state,victim,selected,zone_name,player_id);exiled.extend(selected)
             random.SystemRandom().shuffle(victim["library"]);state["pending_same_name_search"]=None;state["priority_player_id"]=state["active_player_id"]
             _log(state,f"{player['name']} exiled {len(exiled)} additional card(s) named {pending['card_name']}; {victim['name']} shuffled their library.")
+    elif action_type in {"choose_winter_exile","decline_winter_exile"}:
+        pending=state.get("pending_winter_exile") or {}
+        if pending.get("player_id")!=player_id:raise RuleViolation("There is no Winter graveyard choice for this player")
+        if action_type=="decline_winter_exile":state["pending_winter_exile"]=None;state["priority_player_id"]=state["active_player_id"];_log(state,f"{player['name']} declined to exile cards for {pending['source_name']}.")
+        else:
+            requested=action.get("card_ids") or [];allowed={card["instance_id"] for card in pending.get("cards",[])}
+            if len(requested)!=len(set(requested)) or not set(requested).issubset(allowed):raise RuleViolation("Choose only cards in your graveyard")
+            chosen=[card for card in player["graveyard"] if card["instance_id"] in set(requested)]
+            selected_types=set()
+            for chosen_card in chosen:selected_types.update(card_type for card_type in _DELIRIUM_CARD_TYPES if re.search(rf"\b{card_type}\b",chosen_card.get("type_line",""),re.IGNORECASE))
+            if len(selected_types)<4:raise RuleViolation("Choose cards containing at least four card types")
+            permanents=[chosen_card for chosen_card in chosen if any(card_type in chosen_card.get("type_line","") for card_type in ("Artifact","Battle","Creature","Enchantment","Land","Planeswalker"))]
+            if not permanents:raise RuleViolation("The exiled cards must include a permanent card")
+            _leave_graveyard(state,player,chosen);_put_into_exile(state,player,chosen,"graveyard",player_id);state["pending_winter_exile"]=None
+            state["pending_zone_choice"]={"player_id":player_id,"source_name":pending["source_name"],"zone":"exile","destination":"battlefield","card_ids":[card["instance_id"] for card in permanents],"optional":False,"finality":True};state["priority_player_id"]=player_id;_log(state,f"{player['name']} exiled {len(chosen)} card(s) with {len(selected_types)} card types and must choose a permanent to return with finality.")
     elif action_type in {"discard_optional_card","decline_optional_discard"}:
         pending=state.get("pending_optional_discard") or {}
         if pending.get("player_id")!=player_id:raise RuleViolation("There is no optional discard choice for this player")
@@ -5626,7 +5650,9 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
             else:
                 if pending["zone"]=="graveyard":_leave_graveyard(state,player,[chosen])
                 else:zone.remove(chosen)
-                if destination=="battlefield":chosen["controller_id"]=player_id;chosen["summoning_sick"]=True;_enter_battlefield(state,player,[chosen],pending["zone"])
+                if destination=="battlefield":
+                    chosen["controller_id"]=player_id;chosen["summoning_sick"]=True;_enter_battlefield(state,player,[chosen],pending["zone"])
+                    if pending.get("finality"):_add_counters(state,chosen,"finality",1,player_id,"effect")
                 elif destination=="exile":_put_into_exile(state,player,[chosen],pending["zone"],player_id)
                 else:player[destination].append(chosen)
             _log(state,f"{player['name']} chose {chosen['name']} for {pending['source_name']}.")
