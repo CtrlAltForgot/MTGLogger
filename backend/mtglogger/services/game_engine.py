@@ -1821,7 +1821,10 @@ def _delirium_rules_card(card:dict,player:dict)->dict:
 
 
 def _library_search_spec(card:dict)->dict|None:
-    text=card.get("oracle_text") or "";unrestricted=re.search(r"(?:may )?search your library for a card,\s*put it into your hand",text,re.IGNORECASE)
+    text=card.get("oracle_text") or ""
+    if re.search(r"search your library for up to two basic Forest cards",text,re.IGNORECASE) and re.search(r"put one onto the battlefield tapped and the other into your hand",text,re.IGNORECASE):
+        return {"amount":2,"descriptor":"basic Forest","destination":"split","split_destinations":["battlefield","hand"],"tapped":True,"different_names":False,"shared_land_type":False,"label":"Claim Territory — choose in order: battlefield tapped, then hand"}
+    unrestricted=re.search(r"(?:may )?search your library for a card,\s*put it into your hand",text,re.IGNORECASE)
     if unrestricted:return {"amount":1,"descriptor":"card","destination":"hand","tapped":False,"different_names":False,"shared_land_type":False,"label":unrestricted.group(0)}
     match=re.search(r"(?:may )?search your library for (up to )?(a|an|one|two|three|four|five|six|seven|eight|nine|ten|\d+) (.+?) cards?\b",text,re.IGNORECASE)
     if not match:return None
@@ -2430,7 +2433,7 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
     if pending_search:
         if pending_search["player_id"]!=player_id:return []
         cards_by_id={card["instance_id"]:card for card in player["library"]};cards=[cards_by_id[card_id] for card_id in pending_search["card_ids"] if card_id in cards_by_id]
-        return [{"type":"search_library","card_ids":pending_search["card_ids"],"cards":cards,"min_amount":pending_search["min_amount"],"max_amount":pending_search["max_amount"],"destination":pending_search.get("destination","hand"),"tapped":pending_search.get("tapped",False),"label":pending_search.get("label",f"Choose for {pending_search.get('source_name','this effect')}"),"different_names":pending_search.get("different_names",False),"shared_land_type":pending_search.get("shared_land_type",False)},{"type":"concede"}]
+        return [{"type":"search_library","card_ids":pending_search["card_ids"],"cards":cards,"min_amount":pending_search["min_amount"],"max_amount":pending_search["max_amount"],"destination":pending_search.get("destination","hand"),"split_destinations":pending_search.get("split_destinations"),"tapped":pending_search.get("tapped",False),"label":pending_search.get("label",f"Choose for {pending_search.get('source_name','this effect')}"),"different_names":pending_search.get("different_names",False),"shared_land_type":pending_search.get("shared_land_type",False)},{"type":"concede"}]
     pending_scry=state.get("pending_scry")
     if pending_scry:
         if pending_scry["player_id"]!=player_id:return []
@@ -6023,7 +6026,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
     elif action_type == "search_library":
         pending=state.get("pending_library_search") or {};requested=action.get("card_ids") or [];allowed_ids=set(pending.get("card_ids",[]));minimum=pending.get("min_amount",0);maximum=pending.get("max_amount",0)
         if pending.get("player_id")!=player_id or not minimum<=len(requested)<=maximum or len(set(requested))!=len(requested) or not set(requested).issubset(allowed_ids):raise RuleViolation(f"Choose between {minimum} and {maximum} matching card(s)")
-        chosen=[card for card in player["library"] if card["instance_id"] in set(requested)]
+        cards_by_id={card["instance_id"]:card for card in player["library"]};chosen=[cards_by_id[card_id] for card_id in requested]
         if pending.get("different_names") and len({card["name"].casefold() for card in chosen})!=len(chosen):raise RuleViolation("Choose cards with different names")
         if pending.get("shared_land_type") and len(chosen)>1:
             subtype_sets=[set(re.split(r"\s+",card.get("type_line","").split("—",1)[-1].casefold())) for card in chosen]
@@ -6032,13 +6035,15 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if pending.get("look_bottom_unchosen"):
             unchosen=[card for card in player["library"] if card["instance_id"] in allowed_ids];player["library"]=[card for card in player["library"] if card["instance_id"] not in allowed_ids];random.SystemRandom().shuffle(unchosen);player["library"][0:0]=unchosen
         else:random.SystemRandom().shuffle(player["library"])
-        destination=pending.get("destination","hand")
-        for card in chosen:
-            if destination=="battlefield":
+        destination=pending.get("destination","hand");split_destinations=pending.get("split_destinations") or []
+        for index,card in enumerate(chosen):
+            card_destination=split_destinations[index] if index<len(split_destinations) else destination
+            if card_destination=="battlefield":
                 card["controller_id"]=player_id;card["tapped"]=bool(pending.get("tapped"));card["summoning_sick"]=True;_enter_battlefield(state,player,[card],"library")
-            elif destination=="library_top":player["library"].append(card)
+            elif card_destination=="library_top":player["library"].append(card)
             else:player["hand"].append(card)
-        state["pending_library_search"]=None;state["priority_player_id"]=(state.get("pending_trigger_targets") or [{"controller_id":state["active_player_id"]}])[0]["controller_id"];_log(state,f"{player['name']} chose {len(chosen)} card(s) for {destination.replace('_',' ')} and {'put the rest on the bottom' if pending.get('look_bottom_unchosen') else 'shuffled'}.")
+        destination_label="different destinations" if split_destinations else destination.replace('_',' ')
+        state["pending_library_search"]=None;state["priority_player_id"]=(state.get("pending_trigger_targets") or [{"controller_id":state["active_player_id"]}])[0]["controller_id"];_log(state,f"{player['name']} chose {len(chosen)} card(s) for {destination_label} and {'put the rest on the bottom' if pending.get('look_bottom_unchosen') else 'shuffled'}.")
     elif action_type in {"scry","surveil"}:
         pending=state.get("pending_scry") or {};top_ids=action.get("top_ids") or [];away_ids=(action.get("graveyard_ids") if action_type=="surveil" else action.get("bottom_ids")) or [];expected=pending.get("card_ids",[])
         if pending.get("player_id")!=player_id or pending.get("mode","scry")!=action_type or len(top_ids)+len(away_ids)!=len(expected) or len(set(top_ids+away_ids))!=len(expected) or set(top_ids+away_ids)!=set(expected):raise RuleViolation(f"Choose each {action_type}ed card exactly once")
