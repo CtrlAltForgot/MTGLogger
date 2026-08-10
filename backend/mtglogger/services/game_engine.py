@@ -2936,8 +2936,8 @@ def _resolve_spell(state: dict) -> None:
     if multi_damage_target:targeting_card={**targeting_card,"oracle_text":f"This spell deals {multi_damage_target.group(1)} damage to any target."}
     target_kind=_target_kind(targeting_card);target_id=item.get("target_id")
     source_permanent=next((permanent for player in state["players"] for permanent in player["battlefield"] if permanent["instance_id"]==item.get("source_id")),None);target_ids=item.get("target_ids") or [];fight_steps=_fight_target_steps(state,caster["id"],rules_card,source_permanent);valid_fight_ids=[target_value for position,target_value in enumerate(target_ids) if position<len(fight_steps) and target_value in {target["id"] for target in fight_steps[position]["targets"]}]
-    rules_text=(rules_card.get("oracle_text") or "").casefold();convert_to_slime="destroy up to one target artifact, up to one target creature, and up to one target enchantment" in rules_text;crop_sigil_return="return up to one target creature card and up to one target land card from your graveyard to your hand" in rules_text
-    valid_pool={permanent["instance_id"] for owner in state["players"] for permanent in owner["battlefield"]} if convert_to_slime else {candidate["instance_id"] for candidate in caster["graveyard"] if any(kind in candidate.get("type_line","") for kind in ("Creature","Land"))} if crop_sigil_return else {target["id"] for target in _targets(state,caster["id"],targeting_card)}
+    rules_text=(rules_card.get("oracle_text") or "").casefold();convert_to_slime="destroy up to one target artifact, up to one target creature, and up to one target enchantment" in rules_text;crop_sigil_return="return up to one target creature card and up to one target land card from your graveyard to your hand" in rules_text;flytrap_distribution="distribute two +1/+1 counters among one or two target creatures" in rules_text
+    valid_pool={permanent["instance_id"] for owner in state["players"] for permanent in owner["battlefield"] if not flytrap_distribution or "Creature" in permanent.get("type_line","")} if convert_to_slime or flytrap_distribution else {candidate["instance_id"] for candidate in caster["graveyard"] if any(kind in candidate.get("type_line","") for kind in ("Creature","Land"))} if crop_sigil_return else {target["id"] for target in _targets(state,caster["id"],targeting_card)}
     valid_multi_ids=[target_value for target_value in target_ids if target_value in valid_pool] if target_ids and not fight_steps else []
     if item.get("kind")=="trigger" and source_permanent and "sacrifice it unless it escaped" in (card.get("oracle_text") or "").casefold():
         if not source_permanent.get("escaped"):
@@ -3008,6 +3008,15 @@ def _resolve_spell(state: dict) -> None:
     target_stack_item = next((entry for entry in state["stack"] if entry["id"] == target_id), None)
     graveyard_owner=next((player for player in state["players"] if any(graveyard_card["instance_id"]==target_id for graveyard_card in player["graveyard"])),None)
     graveyard_target=next((graveyard_card for player in state["players"] for graveyard_card in player["graveyard"] if graveyard_card["instance_id"]==target_id),None)
+    if flytrap_distribution:
+        if _graveyard_card_type_count(caster)<4:_log(state,f"{card['name']} did not resolve because its Delirium condition was no longer true.");return
+        creatures=[permanent for owner in state["players"] for permanent in owner["battlefield"] if permanent["instance_id"] in set(target_ids) and "Creature" in permanent.get("type_line","")]
+        if len(item.get("target_ids") or [])==1 and len(creatures)==1:_add_counters(state,creatures[0],"+1/+1",2,caster["id"],"effect")
+        else:
+            for creature in creatures:_add_counters(state,creature,"+1/+1",1,caster["id"],"effect")
+        if _graveyard_card_type_count(caster)>=6:
+            for creature in creatures:_add_counters(state,creature,"+1/+1",creature.get("counters",{}).get("+1/+1",0),caster["id"],"effect")
+        _log(state,f"{card['name']} distributed counters among {len(creatures)} creature(s){' and doubled their +1/+1 counters' if _graveyard_card_type_count(caster)>=6 else ''}.");return
     if source_permanent and graveyard_target and "becomes a copy of target permanent card in your graveyard until end of turn" in effect_text:
         _become_temporary_copy(source_permanent,graveyard_target);_sync_city_blessing(state);_log(state,f"{source_permanent['name']} became a copy of {graveyard_target['name']} until end of turn.");return
     if crop_sigil_return:
@@ -4287,7 +4296,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 source_name = re.escape(source.get("name", "").casefold());short_name=re.escape(source.get("name", "").split(",",1)[0].casefold())
                 if attached_attacked and "whenever equipped creature attacks" in lower:
                     matches = True
-                elif source_attacked and "attacks and isn't blocked" not in lower and "attacks and is not blocked" not in lower and re.search(rf"whenever (?:~|this (?:creature|spacecraft)|{source_name}|{short_name}) attacks\b", lower):
+                elif source_attacked and "attacks and isn't blocked" not in lower and "attacks and is not blocked" not in lower and re.search(rf"whenever (?:~|this (?:creature|spacecraft)|{source_name}|{short_name}) (?:enters or )?attacks\b", lower):
                     matches = True
                 elif controlled_attackers and "whenever one or more creatures you control attack" in lower:
                     matches = True
@@ -4385,6 +4394,9 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
             elif (fixed_targets:=re.search(r"up to (two|three|four|\d+) target non-spacecraft creatures?",effect,re.IGNORECASE)):
                 words={"two":2,"three":3,"four":4};maximum=words.get(fixed_targets.group(1).casefold(),int(fixed_targets.group(1)) if fixed_targets.group(1).isdigit() else 0);candidates=[{"id":candidate["instance_id"],"name":candidate["name"],"kind":"permanent","controller_id":candidate["controller_id"]} for candidate_owner in state["players"] for candidate in candidate_owner["battlefield"] if "Creature" in candidate.get("type_line","") and "Spacecraft" not in candidate.get("type_line","")]
                 dynamic_steps=[{"label":f"Choose creature {position+1} (or finish)","targets":candidates,"distinct":True} for position in range(min(maximum,len(candidates)))];dynamic_min=0
+            elif "distribute two +1/+1 counters among one or two target creatures" in effect.casefold():
+                candidates=[{"id":candidate["instance_id"],"name":candidate["name"],"kind":"permanent","controller_id":candidate["controller_id"]} for candidate_owner in state["players"] for candidate in candidate_owner["battlefield"] if "Creature" in candidate.get("type_line","")]
+                dynamic_steps=[{"label":"Choose the first creature","targets":candidates,"distinct":True},{"label":"Choose a second creature (or finish)","targets":candidates,"distinct":True}];dynamic_min=1
             targets=[] if fight_steps or dynamic_steps else _targets(state, owner["id"], ability_card)
             for _ in range(trigger_count):
                 trigger={"id":_id(),"kind":"trigger","card":ability_card,"controller_id":owner["id"],"target_id":None,"source_id":source["instance_id"]}
