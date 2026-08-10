@@ -1492,7 +1492,7 @@ def _new_player(player_id: str, name: str, deck: list[dict], is_bot: bool, forma
         if commander:
             library.remove(commander); commander["commander"] = True; command.append(commander)
     random.SystemRandom().shuffle(library)
-    return {"id": player_id, "name": name, "is_bot": is_bot, "format": format_name, "life": 40 if is_commander else 20, "poison": 0,"energy":0,"energy_paid_this_turn":0,"firebending_mana":0,"any_color_mana":0,"bent_this_turn":[],"undercity_rooms":[],"city_blessing":False, "library": library, "hand": [], "battlefield": [], "graveyard": [], "exile": [], "command": command, "commander_casts": 0, "commander_damage": {}, "commander_damage_names": {}, "land_plays_remaining": 1,"lands_played_this_turn":0, "kept_hand": False, "mulligans": 0, "lost": False}
+    return {"id": player_id, "name": name, "is_bot": is_bot, "format": format_name, "life": 40 if is_commander else 20, "poison": 0,"rad":0,"experience":0,"energy":0,"energy_paid_this_turn":0,"firebending_mana":0,"any_color_mana":0,"bent_this_turn":[],"undercity_rooms":[],"city_blessing":False, "library": library, "hand": [], "battlefield": [], "graveyard": [], "exile": [], "command": command, "commander_casts": 0, "commander_damage": {}, "commander_damage_names": {}, "land_plays_remaining": 1,"lands_played_this_turn":0, "kept_hand": False, "mulligans": 0, "lost": False}
 
 
 def new_game(player_deck: list[dict], opponent_deck: list[dict], play_first: bool = True, opponent_is_bot: bool = True, player_format: str = "", opponent_format: str = "") -> dict:
@@ -1714,7 +1714,7 @@ def _multiplayer(state: dict) -> bool:
 def _pending_decision(state:dict)->bool:
     if state.get("pending_explore"):return True
     if state.get("pending_connive"):return True
-    return bool(state.get("pending_top_card_choice") or state.get("pending_optional_payment") or state.get("pending_tilonalli") or state.get("pending_creature_type") or state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_populate") or state.get("pending_bolster") or state.get("pending_discovery") or state.get("pending_madness") or state.get("pending_rebound") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
+    return bool(state.get("pending_rad_choice") or state.get("pending_top_card_choice") or state.get("pending_optional_payment") or state.get("pending_tilonalli") or state.get("pending_creature_type") or state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_populate") or state.get("pending_bolster") or state.get("pending_discovery") or state.get("pending_madness") or state.get("pending_rebound") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
 
 
 def _split_second_on_stack(state:dict)->bool:
@@ -1756,6 +1756,10 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
     if state["status"] == "complete":
         return []
     player = _player(state, player_id)
+    pending_rad=state.get("pending_rad_choice")
+    if pending_rad:
+        if pending_rad["player_id"]!=player_id:return []
+        common={"source_name":pending_rad["source_name"],"amount":pending_rad["amount"]};return [{"type":"accept_rad_counters","label":f"Get {pending_rad['amount']} rad counters",**common},{"type":"decline_rad_counters","label":"Don't get rad counters",**common},{"type":"concede"}]
     pending_top=state.get("pending_top_card_choice")
     if pending_top:
         if pending_top["player_id"]!=player_id:return []
@@ -2324,6 +2328,10 @@ def _resolve_spell(state: dict) -> None:
         for token in tokens:
             owner=next(owner for owner in state["players"] if token in owner["battlefield"]);_leave_battlefield(state,owner,token,"exile",exile_actor_id=caster["id"])
         _log(state,f"{len(tokens)} temporary token(s) were exiled at the beginning of the end step.");return
+    if item.get("kind")=="rad_trigger":
+        amount=max(0,int(caster.get("rad",0)));milled=[]
+        for _ in range(min(amount,len(caster["library"]))):milled.append(caster["library"].pop())
+        caster["graveyard"].extend(milled);nonlands=sum("Land" not in milled_card.get("type_line","") for milled_card in milled);caster["life"]-=nonlands;caster["rad"]=max(0,amount-nonlands);_log(state,f"{caster['name']} milled {len(milled)} card(s), lost {nonlands} life, and removed {nonlands} rad counter(s).");return
     if card.get("growth_mechanic"):
         permanent=next((permanent for owner in state["players"] for permanent in owner["battlefield"] if permanent["instance_id"]==item.get("source_id")),None);mechanic=card["growth_mechanic"]
         if not permanent:_log(state,f"{card['name']} resolved, but its source was no longer on the battlefield.");return
@@ -2592,6 +2600,9 @@ def _resolve_spell(state: dict) -> None:
     discover_match=re.search(r"\bdiscover (\d+)\b",keyword_text)
     if discover_match:_start_discovery(state,caster,int(discover_match.group(1)),"discover",source_permanent.get("name",card["name"]) if source_permanent else card["name"])
     face_down_text=re.sub(r"\([^()]*(?:to manifest|to cloak)[^()]*\)","",effect_text);source_name=source_permanent.get("name",card["name"]) if source_permanent else card["name"]
+    rad_match=re.search(r"you may get (a|one|two|three|four|five|\d+) rad counters?",effect_text)
+    if rad_match:
+        word=rad_match.group(1).casefold();amount={"a":1,"one":1,"two":2,"three":3,"four":4,"five":5}.get(word,int(word) if word.isdigit() else 1);state["pending_rad_choice"]={"player_id":caster["id"],"source_name":source_name,"amount":amount};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} may get {amount} rad counter(s) from {source_name}.");return
     if "look at the top card of your library" in effect_text:
         if caster["library"]:
             top=caster["library"][-1];creature="Creature" in top.get("type_line","");state["pending_top_card_choice"]={"player_id":caster["id"],"source_name":source_name,"card_id":top["instance_id"],"card":deepcopy(top),"allow_hand":creature and "if it's a creature card" in effect_text,"allow_graveyard":"put it into your graveyard" in effect_text};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} looked at the top card of their library for {source_name}.")
@@ -3718,6 +3729,9 @@ def _advance_turn_phase(state: dict) -> None:
             for saga in list(active["battlefield"]):
                 _add_saga_lore(state,active,saga)
         leaving_combat=state["phase"]=="combat";state["phase"] = PHASES[index + 1]
+        if state["phase"]=="precombat_main":
+            active=_player(state,state["active_player_id"])
+            if active.get("rad",0):ability={"name":"Rad counters","oracle_text":"Mill cards equal to your rad counters, lose life for each nonland card milled this way, then remove that many rad counters.","type_line":"Ability","mana_cost":""};state["stack"].append({"id":_id(),"kind":"rad_trigger","card":ability,"controller_id":active["id"],"target_id":None});_log(state,f"{active['name']}'s {active['rad']} rad counter(s) triggered.")
         if leaving_combat:
             for owner in state["players"]:owner["firebending_mana"]=0
         if state["phase"] == "ending":
@@ -3766,6 +3780,12 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
             _log(state,f"{player['name']} paid {{X}}{{R}} with X={x_value} and created {x_value} tapped and attacking Elemental token(s).")
         else:_log(state,f"{player['name']} declined to pay for {pending.get('source_name') or 'Tilonalli Summoner'}.")
         state["pending_tilonalli"]=None;state["priority_player_id"]=state["active_player_id"]
+    elif action_type in {"accept_rad_counters","decline_rad_counters"}:
+        pending=state.get("pending_rad_choice") or {}
+        if pending.get("player_id")!=player_id:raise RuleViolation("There is no rad-counter choice for this player")
+        if action_type=="accept_rad_counters":player["rad"]=player.get("rad",0)+int(pending["amount"]);_log(state,f"{player['name']} got {pending['amount']} rad counter(s) from {pending['source_name']}.")
+        else:_log(state,f"{player['name']} declined the rad counters from {pending.get('source_name','the effect')}.")
+        state["pending_rad_choice"]=None;state["priority_player_id"]=state["active_player_id"]
     elif action_type in {"take_top_card","mill_top_card","keep_top_card"}:
         pending=state.get("pending_top_card_choice") or {}
         if pending.get("player_id")!=player_id:raise RuleViolation("There is no top-card choice for this player")
