@@ -1928,7 +1928,7 @@ def _target_kind(card: dict) -> str | None:
     if re.search(r"up to x target instant cards? from your graveyard",text):return "graveyard_card"
     if re.search(r"target creature or enchantment card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_creature_or_enchantment"
     if re.search(r"target creature card (?:from|in) (?:your|a|any|defending player's) graveyard",text):return "graveyard_creature"
-    if re.search(r"target permanent card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_permanent"
+    if re.search(r"target permanent card(?: with mana value \d+ or less)? (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_permanent"
     if re.search(r"target (?:nonland permanent |nonland )?card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_card"
     if "target face-down permanent you control" in text:return "permanent"
     if "target artifact or enchantment" in text:return "artifact_or_enchantment"
@@ -2007,7 +2007,8 @@ def _targets(state: dict, caster_id: str, card: dict, ignore_target_protection:b
         soulshift=card.get("soulshift_value")
         instant_or_sorcery="instant or sorcery" in text;instant_only=bool(re.search(r"target instant cards?",text))
         nonland_permanent="nonland permanent card" in text
-        return [{"id":graveyard_card["instance_id"],"name":graveyard_card["name"],"kind":"card","controller_id":owner["id"]} for owner in state["players"] if not own_only or owner["id"]==caster_id for graveyard_card in owner["graveyard"] if (kind=="graveyard_card" or kind=="graveyard_permanent" and any(card_type in graveyard_card.get("type_line","") for card_type in ("Artifact","Battle","Creature","Enchantment","Land","Planeswalker")) or "Creature" in graveyard_card.get("type_line","") or kind=="graveyard_creature_or_enchantment" and "Enchantment" in graveyard_card.get("type_line","")) and (not nonland_permanent or ("Land" not in graveyard_card.get("type_line","") and any(card_type in graveyard_card.get("type_line","") for card_type in ("Artifact","Battle","Creature","Enchantment","Planeswalker")))) and (not instant_or_sorcery or any(kind_name in graveyard_card.get("type_line","") for kind_name in ("Instant","Sorcery"))) and (not instant_only or "Instant" in graveyard_card.get("type_line","")) and (soulshift is None or (re.search(r"\bSpirit\b",graveyard_card.get("type_line",""),re.IGNORECASE) and float(graveyard_card.get("mana_value") or 0)<=float(soulshift)))]
+        value_limit=re.search(r"mana value (\d+) or less",text)
+        return [{"id":graveyard_card["instance_id"],"name":graveyard_card["name"],"kind":"card","controller_id":owner["id"]} for owner in state["players"] if not own_only or owner["id"]==caster_id for graveyard_card in owner["graveyard"] if (kind=="graveyard_card" or kind=="graveyard_permanent" and any(card_type in graveyard_card.get("type_line","") for card_type in ("Artifact","Battle","Creature","Enchantment","Land","Planeswalker")) or "Creature" in graveyard_card.get("type_line","") or kind=="graveyard_creature_or_enchantment" and "Enchantment" in graveyard_card.get("type_line","")) and (not nonland_permanent or ("Land" not in graveyard_card.get("type_line","") and any(card_type in graveyard_card.get("type_line","") for card_type in ("Artifact","Battle","Creature","Enchantment","Planeswalker")))) and (not instant_or_sorcery or any(kind_name in graveyard_card.get("type_line","") for kind_name in ("Instant","Sorcery"))) and (not instant_only or "Instant" in graveyard_card.get("type_line","")) and (not value_limit or float(graveyard_card.get("mana_value") or 0)<=int(value_limit.group(1))) and (soulshift is None or (re.search(r"\bSpirit\b",graveyard_card.get("type_line",""),re.IGNORECASE) and float(graveyard_card.get("mana_value") or 0)<=float(soulshift)))]
     for player in state["players"]:
         aura_types=_aura_allowed_types(card)
         if (kind in {"any", "player","player_or_planeswalker"} or (kind=="permanent" and "player" in aura_types)) and not ("target opponent" in text and player["id"]==caster_id) and not _player_protected_from(state,player,card): targets.append({"id": player["id"], "name": player["name"], "kind": "player", "controller_id": player["id"]})
@@ -3434,6 +3435,8 @@ def _resolve_spell(state: dict) -> None:
                 first_power=max(0,_parse_stats(first,state)[0]);second_power=max(0,_parse_stats(second,state)[0]);_damage_permanent(state,second,first_power,first);_damage_permanent(state,first,second_power,second);first["fought_turn"]=state["turn"];second["fought_turn"]=state["turn"];_log(state,f"{first['name']} fought {second['name']}.")
     if target and target_owner and re.search(r"destroy target (?:artifact|creature|enchantment|land|planeswalker|permanent|noncreature permanent|nonland permanent)", effect_text):
         if _destroy_permanent(state,target_owner,target,"can't be regenerated" in effect_text):_log(state, f"{target['name']} was destroyed.")
+        source_text=((source_permanent or {}).get("oracle_text") or card.get("oracle_text") or "").casefold()
+        if "destroy target creature an opponent controls. you gain 3 life" in source_text:_gain_life(state,caster,3);_log(state,f"{caster['name']} gained 3 life.")
     if target and target_owner and re.search(r"exile target (?:artifact|creature|enchantment|land|planeswalker|permanent|nonland permanent)", effect_text):
         linked_source=source_permanent if source_permanent and "return all cards exiled with" in (source_permanent.get("oracle_text") or "").casefold() else None
         _leave_battlefield(state,target_owner,target,"exile",exile_actor_id=caster["id"])
@@ -3602,7 +3605,7 @@ def _resolve_spell(state: dict) -> None:
             _log(state, f"{countered['name']} was countered.")
             if card.get("name")=="Invasive Surgery" and _graveyard_card_type_count(caster)>=4:_start_same_name_search(state,caster,countered_controller,countered["name"],card["name"])
     if graveyard_target and graveyard_owner:
-        if re.search(r"(?:return|put) (?:target|that) (?:(?:creature or enchantment|creature|nonland permanent) )?card (?:.*graveyard )?(?:to|into|onto) (?:the battlefield|play)",effect_text):
+        if re.search(r"(?:return|put) (?:target|that) (?:(?:creature or enchantment|creature|permanent|nonland permanent) )?card (?:.*graveyard )?(?:to|into|onto) (?:the battlefield|play)",effect_text):
             _leave_graveyard(state,graveyard_owner,[graveyard_target]);graveyard_target["controller_id"]=caster["id"];graveyard_target["summoning_sick"]=True;_enter_battlefield(state,caster,[graveyard_target],"graveyard");_log(state,f"{graveyard_target['name']} returned to the battlefield under {caster['name']}'s control.")
         elif re.search(r"return (?:target|that) (?:creature |nonland permanent )?card .*graveyard to (?:your|its owner'?s) hand",effect_text):
             _leave_graveyard(state,graveyard_owner,[graveyard_target]);graveyard_target["controller_id"]=graveyard_target.get("owner_id",graveyard_owner["id"]);_player(state,graveyard_target["controller_id"])["hand"].append(graveyard_target);_log(state,f"{graveyard_target['name']} returned to its owner's hand.")
