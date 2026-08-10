@@ -3076,8 +3076,8 @@ def _resolve_spell(state: dict) -> None:
     if multi_damage_target:targeting_card={**targeting_card,"oracle_text":f"This spell deals {multi_damage_target.group(1)} damage to any target."}
     target_kind=_target_kind(targeting_card);target_id=item.get("target_id")
     source_permanent=next((permanent for player in state["players"] for permanent in player["battlefield"] if permanent["instance_id"]==item.get("source_id")),None);target_ids=item.get("target_ids") or [];fight_steps=_fight_target_steps(state,caster["id"],rules_card,source_permanent);valid_fight_ids=[target_value for position,target_value in enumerate(target_ids) if position<len(fight_steps) and target_value in {target["id"] for target in fight_steps[position]["targets"]}]
-    rules_text=(rules_card.get("oracle_text") or "").casefold();convert_to_slime="destroy up to one target artifact, up to one target creature, and up to one target enchantment" in rules_text;crop_sigil_return="return up to one target creature card and up to one target land card from your graveyard to your hand" in rules_text;flytrap_distribution="distribute two +1/+1 counters among one or two target creatures" in rules_text
-    valid_pool={permanent["instance_id"] for owner in state["players"] for permanent in owner["battlefield"] if not flytrap_distribution or "Creature" in permanent.get("type_line","")} if convert_to_slime or flytrap_distribution else {candidate["instance_id"] for candidate in caster["graveyard"] if any(kind in candidate.get("type_line","") for kind in ("Creature","Land"))} if crop_sigil_return else {target["id"] for target in _targets(state,caster["id"],targeting_card)}
+    rules_text=(rules_card.get("oracle_text") or "").casefold();convert_to_slime="destroy up to one target artifact, up to one target creature, and up to one target enchantment" in rules_text;crop_sigil_return="return up to one target creature card and up to one target land card from your graveyard to your hand" in rules_text;castigator_shuffle="shuffle up to three target cards from your graveyard into your library" in rules_text;flytrap_distribution="distribute two +1/+1 counters among one or two target creatures" in rules_text
+    valid_pool={permanent["instance_id"] for owner in state["players"] for permanent in owner["battlefield"] if not flytrap_distribution or "Creature" in permanent.get("type_line","")} if convert_to_slime or flytrap_distribution else {candidate["instance_id"] for candidate in caster["graveyard"] if castigator_shuffle or any(kind in candidate.get("type_line","") for kind in ("Creature","Land"))} if crop_sigil_return or castigator_shuffle else {target["id"] for target in _targets(state,caster["id"],targeting_card)}
     valid_multi_ids=[target_value for target_value in target_ids if target_value in valid_pool] if target_ids and not fight_steps else []
     if item.get("kind")=="trigger" and source_permanent and "sacrifice it unless it escaped" in (card.get("oracle_text") or "").casefold():
         if not source_permanent.get("escaped"):
@@ -3239,6 +3239,11 @@ def _resolve_spell(state: dict) -> None:
             for candidate in exiling:
                 candidate["zethi_source_id"]=item.get("source_id");candidate.setdefault("counters",{})["kick"]=candidate.get("counters",{}).get("kick",0)+1
             _put_into_exile(state,caster,exiling,"graveyard",caster["id"]);_log(state,f"{card['name']} exiled {len(exiling)} instant card(s) with kick counters.")
+    if re.search(r"shuffle up to three target cards from your graveyard into your library",effect_text):
+        returning=[candidate for candidate in list(caster["graveyard"]) if candidate["instance_id"] in set(target_ids)]
+        if returning:
+            _leave_graveyard(state,caster,returning);caster["library"].extend(returning);random.SystemRandom().shuffle(caster["library"])
+        _log(state,f"{caster['name']} shuffled {len(returning)} selected graveyard card(s) into their library.");return
     if "copy each exiled card you own with a kick counter on it" in effect_text:
         candidates=[candidate["instance_id"] for candidate in caster["exile"] if candidate.get("counters",{}).get("kick",0)>0]
         if candidates:
@@ -4604,6 +4609,8 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
             elif (fixed_targets:=re.search(r"up to (two|three|four|\d+) target non-spacecraft creatures?",effect,re.IGNORECASE)):
                 words={"two":2,"three":3,"four":4};maximum=words.get(fixed_targets.group(1).casefold(),int(fixed_targets.group(1)) if fixed_targets.group(1).isdigit() else 0);candidates=[{"id":candidate["instance_id"],"name":candidate["name"],"kind":"permanent","controller_id":candidate["controller_id"]} for candidate_owner in state["players"] for candidate in candidate_owner["battlefield"] if "Creature" in candidate.get("type_line","") and "Spacecraft" not in candidate.get("type_line","")]
                 dynamic_steps=[{"label":f"Choose creature {position+1} (or finish)","targets":candidates,"distinct":True} for position in range(min(maximum,len(candidates)))];dynamic_min=0
+            elif "shuffle up to three target cards from your graveyard into your library" in effect.casefold():
+                candidates=[{"id":candidate["instance_id"],"name":candidate["name"],"kind":"card","controller_id":owner["id"]} for candidate in owner["graveyard"]];dynamic_steps=[{"label":f"Choose graveyard card {position+1} (or finish)","targets":candidates,"distinct":True} for position in range(min(3,len(candidates)))];dynamic_min=0
             elif "distribute two +1/+1 counters among one or two target creatures" in effect.casefold():
                 candidates=[{"id":candidate["instance_id"],"name":candidate["name"],"kind":"permanent","controller_id":candidate["controller_id"]} for candidate_owner in state["players"] for candidate in candidate_owner["battlefield"] if "Creature" in candidate.get("type_line","")]
                 dynamic_steps=[{"label":"Choose the first creature","targets":candidates,"distinct":True},{"label":"Choose a second creature (or finish)","targets":candidates,"distinct":True}];dynamic_min=1
