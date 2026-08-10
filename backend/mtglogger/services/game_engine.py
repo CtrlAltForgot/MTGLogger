@@ -1627,6 +1627,10 @@ def _pending_decision(state:dict)->bool:
     return bool(state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_populate") or state.get("pending_bolster") or state.get("pending_discovery") or state.get("pending_madness") or state.get("pending_rebound") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
 
 
+def _split_second_on_stack(state:dict)->bool:
+    return any(item.get("kind","spell")=="spell" and _has_keyword(item.get("card",{}),"Split second") for item in state.get("stack",[]))
+
+
 def _queue_commander_zone_choice(state:dict,owner:dict,card:dict,zone:str)->None:
     if not card.get("commander") or zone=="command":return
     pending=state.setdefault("pending_commander_zone",[])
@@ -2165,6 +2169,8 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
             legal_blocks = {blocker["instance_id"]:[attacker["instance_id"] for attacker in attackers if _can_block_pair(state,attacker,blocker)] for blocker in player["battlefield"] if blocker["instance_id"] in blockers}
             eligible_blockers=[blocker_id for blocker_id,attacker_ids in legal_blocks.items() if attacker_ids]
             if eligible_blockers: actions.append({"type": "declare_blockers", "card_ids": eligible_blockers, "legal_blocks": legal_blocks})
+    if _split_second_on_stack(state):
+        actions=[action for action in actions if action["type"] in {"concede","turn_face_up","foretell","pass_priority","resolve"}]
     return actions
 
 
