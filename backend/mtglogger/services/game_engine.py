@@ -1361,6 +1361,7 @@ def public_state(state: dict, viewer_id: str = "player") -> dict:
 def _target_kind(card: dict) -> str | None:
     text = (card.get("oracle_text") or "").casefold()
     type_line=card.get("type_line","").casefold()
+    if card.get("soulshift_value") is not None:return "graveyard_card"
     if "aura" in type_line:
         allowed=_aura_allowed_types(card)
         if len(allowed)==1:return next(iter(allowed))
@@ -1438,7 +1439,8 @@ def _targets(state: dict, caster_id: str, card: dict) -> list[dict]:
         targets=[{"id":item["id"],"name":item["card"]["name"],"kind":"spell","controller_id":item["controller_id"]} for item in state["stack"]]
     if kind in {"graveyard_creature","graveyard_card"}:
         own_only="your graveyard" in text
-        return [{"id":graveyard_card["instance_id"],"name":graveyard_card["name"],"kind":"card","controller_id":owner["id"]} for owner in state["players"] if not own_only or owner["id"]==caster_id for graveyard_card in owner["graveyard"] if kind=="graveyard_card" or "Creature" in graveyard_card.get("type_line","")]
+        soulshift=card.get("soulshift_value")
+        return [{"id":graveyard_card["instance_id"],"name":graveyard_card["name"],"kind":"card","controller_id":owner["id"]} for owner in state["players"] if not own_only or owner["id"]==caster_id for graveyard_card in owner["graveyard"] if (kind=="graveyard_card" or "Creature" in graveyard_card.get("type_line","")) and (soulshift is None or (re.search(r"\bSpirit\b",graveyard_card.get("type_line",""),re.IGNORECASE) and float(graveyard_card.get("mana_value") or 0)<=float(soulshift)))]
     for player in state["players"]:
         aura_types=_aura_allowed_types(card)
         if (kind in {"any", "player"} or (kind=="permanent" and "player" in aura_types)) and not ("target opponent" in text and player["id"]==caster_id) and not _player_protected_from(state,player,card): targets.append({"id": player["id"], "name": player["name"], "kind": "player", "controller_id": player["id"]})
@@ -1744,7 +1746,9 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
         if pending["controller_id"]!=player_id:return []
         if pending.get("target_steps"):return [{"type":"choose_trigger_targets","target_steps":pending["target_steps"],"label":pending["card"]["oracle_text"],"source_name":pending["source_name"]},{"type":"concede"}]
         targets=_targets(state,player_id,pending["card"])
-        return ([{"type":"choose_trigger_target","targets":targets,"label":pending["card"]["oracle_text"],"source_name":pending["source_name"]},{"type":"concede"}] if targets else [{"type":"skip_trigger","source_name":pending["source_name"]},{"type":"concede"}])
+        actions=[{"type":"choose_trigger_target","targets":targets,"label":pending["card"]["oracle_text"],"source_name":pending["source_name"]}] if targets else []
+        if pending.get("optional") or not targets:actions.append({"type":"skip_trigger","source_name":pending["source_name"]})
+        return actions+[{"type":"concede"}]
     if state["status"] == "mulligan":
         if player["kept_hand"]:
             return []
@@ -2477,7 +2481,7 @@ def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str, t
     for attachment_owner,attachment in attachments:
         _detach(state,attachment,restore_control=False)
         if "Aura" in attachment.get("type_line",""):_leave_battlefield(state,attachment_owner,attachment,"graveyard")
-    revive_keyword=None
+    revive_keyword=None;soulshift_values=_keyword_instances(state,card,"Soulshift") if destination=="graveyard" and "Creature" in card.get("type_line","") and not card.get("token") else []
     if destination=="graveyard" and "Creature" in card.get("type_line","") and not card.get("token"):
         if _has_keyword(card,"Persist") and card.get("counters",{}).get("-1/-1",0)<=0:revive_keyword="persist"
         elif _has_keyword(card,"Undying") and card.get("counters",{}).get("+1/+1",0)<=0:revive_keyword="undying"
@@ -2512,6 +2516,9 @@ def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str, t
     _queue_commander_zone_choice(state,zone_owner,card,destination)
     if revive_keyword and destination=="graveyard":
         ability={"name":f"{card['name']} — {revive_keyword.title()}","oracle_text":f"Return {card['name']} to the battlefield under its owner's control with a {'-1/-1' if revive_keyword=='persist' else '+1/+1'} counter on it.","type_line":"Ability","mana_cost":""};state["stack"].append({"id":_id(),"kind":"revive_trigger","card":ability,"controller_id":previous_controller,"owner_id":zone_owner["id"],"source_id":card["instance_id"],"revive_keyword":revive_keyword});_log(state,f"{card['name']}'s {revive_keyword} ability triggered.")
+    for value in soulshift_values:
+        ability={"name":f"{card['name']} — Soulshift {value}","oracle_text":f"Return target card from your graveyard to your hand.","type_line":"Ability","mana_cost":"","soulshift_value":value};trigger={"id":_id(),"kind":"trigger","card":ability,"controller_id":previous_controller,"target_id":None,"source_id":card["instance_id"]};targets=_targets(state,previous_controller,ability)
+        if targets:state.setdefault("pending_trigger_targets",[]).append({"controller_id":previous_controller,"source_name":card["name"],"trigger":trigger,"card":ability,"optional":True});state["priority_player_id"]=state["pending_trigger_targets"][0]["controller_id"];_log(state,f"{card['name']}'s soulshift {value} ability triggered.")
     if earthbend_controller:
         if destination=="exile":_leave_exile(state,zone_owner,[card])
         else:zone_owner[destination].remove(card)
@@ -2702,6 +2709,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
             lower = clause.casefold(); matches = False
             if event=="cast" and re.match(r"^storm\s*\(",lower):continue
             if event in {"attackers_declared","blockers_declared"} and re.match(r"^(?:bushido(?:\s+\d+)?|flanking|exalted)\s*\(",lower):continue
+            if event=="dies" and re.match(r"^soulshift\s+\d+",lower):continue
             if event=="enters" and re.match(r"^backup\b",lower):continue
             if event=="upkeep" and re.match(r"^cumulative upkeep\b",lower):continue
             trigger_count = 1
@@ -3758,7 +3766,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         elif action_type=="choose_trigger_target":
             if target_id not in {target["id"] for target in targets}:raise RuleViolation("Choose a legal target for the triggered ability")
             trigger=pending["trigger"];trigger["target_id"]=target_id;state["stack"].append(trigger);_log(state,f"{player['name']} chose {next(target['name'] for target in targets if target['id']==target_id)} for {pending['source_name']}'s trigger.")
-        elif targets:raise RuleViolation("This triggered ability still has legal targets")
+        elif targets and not pending.get("optional"):raise RuleViolation("This triggered ability still has legal targets")
         state["pending_trigger_targets"]=pending_list;state["priority_player_id"]=pending_list[0]["controller_id"] if pending_list else state["active_player_id"]
     elif action_type == "advance_phase":
         if _multiplayer(state) or not allow_direct_resolution:
