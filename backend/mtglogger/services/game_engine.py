@@ -753,7 +753,7 @@ def _cumulative_upkeep_cost(card:dict)->dict|None:
 
 
 def _mutate_original(card:dict)->dict:
-    runtime={"tapped","damage","counters","summoning_sick","temporary_power","temporary_toughness","temporary_base_power","temporary_base_toughness","temporary_keywords","temporary_removed_keywords","attachment_keywords","attached_to","mutate_pile","mutate_count","mutate_top_component_id","effective_power","effective_toughness","entry_trigger_turns","activated_ability_usage"}
+    runtime={"tapped","damage","counters","summoning_sick","temporary_power","temporary_toughness","temporary_base_power","temporary_base_toughness","temporary_keywords","temporary_removed_keywords","attachment_keywords","attached_to","mutate_pile","mutate_count","mutate_top_component_id","effective_power","effective_toughness","entry_trigger_turns","activated_ability_usage","station_graveyard_cast_turn"}
     return {key:deepcopy(value) for key,value in card.items() if key not in runtime}
 
 
@@ -1602,6 +1602,7 @@ def _matches_library_search(card:dict,descriptor:str)->bool:
     if "basic land" in descriptor and not ("basic" in type_line and "land" in type_line):return False
     elif "land" in descriptor and "land" not in type_line:return False
     if "creature" in descriptor and "creature" not in type_line:return False
+    if "legendary" in descriptor and "legendary" not in type_line:return False
     qualities=[quality for quality in ("aura","equipment","shrine","lesson","noble","forest","island","mountain","plains","swamp","cave") if re.search(rf"\b{quality}\b",descriptor)]
     if qualities and not any(quality in type_line for quality in qualities):return False
     return any(term in descriptor for term in ("card","land","creature","aura","equipment","shrine","lesson","noble","forest","island","mountain","plains","swamp","cave"))
@@ -2251,6 +2252,8 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
     castable.extend((card,"flashback") for card in player["graveyard"] if _flashback_ability(card))
     castable.extend((card,"escape") for card in player["graveyard"] if _escape_ability(card))
     castable.extend((card,"graveyard_permission") for card in player["graveyard"] if card.get("graveyard_cast_until_turn")==state["turn"])
+    station_graveyard_source=next((permanent for permanent in player["battlefield"] if "once during each of your turns, you may cast a permanent spell from your graveyard by sacrificing a land" in _active_level_text(permanent).casefold() and permanent.get("station_graveyard_cast_turn")!=state["turn"]),None) if active else None
+    if station_graveyard_source:castable.extend((card,"graveyard_permission") for card in player["graveyard"] if any(kind in card.get("type_line","") for kind in ("Artifact","Battle","Creature","Enchantment","Planeswalker")))
     castable.extend((card,"graveyard_permission") for card in player["graveyard"] if player.get("speed",0)>=4 and re.search(r"Max speed\s*[—-]\s*You may cast this card from your graveyard",card.get("oracle_text") or "",re.IGNORECASE))
     castable.extend((card,"exile_permission") for card in player["exile"] if card.get("exile_cast_until_turn")==state["turn"])
     castable.extend((card,"airbend") for card in player["exile"] if card.get("airbent"))
@@ -2306,7 +2309,10 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
                 targeting_card=_spell_targeting_card(base_rules);targets = _targets(state, player_id, targeting_card)
                 if _target_kind(targeting_card) and not targets: continue
                 if targets: action["targets"] = targets
-        if normal_payable:actions.append(action)
+        station_permission=source=="graveyard_permission" and station_graveyard_source and card.get("graveyard_cast_until_turn")!=state["turn"]
+        if station_permission:
+            lands=[candidate for candidate in player["battlefield"] if "Land" in candidate.get("type_line","") and _can_pay(player,cost_card,generic_adjustment,excluded_ids={candidate["instance_id"]})];action.update({"station_source_id":station_graveyard_source["instance_id"],"cost_kind":"sacrifice","cost_amount":1,"cost_options":[candidate["instance_id"] for candidate in lands],"label":f"{action['label']} · sacrifice a land"})
+        if normal_payable and (not station_permission or lands):actions.append(action)
         multikicker_cost=_multikicker_cost(card) if source in {"hand","command"} else None
         if multikicker_cost:
             for count in range(1,21):
@@ -2797,6 +2803,10 @@ def _resolve_spell(state: dict) -> None:
     optional_discard=re.search(r"you may discard a card\.\s*if you do,\s*(.+)",effect_text,re.DOTALL)
     if optional_discard:
         source_name=(source_permanent or card).get("name",card["name"]);state["pending_optional_discard"]={"player_id":caster["id"],"source_name":source_name,"source_id":item.get("source_id"),"continuation":optional_discard.group(1).strip()};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} may discard a card for {source_name}.");return
+    optional_land_sacrifice=re.search(r"you may sacrifice a land or lander\.\s*if you do,\s*(.+)",effect_text,re.DOTALL)
+    if optional_land_sacrifice:
+        choices=[candidate["instance_id"] for candidate in caster["battlefield"] if "Land" in candidate.get("type_line","") or re.search(r"\bLander\b",candidate.get("type_line",""),re.IGNORECASE)]
+        source_name=(source_permanent or card).get("name",card["name"]);state["pending_zone_choice"]={"player_id":caster["id"],"source_name":source_name,"source_id":item.get("source_id"),"zone":"battlefield","destination":"graveyard","card_ids":choices,"optional":True,"sacrifice":True,"continuation":optional_land_sacrifice.group(1).strip()};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} may sacrifice a land or Lander for {source_name}.");return
     if re.search(r"you may pay \{x\}\{r\}",effect_text) and "create x 1/1 red elemental creature tokens" in effect_text:
         state["pending_tilonalli"]={"player_id":caster["id"],"source_name":source_permanent.get("name",card["name"]) if source_permanent else card["name"],"source_id":item.get("source_id"),"defender_id":state.get("combat",{}).get("attack_targets",{}).get(item.get("source_id"),opponent(state,caster["id"])["id"])};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} may pay {{X}}{{R}} for {state['pending_tilonalli']['source_name']}.");return
     if "take an extra turn after this one" in effect_text:
@@ -3364,6 +3374,7 @@ def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str, t
     if card.get("earthbend_base_type_line") is not None:
         card["type_line"]=card.pop("earthbend_base_type_line");card["power"]=card.pop("earthbend_base_power",None);card["toughness"]=card.pop("earthbend_base_toughness",None)
     card.pop("earthbent",None);card.pop("earthbend_controller",None)
+    card.pop("station_graveyard_cast_turn",None)
     if card.get("card_faces"):_set_card_face(card,0)
     if card.get("token"): return
     zone_owner=_player(state,card.get("owner_id",owner["id"]));previous_controller=card.get("controller_id",owner["id"]);card["controller_id"]=zone_owner["id"]
@@ -4577,7 +4588,11 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         elif requested_convoke:
             _pay_mana(state,player,convoke_residual or {"mana_cost":""},excluded_ids=set(selected_cost_ids))
             _set_tapped(state,[creature for creature in player["battlefield"] if creature["instance_id"] in selected_cost_ids],True,player_id,"convoke")
-        else:_pay_mana(state,player,cost_card,generic_adjustment-(len(selected_cost_ids) if requested_delve else 0),x_value=x_value)
+        else:_pay_mana(state,player,cost_card,generic_adjustment-(len(selected_cost_ids) if requested_delve else 0),x_value=x_value,excluded_ids=set(selected_cost_ids) if available.get("station_source_id") else None)
+        if available.get("station_source_id"):
+            sacrificed_land=next((candidate for candidate in player["battlefield"] if candidate["instance_id"] in set(selected_cost_ids) and "Land" in candidate.get("type_line","")),None);station_source=next((candidate for candidate in player["battlefield"] if candidate["instance_id"]==available["station_source_id"]),None)
+            if not sacrificed_land or not station_source:raise RuleViolation("The Spacecraft or land for the graveyard cast is no longer available")
+            _sacrifice_permanents(state,player,[sacrificed_land]);station_source["station_graveyard_cast_turn"]=state["turn"]
         if requested_evoked and available.get("cost_kind")=="evoke_exile":
             pitch=next((candidate for candidate in player["hand"] if candidate["instance_id"] in set(selected_cost_ids) and candidate is not card),None)
             if not pitch:raise RuleViolation("Choose the required colored card to exile for evoke")
@@ -5043,13 +5058,18 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if action_type=="choose_zone_card":
             zone=player.get(pending["zone"],[]);chosen=next((card for card in zone if card["instance_id"]==action.get("card_id") and card["instance_id"] in set(pending["card_ids"])),None)
             if not chosen:raise RuleViolation("Choose an eligible card")
-            zone.remove(chosen);destination=pending["destination"]
-            if destination=="battlefield":chosen["controller_id"]=player_id;chosen["summoning_sick"]=True;_enter_battlefield(state,player,[chosen],pending["zone"])
-            else:player[destination].append(chosen)
+            destination=pending["destination"]
+            if pending.get("sacrifice"):_sacrifice_permanents(state,player,[chosen])
+            else:
+                zone.remove(chosen)
+                if destination=="battlefield":chosen["controller_id"]=player_id;chosen["summoning_sick"]=True;_enter_battlefield(state,player,[chosen],pending["zone"])
+                else:player[destination].append(chosen)
             _log(state,f"{player['name']} chose {chosen['name']} for {pending['source_name']}.")
         elif not pending.get("optional"):raise RuleViolation("This choice is required")
         else:_log(state,f"{player['name']} chose no card for {pending['source_name']}.")
         state["pending_zone_choice"]=None;state["priority_player_id"]=state["active_player_id"]
+        if action_type=="choose_zone_card" and pending.get("continuation"):
+            ability={"name":f"{pending['source_name']} follow-up","oracle_text":pending["continuation"],"type_line":"Ability","mana_cost":""};state["stack"].append({"id":_id(),"kind":"trigger","card":ability,"controller_id":player_id,"target_id":None,"source_id":pending.get("source_id")});_resolve_spell(state)
     elif action_type == "adjust_life":
         target_player = _player(state, action.get("target_id") or player_id); amount = max(-100, min(100, int(action.get("amount") or 0))); target_player["life"] += amount; _log(state, f"{target_player['name']}'s life was adjusted by {amount:+d}.")
     elif action_type == "add_counter":
