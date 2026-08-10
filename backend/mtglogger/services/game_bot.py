@@ -405,6 +405,8 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
         if "cast" not in by_type or lands_in_hand<2 or (difficulty=="expert" and stranded):return choice
     if "activate_speed_graveyard" in by_type:
         return by_type["activate_speed_graveyard"][0]
+    if "station" in by_type:
+        action=max(by_type["station"],key=lambda candidate:max((_parse_stats(_card(state,"bot",card_id),state)[0] for card_id in candidate.get("cost_options",[])),default=0));crew=max(action["cost_options"],key=lambda card_id:_parse_stats(_card(state,"bot",card_id),state)[0]);return {**action,"cost_card_ids":[crew]}
     if "cast_face_down" in by_type and "cast" not in by_type:
         choices=by_type["cast_face_down"];return random.choice(choices) if difficulty=="beginner" else max(choices,key=lambda action:_threat_score(state,_card(state,"bot",action["card_id"])))
     if "unearth" in by_type:

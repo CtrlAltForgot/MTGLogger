@@ -255,9 +255,33 @@ def _level_sections(card:dict)->tuple[list[str],list[tuple[int,int|None,list[str
 
 def _active_level_text(card:dict)->str:
     preamble,sections=_level_sections(card)
-    if not sections:return _active_speed_text(card,card.get("oracle_text") or "")
+    if not sections:return _active_speed_text(card,_active_station_text(card,card.get("oracle_text") or ""))
     level=int(card.get("counters",{}).get("level",0));active=next((lines for minimum,maximum,lines in sections if level>=minimum and (maximum is None or level<=maximum)),[])
-    return _active_speed_text(card,"\n".join([*preamble,*active]))
+    return _active_speed_text(card,_active_station_text(card,"\n".join([*preamble,*active])))
+
+
+def _active_station_text(card:dict,text:str)->str:
+    """Expose every Station threshold reached by the permanent's charge counters."""
+    charge=int(card.get("counters",{}).get("charge",0));visible=[]
+    for line in text.splitlines():
+        match=re.match(r"^\s*(\d+)\+\s*\|\s*(.+)$",line)
+        if not match:visible.append(line)
+        elif charge>=int(match.group(1)):visible.append(match.group(2))
+    return "\n".join(visible)
+
+
+def _station_threshold(card:dict)->int|None:
+    match=re.search(r"artifact creature at (\d+)\+",card.get("oracle_text") or "",re.IGNORECASE)
+    return int(match.group(1)) if match else None
+
+
+def _sync_station_state(card:dict)->None:
+    threshold=_station_threshold(card)
+    if threshold is None:return
+    active=int(card.get("counters",{}).get("charge",0))>=threshold
+    if active and "Creature" not in card.get("type_line",""):
+        card["station_base_type_line"]=card.get("type_line","");card["type_line"]=card["type_line"].replace("Artifact —","Artifact Creature —")
+    elif not active and card.get("station_base_type_line") is not None:card["type_line"]=card.pop("station_base_type_line")
 
 
 def _active_speed_text(card:dict,text:str)->str:
@@ -465,6 +489,8 @@ def _has_keyword(card: dict, keyword: str) -> bool:
     if level_sections and any(re.search(rf"\b{re.escape(keyword)}\b","\n".join(lines),re.IGNORECASE) for _,_,lines in level_sections):printed.discard(keyword.casefold())
     lower_keyword=keyword.casefold();raw_text=card.get("oracle_text") or "";speed_conditional=[line for line in raw_text.splitlines() if re.match(r"^\s*Max speed\s*[—-]",line,re.IGNORECASE)];text=_active_level_text(card).casefold();conditional=[clause for clause in re.split(r"(?<=[.!])\s+|\n",text) if "as long as this creature is monstrous" in clause];blessing_conditional=[clause for clause in re.split(r"(?<=[.!])\s+|\n",text) if "city's blessing" in clause];unconditional="\n".join(clause for clause in re.split(r"(?<=[.!])\s+|\n",text) if clause not in conditional and clause not in blessing_conditional)
     if int(card.get("controller_speed",0))<4 and any(re.search(rf"\b{re.escape(lower_keyword)}\b",line,re.IGNORECASE) for line in speed_conditional):printed.discard(lower_keyword)
+    charge=int(card.get("counters",{}).get("charge",0));inactive_station=[match.group(2) for line in raw_text.splitlines() if (match:=re.match(r"^\s*(\d+)\+\s*\|\s*(.+)$",line)) and charge<int(match.group(1))]
+    if any(re.search(rf"\b{re.escape(lower_keyword)}\b",line,re.IGNORECASE) for line in inactive_station):printed.discard(lower_keyword)
     if any(re.search(rf"\b{re.escape(lower_keyword)}\b",clause) for clause in blessing_conditional):printed.discard(lower_keyword)
     monstrous_match=card.get("monstrous") and any(re.search(rf"\b{re.escape(lower_keyword)}\b",clause) for clause in conditional)
     blessing_match=card.get("controller_city_blessing") and any(re.search(rf"\b{re.escape(lower_keyword)}\b",clause) for clause in blessing_conditional)
@@ -2355,6 +2381,12 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
             for ninja,source in candidates:
                 ability=_ninjutsu_ability(ninja)
                 if ability and _can_pay(player,{"mana_cost":ability["mana_cost"]}):actions.append({"type":"ninjutsu","card_id":ninja["instance_id"],"source":source,"mana_cost":ability["mana_cost"],"targets":targets,"label":f"{'Commander ' if ability['commander'] else ''}Ninjutsu {ninja['name']} · {ability['mana_cost']} · return an unblocked attacker"})
+    if active and main and not state["stack"]:
+        station_creatures=[candidate for candidate in player["battlefield"] if "Creature" in candidate.get("type_line","") and not candidate.get("tapped")]
+        for permanent in player["battlefield"]:
+            if not re.search(r"(?:^|\n)Station\b",permanent.get("oracle_text") or "",re.IGNORECASE):continue
+            options=[candidate for candidate in station_creatures if candidate["instance_id"]!=permanent["instance_id"]]
+            if options:actions.append({"type":"station","card_id":permanent["instance_id"],"cost_kind":"station","cost_amount":1,"cost_options":[candidate["instance_id"] for candidate in options],"label":f"Station {permanent['name']} · tap another creature to add charge counters equal to its power"})
     for permanent in player["battlefield"]:
         for index, ability in enumerate(_permanent_abilities(state,permanent)):
             if not _activation_timing_legal(state,player_id,permanent,index,ability):continue
@@ -3225,6 +3257,7 @@ def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str, t
         for key,value in values.items():card[key]=value
         card.pop("face_down",None);card.pop("cloaked",None)
     if card.get("base_type_line") is not None:card["type_line"]=card.pop("base_type_line")
+    if card.get("station_base_type_line") is not None:card["type_line"]=card.pop("station_base_type_line")
     if card.get("earthbend_base_type_line") is not None:
         card["type_line"]=card.pop("earthbend_base_type_line");card["power"]=card.pop("earthbend_base_power",None);card["toughness"]=card.pop("earthbend_base_toughness",None)
     card.pop("earthbent",None);card.pop("earthbend_controller",None)
@@ -4535,6 +4568,11 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         card=next((candidate for candidate in player["graveyard"] if candidate["instance_id"]==action.get("card_id")),None);available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="activate_speed_graveyard" and entry["card_id"]==action.get("card_id")),None)
         if not card or not available:raise RuleViolation("That max-speed graveyard ability cannot be activated")
         _pay_mana(state,player,{"mana_cost":"{3}"});_leave_graveyard(state,player,[card]);_put_into_exile(state,player,[card],"graveyard",player_id);_draw(state,player);state["consecutive_passes"]=0;state["pending_phase_advance"]=False;_log(state,f"{player['name']} exiled {card['name']} from their graveyard and drew a card at max speed.")
+    elif action_type=="station":
+        permanent=next((card for card in player["battlefield"] if card["instance_id"]==action.get("card_id") and re.search(r"(?:^|\n)Station\b",card.get("oracle_text") or "",re.IGNORECASE)),None);selected=action.get("cost_card_ids") or []
+        available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="station" and entry["card_id"]==action.get("card_id")),None)
+        if not permanent or not available or len(selected)!=1 or selected[0] not in available["cost_options"]:raise RuleViolation("Choose one other untapped creature to station this permanent")
+        crew=next(card for card in player["battlefield"] if card["instance_id"]==selected[0]);amount=max(0,_parse_stats(crew,state)[0]);_set_tapped(state,[crew],True,player_id,"station");_add_counters(state,permanent,"charge",amount,player_id,"station");_sync_station_state(permanent);state["consecutive_passes"]=0;state["pending_phase_advance"]=False;_log(state,f"{player['name']} tapped {crew['name']} to station {permanent['name']} for {amount} charge counter(s).")
     elif action_type == "equip":
         available=next((entry for entry in legal_actions(state,player_id) if entry["type"]=="equip" and entry["card_id"]==action.get("card_id")),None);target_id=action.get("target_id")
         if not available or target_id not in {target["id"] for target in available["targets"]}:raise RuleViolation("That Equipment cannot be attached to that creature now")
