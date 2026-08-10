@@ -31,6 +31,7 @@ def opponent(state: dict, player_id: str) -> dict:
 
 
 def _draw(state: dict, player: dict, amount: int = 1,emit_events:bool=True) -> None:
+    if player.get("speed",0)>=4 and any("if you would draw a card, draw two cards instead" in _active_level_text(permanent).casefold() for permanent in player["battlefield"]):amount*=2
     trigger_dedupe:set[str]=set()
     for _ in range(amount):
         if not player["library"]:
@@ -184,6 +185,7 @@ def _continuous_stats(state:dict|None,card:dict)->tuple[int,int]:
                 if subtype_bonus and subtype_bonus.group(2).casefold() not in {"creature","artifact","enchantment","permanent","token"} and controller==source.get("controller_id",owner["id"]) and (not subtype_bonus.group(1) or source.get("instance_id")!=card.get("instance_id")) and re.search(rf"\b{re.escape(subtype_bonus.group(2))}\b",type_line,re.IGNORECASE):power+=int(subtype_bonus.group(3));toughness+=int(subtype_bonus.group(4))
             if controller==source.get("controller_id",owner["id"]) and "gets +1/+0 for each time it has attacked this turn" in (source.get("oracle_text") or "").casefold():power+=int(card.get("attacks_this_turn",0))
             if controller==source.get("controller_id",owner["id"]) and source is not card and re.search(r"\bElf\b",card.get("type_line","")) and "other elf creatures you control get +1/+1 for each +1/+1 counter on this creature" in (source.get("oracle_text") or "").casefold():power+=source.get("counters",{}).get("+1/+1",0);toughness+=source.get("counters",{}).get("+1/+1",0)
+            if controller==source.get("controller_id",owner["id"]) and source is not card and "other creatures you control get +x/+0, where x is your speed" in _active_level_text(source).casefold():power+=int(owner.get("speed",0))
     return power,toughness
 
 
@@ -200,7 +202,11 @@ def _sync_city_blessing(state:dict)->None:
                 for source in source_owner["battlefield"]:
                     chosen=(source.get("chosen_creature_type") or "").casefold()
                     if chosen and source.get("controller_id",source_owner["id"])==controller_id and controller_id in blessed and "they also have vigilance" in (source.get("oracle_text") or "").casefold() and re.search(rf"\b{re.escape(chosen)}\b",card.get("type_line","").casefold()):granted.append("Vigilance")
-                    text=(source.get("oracle_text") or "").casefold();card_types=card.get("type_line","").casefold()
+                    text=_active_level_text(source).casefold();card_types=card.get("type_line","").casefold()
+                    if source.get("controller_id",source_owner["id"])==controller_id and "creature" in card_types:
+                        for keyword in ("haste","first strike","double strike","deathtouch","lifelink","menace","trample","vigilance"):
+                            global_keyword=re.search(rf"\b(other )?(?:[a-z]+ )?creatures you control have {re.escape(keyword)}\b",text)
+                            if global_keyword and (not global_keyword.group(1) or source.get("instance_id")!=card.get("instance_id")):granted.append(keyword.title())
                     if source.get("controller_id",source_owner["id"])==controller_id and "land" in card_types and "creature" in card_types:
                         for keyword in ("trample","vigilance"):
                             if f"land creatures you control have {keyword}" in text:granted.append(keyword.title())
@@ -247,9 +253,38 @@ def _level_sections(card:dict)->tuple[list[str],list[tuple[int,int|None,list[str
 
 def _active_level_text(card:dict)->str:
     preamble,sections=_level_sections(card)
-    if not sections:return card.get("oracle_text") or ""
+    if not sections:return _active_speed_text(card,card.get("oracle_text") or "")
     level=int(card.get("counters",{}).get("level",0));active=next((lines for minimum,maximum,lines in sections if level>=minimum and (maximum is None or level<=maximum)),[])
-    return "\n".join([*preamble,*active])
+    return _active_speed_text(card,"\n".join([*preamble,*active]))
+
+
+def _active_speed_text(card:dict,text:str)->str:
+    """Expose max-speed rules only while the permanent's controller is at speed 4+."""
+    active=int(card.get("controller_speed",0))>=4;visible=[]
+    for line in text.splitlines():
+        if re.match(r"^\s*Max speed\s*[—-]",line,re.IGNORECASE):
+            if active:visible.append(re.sub(r"^\s*Max speed\s*[—-]\s*","",line,flags=re.IGNORECASE))
+        else:visible.append(line)
+    return "\n".join(visible)
+
+
+def _sync_speed(state:dict)->None:
+    for owner in state["players"]:
+        for permanent in owner["battlefield"]:permanent["controller_speed"]=int(_player(state,permanent.get("controller_id",owner["id"])).get("speed",0))
+    _sync_city_blessing(state)
+
+
+def _start_engines(state:dict,player:dict)->None:
+    if player.get("speed",0)>0:return
+    player["speed"]=1;_sync_speed(state);_log(state,f"{player['name']} started their engines at speed 1.")
+
+
+def _update_speed_for_life_loss(state:dict,before:dict[str,int])->None:
+    active=_player(state,state["active_player_id"])
+    if active.get("speed",0)<=0 or active.get("speed_increased_turn")==state["turn"]:return
+    if not any(owner["id"]!=active["id"] and owner.get("life",0)<before.get(owner["id"],owner.get("life",0)) for owner in state["players"]):return
+    unlimited=any("your speed can increase beyond 4" in (card.get("oracle_text") or "").casefold() for card in active["battlefield"]);maximum=99 if unlimited else 4
+    active["speed"]=min(maximum,int(active.get("speed",0))+1);active["speed_increased_turn"]=state["turn"];_sync_speed(state);_log(state,f"{active['name']}'s speed increased to {active['speed']}.")
 
 
 def _level_stats(card:dict)->tuple[int,int]|None:
@@ -268,12 +303,13 @@ def _parse_stats(card: dict,state:dict|None=None) -> tuple[int, int]:
     try:
         plus = card.get("counters", {}).get("+1/+1", 0); minus = card.get("counters", {}).get("-1/-1", 0)
         static_power,static_toughness=_continuous_stats(state,card)
-        level_stats=_level_stats(card);base_power,base_toughness=level_stats or (int(card.get("temporary_base_power",card.get("power") or 0)),int(card.get("temporary_base_toughness",card.get("toughness") or 0)))
+        speed=int(card.get("controller_speed",0));speed_power="power is equal to your speed" in (card.get("oracle_text") or "").casefold();level_stats=_level_stats(card);base_power,base_toughness=level_stats or (speed if speed_power else int(card.get("temporary_base_power",card.get("power") or 0)),int(card.get("temporary_base_toughness",card.get("toughness") or 0)))
+        active_text=_active_level_text(card);static_clauses=[clause for clause in re.split(r"(?<=[.!])\s+|\n",active_text) if "until end of turn" not in clause.casefold() and "as long as" not in clause.casefold()];self_static=next((match for clause in static_clauses if (match:=re.search(r"this creature gets ([+-]\d+)/([+-]\d+)",clause,re.IGNORECASE))),None);speed_static=(int(self_static.group(1)),int(self_static.group(2))) if self_static else (0,0)
         blessing_power=blessing_toughness=0
         if card.get("controller_city_blessing"):
             blessing=re.search(r"(?:this creature|[A-Z][^.\n]+) gets ([+-]\d+)/([+-]\d+) as long as you have the city's blessing",card.get("oracle_text") or "",re.IGNORECASE)
             if blessing:blessing_power,blessing_toughness=int(blessing.group(1)),int(blessing.group(2))
-        return base_power + plus - minus + card.get("temporary_power", 0)+static_power+blessing_power, base_toughness + plus - minus + card.get("temporary_toughness", 0)+static_toughness+blessing_toughness
+        return base_power + plus - minus + card.get("temporary_power", 0)+static_power+blessing_power+speed_static[0], base_toughness + plus - minus + card.get("temporary_toughness", 0)+static_toughness+blessing_toughness+speed_static[1]
     except ValueError:
         return 0, 0
 
@@ -320,7 +356,7 @@ def _mana_pools(effect: str) -> list[tuple[int, ...]]:
 
 def _mana_source_options(card: dict) -> list[dict]:
     """Pair every usable mana output with the costs of that exact ability."""
-    type_line=card.get("type_line","");text=card.get("oracle_text") or "";options=[]
+    type_line=card.get("type_line","");text=_active_level_text(card);options=[]
     for line in text.splitlines():
         match=re.match(r"^([^:]+):\s*(Add [^.\n]+)",line.strip(),re.IGNORECASE)
         if not match:continue
@@ -425,7 +461,8 @@ def _has_keyword(card: dict, keyword: str) -> bool:
     printed={value.casefold() for value in card.get("keywords", [])};temporary={value.casefold() for value in card.get("temporary_keywords", [])};continuous={value.casefold() for value in card.get("continuous_keywords", [])};attached={value.casefold() for values in card.get("attachment_keywords",{}).values() for value in values};counter_keywords={name.casefold() for name,amount in card.get("counters",{}).items() if amount>0}
     _,level_sections=_level_sections(card)
     if level_sections and any(re.search(rf"\b{re.escape(keyword)}\b","\n".join(lines),re.IGNORECASE) for _,_,lines in level_sections):printed.discard(keyword.casefold())
-    lower_keyword=keyword.casefold();text=_active_level_text(card).casefold();conditional=[clause for clause in re.split(r"(?<=[.!])\s+|\n",text) if "as long as this creature is monstrous" in clause];blessing_conditional=[clause for clause in re.split(r"(?<=[.!])\s+|\n",text) if "city's blessing" in clause];unconditional="\n".join(clause for clause in re.split(r"(?<=[.!])\s+|\n",text) if clause not in conditional and clause not in blessing_conditional)
+    lower_keyword=keyword.casefold();raw_text=card.get("oracle_text") or "";speed_conditional=[line for line in raw_text.splitlines() if re.match(r"^\s*Max speed\s*[—-]",line,re.IGNORECASE)];text=_active_level_text(card).casefold();conditional=[clause for clause in re.split(r"(?<=[.!])\s+|\n",text) if "as long as this creature is monstrous" in clause];blessing_conditional=[clause for clause in re.split(r"(?<=[.!])\s+|\n",text) if "city's blessing" in clause];unconditional="\n".join(clause for clause in re.split(r"(?<=[.!])\s+|\n",text) if clause not in conditional and clause not in blessing_conditional)
+    if int(card.get("controller_speed",0))<4 and any(re.search(rf"\b{re.escape(lower_keyword)}\b",line,re.IGNORECASE) for line in speed_conditional):printed.discard(lower_keyword)
     if any(re.search(rf"\b{re.escape(lower_keyword)}\b",clause) for clause in blessing_conditional):printed.discard(lower_keyword)
     monstrous_match=card.get("monstrous") and any(re.search(rf"\b{re.escape(lower_keyword)}\b",clause) for clause in conditional)
     blessing_match=card.get("controller_city_blessing") and any(re.search(rf"\b{re.escape(lower_keyword)}\b",clause) for clause in blessing_conditional)
@@ -713,6 +750,15 @@ def _affinity_reduction(player:dict,card:dict)->int:
     return sum(matches(permanent) for permanent in player["battlefield"])
 
 
+def _speed_cost_reduction(player:dict,card:dict)->int:
+    reduction=0
+    for permanent in player["battlefield"]:
+        text=_active_level_text(permanent).casefold()
+        if "spells you cast cost {1} less to cast" in text:reduction+=1
+        if "noncreature spells you cast cost {x} less to cast, where x is your speed" in text and "Creature" not in card.get("type_line",""):reduction+=int(player.get("speed",0))
+    return reduction
+
+
 def _earthbend_value(card:dict,player:dict|None=None)->int|None:
     match=re.search(r"\bearthbend\s+(\d+)\b",card.get("oracle_text") or "",re.IGNORECASE)
     if match:return int(match.group(1))
@@ -767,6 +813,7 @@ def _effective_rules_text(state:dict,card:dict)->str:
 def _can_attack(state:dict,card:dict,attacker:dict,defender:dict)->bool:
     text=_effective_rules_text(state,card)
     if card.get("cant_attack_until_turn")==state["turn"]:return False
+    if "can't attack or block unless you have max speed" in text and attacker.get("speed",0)<4:return False
     defender_override="defender" in text and "can attack as though it didn't have defender" in text and any("Creature" in permanent.get("type_line","") and _parse_stats(permanent,state)[0]>=4 for permanent in attacker["battlefield"])
     if _has_keyword(card,"Defender") and not defender_override:return False
     if "can't attack unless" in text or "can't attack or block unless" in text:
@@ -783,6 +830,7 @@ def _can_attack(state:dict,card:dict,attacker:dict,defender:dict)->bool:
 def _can_block_pair(state:dict,attacker:dict,blocker:dict)->bool:
     attacker_text=_effective_rules_text(state,attacker);blocker_text=_effective_rules_text(state,blocker)
     if blocker.get("cant_block_until_turn")==state["turn"]:return False
+    if "can't attack or block unless you have max speed" in blocker_text and _player(state,blocker.get("controller_id")).get("speed",0)<4:return False
     conditional="can't attack or block unless" in blocker_text and not ("unless you have the city's blessing" in blocker_text and _player(state,blocker.get("controller_id")).get("city_blessing"))
     if conditional and "you control another creature with power 4 or greater" in blocker_text:
         controller=_player(state,blocker.get("controller_id"));conditional=any(permanent["instance_id"]!=blocker["instance_id"] and "Creature" in permanent.get("type_line","") and _parse_stats(permanent,state)[0]>=4 for permanent in controller["battlefield"])
@@ -910,6 +958,8 @@ def _queue_damage_event(state:dict,source:dict,target:dict,amount:int,combat:boo
 
 def _damage_player(state:dict,target:dict,amount:int,source:dict,combat:bool=False)->int:
     if amount<=0:return 0
+    source_controller=_player(state,source.get("controller_id",source.get("owner_id",state["active_player_id"])))
+    if source_controller.get("speed",0)>=4 and any("it deals that much damage plus 1 instead" in _active_level_text(permanent).casefold() for permanent in source_controller["battlefield"]):amount+=1
     if _player_protected_from(state,target,source):_log(state,f"Protection prevented {amount} damage to {target['name']}.");return 0
     if _has_keyword(source,"Infect"):_add_counters(state,target,"poison",amount,source.get("controller_id"),"damage")
     else:target["life"]-=amount
@@ -920,6 +970,8 @@ def _damage_player(state:dict,target:dict,amount:int,source:dict,combat:bool=Fal
 
 def _damage_permanent(state:dict,target:dict,amount:int,source:dict)->int:
     if amount<=0:return 0
+    source_controller=_player(state,source.get("controller_id",source.get("owner_id",state["active_player_id"])))
+    if target.get("controller_id")!=source_controller["id"] and source_controller.get("speed",0)>=4 and any("it deals that much damage plus 1 instead" in _active_level_text(permanent).casefold() for permanent in source_controller["battlefield"]):amount+=1
     if _protected_from(target,source):
         _log(state,f"Protection prevented {amount} damage to {target['name']}.");return 0
     if _consume_shield(state,target,"damage"):return 0
@@ -1517,7 +1569,7 @@ def _new_player(player_id: str, name: str, deck: list[dict], is_bot: bool, forma
         if commander:
             library.remove(commander); commander["commander"] = True; command.append(commander)
     random.SystemRandom().shuffle(library)
-    return {"id": player_id, "name": name, "is_bot": is_bot, "format": format_name, "life": 40 if is_commander else 20, "poison": 0,"rad":0,"experience":0,"energy":0,"energy_paid_this_turn":0,"firebending_mana":0,"any_color_mana":0,"bent_this_turn":[],"undercity_rooms":[],"city_blessing":False, "library": library, "hand": [], "battlefield": [], "graveyard": [], "exile": [], "command": command, "commander_casts": 0, "commander_damage": {}, "commander_damage_names": {}, "land_plays_remaining": 1,"lands_played_this_turn":0, "kept_hand": False, "mulligans": 0, "lost": False}
+    return {"id": player_id, "name": name, "is_bot": is_bot, "format": format_name, "life": 40 if is_commander else 20, "poison": 0,"rad":0,"experience":0,"speed":0,"energy":0,"energy_paid_this_turn":0,"firebending_mana":0,"any_color_mana":0,"bent_this_turn":[],"undercity_rooms":[],"city_blessing":False, "library": library, "hand": [], "battlefield": [], "graveyard": [], "exile": [], "command": command, "commander_casts": 0, "commander_damage": {}, "commander_damage_names": {}, "land_plays_remaining": 1,"lands_played_this_turn":0, "kept_hand": False, "mulligans": 0, "lost": False}
 
 
 def new_game(player_deck: list[dict], opponent_deck: list[dict], play_first: bool = True, opponent_is_bot: bool = True, player_format: str = "", opponent_format: str = "") -> dict:
@@ -2107,7 +2159,7 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
         card_action_start=len(actions)
         flashback=_flashback_ability(card) if source=="flashback" else None;escape=_escape_ability(card) if source=="escape" else None;foretell_cost=_foretell_cost(card) if source=="foretell" else None;cost_card={**card,"mana_cost":foretell_cost} if foretell_cost else {**card,"mana_cost":"{0}"} if source in {"suspend","plot"} else {**card,"mana_cost":"{2}"} if source=="airbend" else {**card,"mana_cost":flashback["mana_cost"]} if flashback else {**card,"mana_cost":escape["mana_cost"]} if escape else card;kicker_cost=_kicker_cost(card)
         instant_speed = source!="plot" and ("Instant" in card.get("type_line", "") or _has_keyword(card, "Flash"))
-        total_tax=_commander_tax(player,card) if source=="command" else 0;affinity_reduction=_affinity_reduction(player,card);generic_adjustment=total_tax-affinity_reduction
+        total_tax=_commander_tax(player,card) if source=="command" else 0;affinity_reduction=_affinity_reduction(player,card);speed_reduction=_speed_cost_reduction(player,card);generic_adjustment=total_tax-affinity_reduction-speed_reduction
         behold_options=[candidate for zone in (player["hand"],player["battlefield"]) for candidate in zone if flashback and flashback["behold_type"] in candidate.get("type_line","").casefold()]
         escape_options=[candidate for candidate in player["graveyard"] if candidate is not card] if escape else []
         escape_lands=[candidate for candidate in player["battlefield"] if escape and "Land" in candidate.get("type_line","")]
@@ -2535,6 +2587,7 @@ def _resolve_spell(state: dict) -> None:
     effect_text = "" if is_permanent_spell and re.search(r"\b(?:when|whenever|at the beginning)\b", text) else text
     times_kicked=int(item.get("multikicker_count") or (source_permanent or {}).get("times_kicked",0))
     if times_kicked:effect_text=_multikicker_effect(effect_text,times_kicked)
+    if caster.get("speed",0):effect_text=_speed_effect(effect_text,caster)
     if source_permanent and re.search(r"deals damage equal to (?:its|his|her) power",effect_text):effect_text=re.sub(r"deals damage equal to (?:its|his|her) power",f"deals {_parse_stats(source_permanent,state)[0]} damage",effect_text)
     if "if you had a land enter" in effect_text:effect_text=_landfall_spell_effect(effect_text,caster.get("land_entered_turn")==state.get("turn"))
     if item.get("kind")=="trigger" and re.search(r"\b(?:first|second|third|fourth) time(?: this ability has resolved)? this turn\b",effect_text):
@@ -3204,6 +3257,7 @@ def _enter_battlefield(state:dict,controller:dict,cards:list[dict],origin:str="e
         card["controller_id"]=controller["id"];card["entered_turn"]=state["turn"];card["entry_event_origin"]=origin;card["entry_event_was_cast"]=was_cast;card["entry_event_played"]=played;card["entry_event_batch_size"]=batch_size
         if _echo_cost(card):card["echo_due_controller_id"]=controller["id"]
         controller["battlefield"].append(card)
+        if re.search(r"(?:^|\n)Start your engines!",card.get("oracle_text") or "",re.IGNORECASE):_start_engines(state,controller)
         if "Land" in card.get("type_line",""):controller["land_entered_turn"]=state["turn"]
         if "as this enchantment enters, choose a creature type" in (card.get("oracle_text") or "").casefold() and not card.get("chosen_creature_type"):
             state.setdefault("pending_creature_type",[]).append({"player_id":controller["id"],"card_id":card["instance_id"],"card_name":card["name"]});state["priority_player_id"]=controller["id"]
@@ -3400,6 +3454,16 @@ def _multikicker_effect(text:str,count:int)->str:
     return text
 
 
+def _speed_effect(text:str,player:dict)->str:
+    speed=int(player.get("speed",0))
+    text=re.sub(r"\bwhere x is your speed\b",f"where x is {speed}",text,flags=re.IGNORECASE)
+    if re.search(rf"where x is {speed}\b",text,re.IGNORECASE):text=re.sub(r"\bx\b",str(speed),text,flags=re.IGNORECASE)
+    text=re.sub(r"\b(equal to|equal in amount to) your speed\b",lambda match:f"{match.group(1)} {speed}",text,flags=re.IGNORECASE)
+    text=re.sub(r"\bgain life equal to (?:your speed|\d+)\b",f"gain {speed} life",text,flags=re.IGNORECASE)
+    text=re.sub(r"\bdraw cards equal to (?:your speed|\d+)\b",f"draw {speed} cards",text,flags=re.IGNORECASE)
+    return text
+
+
 def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owner: dict, dedupe:set[str]|None=None, sources_override:list[tuple[dict,dict]]|None=None) -> None:
     if event in {"earthbend","waterbend","firebend","airbend"}:
         event_owner["bent_this_turn"]=sorted(set(event_owner.get("bent_this_turn",[]))|{event})
@@ -3414,7 +3478,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
         if not any(source is event_card for _,source in sources):
             insert_at=max((index+1 for index,(owner,_) in enumerate(sources) if owner["id"]==event_owner["id"]),default=len(sources));sources.insert(insert_at,(event_owner,event_card))
     for owner, source in sources:
-        text = "\n".join([source.get("oracle_text") or "",*(source.get("temporary_backup_rules") or [])])
+        text = "\n".join([_active_level_text(source),*(source.get("temporary_backup_rules") or [])])
         raw_clauses = re.split(r"(?<=[.!])\s+|\n", text);clauses=[]
         for clause in raw_clauses:
             modal_continuation=bool(clauses and (clause.strip().startswith(("•","-")) or clauses[-1].lstrip().startswith(("•","-")) or re.search(r"\n[•-]\s",clauses[-1]) and not re.match(r"(?:when(?:ever)?\b|at the beginning\b|[+−-]?\d+\s*:|\{[^}]+\}[^:]*:)",clause.strip(),re.IGNORECASE)))
@@ -3938,6 +4002,7 @@ def _advance_turn_phase(state: dict) -> None:
 
 
 def perform_action(state: dict, player_id: str, action: dict, allow_direct_resolution:bool=True) -> dict:
+    life_before={owner["id"]:owner.get("life",0) for owner in state["players"]}
     state = deepcopy(state)
     player = _player(state, player_id)
     action_type = action.get("type")
@@ -4230,7 +4295,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         requested_source=action.get("source");zone_name="graveyard" if requested_source in {"flashback","escape","mutate_graveyard","graveyard_permission"} else "exile" if requested_source in {"airbend","suspend","foretell","plot","rebound","exile_permission"} else "hand" if requested_source in {"mutate_hand","evoke","dash_hand","bestow"} else "command" if requested_source in {"mutate_command","dash_command"} else requested_source if requested_source in {"hand","command"} else next((zone for zone in ("hand","command") if any(card["instance_id"]==action.get("card_id") for card in player.get(zone,[]))),None)
         source=requested_source if requested_source in {"flashback","escape","mutate_graveyard","graveyard_permission","airbend","suspend","foretell","plot","rebound","exile_permission","mutate_hand","mutate_command","evoke","dash_hand","dash_command","bestow"} else zone_name;card=next((card for card in player.get(zone_name or "hand",[]) if card["instance_id"]==action.get("card_id")),None);flashback=_flashback_ability(card or {}) if source=="flashback" else None;escape=_escape_ability(card or {}) if source=="escape" else None
         requested_kicked=bool(action.get("kicked"));requested_multikicker=max(0,int(action.get("multikicker_count") or 0));requested_entwined=bool(action.get("entwined"));requested_buyback=bool(action.get("buyback"));requested_convoke=bool(action.get("convoke"));requested_waterbend=bool(action.get("waterbend"));requested_overloaded=bool(action.get("overloaded"));requested_evoked=requested_source=="evoke";requested_dashed=requested_source in {"dash_hand","dash_command"};requested_bestowing=bool(action.get("bestowing") or requested_source=="bestow");requested_delve=bool(action.get("delve"));requested_mutating=bool(action.get("mutating") or requested_source in {"mutate_hand","mutate_graveyard","mutate_command"});requested_blight=bool(action.get("blighted") or (action.get("cost_card_ids") and _optional_blight_cost(card or {})));requested_blessing_top=bool(action.get("blessing_top"));available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="cast" and entry["card_id"]==action.get("card_id") and entry.get("source")==source and int(entry.get("multikicker_count") or 0)==requested_multikicker and bool(entry.get("bestowing"))==requested_bestowing and bool(entry.get("entwined"))==requested_entwined and bool(entry.get("overloaded"))==requested_overloaded and bool(entry.get("evoked"))==requested_evoked and bool(entry.get("dashed"))==requested_dashed and bool(entry.get("delve"))==requested_delve and (not requested_delve or entry.get("cost_amount")==len(action.get("cost_card_ids") or [])) and bool(entry.get("mutating"))==requested_mutating and entry.get("mutate_position")==action.get("mutate_position") and bool(entry.get("kicked"))==requested_kicked and bool(entry.get("buyback"))==requested_buyback and bool(entry.get("convoke"))==requested_convoke and bool(entry.get("waterbend"))==requested_waterbend and bool(entry.get("blighted"))==requested_blight and bool(entry.get("blessing_top"))==requested_blessing_top),None)
-        tax = _commander_tax(player, card) if card and source in {"command","mutate_command","dash_command"} else 0;affinity_reduction=_affinity_reduction(player,card or {});buyback=_buyback_ability(card or {}) if requested_buyback else None;generic_adjustment=tax-affinity_reduction-(_dash_reduction(player) if requested_dashed else 0)-int(available.get("buyback_reduction",0) if available else 0)
+        tax = _commander_tax(player, card) if card and source in {"command","mutate_command","dash_command"} else 0;affinity_reduction=_affinity_reduction(player,card or {});speed_reduction=_speed_cost_reduction(player,card or {});buyback=_buyback_ability(card or {}) if requested_buyback else None;generic_adjustment=tax-affinity_reduction-speed_reduction-(_dash_reduction(player) if requested_dashed else 0)-int(available.get("buyback_reduction",0) if available else 0)
         if not card:raise RuleViolation("That spell cannot be cast")
         if not available:raise RuleViolation("That spell cannot be cast from that zone")
         cost_card={**card,"mana_cost":_overload_cost(card) or ""} if requested_overloaded else {**card,"mana_cost":_dash_cost(card)} if requested_dashed else {**card,"mana_cost":_bestow_cost(card)} if requested_bestowing else {**card,"mana_cost":(_evoke_ability(card) or {}).get("mana_cost","")} if requested_evoked else {**card,"mana_cost":_mutate_cost(card)} if requested_mutating else {**card,"mana_cost":_foretell_cost(card) or ""} if source=="foretell" else {**card,"mana_cost":"{0}"} if source in {"suspend","plot","rebound"} else {**card,"mana_cost":"{2}"} if source=="airbend" else {**card,"mana_cost":flashback["mana_cost"]} if flashback else {**card,"mana_cost":escape["mana_cost"]} if escape else card
@@ -4763,6 +4828,6 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
                 if destination=="exile":_put_into_exile(state,source_owner,[card],source,player_id)
                 else:source_owner[destination].append(card)
         _log(state, f"{moved_name} moved from {source} to {destination}.")
-    _state_based_actions(state);_check_winner(state)
+    _update_speed_for_life_loss(state,life_before);_state_based_actions(state);_check_winner(state)
     state["version"] += 1
     return state
