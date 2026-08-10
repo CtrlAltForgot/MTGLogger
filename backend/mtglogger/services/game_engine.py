@@ -1003,6 +1003,7 @@ def _activated_abilities(card: dict) -> list[dict]:
         taps="{T}" in cost.upper()
         source_name=re.escape(card.get("name", ""));self_reference=rf"(?:~|this (?:artifact|creature|permanent)|{source_name})"
         self_sacrifice=re.search(rf"\bsacrifice {self_reference}\b",cost,re.IGNORECASE) is not None
+        self_bottom=re.search(rf"\bput {self_reference} on the bottom of (?:its|your) owner's library\b",cost,re.IGNORECASE) is not None
         life_match=re.search(r"\bpay (\d+) life\b",cost,re.IGNORECASE);life_cost=int(life_match.group(1)) if life_match else 0
         counter_match=re.search(rf"\bremove (a|one|two|three|four|five|\d+) ([\w+/-]+) counters? from {self_reference}\b",cost,re.IGNORECASE)
         counter_cost=None
@@ -1018,7 +1019,7 @@ def _activated_abilities(card: dict) -> list[dict]:
         blight_match=re.search(r"\bblight (\d+)\b",cost,re.IGNORECASE)
         if blight_match:selection_costs.append({"kind":"blight","filter":"creature","amount":1,"blight_amount":int(blight_match.group(1)),"exclude_source":False})
         unsupported=("discard" in cost.casefold() and not selection_costs) or ("sacrifice" in cost.casefold() and not self_sacrifice and not selection_costs) or ("remove" in cost.casefold() and "counter" in cost.casefold() and not counter_cost) or (waterbend_symbol and selection_costs)
-        if unsupported or (not taps and not mana_cost and not waterbend_symbol and not energy_cost and not self_sacrifice and not life_cost and not counter_cost and not selection_costs):continue
+        if unsupported or (not taps and not mana_cost and not waterbend_symbol and not energy_cost and not self_sacrifice and not self_bottom and not life_cost and not counter_cost and not selection_costs):continue
         if re.match(r"add (?:\{|one mana)", effect, re.IGNORECASE): continue
         adapt=re.search(r"\badapt (\d+)\b",effect,re.IGNORECASE);monstrosity=re.search(r"\bmonstrosity (X|\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b",effect,re.IGNORECASE);words_amount={"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10};mechanic="adapt" if adapt else "monstrosity" if monstrosity else None;amount=int(adapt.group(1)) if adapt else (monstrosity.group(1).upper() if monstrosity and monstrosity.group(1).upper()=="X" else words_amount.get(monstrosity.group(1).casefold(),int(monstrosity.group(1)) if monstrosity and monstrosity.group(1).isdigit() else 0) if monstrosity else 0)
         if mechanic=="monstrosity" and "where x is the result" in effect.casefold():amount="D8"
@@ -1026,7 +1027,7 @@ def _activated_abilities(card: dict) -> list[dict]:
         ability_card = {**card, "name": f"{card['name']} ability", "oracle_text": effect, "source_type_line":card.get("type_line",""),"source_mana_cost":card.get("mana_cost",""), "type_line": "Ability", "mana_cost": ""}
         if mechanic:ability_card.update({"growth_mechanic":mechanic,"growth_amount":amount})
         lower_effect=effect.casefold();restrictions={"sorcery":bool(re.search(r"activate (?:this ability )?only (?:as a sorcery|any time you could cast a sorcery)",lower_effect)),"your_turn":bool(re.search(r"activate (?:this ability )?only during your turn",lower_effect)),"opponent_turn":bool(re.search(r"activate (?:this ability )?only during an opponent's turn",lower_effect)),"combat":bool(re.search(r"activate (?:this ability )?only during combat",lower_effect)),"before_attackers":bool(re.search(r"activate (?:this ability )?only before attackers are declared",lower_effect)),"upkeep":bool(re.search(r"activate (?:this ability )?only during your upkeep",lower_effect)),"end_step":bool(re.search(r"activate (?:this ability )?only during your end step",lower_effect)),"once_each_turn":bool(re.search(r"activate (?:this ability )?(?:only |no more than )?once (?:each|per) turn",lower_effect)),"once":bool(re.search(r"activate (?:this ability )?only once(?:\.|$)",lower_effect))}
-        abilities.append({"cost":cost,"mana_cost":mana_cost,"waterbend_symbol":waterbend_symbol,"energy_cost":energy_cost,"taps":taps,"self_sacrifice":self_sacrifice,"life_cost":life_cost,"counter_cost":counter_cost,"selection_cost":selection_costs[0] if len(selection_costs)==1 else None,"selection_costs":selection_costs,"restrictions":restrictions,"effect":effect,"card":ability_card})
+        abilities.append({"cost":cost,"mana_cost":mana_cost,"waterbend_symbol":waterbend_symbol,"energy_cost":energy_cost,"taps":taps,"self_sacrifice":self_sacrifice,"self_bottom":self_bottom,"life_cost":life_cost,"counter_cost":counter_cost,"selection_cost":selection_costs[0] if len(selection_costs)==1 else None,"selection_costs":selection_costs,"restrictions":restrictions,"effect":effect,"card":ability_card})
     return abilities
 
 
@@ -2387,6 +2388,8 @@ def _resolve_spell(state: dict) -> None:
     target_stack_item = next((entry for entry in state["stack"] if entry["id"] == target_id), None)
     graveyard_owner=next((player for player in state["players"] if any(graveyard_card["instance_id"]==target_id for graveyard_card in player["graveyard"])),None)
     graveyard_target=next((graveyard_card for player in state["players"] for graveyard_card in player["graveyard"] if graveyard_card["instance_id"]==target_id),None)
+    if "take an extra turn after this one" in effect_text:
+        state.setdefault("extra_turns",[]).append(caster["id"]);_log(state,f"{caster['name']} will take an extra turn after this one.");return
     if "reveal the top card of your library and put that card into your hand" in effect_text and "where x is that card's mana value" in effect_text:
         if caster["library"]:
             revealed=caster["library"].pop();caster["hand"].append(revealed);amount=int(revealed.get("mana_value") or 0)
@@ -3350,7 +3353,7 @@ def _state_based_actions(state: dict) -> None:
 
 def _begin_next_turn(state:dict)->None:
     previous_active=_player(state,state["active_player_id"]);previous_spells=previous_active.get("spells_cast_this_turn",0) if previous_active.get("cast_event_turn")==state["turn"] else 0
-    state["pending_discard"]=None;state["turn"] += 1; state["phase"] = PHASES[0];state["beginning_draw_pending"]=True; state["active_player_id"] = opponent(state, state["active_player_id"])["id"]
+    state["pending_discard"]=None;state["turn"] += 1; state["phase"] = PHASES[0];state["beginning_draw_pending"]=True;state["active_player_id"]=(state.get("extra_turns") or []).pop() if state.get("extra_turns") else opponent(state,state["active_player_id"])["id"]
     active = _player(state, state["active_player_id"]);active["lands_played_this_turn"]=0;_refresh_land_plays(state,active)
     echo_due=[card for card in active["battlefield"] if card.get("echo_due_controller_id")==active["id"]]
     if echo_due:
@@ -3880,6 +3883,8 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
             elif card["instance_id"] in sacrifice_ids and card in player["battlefield"]:sacrifice_cards.append(card)
         _discard_cards(state,player,discard_cards)
         _sacrifice_permanents(state,player,list({card["instance_id"]:card for card in sacrifice_cards}.values()))
+        if ability.get("self_bottom") and permanent in player["battlefield"]:
+            _leave_battlefield(state,player,permanent,"library");owner=_player(state,permanent.get("owner_id",player["id"]));owner["library"].remove(permanent);owner["library"].insert(0,permanent)
         if (_multiplayer(state) or not allow_direct_resolution) and not state.get("pending_ward") and not state.get("pending_trigger_targets"):state["priority_player_id"]=opponent(state,player_id)["id"]
         _log(state,f"{player['name']} activated {permanent['name']}: {ability['effect']}")
     elif action_type == "activate_loyalty":
