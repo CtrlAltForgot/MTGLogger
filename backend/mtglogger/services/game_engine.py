@@ -1950,6 +1950,8 @@ def _target_kind(card: dict) -> str | None:
     if re.search(r"counter target (?:spell or (?:activated or triggered )?ability|spell or ability)",text):return "stack"
     if re.search(r"counter target (?:activated or triggered|activated|triggered) ability",text):return "ability"
     if re.search(r"counter target (?:noncreature |sorcery )?spell",text):return "spell"
+    if re.search(r"return target spell to its owner'?s hand",text):return "spell"
+    if re.search(r"copy target (?:activated or triggered|activated|triggered) ability",text):return "ability"
     if "copy target spell" in text:return "spell"
     if re.search(r"\bairbend (?:up to one )?target creature or spell\b",text):return "creature_or_spell"
     if re.search(r"\bairbend (?:up to one )?target spell\b",text):return "spell"
@@ -2038,9 +2040,11 @@ def _targets(state: dict, caster_id: str, card: dict, ignore_target_protection:b
         def allowed(item:dict)->bool:
             is_spell=item.get("kind","spell")=="spell"
             controlled_copy="copy target spell you control" in text
+            controlled_ability=bool(re.search(r"copy target (?:activated or triggered|activated|triggered) ability you control",text))
             sorcery_only="target sorcery spell" in text
             noncreature_only="target noncreature spell" in text
-            return (kind=="stack" or (kind=="spell" and is_spell) or (kind=="ability" and not is_spell)) and (not sorcery_only or "Sorcery" in item.get("card",{}).get("type_line","")) and (not noncreature_only or "Creature" not in item.get("card",{}).get("type_line","")) and (not controlled_copy or item.get("controller_id")==caster_id)
+            value_limit=re.search(r"mana value (\d+) or less",text);source=next((permanent for owner in state["players"] for permanent in owner["battlefield"] if permanent["instance_id"]==item.get("source_id")),None);source_type=(source or item.get("card",{})).get("source_type_line") or (source or item.get("card",{})).get("type_line","");noncreature_source="from a noncreature source" in text
+            return (kind=="stack" or (kind=="spell" and is_spell) or (kind=="ability" and not is_spell)) and (not sorcery_only or "Sorcery" in item.get("card",{}).get("type_line","")) and (not noncreature_only or "Creature" not in item.get("card",{}).get("type_line","")) and (not controlled_copy or item.get("controller_id")==caster_id) and (not controlled_ability or item.get("controller_id")==caster_id) and (not value_limit or float(item.get("card",{}).get("mana_value") or 0)<=int(value_limit.group(1))) and (not noncreature_source or "Creature" not in source_type)
         return [{"id":item["id"],"name":item["card"]["name"],"kind":"spell" if item.get("kind","spell")=="spell" else "ability","controller_id":item["controller_id"]} for item in state["stack"] if allowed(item) and not ("you don't control" in text and item["controller_id"]==caster_id)]
     if kind == "creature_or_spell":
         targets=[{"id":item["id"],"name":item["card"]["name"],"kind":"spell","controller_id":item["controller_id"]} for item in state["stack"]]
@@ -3152,7 +3156,9 @@ def _resolve_spell(state: dict) -> None:
     if "copy target spell you control" in effect_text:
         original=next((stack_item for stack_item in state["stack"] if stack_item["id"]==target_id and stack_item.get("controller_id")==caster["id"] and stack_item.get("kind","spell")=="spell"),None)
         if original:_copy_stack_item(state,caster,original);_log(state,f"{caster['name']} copied {original['card']['name']}.")
-        return
+    if re.search(r"copy target (?:activated or triggered|activated|triggered) ability",effect_text):
+        original=next((stack_item for stack_item in state["stack"] if stack_item["id"]==target_id and stack_item.get("kind","spell")!="spell"),None)
+        if original:_copy_stack_item(state,caster,original);_log(state,f"{caster['name']} copied {original['card']['name']}; its existing targets were retained.")
     if "if you had a land enter" in effect_text:effect_text=_landfall_spell_effect(effect_text,caster.get("land_entered_turn")==state.get("turn"))
     if item.get("kind")=="trigger" and re.search(r"\b(?:first|second|third|fourth) time(?: this ability has resolved)? this turn\b",effect_text):
         usage=state.setdefault("trigger_resolution_usage",{});key=f"{item.get('source_id')}:{card.get('oracle_text','')}";record=usage.get(key,{})
@@ -3778,6 +3784,13 @@ def _resolve_spell(state: dict) -> None:
     elif re.search(r"(?:then |you )?discard (?:a|one|two|three|four|\d+) cards?",effect_text):
         match=re.search(r"discard (a|one|two|three|four|\d+) cards?",effect_text);word=match.group(1);words={"a":1,"one":1,"two":2,"three":3,"four":4};amount=words.get(word,int(word) if word.isdigit() else 1);required=min(amount,len(caster["hand"]))
         if required:state["pending_discard"]={"player_id":caster["id"],"amount":required,"reason":"effect"};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} must discard {required} card(s).")
+    if target_stack_item and target_kind=="spell" and re.search(r"return target spell to its owner'?s hand",effect_text):
+        state["stack"].remove(target_stack_item);returned=target_stack_item["card"]
+        if target_stack_item.get("kind")=="storm_copy" or returned.get("token"):_log(state,f"The copy of {returned['name']} ceased to exist instead of returning to a hand.")
+        else:
+            owner=_player(state,returned.get("owner_id",target_stack_item["controller_id"]));_restore_face_down_identity(returned)
+            if returned.get("card_faces"):_set_card_face(returned,0)
+            returned["controller_id"]=owner["id"];owner["hand"].append(returned);_log(state,f"{returned['name']} returned from the stack to its owner's hand.")
     if target_stack_item and target_kind in {"spell","ability","stack"} and "counter target" in effect_text:
         unless_pay=re.search(r"counter target spell unless its controller pays ((?:\{[^}]+\})+)",effect_text)
         if not _stack_item_can_be_countered(state,target_stack_item):
