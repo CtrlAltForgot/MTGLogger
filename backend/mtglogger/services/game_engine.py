@@ -167,7 +167,8 @@ def _continuous_stats(state:dict|None,card:dict)->tuple[int,int]:
             clauses=re.split(r"(?<=[.!])\s+|\n",_active_level_text(source))
             for clause in clauses:
                 lower=clause.casefold()
-                if ":" in clause or "until end of turn" in lower or "as long as" in lower or re.match(r"\s*(?:when|whenever|if)\b",lower):continue
+                blessing_static="as long as you have the city's blessing" in lower and owner.get("city_blessing")
+                if ":" in clause or "until end of turn" in lower or ("as long as" in lower and not blessing_static) or re.match(r"\s*(?:when|whenever|if)\b",lower):continue
                 for match in re.finditer(r"\b(other )?((?:[a-z]+ )?creatures|creature tokens) (you|your opponents) control get ([+-]\d+)/([+-]\d+)",clause,re.IGNORECASE):
                     other,group,scope=bool(match.group(1)),match.group(2).casefold(),match.group(3).casefold();source_controller=source.get("controller_id",owner["id"])
                     if other and source["instance_id"]==card.get("instance_id"):continue
@@ -176,6 +177,8 @@ def _continuous_stats(state:dict|None,card:dict)->tuple[int,int]:
                     qualifier=group.removesuffix(" creatures")
                     if qualifier not in {"creature","creatures"} and group!="creature tokens" and qualifier not in type_line:continue
                     power+=int(match.group(4));toughness+=int(match.group(5))
+                subtype_bonus=re.search(r"\b(other )?([A-Za-z][A-Za-z'-]+)s you control get ([+-]\d+)/([+-]\d+)",clause,re.IGNORECASE)
+                if subtype_bonus and subtype_bonus.group(2).casefold() not in {"creature","artifact","enchantment","permanent","token"} and controller==source.get("controller_id",owner["id"]) and (not subtype_bonus.group(1) or source.get("instance_id")!=card.get("instance_id")) and re.search(rf"\b{re.escape(subtype_bonus.group(2))}\b",type_line,re.IGNORECASE):power+=int(subtype_bonus.group(3));toughness+=int(subtype_bonus.group(4))
     return power,toughness
 
 
@@ -698,7 +701,9 @@ def _aura_allowed_types(card:dict)->set[str]:
 
 def _effective_rules_text(state:dict,card:dict)->str:
     attachment_texts=[attachment.get("oracle_text") or "" for owner in state["players"] for attachment in owner["battlefield"] if attachment.get("attached_to")==card.get("instance_id")]
-    return "\n".join([_active_level_text(card),*(card.get("temporary_backup_rules") or []),*attachment_texts]).casefold()
+    text="\n".join([_active_level_text(card),*(card.get("temporary_backup_rules") or []),*attachment_texts]);blessed=_player(state,card.get("controller_id",card.get("owner_id"))).get("city_blessing")
+    clauses=re.split(r"(?<=[.!])\s+|\n",text);visible=[clause for clause in clauses if blessed or "city's blessing" not in clause.casefold() or "unless you have the city's blessing" in clause.casefold()]
+    return "\n".join(visible).casefold()
 
 
 def _can_attack(state:dict,card:dict,attacker:dict,defender:dict)->bool:
@@ -727,9 +732,11 @@ def _can_block_pair(state:dict,attacker:dict,blocker:dict)->bool:
     elif conditional:return False
     if "can't block" in blocker_text and "can't attack or block alone" not in blocker_text and "can't attack or block unless" not in blocker_text and "can't block or be blocked by non-spirit creatures" not in blocker_text:return False
     if "can't be blocked" in attacker_text or "unblockable" in attacker_text:return False
+    attacker_controller=_player(state,attacker.get("controller_id"));attacker_type=attacker.get("type_line","").casefold()
+    if attacker_controller.get("city_blessing") and any("detectives you control can't be blocked" in (source.get("oracle_text") or "").casefold() for source in attacker_controller["battlefield"]) and "detective" in attacker_type:return False
     if "can't be blocked by non-spirit creatures" in attacker_text and "spirit" not in blocker.get("type_line","").casefold():return False
     if "can't block or be blocked by non-spirit creatures" in blocker_text and "spirit" not in attacker.get("type_line","").casefold():return False
-    attacker_controller=_player(state,attacker.get("controller_id"));defender=opponent(state,attacker_controller["id"]);defender_lands=[card for card in defender["battlefield"] if "Land" in card.get("type_line","")]
+    defender=opponent(state,attacker_controller["id"]);defender_lands=[card for card in defender["battlefield"] if "Land" in card.get("type_line","")]
     global_text="\n".join(card.get("oracle_text") or "" for owner in state["players"] for card in owner["battlefield"]).casefold()
     for kind in ("plains","island","swamp","mountain","forest","desert"):
         if re.search(rf"\b{kind}walk\b",attacker_text) and (any(re.search(rf"\b{kind}\b",land.get("type_line",""),re.IGNORECASE) for land in defender_lands) or f"all lands are {kind}s" in global_text):return False
@@ -3150,8 +3157,10 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
             elif event in {"earthbend","waterbend","firebend","airbend"}:
                 multi_bend="whenever you waterbend, earthbend, firebend, or airbend" in lower
                 matches=owner["id"]==event_owner["id"] and (f"whenever you {event}" in lower or multi_bend)
+            if matches and "if you have the city's blessing" in lower and not owner.get("city_blessing"):continue
             if not matches or "," not in clause: continue
             effect = clause.split(",", 1)[1].strip()
+            if owner.get("city_blessing"):effect=re.sub(r"^if you have the city's blessing,\s*","",effect,flags=re.IGNORECASE)
             if event=="enters":
                 etb_effect_boundary=re.search(r",\s*(?=(?:you\b|put\b|create\b|draw\b|each\b|target\b|this\b|that\b|it\b|its\b|gain\b|tap\b|untap\b|exile\b|investigate\b|proliferate\b|scry\b|mill\b|add\b|amass\b|venture\b|return\b|search\b|[a-z0-9' -]+ deals?\b))",clause,re.IGNORECASE)
                 if etb_effect_boundary:effect=clause[etb_effect_boundary.end():].strip()
