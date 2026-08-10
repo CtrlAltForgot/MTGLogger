@@ -593,7 +593,7 @@ def _mana_requirements(card: dict, extra_generic: int = 0, x_value:int=0) -> tup
 
 def _has_keyword(card: dict, keyword: str) -> bool:
     if keyword.casefold() in {value.casefold() for value in card.get("temporary_removed_keywords",[])}:return False
-    printed={value.casefold() for value in card.get("keywords", [])};temporary={value.casefold() for value in card.get("temporary_keywords", [])};continuous={value.casefold() for value in card.get("continuous_keywords", [])};attached={value.casefold() for values in card.get("attachment_keywords",{}).values() for value in values};counter_keywords={name.casefold() for name,amount in card.get("counters",{}).items() if amount>0}
+    printed={value.casefold() for value in card.get("keywords", [])};temporary={value.casefold() for value in card.get("temporary_keywords", [])};until_next_turn={value.casefold() for value in card.get("until_next_turn_keywords", [])};continuous={value.casefold() for value in card.get("continuous_keywords", [])};attached={value.casefold() for values in card.get("attachment_keywords",{}).values() for value in values};counter_keywords={name.casefold() for name,amount in card.get("counters",{}).items() if amount>0}
     _,level_sections=_level_sections(card)
     if level_sections and any(re.search(rf"\b{re.escape(keyword)}\b","\n".join(lines),re.IGNORECASE) for _,_,lines in level_sections):printed.discard(keyword.casefold())
     lower_keyword=keyword.casefold();raw_text=card.get("oracle_text") or "";speed_conditional=[line for line in raw_text.splitlines() if re.match(r"^\s*Max speed\s*[—-]",line,re.IGNORECASE)];text=_active_level_text(card).casefold();conditional=[clause for clause in re.split(r"(?<=[.!])\s+|\n",text) if "as long as this creature is monstrous" in clause];blessing_conditional=[clause for clause in re.split(r"(?<=[.!])\s+|\n",text) if "city's blessing" in clause];unconditional="\n".join(clause for clause in re.split(r"(?<=[.!])\s+|\n",text) if clause not in conditional and clause not in blessing_conditional)
@@ -608,7 +608,7 @@ def _has_keyword(card: dict, keyword: str) -> bool:
     monstrous_match=card.get("monstrous") and any(re.search(rf"\b{re.escape(lower_keyword)}\b",clause) for clause in conditional)
     blessing_match=card.get("controller_city_blessing") and any(re.search(rf"\b{re.escape(lower_keyword)}\b",clause) for clause in blessing_conditional)
     self_excluded=re.search(rf"\bother [^.\n]+ you control (?:have|gain) [^.\n]*\b{re.escape(lower_keyword)}\b",unconditional) is not None
-    return lower_keyword in printed|temporary|continuous|attached|counter_keywords or (lower_keyword=="haste" and bool(card.get("earthbent") or card.get("suspend_haste"))) or bool(monstrous_match) or bool(blessing_match) or (not self_excluded and re.search(rf"\b{re.escape(lower_keyword)}\b",unconditional) is not None)
+    return lower_keyword in printed|temporary|until_next_turn|continuous|attached|counter_keywords or (lower_keyword=="haste" and bool(card.get("earthbent") or card.get("suspend_haste"))) or bool(monstrous_match) or bool(blessing_match) or (not self_excluded and re.search(rf"\b{re.escape(lower_keyword)}\b",unconditional) is not None)
 
 
 def _attachment_keywords(card:dict)->list[str]:
@@ -3950,6 +3950,12 @@ def _resolve_spell(state: dict) -> None:
         supported=("flying","first strike","double strike","deathtouch","haste","hexproof","indestructible","lifelink","menace","reach","trample","vigilance");gained={keyword for keyword in supported if re.search(rf"\b{re.escape(keyword)}\b",team_keywords.group(1))}
         for permanent in caster["battlefield"]:
             if "Creature" in permanent.get("type_line",""):permanent["temporary_keywords"]=sorted(set(permanent.get("temporary_keywords",[]))|gained)
+    until_next_turn=re.search(r"(humans) you control gain ([^.]+?) until your next turn",effect_text)
+    if until_next_turn:
+        supported=("flying","first strike","double strike","deathtouch","haste","hexproof","indestructible","lifelink","menace","reach","trample","vigilance");gained={keyword.title() for keyword in supported if re.search(rf"\b{re.escape(keyword)}\b",until_next_turn.group(2))};affected=[]
+        for permanent in caster["battlefield"]:
+            if "Creature" in permanent.get("type_line","") and re.search(r"\bHuman\b",permanent.get("type_line",""),re.IGNORECASE):permanent["until_next_turn_keywords"]=sorted(set(permanent.get("until_next_turn_keywords",[]))|gained);permanent["until_next_turn_player_id"]=caster["id"];affected.append(permanent)
+        _log(state,f"{len(affected)} Human creature(s) gained {', '.join(sorted(gained))} until {caster['name']}'s next turn.")
     global_keywords=re.search(r"all creatures gain ([^.]+?) until end of turn",effect_text)
     if global_keywords:
         supported=("flying","first strike","double strike","deathtouch","haste","hexproof","indestructible","lifelink","menace","reach","trample","vigilance");gained={keyword for keyword in supported if re.search(rf"\b{re.escape(keyword)}\b",global_keywords.group(1))}
@@ -4143,7 +4149,7 @@ def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str, t
             else:zone_owner[destination].append(component)
             _queue_commander_zone_choice(state,zone_owner,component,destination)
         return
-    card["damage"] = 0; card["tapped"] = False;card.pop("escaped",None);card.pop("disturbed",None);card.pop("evoked",None);card.pop("echo_due_controller_id",None);card.pop("dashed",None);card.pop("dash_return_triggered",None);card.pop("deathtouch_damage",None);card.pop("crewed_turn",None);card.pop("temporary_control_return_to",None);card.pop("control_while_source_id",None);card.pop("control_return_to_id",None);card.pop("activated_ability_usage",None);card.pop("temporary_power",None);card.pop("temporary_toughness",None);card.pop("temporary_base_power",None);card.pop("temporary_base_toughness",None);card.pop("temporary_keywords",None);card.pop("temporary_removed_keywords",None);card.pop("temporary_backup_rules",None);card.pop("temporary_protection_colors",None);card.pop("unearthed",None);card.pop("unearth_controller_id",None);card.pop("unearth_end_triggered",None);card.pop("populate_sacrifice_turn",None);card.pop("monstrous",None);card.pop("monstrosity_value",None)
+    card["damage"] = 0; card["tapped"] = False;card.pop("escaped",None);card.pop("disturbed",None);card.pop("evoked",None);card.pop("echo_due_controller_id",None);card.pop("dashed",None);card.pop("dash_return_triggered",None);card.pop("deathtouch_damage",None);card.pop("crewed_turn",None);card.pop("temporary_control_return_to",None);card.pop("control_while_source_id",None);card.pop("control_return_to_id",None);card.pop("activated_ability_usage",None);card.pop("temporary_power",None);card.pop("temporary_toughness",None);card.pop("temporary_base_power",None);card.pop("temporary_base_toughness",None);card.pop("temporary_keywords",None);card.pop("until_next_turn_keywords",None);card.pop("until_next_turn_player_id",None);card.pop("temporary_removed_keywords",None);card.pop("temporary_backup_rules",None);card.pop("temporary_protection_colors",None);card.pop("unearthed",None);card.pop("unearth_controller_id",None);card.pop("unearth_end_triggered",None);card.pop("populate_sacrifice_turn",None);card.pop("monstrous",None);card.pop("monstrosity_value",None)
     card.pop("damage_prevention",None);card.pop("damage_source_ids_turn",None)
     if card.get("face_down"):
         values=card.pop("face_down_values",{})
@@ -4949,6 +4955,9 @@ def _begin_next_turn(state:dict)->None:
     previous_active=_player(state,state["active_player_id"]);previous_spells=previous_active.get("spells_cast_this_turn",0) if previous_active.get("cast_event_turn")==state["turn"] else 0
     state["pending_discard"]=None;state["turn"] += 1; state["phase"] = PHASES[0];state["beginning_draw_pending"]=True;state["active_player_id"]=(state.get("extra_turns") or []).pop() if state.get("extra_turns") else opponent(state,state["active_player_id"])["id"]
     active = _player(state, state["active_player_id"]);active["lands_played_this_turn"]=0;_refresh_land_plays(state,active)
+    for owner in state["players"]:
+        for permanent in owner["battlefield"]:
+            if permanent.get("until_next_turn_player_id")==active["id"]:permanent.pop("until_next_turn_keywords",None);permanent.pop("until_next_turn_player_id",None)
     echo_due=[card for card in active["battlefield"] if card.get("echo_due_controller_id")==active["id"]]
     if echo_due:
         state["pending_echo"]=[{"player_id":active["id"],"card_id":card["instance_id"],"card_name":card["name"]} for card in echo_due]
