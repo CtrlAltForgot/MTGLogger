@@ -489,6 +489,9 @@ def _mana_pools(effect: str) -> list[tuple[int, ...]]:
 def _mana_source_options(card: dict) -> list[dict]:
     """Pair every usable mana output with the costs of that exact ability."""
     type_line=card.get("type_line","");text=_active_level_text(card);options=[]
+    if "for each color among the exiled cards used to craft this creature, add one mana of that color" in text.casefold():
+        colors={color for material in card.get("crafted_with_cards",[]) for color in (material.get("colors") or []) if color in "WUBRG"}
+        if colors:options.append({"pool":tuple(1 if color in colors else 0 for color in _MANA_COLORS),"taps":True,"life_cost":0,"self_sacrifice":False})
     for line in text.splitlines():
         match=re.match(r"^([^:]+):\s*(Add [^.\n]+)",line.strip(),re.IGNORECASE)
         if not match:continue
@@ -2069,6 +2072,7 @@ def _target_kind(card: dict) -> str | None:
     if re.search(r"target artifact\b",text):return "artifact"
     if "target creature or planeswalker" in text:return "creature_or_planeswalker"
     if "target creature or vehicle" in text:return "creature_or_vehicle"
+    if re.search(r"attach it to target creature you control",text):return "creature"
     if re.search(r"role token attached to target creature",text):return "creature"
     if re.search(r"target (?:player|opponent) mills?", text): return "player"
     if "target opponent's library" in text:return "player"
@@ -3429,7 +3433,9 @@ def _resolve_spell(state: dict) -> None:
     target_player = next((player for player in state["players"] if player["id"] == target_id), None)
     target_owner = next((player for player in state["players"] if any(permanent["instance_id"] == target_id for permanent in player["battlefield"])), None)
     target = next((permanent for player in state["players"] for permanent in player["battlefield"] if permanent["instance_id"] == target_id), None)
-    if target and target_owner and re.search(r"put target (?:artifact, creature, or enchantment|nonland permanent) on (?:the )?(bottom|top) of its owner's library",effect_text):
+    if target and source_permanent and "attach it to target creature you control" in effect_text:
+        _attach(state,source_permanent,target);_log(state,f"{source_permanent['name']} attached to {target['name']} as its enter trigger resolved.");effect_text=""
+    elif target and target_owner and re.search(r"put target (?:artifact, creature, or enchantment|nonland permanent) on (?:the )?(bottom|top) of its owner's library",effect_text):
         destination="bottom" if "bottom" in effect_text else "top";zone_owner=_player(state,target.get("owner_id",target_owner["id"]));_leave_battlefield(state,target_owner,target,"library")
         if destination=="bottom":zone_owner["library"].remove(target);zone_owner["library"].insert(0,target)
         _log(state,f"{target['name']} was put on the {destination} of its owner's library.");effect_text=""
@@ -4771,7 +4777,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 is_creature="creature" in type_line;is_land="land" in type_line;is_artifact="artifact" in type_line;is_enchantment="enchantment" in type_line;is_token=bool(event_card.get("token"));is_permanent=any(kind in type_line for kind in ("artifact","battle","creature","enchantment","land","planeswalker"))
                 kind_ok=(("token" in condition and is_token) or ("creature" in condition and is_creature) or ("land" in condition and is_land) or ("artifact" in condition and is_artifact) or ("enchantment" in condition and is_enchantment) or ("permanent" in condition and is_permanent))
                 kind_ok=kind_ok and not (("nontoken" in condition and is_token) or ("noncreature" in condition and is_creature) or ("nonland" in condition and is_land) or ("artifact creature" in condition and not (is_artifact and is_creature)))
-                source_name=(source.get("name") or "").casefold();short_source_name=source_name.split(",",1)[0];first_name=source_name.split()[0] if source_name else "";named_first=bool(first_name and re.search(rf"\bwhen {re.escape(first_name)} enters\b",condition));self_reference="this creature" in condition or "this spacecraft" in condition or "this token" in condition or "this permanent" in condition or "this artifact" in condition or "this enchantment" in condition or "this land" in condition or bool(source_name and source_name in condition) or bool(short_source_name and short_source_name in condition) or named_first;self_enters=source is event_card and self_reference and "enter" in condition
+                source_name=(source.get("name") or "").casefold();short_source_name=source_name.split(",",1)[0];first_name=source_name.split()[0] if source_name else "";named_first=bool(first_name and re.search(rf"\bwhen {re.escape(first_name)} enters\b",condition));self_reference="this creature" in condition or "this equipment" in condition or "this spacecraft" in condition or "this token" in condition or "this permanent" in condition or "this artifact" in condition or "this enchantment" in condition or "this land" in condition or bool(source_name and source_name in condition) or bool(short_source_name and short_source_name in condition) or named_first;self_enters=source is event_card and self_reference and "enter" in condition
                 kind_ok=kind_ok or self_enters
                 controlled_scope=("you control" in condition or "under your control" in condition) and under_control;owned_scope="you own" in condition and owned;opponent_scope=("opponent controls" in condition or "opponents control" in condition or "under an opponent's control" in condition) and not under_control;enchanted_scope="enchanted player controls" in condition and source.get("attached_to")==event_card.get("controller_id")
                 global_scope=not self_reference and not any(phrase in condition for phrase in ("you control","under your control","you own","opponent controls","opponents control","under an opponent's control","enchanted player controls"))
