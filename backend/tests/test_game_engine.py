@@ -1295,6 +1295,11 @@ def test_landfall_base_stats_power_and_counter_doubling():
     hydra={**card(875,"Mossborn Hydra","Creature — Hydra","","0","0"),"oracle_text":"Trample\nThis creature enters with a +1/+1 counter on it.\nLandfall — Whenever a land you control enters, double the number of +1/+1 counters on this creature.","instance_id":"mossborn","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{"+1/+1":3},"summoning_sick":False};_,changed=resolve_landfall(hydra);assert changed["counters"]["+1/+1"]==6
 
 
+def test_landfall_can_trigger_and_return_its_source_from_graveyard():
+    state=kept_game();player=next(p for p in state["players"] if p["id"]=="player");bloodghast={**card(876,"Bloodghast","Creature — Vampire Spirit","","2","1"),"oracle_text":"This creature can't block.\nLandfall — Whenever a land you control enters, you may return this card from your graveyard to the battlefield.","instance_id":"bloodghast","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False};player["graveyard"].append(bloodghast);land={**card(877,"Return Land","Basic Land — Swamp"),"instance_id":"return-landfall","owner_id":"player","controller_id":"player"};_enter_battlefield(state,player,[land],"hand");assert state["stack"][-1]["source_id"]=="bloodghast"
+    state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");returned=next(card for card in player["battlefield"] if card["instance_id"]=="bloodghast");assert returned["summoning_sick"] and not any(card["instance_id"]=="bloodghast" for card in player["graveyard"])
+
+
 def test_attack_triggers_count_attackers_once_or_individually_and_choose_targets():
     state=kept_game();state=perform_action(state,"player",{"type":"advance_phase"});state=perform_action(state,"player",{"type":"advance_phase"});player=next(p for p in state["players"] if p["id"]=="player");bot=next(p for p in state["players"] if p["id"]=="bot")
     banner={**card(830,"Battle Banner","Enchantment"),"oracle_text":"Whenever one or more creatures you control attack, you gain 1 life.","instance_id":"battle-banner","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False}

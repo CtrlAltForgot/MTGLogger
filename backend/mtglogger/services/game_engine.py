@@ -2436,7 +2436,7 @@ def _resolve_spell(state: dict) -> None:
     target_player = next((player for player in state["players"] if player["id"] == target_id), None)
     target_owner = next((player for player in state["players"] if any(permanent["instance_id"] == target_id for permanent in player["battlefield"])), None)
     target = next((permanent for player in state["players"] for permanent in player["battlefield"] if permanent["instance_id"] == target_id), None)
-    event_permanent=next((permanent for player in state["players"] for permanent in player["battlefield"] if permanent["instance_id"]==item.get("event_card_id")),None);event_controller=_player(state,item.get("event_owner_id")) if item.get("event_owner_id") else _player(state,event_permanent.get("controller_id")) if event_permanent else None
+    event_permanent=next((permanent for player in state["players"] for permanent in player["battlefield"] if permanent["instance_id"]==item.get("event_card_id")),None);event_controller=_player(state,item.get("event_owner_id")) if item.get("event_owner_id") else _player(state,event_permanent.get("controller_id")) if event_permanent else None;source_graveyard=next((graveyard_card for graveyard_card in caster["graveyard"] if graveyard_card["instance_id"]==item.get("source_id")),None)
     target_stack_item = next((entry for entry in state["stack"] if entry["id"] == target_id), None)
     graveyard_owner=next((player for player in state["players"] if any(graveyard_card["instance_id"]==target_id for graveyard_card in player["graveyard"])),None)
     graveyard_target=next((graveyard_card for player in state["players"] for graveyard_card in player["graveyard"] if graveyard_card["instance_id"]==target_id),None)
@@ -2456,6 +2456,8 @@ def _resolve_spell(state: dict) -> None:
         token=deepcopy(source_permanent);token["instance_id"]=_id();token["owner_id"]=caster["id"];token["controller_id"]=caster["id"];token["token"]=True;token["damage"]=0;token["counters"]={};token["tapped"]=False;token["summoning_sick"]=True
         for key in ("attached_to","attachment_keywords","attachment_rules","temporary_power","temporary_toughness","temporary_keywords","temporary_backup_rules","deathtouch_damage","activated_ability_usage","entered_turn"):token.pop(key,None)
         _enter_battlefield(state,caster,[token],"token");_log(state,f"{caster['name']} created a token copy of {source_permanent['name']}.");return
+    if source_graveyard and re.search(r"you may return this card from your graveyard to the battlefield",effect_text):
+        _leave_graveyard(state,caster,[source_graveyard]);source_graveyard["controller_id"]=caster["id"];source_graveyard["summoning_sick"]=True;_enter_battlefield(state,caster,[source_graveyard],"graveyard");_log(state,f"{source_graveyard['name']} returned from {caster['name']}'s graveyard.");return
     if "reveal the top card of your library and put that card into your hand" in effect_text and "where x is that card's mana value" in effect_text:
         if caster["library"]:
             revealed=caster["library"].pop();caster["hand"].append(revealed);amount=int(revealed.get("mana_value") or 0)
@@ -2952,6 +2954,7 @@ def _enter_battlefield(state:dict,controller:dict,cards:list[dict],origin:str="e
     if any("you may play an additional land on each of your turns" in (card.get("oracle_text") or "").casefold() for card in entering):_refresh_land_plays(state,controller)
     _sync_city_blessing(state)
     ordered_owners=sorted(state["players"],key=lambda owner:owner["id"]!=state.get("active_player_id"));sources=[(owner,permanent) for owner in ordered_owners for permanent in owner["battlefield"]]
+    if any("Land" in card.get("type_line","") for card in entering):sources.extend((owner,card) for owner in ordered_owners for card in owner["graveyard"] if re.search(r"landfall\s*[—-].*whenever a land[^.]+enters[^,]*,\s*you may return this card from your graveyard to the battlefield",(card.get("oracle_text") or "").replace("\n"," "),re.IGNORECASE))
     for card in entering:_queue_triggers(state,"enters",card,controller,dedupe,sources)
     for card in entering:
         targets=[{"id":candidate["instance_id"],"name":candidate["name"],"kind":"permanent","controller_id":candidate.get("controller_id",controller["id"])} for owner in state["players"] for candidate in owner["battlefield"] if "Creature" in candidate.get("type_line","")]
@@ -3112,6 +3115,8 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
         event_owner["bent_this_turn"]=sorted(set(event_owner.get("bent_this_turn",[]))|{event})
     ordered_owners=sorted(state["players"],key=lambda owner:owner["id"]!=state.get("active_player_id"))
     sources = list(sources_override) if sources_override is not None else [(owner, permanent) for owner in ordered_owners for permanent in owner["battlefield"]]
+    if sources_override is None and event=="enters" and event_card and "Land" in event_card.get("type_line",""):
+        sources.extend((owner,card) for owner in ordered_owners for card in owner["graveyard"] if re.search(r"landfall\s*[—-].*whenever a land[^.]+enters[^,]*,\s*you may return this card from your graveyard to the battlefield",(card.get("oracle_text") or "").replace("\n"," "),re.IGNORECASE))
     if event=="upkeep":
         for owner,permanent in sources:
             if permanent.pop("transform_next_upkeep",False):_transform(state,permanent)
