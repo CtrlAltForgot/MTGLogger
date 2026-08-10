@@ -3152,6 +3152,10 @@ def _resolve_spell(state: dict) -> None:
     effect_text = "" if is_permanent_spell and re.search(r"\b(?:when|whenever|at the beginning)\b", text) else text
     if re.search(r"create \d+ map tokens?, where \d+ is one plus the number of opponents who control an artifact",effect_text):
         map_count=1+sum(any("Artifact" in permanent.get("type_line","") for permanent in owner["battlefield"]) for owner in state["players"] if owner["id"]!=caster["id"]);effect_text=re.sub(r"create \d+ map tokens?",f"create {map_count} Map tokens",effect_text,count=1)
+    if re.search(r"you gain \d+ life and each opponent loses \d+ life, where \d+ is the number of knights you control",effect_text):
+        knight_count=sum("Creature" in permanent.get("type_line","") and re.search(r"\bKnight\b",permanent.get("type_line",""),re.IGNORECASE) is not None for permanent in caster["battlefield"]);effect_text=re.sub(r"you gain \d+ life and each opponent loses \d+ life",f"you gain {knight_count} life and each opponent loses {knight_count} life",effect_text,count=1)
+    if re.search(r"target creature you control gains vigilance and gets \+\d+/\+\d+ until end of turn, where \d+ is the number of creatures you control",effect_text):
+        creature_count=sum("Creature" in permanent.get("type_line","") for permanent in caster["battlefield"]);effect_text=re.sub(r"gets \+\d+/\+\d+ until end of turn",f"gets +{creature_count}/+{creature_count} until end of turn",effect_text,count=1)
     if "owner of target attacking creature you don't control puts it on their choice of the top or bottom of their library" in effect_text:
         placement_target=next((candidate for owner in state["players"] for candidate in owner["battlefield"] if candidate["instance_id"]==target_id),None);placement_controller=next((owner for owner in state["players"] if placement_target in owner["battlefield"]),None) if placement_target else None
         if placement_target and placement_controller:
@@ -3593,8 +3597,10 @@ def _resolve_spell(state: dict) -> None:
         _damage_player(state,other,amount,source_permanent or card)
     that_player_damage=re.search(r"deals (\d+) damage to that player",effect_text)
     if that_player_damage and item.get("event_owner_id"):_damage_player(state,_player(state,item["event_owner_id"]),int(that_player_damage.group(1)),source_permanent or card)
-    lose_life = re.search(r"(?:target opponent|each opponent) loses (\d+) life", effect_text)
-    if lose_life: other["life"] -= int(lose_life.group(1))
+    lose_life = re.search(r"(target opponent|each opponent) loses (\d+) life", effect_text)
+    if lose_life:
+        affected=[owner for owner in state["players"] if owner["id"]!=caster["id"]] if lose_life.group(1)=="each opponent" else [other]
+        for owner in affected:owner["life"]-=int(lose_life.group(2))
     you_lose = re.search(r"you lose (\d+) life", effect_text)
     if you_lose: caster["life"] -= int(you_lose.group(1))
     targeted_damage = re.search(r"deals (\d+) damage to (?:any target|target creature|target opponent|target player(?: or planeswalker)?)", effect_text)
