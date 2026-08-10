@@ -697,9 +697,12 @@ def _affinity_reduction(player:dict,card:dict)->int:
     return sum(matches(permanent) for permanent in player["battlefield"])
 
 
-def _earthbend_value(card:dict)->int|None:
+def _earthbend_value(card:dict,player:dict|None=None)->int|None:
     match=re.search(r"\bearthbend\s+(\d+)\b",card.get("oracle_text") or "",re.IGNORECASE)
-    return int(match.group(1)) if match else None
+    if match:return int(match.group(1))
+    text=card.get("oracle_text") or ""
+    if player and re.search(r"\bearthbend\s+x\b",text,re.IGNORECASE) and "number of experience counters you have" in text.casefold():return int(player.get("experience",0))
+    return None
 
 
 def _waterbend_symbol(text:str)->str|None:
@@ -1552,7 +1555,7 @@ def _target_kind(card: dict) -> str | None:
     if re.search(r"\bairbend (?:up to one )?target creature or spell\b",text):return "creature_or_spell"
     if re.search(r"\bairbend (?:up to one )?target spell\b",text):return "spell"
     if re.search(r"\bairbend (?:up to one )?target creature\b",text):return "creature"
-    if re.search(r"\bearthbend\s+\d+\b",text):return "land"
+    if re.search(r"\bearthbend\s+(?:\d+|x)\b",text):return "land"
     if re.search(r"target creature card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_creature"
     if re.search(r"target (?:nonland permanent |nonland )?card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_card"
     if "target face-down permanent you control" in text:return "permanent"
@@ -2631,7 +2634,10 @@ def _resolve_spell(state: dict) -> None:
         if number:fire_mana=max(fire_mana,int(number.group(1)))
         if fire_mana:
             caster["firebending_mana"]=caster.get("firebending_mana",0)+fire_mana;_log(state,f"{caster['name']} added {fire_mana} firebending mana for this combat.");_queue_triggers(state,"firebend",source_permanent or card,caster)
-    earthbend=_earthbend_value(rules_card)
+    experience_match=re.search(r"\byou get (?:an?|one) experience counter\b",effect_text)
+    if experience_match:
+        caster["experience"]=caster.get("experience",0)+1;_log(state,f"{caster['name']} got an experience counter.")
+    earthbend=_earthbend_value(rules_card,caster)
     if earthbend is not None and target and target_owner and "Land" in target.get("type_line","") and target["controller_id"]==caster["id"]:
         if not target.get("earthbent"):
             target["earthbend_base_type_line"]=target.get("type_line","");target["earthbend_base_power"]=target.get("power");target["earthbend_base_toughness"]=target.get("toughness")
@@ -3462,6 +3468,8 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                     matches = True
                 elif controlled_attackers and "whenever a creature you control attacks" in lower:
                     matches = True; trigger_count = len(controlled_attackers)
+                elif controlled_attackers and re.search(r"whenever you attack\b",lower):
+                    matches = True
             elif event == "blockers_declared":
                 combat=state.get("combat",{});blocks=combat.get("blocks",{});attacking_ids=set(combat.get("attackers",[]));blocked_ids=set(blocks.values());source_id=source.get("instance_id");source_name=re.escape(source.get("name","").casefold());source_blocking=source_id in blocks;source_blocked=source_id in blocked_ids;source_attacked=source_id in attacking_ids;controlled_blockers=[card for card in owner["battlefield"] if card.get("instance_id") in blocks]
                 if source_blocking and re.search(rf"whenever (?:~|this creature|{source_name}) (?:attacks or )?blocks\b",lower):matches=True
