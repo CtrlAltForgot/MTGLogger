@@ -303,6 +303,7 @@ def _mana_source_options(card: dict) -> list[dict]:
         cost,effect=match.group(1).strip(),match.group(2).strip();lower=cost.casefold();taps="{t}" in lower
         self_sacrifice=re.search(r"\bsacrifice (?:this (?:artifact|creature|permanent)|%s)\b"%re.escape(card.get("name","")),cost,re.IGNORECASE) is not None
         life_match=re.search(r"\bpay (\d+) life\b",cost,re.IGNORECASE);life_cost=int(life_match.group(1)) if life_match else 0
+        if "if you don't have the city's blessing, you lose 1 life" in text.casefold() and not card.get("controller_city_blessing"):life_cost+=1
         residual=re.sub(r"\{t\}|pay \d+ life|sacrifice (?:this (?:artifact|creature|permanent)|%s)|[,. ]"%re.escape(card.get("name","")),"",cost,flags=re.IGNORECASE)
         if residual:continue
         options.extend({"pool":pool,"taps":taps,"life_cost":life_cost,"self_sacrifice":self_sacrifice} for pool in _mana_pools(effect))
@@ -2393,7 +2394,7 @@ def _resolve_spell(state: dict) -> None:
     graveyard_target=next((graveyard_card for player in state["players"] for graveyard_card in player["graveyard"] if graveyard_card["instance_id"]==target_id),None)
     if "take an extra turn after this one" in effect_text:
         state.setdefault("extra_turns",[]).append(caster["id"]);_log(state,f"{caster['name']} will take an extra turn after this one.");return
-    if "for each token you control that entered the battlefield this turn, create a token that's a copy of it" in effect_text and re.search(r"create a 1/1 white cat creature token",effect_text):
+    if re.search(r"for each token you control that entered (?:the battlefield )?this turn, create a token that's a copy of it",effect_text) and re.search(r"create a 1/1 white cat creature token",effect_text):
         cat={"instance_id":_id(),"scryfall_id":"token-cat","name":"Cat Token","image_url":None,"type_line":"Token Creature — Cat","oracle_text":"","mana_cost":"","mana_value":0,"colors":["W"],"power":"1","toughness":"1","owner_id":caster["id"],"controller_id":caster["id"],"tapped":False,"damage":0,"counters":{},"summoning_sick":True,"token":True,"keywords":[]};_enter_battlefield(state,caster,[cat],"token")
         originals=[token for token in caster["battlefield"] if token.get("token") and token.get("entered_turn")==state["turn"]] if caster.get("city_blessing") else [];copies=[]
         for original in originals:
@@ -2652,10 +2653,10 @@ def _resolve_spell(state: dict) -> None:
         amount = {"a":1,"one":1,"two":2,"three":3,"four":4,"five":5}.get(token_match.group(1),int(token_match.group(1)) if token_match.group(1).isdigit() else 0)
         attacking="tapped and attacking" in effect_text;tapped=bool(token_match.group(2)) or attacking or "tokens enter tapped" in effect_text;created=[]
         descriptor=token_match.group(5).strip();color_names={"white":"W","blue":"U","black":"B","red":"R","green":"G"};colors=[symbol for name,symbol in color_names.items() if re.search(rf"\b{name}\b",descriptor)]
-        subtype=re.sub(r"\b(?:white|blue|black|red|green|colorless|and)\b"," ",descriptor).strip();subtype=re.sub(r"\s+"," ",subtype) or "Creature"
+        artifact_token=re.search(r"\bartifact\b",descriptor,re.IGNORECASE) is not None;subtype=re.sub(r"\b(?:white|blue|black|red|green|colorless|artifact|and)\b"," ",descriptor).strip();subtype=re.sub(r"\s+"," ",subtype) or "Creature"
         keywords=[keyword.title() for keyword in ("flying","first strike","double strike","deathtouch","haste","lifelink","menace","reach","trample","vigilance") if re.search(rf"\b{keyword}\b",effect_text)]
         for _ in range(amount):
-            token={"instance_id":_id(),"scryfall_id":"token","name":f"{subtype.title()} Token","image_url":None,"type_line":f"Token Creature — {subtype.title()}","oracle_text":"","mana_cost":"","mana_value":0,"colors":colors,"power":token_match.group(3),"toughness":token_match.group(4),"owner_id":caster["id"],"controller_id":caster["id"],"tapped":tapped,"damage":0,"counters":{},"summoning_sick":True,"token":True,"keywords":keywords};created.append(token)
+            token={"instance_id":_id(),"scryfall_id":"token","name":f"{subtype.title()} Token","image_url":None,"type_line":f"Token {'Artifact ' if artifact_token else ''}Creature — {subtype.title()}","oracle_text":"","mana_cost":"","mana_value":0,"colors":colors,"power":token_match.group(3),"toughness":token_match.group(4),"owner_id":caster["id"],"controller_id":caster["id"],"tapped":tapped,"damage":0,"counters":{},"summoning_sick":True,"token":True,"keywords":keywords};created.append(token)
         if attacking and state.get("phase")=="combat":
             source_target=state["combat"].get("attack_targets",{}).get(item.get("source_id"),other["id"])
             for token in created:state["combat"]["attackers"].append(token["instance_id"]);state["combat"]["attack_targets"][token["instance_id"]]=source_target
