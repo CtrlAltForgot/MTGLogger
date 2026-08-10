@@ -489,6 +489,7 @@ def _mana_pools(effect: str) -> list[tuple[int, ...]]:
 def _mana_source_options(card: dict) -> list[dict]:
     """Pair every usable mana output with the costs of that exact ability."""
     type_line=card.get("type_line","");text=_active_level_text(card);options=[]
+    if card.get("name")=="Locus of Enlightenment":text="\n".join([text,*[(material.get("oracle_text") or "") for material in card.get("crafted_with_cards",[]) if "Land" not in material.get("type_line","")]])
     if "for each color among the exiled cards used to craft this creature, add one mana of that color" in text.casefold():
         colors={color for material in card.get("crafted_with_cards",[]) for color in (material.get("colors") or []) if color in "WUBRG"}
         if colors:options.append({"pool":tuple(1 if color in colors else 0 for color in _MANA_COLORS),"taps":True,"life_cost":0,"self_sacrifice":False})
@@ -1487,7 +1488,7 @@ def _activation_timing_legal(state:dict,player_id:str,permanent:dict,index:int,a
     if restrictions.get("before_attackers") and (phase!="combat" or state["combat"].get("attackers_declared")):return False
     if restrictions.get("upkeep") and not (active and phase=="beginning" and state.get("beginning_draw_pending")):return False
     if restrictions.get("end_step") and not (active and phase=="ending"):return False
-    usage=permanent.get("activated_ability_usage",{}).get(str(index),{})
+    usage_key=ability.get("inherited_key",str(index));usage=permanent.get("activated_ability_usage",{}).get(usage_key,{})
     if restrictions.get("once_each_turn") and usage.get("turn")==state["turn"]:return False
     if restrictions.get("once") and usage.get("ever"):return False
     return True
@@ -1507,6 +1508,11 @@ def _permanent_abilities(state:dict,card:dict)->list[dict]:
     rules="\n".join([_active_level_text(card),*(card.get("temporary_backup_rules") or []),*granted]);level_cost=_level_up_cost(card)
     if level_cost:rules=f"{rules}\n{level_cost}: Put a level counter on this. Activate only as a sorcery."
     abilities=_activated_abilities({**card,"oracle_text":rules})
+    if card.get("name")=="Locus of Enlightenment":
+        for material in card.get("crafted_with_cards") or []:
+            if "Land" in material.get("type_line",""):continue
+            for material_index,inherited in enumerate(_activated_abilities(material)):
+                inherited=deepcopy(inherited);inherited["restrictions"]["once_each_turn"]=True;inherited["inherited_by_locus"]=True;inherited["inherited_source_name"]=material.get("name","crafted card");inherited["inherited_key"]=f"{material.get('instance_id',material.get('id',material_index))}:{material_index}";inherited["card"]["name"]=f"Locus of Enlightenment — {material.get('name','crafted card')} ability";abilities.append(inherited)
     for ability in abilities:
         if ability["effect"].casefold().startswith("put a level counter on this"):
             ability["card"]["growth_mechanic"]="level_up";ability["card"]["growth_amount"]=1
@@ -2358,6 +2364,7 @@ def _pending_decision(state:dict)->bool:
     if state.get("pending_headdress"):return True
     if state.get("pending_grim_captain"):return True
     if state.get("pending_blunderbuss"):return True
+    if state.get("pending_locus_copy"):return True
     return bool(state.get("pending_miracle") or state.get("pending_impulsivity") or state.get("pending_library_placement") or state.get("pending_sticktwister") or state.get("pending_eumidian_choice") or state.get("pending_rad_choice") or state.get("pending_tap_choice") or state.get("pending_top_card_choice") or state.get("pending_revealed_discard") or state.get("pending_same_name_search") or state.get("pending_winter_exile") or state.get("pending_optional_discard") or state.get("pending_optional_payment") or state.get("pending_tilonalli") or state.get("pending_creature_type") or state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_populate") or state.get("pending_bolster") or state.get("pending_discovery") or state.get("pending_madness") or state.get("pending_rebound") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
 
 
@@ -2732,6 +2739,10 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
             cards=[card for card in player["battlefield"] if card["instance_id"] in set(pending_blunderbuss["card_ids"])];return [{"type":"choose_blunderbuss_sacrifice","source_name":pending_blunderbuss["source_name"],"card_ids":pending_blunderbuss["card_ids"],"cards":cards,"label":"Sacrifice another artifact"},{"type":"concede"}]
         targets=[{"id":card["instance_id"],"name":card["name"],"kind":"permanent","controller_id":owner["id"]} for owner in state["players"] for card in owner["battlefield"] if "Creature" in card.get("type_line","") and not _has_keyword(card,"Shroud")]
         return ([{"type":"choose_blunderbuss_target","source_name":pending_blunderbuss["source_name"],"targets":targets,"label":"Choose the creature that will be dealt damage"}] if targets else [{"type":"finish_blunderbuss","source_name":pending_blunderbuss["source_name"],"label":"No legal creature remains"}])+[{"type":"concede"}]
+    pending_locus=state.get("pending_locus_copy")
+    if pending_locus:
+        if pending_locus["player_id"]!=player_id:return []
+        return [{"type":"choose_locus_copy_target","source_name":"Locus of Enlightenment","targets":pending_locus["targets"],"current_target_id":pending_locus.get("current_target_id"),"label":"Choose a target for the copied ability"},{"type":"concede"}]
     pending_zethi=state.get("pending_zethi_copies")
     if pending_zethi:
         if pending_zethi["player_id"]!=player_id:return []
@@ -3128,7 +3139,7 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
             cost_options=list(dict.fromkeys(card_id for requirement in cost_requirements for card_id in requirement["options"]))
             fight_steps=_fight_target_steps(state,player_id,ability["card"],permanent);multi_requested=bool(re.search(r"\b(?:tap|untap) (?:up to )?(?:two|three|four|\d+) target (?:creatures|lands)\b",ability["effect"],re.IGNORECASE) or "return up to one target creature card and up to one target land card from your graveyard to your hand" in ability["effect"].casefold());multi_variants=_multi_target_step_variants(state,player_id,ability["card"]) if multi_requested else [];targets=[] if fight_steps or multi_requested else _targets(state, player_id, ability["card"])
             if (fight_steps and any(not step["targets"] for step in fight_steps)) or (multi_requested and not multi_variants) or (not fight_steps and not multi_requested and _target_kind(ability["card"]) and not targets): continue
-            fixed_cost_amount=sum(cost["amount"] for cost in selection_costs if cost["amount"]!="X");action = {"type": "activate", "card_id": permanent["instance_id"], "ability_index": index, "label": f"{ability['cost']}: {ability['effect']}","life_cost":ability["life_cost"],"energy_cost":energy_cost,"self_sacrifice":ability["self_sacrifice"],"counter_cost":ability["counter_cost"],"cost_kind":selection_costs[0]["kind"] if len(selection_costs)==1 else "compound" if selection_costs else None,"cost_amount":fixed_cost_amount,"cost_options":cost_options,"cost_requirements":cost_requirements,"cost_combinations":cost_combinations,"selection_x":selection_has_x,"generic_reduction":reduction}
+            inherited_label=f"{ability['inherited_source_name']} — " if ability.get("inherited_by_locus") else "";fixed_cost_amount=sum(cost["amount"] for cost in selection_costs if cost["amount"]!="X");action = {"type": "activate", "card_id": permanent["instance_id"], "ability_index": index, "label": f"{inherited_label}{ability['cost']}: {ability['effect']}","life_cost":ability["life_cost"],"energy_cost":energy_cost,"self_sacrifice":ability["self_sacrifice"],"counter_cost":ability["counter_cost"],"cost_kind":selection_costs[0]["kind"] if len(selection_costs)==1 else "compound" if selection_costs else None,"cost_amount":fixed_cost_amount,"cost_options":cost_options,"cost_requirements":cost_requirements,"cost_combinations":cost_combinations,"selection_x":selection_has_x,"generic_reduction":reduction}
             if len(selection_costs)==1 and selection_costs[0]["kind"]=="blight":action["blight_amount"]=selection_costs[0]["blight_amount"]
             if waterbend_symbol:
                 options=[candidate["instance_id"] for candidate in player["battlefield"] if candidate["instance_id"] not in excluded and not candidate.get("tapped") and any(kind in candidate.get("type_line","") for kind in ("Artifact","Creature"))];action.update({"waterbend":True,"waterbend_amount":waterbend_amount,"cost_kind":"waterbend","cost_min_amount":min(map(len,waterbend_combinations)),"cost_max_amount":max(map(len,waterbend_combinations)),"cost_options":options,"cost_combinations":waterbend_combinations})
@@ -5656,6 +5667,10 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         permanent=next((card for card in player["battlefield"] if card["instance_id"]==pending["card_id"]),None)
         if not permanent:raise RuleViolation("That permanent is no longer on the battlefield")
         permanent["chosen_creature_type"]=choice.title();pending_list.pop(0);state["pending_creature_type"]=pending_list;_sync_city_blessing(state);state["priority_player_id"]=pending_list[0]["player_id"] if pending_list else state["active_player_id"];_log(state,f"{player['name']} chose {permanent['chosen_creature_type']} for {permanent['name']}.")
+    elif action_type=="choose_locus_copy_target":
+        pending=state.get("pending_locus_copy") or {};target_id=action.get("target_id")
+        if pending.get("player_id")!=player_id or target_id not in {target["id"] for target in pending.get("targets",[])}:raise RuleViolation("Choose a legal target for Locus of Enlightenment's copied ability")
+        original=pending["original"];copied=_copy_stack_item(state,player,original);copied["target_id"]=target_id;state["pending_locus_copy"]=None;state["consecutive_passes"]=0;state["priority_player_id"]=opponent(state,player_id)["id"] if _multiplayer(state) else state["active_player_id"];target_name=next(target["name"] for target in pending["targets"] if target["id"]==target_id);_log(state,f"Locus of Enlightenment copied {pending['source_name']}'s ability targeting {target_name}.")
     elif action_type=="choose_blunderbuss_sacrifice":
         pending=state.get("pending_blunderbuss") or {};choice_id=action.get("card_id");artifact=next((card for card in player["battlefield"] if card["instance_id"]==choice_id),None)
         if pending.get("stage")!="sacrifice" or pending.get("player_id")!=player_id or choice_id not in set(pending.get("card_ids",[])) or not artifact or "Artifact" not in artifact.get("type_line","") or artifact["instance_id"]==pending.get("equipment_id"):raise RuleViolation("Choose a legal artifact other than Dire Blunderbuss")
@@ -6252,10 +6267,15 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
             blight_options={card["instance_id"] for card in _activated_cost_options(player,permanent,blight_cost)};blight_target=next(card for card in selected_cost_cards if card["instance_id"] in blight_options);_apply_blight(state,player,blight_target,blight_cost["blight_amount"])
         if ability["taps"]:_set_tapped(state,[permanent],True,player_id,"activation")
         if ability.get("restrictions",{}).get("once_each_turn") or ability.get("restrictions",{}).get("once"):
-            permanent.setdefault("activated_ability_usage",{})[str(index)]={"turn":state["turn"],"ever":True}
+            usage_key=ability.get("inherited_key",str(index));permanent.setdefault("activated_ability_usage",{})[usage_key]={"turn":state["turn"],"ever":True}
         cost_triggers=state["stack"][stack_before_cost:];del state["stack"][stack_before_cost:]
         sacrificed_power=max((_parse_stats(card,state)[0] for card in selected_cost_cards if "Creature" in card.get("type_line","")),default=0) if "sacrificed creature's power" in ability["effect"].casefold() else 0
-        activated_kind="crew_ability" if "this vehicle becomes an artifact creature until end of turn" in ability["effect"].casefold() else "ability";stack_item={"id":_id(),"kind":activated_kind,"card":ability["card"],"controller_id":player_id,"target_id":target_id,"target_ids":target_ids,"source_id":permanent["instance_id"],"x_value":x_value,"sacrificed_power":sacrificed_power};state["stack"].append(stack_item);state["stack"].extend(cost_triggers);state["consecutive_passes"]=0;state["pending_phase_advance"]=False
+        activated_kind="crew_ability" if "this vehicle becomes an artifact creature until end of turn" in ability["effect"].casefold() else "ability";stack_item={"id":_id(),"kind":activated_kind,"card":ability["card"],"controller_id":player_id,"target_id":target_id,"target_ids":target_ids,"source_id":permanent["instance_id"],"x_value":x_value,"sacrificed_power":sacrificed_power};state["stack"].append(stack_item);state["stack"].extend(cost_triggers)
+        if ability.get("inherited_by_locus"):
+            copy_targets=_targets(state,player_id,ability["card"])
+            if target_id and copy_targets:state["pending_locus_copy"]={"player_id":player_id,"original":deepcopy(stack_item),"targets":copy_targets,"current_target_id":target_id,"source_name":ability["inherited_source_name"]};state["priority_player_id"]=player_id;_log(state,"Locus of Enlightenment is waiting for its controller to confirm or change the copied ability's target.")
+            else:_copy_stack_item(state,player,stack_item);_log(state,f"Locus of Enlightenment copied {ability['inherited_source_name']}'s activated ability.")
+        state["consecutive_passes"]=0;state["pending_phase_advance"]=False
         if waterbend_symbol:_queue_triggers(state,"waterbend",permanent,player)
         for ward_target in ([target_id] if target_id else [])+target_ids:_queue_ward(state,player,ward_target,stack_item)
         sacrifice_cards=[permanent] if ability["self_sacrifice"] else []
