@@ -167,8 +167,6 @@ def _continuous_stats(state:dict|None,card:dict)->tuple[int,int]:
             if source.get("attached_to")==card.get("instance_id"):
                 attachment_text=_active_level_text(source).casefold()
                 for attachment_match in re.finditer(r"(?:equipped|enchanted) creature gets (?:an additional )?([+-]\d+)/([+-]\d+)(?! (?:until end of turn|for each))",attachment_text):power+=int(attachment_match.group(1));toughness+=int(attachment_match.group(2))
-                if "enchanted creature gets +1/+1 for each spirit you control" in attachment_text:
-                    spirit_count=sum("Spirit" in permanent.get("type_line","") for permanent in owner["battlefield"]);power+=spirit_count;toughness+=spirit_count
             clauses=re.split(r"(?<=[.!])\s+|\n",_active_level_text(source))
             for clause in clauses:
                 lower=clause.casefold()
@@ -1944,7 +1942,7 @@ def _target_kind(card: dict) -> str | None:
         if allowed or re.search(r"\benchant (?:nonland )?permanent\b",text):return "permanent"
     if re.search(r"counter target (?:spell or (?:activated or triggered )?ability|spell or ability)",text):return "stack"
     if re.search(r"counter target (?:activated or triggered|activated|triggered) ability",text):return "ability"
-    if "counter target spell" in text or "counter target sorcery spell" in text:return "spell"
+    if re.search(r"counter target (?:noncreature |sorcery )?spell",text):return "spell"
     if "copy target spell" in text:return "spell"
     if re.search(r"\bairbend (?:up to one )?target creature or spell\b",text):return "creature_or_spell"
     if re.search(r"\bairbend (?:up to one )?target spell\b",text):return "spell"
@@ -2032,7 +2030,8 @@ def _targets(state: dict, caster_id: str, card: dict, ignore_target_protection:b
             is_spell=item.get("kind","spell")=="spell"
             controlled_copy="copy target spell you control" in text
             sorcery_only="target sorcery spell" in text
-            return (kind=="stack" or (kind=="spell" and is_spell) or (kind=="ability" and not is_spell)) and (not sorcery_only or "Sorcery" in item.get("card",{}).get("type_line","")) and (not controlled_copy or item.get("controller_id")==caster_id)
+            noncreature_only="target noncreature spell" in text
+            return (kind=="stack" or (kind=="spell" and is_spell) or (kind=="ability" and not is_spell)) and (not sorcery_only or "Sorcery" in item.get("card",{}).get("type_line","")) and (not noncreature_only or "Creature" not in item.get("card",{}).get("type_line","")) and (not controlled_copy or item.get("controller_id")==caster_id)
         return [{"id":item["id"],"name":item["card"]["name"],"kind":"spell" if item.get("kind","spell")=="spell" else "ability","controller_id":item["controller_id"]} for item in state["stack"] if allowed(item) and not ("you don't control" in text and item["controller_id"]==caster_id)]
     if kind == "creature_or_spell":
         targets=[{"id":item["id"],"name":item["card"]["name"],"kind":"spell","controller_id":item["controller_id"]} for item in state["stack"]]
@@ -2063,6 +2062,7 @@ def _targets(state: dict, caster_id: str, card: dict, ignore_target_protection:b
                 if "non-spacecraft" in text and "Spacecraft" in permanent.get("type_line",""):continue
                 if "noncreature artifact" in text and "Creature" in permanent.get("type_line", ""): continue
                 if "creature without flying" in text and _has_keyword(permanent,"Flying"):continue
+                if "creature you don't control that was dealt damage this turn" in text and (player["id"]==caster_id or not permanent.get("damage_source_ids_turn")):continue
                 if "non-salamander creature" in text and re.search(r"\bSalamander\b",permanent.get("type_line",""),re.IGNORECASE):continue
                 if not ignore_target_protection and (_has_keyword(permanent,"Shroud") or (player["id"] != caster_id and (_has_keyword(permanent,"Hexproof") or permanent.get("hexproof_until_turn",0)>=state["turn"]))): continue
                 if not ignore_target_protection and _protected_from(permanent,card): continue
@@ -3107,6 +3107,8 @@ def _resolve_spell(state: dict) -> None:
         if enchanted and amount>=3:enchanted["lost"]=True;enchanted["loss_reason"]="sinners_judgment";_log(state,f"{enchanted['name']} lost the game to Sinner's Judgment with {amount} judgment counters.")
         else:_log(state,f"{source_permanent['name']} has {amount} judgment counter(s).")
         return
+    if source_permanent and re.fullmatch(r"sacrifice it at end of combat\.?",effect_text.strip(),re.IGNORECASE):
+        source_permanent["sacrifice_end_combat"]=True;_log(state,f"{source_permanent['name']} will be sacrificed at end of combat.");return
     times_kicked=int(item.get("multikicker_count") or (source_permanent or {}).get("times_kicked",0))
     if times_kicked:effect_text=_multikicker_effect(effect_text,times_kicked)
     if caster.get("speed",0):effect_text=_speed_effect(effect_text,caster)
@@ -4518,7 +4520,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 source_name = re.escape(source.get("name", "").casefold());short_name=re.escape(source.get("name", "").split(",",1)[0].casefold())
                 if attached_attacked and "whenever equipped creature attacks" in lower:
                     matches = True
-                elif source_attacked and "attacks and isn't blocked" not in lower and "attacks and is not blocked" not in lower and re.search(rf"whenever (?:~|this (?:creature|spacecraft)|{source_name}|{short_name}) (?:enters or )?attacks\b", lower):
+                elif source_attacked and "attacks and isn't blocked" not in lower and "attacks and is not blocked" not in lower and re.search(rf"when(?:ever)? (?:~|this (?:creature|spacecraft)|{source_name}|{short_name}) (?:enters or )?attacks\b", lower):
                     matches = True
                 elif controlled_attackers and "whenever one or more creatures you control attack" in lower:
                     matches = True
@@ -4530,8 +4532,8 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                     matches = True
                 if matches and "attacks for the first time each turn" in lower and int(source.get("attacks_this_turn",0))!=1:matches=False
             elif event == "blockers_declared":
-                combat=state.get("combat",{});blocks=combat.get("blocks",{});attacking_ids=set(combat.get("attackers",[]));blocked_ids=set(blocks.values());source_id=source.get("instance_id");source_name=re.escape(source.get("name","").casefold());source_blocking=source_id in blocks;source_blocked=source_id in blocked_ids;source_attacked=source_id in attacking_ids;controlled_blockers=[card for card in owner["battlefield"] if card.get("instance_id") in blocks]
-                if source_blocking and re.search(rf"whenever (?:~|this creature|{source_name}) (?:attacks or )?blocks\b",lower):matches=True
+                combat=state.get("combat",{});blocks=combat.get("blocks",{});attacking_ids=set(combat.get("attackers",[]));blocked_ids=set(blocks.values());source_id=source.get("instance_id");source_name=re.escape(source.get("name","").casefold());short_name=re.escape(source.get("name","").split(",",1)[0].casefold());source_blocking=source_id in blocks;source_blocked=source_id in blocked_ids;source_attacked=source_id in attacking_ids;controlled_blockers=[card for card in owner["battlefield"] if card.get("instance_id") in blocks]
+                if source_blocking and re.search(rf"when(?:ever)? (?:~|this creature|{source_name}|{short_name}) (?:attacks or )?blocks\b",lower):matches=True
                 elif source_blocked and re.search(rf"whenever (?:~|this creature|{source_name}) becomes blocked\b",lower):matches=True
                 elif source_attacked and not source_blocked and re.search(rf"whenever (?:~|this creature|{source_name}) attacks and (?:isn't|is not) blocked\b",lower):matches=True
                 elif controlled_blockers and "whenever one or more creatures you control block" in lower:matches=True
@@ -4726,7 +4728,7 @@ def _combat_damage(state: dict) -> None:
     _log(state, "Combat damage resolved.")
     sacrifice_tokens=[token for owner in state["players"] for token in owner["battlefield"] if token.pop("sacrifice_end_combat",False)]
     if sacrifice_tokens:
-        ability={"name":"End-of-combat token sacrifice","type_line":"Ability","mana_cost":"","oracle_text":"Sacrifice the temporary attacking token at end of combat."};state["stack"].append({"id":_id(),"kind":"end_combat_sacrifice_trigger","card":ability,"controller_id":sacrifice_tokens[0]["controller_id"],"token_ids":[token["instance_id"] for token in sacrifice_tokens]});_log(state,f"The end-of-combat sacrifice of {len(sacrifice_tokens)} temporary token(s) triggered.")
+        ability={"name":"End-of-combat sacrifice","type_line":"Ability","mana_cost":"","oracle_text":"Sacrifice the marked attacking permanent at end of combat."};state["stack"].append({"id":_id(),"kind":"end_combat_sacrifice_trigger","card":ability,"controller_id":sacrifice_tokens[0]["controller_id"],"token_ids":[token["instance_id"] for token in sacrifice_tokens]});_log(state,f"The end-of-combat sacrifice of {len(sacrifice_tokens)} marked attacker(s) triggered.")
     state["combat"] = {"attackers": [], "attackers_declared":False,"blocks": {},"attack_targets":{},"block_orders":{},"damage_pending":False,"damage_step":None,"first_strike_damage_ids":[],"block_triggers_pending":False}
 
 
