@@ -485,6 +485,11 @@ def _kicker_cost(card:dict)->str|None:
     return match.group(1).upper() if match else None
 
 
+def _overload_cost(card:dict)->str|None:
+    match=re.search(r"(?:^|\n)Overload\s+((?:\{[^}]+\})+)",card.get("oracle_text") or "",re.IGNORECASE)
+    return match.group(1).upper() if match else None
+
+
 def _buyback_ability(card:dict)->dict|None:
     line=next((line.strip() for line in (card.get("oracle_text") or "").splitlines() if re.match(r"^Buyback\b",line.strip(),re.IGNORECASE)),None)
     if not line:return None
@@ -1508,23 +1513,24 @@ def _selected_mode_card(card:dict,indices:list[int]|None)->dict:
     return {**card,"oracle_text":" ".join(selected)}
 
 
-def _targets(state: dict, caster_id: str, card: dict) -> list[dict]:
+def _targets(state: dict, caster_id: str, card: dict, ignore_target_protection:bool=False) -> list[dict]:
     kind = _target_kind(card)
     if not kind: return []
     text = (card.get("oracle_text") or "").casefold()
-    own_target_only=bool(re.search(r"(?:target|enchant)[^.\n]*\byou control\b",text));opponent_target_only=bool(re.search(r"(?:target|enchant)[^.\n]*\b(?:an opponent|opponents?) controls?\b",text))
+    own_target_only=bool(re.search(r"(?:target|enchant)[^.\n]*\byou control\b",text));opponent_target_only=bool(re.search(r"(?:target|enchant)[^.\n]*\b(?:you (?:do not|don't) control|(?:an opponent|opponents?) controls?)\b",text))
     targets = []
     if kind in {"spell","ability","stack"}:
         def allowed(item:dict)->bool:
             is_spell=item.get("kind","spell")=="spell"
             return kind=="stack" or (kind=="spell" and is_spell) or (kind=="ability" and not is_spell)
-        return [{"id":item["id"],"name":item["card"]["name"],"kind":"spell" if item.get("kind","spell")=="spell" else "ability","controller_id":item["controller_id"]} for item in state["stack"] if allowed(item)]
+        return [{"id":item["id"],"name":item["card"]["name"],"kind":"spell" if item.get("kind","spell")=="spell" else "ability","controller_id":item["controller_id"]} for item in state["stack"] if allowed(item) and not ("you don't control" in text and item["controller_id"]==caster_id)]
     if kind == "creature_or_spell":
         targets=[{"id":item["id"],"name":item["card"]["name"],"kind":"spell","controller_id":item["controller_id"]} for item in state["stack"]]
     if kind in {"graveyard_creature","graveyard_card"}:
         own_only="your graveyard" in text
         soulshift=card.get("soulshift_value")
-        return [{"id":graveyard_card["instance_id"],"name":graveyard_card["name"],"kind":"card","controller_id":owner["id"]} for owner in state["players"] if not own_only or owner["id"]==caster_id for graveyard_card in owner["graveyard"] if (kind=="graveyard_card" or "Creature" in graveyard_card.get("type_line","")) and (soulshift is None or (re.search(r"\bSpirit\b",graveyard_card.get("type_line",""),re.IGNORECASE) and float(graveyard_card.get("mana_value") or 0)<=float(soulshift)))]
+        instant_or_sorcery="instant or sorcery" in text
+        return [{"id":graveyard_card["instance_id"],"name":graveyard_card["name"],"kind":"card","controller_id":owner["id"]} for owner in state["players"] if not own_only or owner["id"]==caster_id for graveyard_card in owner["graveyard"] if (kind=="graveyard_card" or "Creature" in graveyard_card.get("type_line","")) and (not instant_or_sorcery or any(kind_name in graveyard_card.get("type_line","") for kind_name in ("Instant","Sorcery"))) and (soulshift is None or (re.search(r"\bSpirit\b",graveyard_card.get("type_line",""),re.IGNORECASE) and float(graveyard_card.get("mana_value") or 0)<=float(soulshift)))]
     for player in state["players"]:
         aura_types=_aura_allowed_types(card)
         if (kind in {"any", "player"} or (kind=="permanent" and "player" in aura_types)) and not ("target opponent" in text and player["id"]==caster_id) and not _player_protected_from(state,player,card): targets.append({"id": player["id"], "name": player["name"], "kind": "player", "controller_id": player["id"]})
@@ -1535,8 +1541,10 @@ def _targets(state: dict, caster_id: str, card: dict) -> list[dict]:
                 if own_target_only and player["id"] != caster_id: continue
                 if opponent_target_only and player["id"] == caster_id: continue
                 if "nonland permanent" in text and "Land" in permanent.get("type_line", ""): continue
-                if _has_keyword(permanent,"Shroud") or (player["id"] != caster_id and (_has_keyword(permanent,"Hexproof") or permanent.get("hexproof_until_turn",0)>=state["turn"])): continue
-                if _protected_from(permanent,card): continue
+                if "noncreature artifact" in text and "Creature" in permanent.get("type_line", ""): continue
+                if "creature without flying" in text and _has_keyword(permanent,"Flying"):continue
+                if not ignore_target_protection and (_has_keyword(permanent,"Shroud") or (player["id"] != caster_id and (_has_keyword(permanent,"Hexproof") or permanent.get("hexproof_until_turn",0)>=state["turn"]))): continue
+                if not ignore_target_protection and _protected_from(permanent,card): continue
                 targets.append({"id": permanent["instance_id"], "name": permanent["name"], "kind": "permanent", "controller_id": player["id"]})
     return targets
 
@@ -1918,6 +1926,12 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
         delve_options=list(player["graveyard"]) if _has_keyword(card,"Delve") and source in {"hand","command"} else []
         delve_possible=bool(delve_options) and any(_can_pay(player,cost_card,generic_adjustment-count,x_value=0) for count in range(1,len(delve_options)+1))
         convoke_combinations=[] if waterbend_symbol or _has_x_cost(cost_card) or (flashback and flashback["behold_amount"]) or not _has_convoke(card) else _convoke_combinations(player,cost_card,generic_adjustment);convoke_min=len(convoke_combinations[0]) if convoke_combinations else None
+        overload_cost=_overload_cost(card) if source in {"hand","command"} else None;overload_card={**card,"mana_cost":overload_cost or ""}
+        overload_timing=source in {"hand","command"} and ((active and main and not state["stack"]) or instant_speed)
+        if overload_cost and overload_timing and _can_pay(player,overload_card,total_tax):
+            overload_action={"type":"cast","card_id":card["instance_id"],"source":source,"overloaded":True,"mana_cost":overload_cost,"commander_tax":total_tax,"label":f"Overload {card['name']} · {overload_cost}{f' + {{2}}×{player.get('commander_casts',0)} commander tax' if total_tax else ''}"}
+            if _has_x_cost(overload_card):overload_action.update({"x_min":0,"x_max":_maximum_x(player,overload_card,total_tax)})
+            actions.append(overload_action)
         if "Land" in card.get("type_line", "") or (source!="suspend" and not ((active and main and not state["stack"]) or instant_speed)) or (not normal_payable and convoke_min is None and not delve_possible and not (_has_keyword(card,"Delve") and _has_x_cost(cost_card) and delve_options)) or (flashback and len(behold_options)<flashback["behold_amount"]) or (escape and (len(escape_options)<escape["exile_count"] or len(escape_lands)<escape["land_count"] or len(_graveyard_card_types(escape_options))<escape["card_types_required"])): continue
         cost_label=cost_card.get("mana_cost") or "{0}";action = {"type": "cast", "card_id": card["instance_id"], "source": source, "commander_tax": total_tax,"affinity_reduction":affinity_reduction,"label":f"{'Plot cast' if source=='plot' else 'Foretell cast' if source=='foretell' else 'Suspend cast' if source=='suspend' else 'Flashback' if flashback else 'Airbend cast' if source=='airbend' else 'Cast'} {card['name']} · {'without paying its mana cost' if source in {'suspend','plot'} else cost_label}{f' + {{2}}×{player.get("commander_casts",0)} commander tax' if total_tax else ''}{f' · Affinity reduces {{1}}×{affinity_reduction}' if affinity_reduction else ''}"}
         if flashback:action.update({"flashback":True,"cost_kind":"behold" if flashback["behold_amount"] else None,"cost_amount":flashback["behold_amount"],"cost_options":[candidate["instance_id"] for candidate in behold_options]})
@@ -2243,6 +2257,13 @@ def _resolve_spell(state: dict) -> None:
         for target_id in item["target_ids"]:
             single_card=_x_rules_card(item["card"],item.get("x_value"));single_text=re.sub(r"\b\d+ target (nonlegendary )?(cards|creatures)\b",lambda match:f"target {match.group(1) or ''}{match.group(2)[:-1]}",single_card.get("oracle_text") or "",flags=re.IGNORECASE);single_text=re.sub(r"(?:each of )?up to (?:one|two|three|\d+) target creatures", "target creature",single_text,flags=re.IGNORECASE);single_card={**single_card,"oracle_text":single_text};state["stack"].append({**item,"id":_id(),"kind":"ability","card":single_card,"target_id":target_id,"target_ids":[]});_resolve_spell(state)
         _log(state,f"{card['name']} resolved for {len(item['target_ids'])} targets.");return
+    if item.get("kind","spell")=="spell" and item.get("overloaded"):
+        targeting_card=_spell_targeting_card(_x_rules_card(card,item.get("x_value")));targets=_targets(state,caster["id"],targeting_card,ignore_target_protection=True)
+        for overload_target in targets:
+            state["stack"].append({"id":_id(),"kind":"overload_effect","card":card,"controller_id":caster["id"],"target_id":overload_target["id"],"x_value":item.get("x_value")})
+            _resolve_spell(state)
+        caster["graveyard"].append(card)
+        _log(state,f"{card['name']} resolved overloaded, affecting {len(targets)} object(s).");return
     if item.get("kind","spell")=="spell" and len(item.get("mode_indices") or [])>1:
         options={option["index"]:option for option in _modal_options(card)};targets=item.get("mode_targets") or []
         for position,index in enumerate(item["mode_indices"]):
@@ -2266,7 +2287,7 @@ def _resolve_spell(state: dict) -> None:
         if item.get("kind","spell")=="spell":_countered_spell_destination(state,caster,card,item.get("flashback",False))
         _finish_saga_final_chapter(state,item)
         _log(state,f"{card['name']} was countered because all of its fight targets were no longer legal.");return
-    if target_kind and target_id not in {target["id"] for target in _targets(state,caster["id"],targeting_card)}:
+    if item.get("kind")!="overload_effect" and target_kind and target_id not in {target["id"] for target in _targets(state,caster["id"],targeting_card)}:
         if item.get("kind","spell")=="spell":_countered_spell_destination(state,caster,card,item.get("flashback",False))
         _finish_saga_final_chapter(state,item)
         _log(state,f"{card['name']} was countered because its target was no longer legal.");return
@@ -2405,9 +2426,9 @@ def _resolve_spell(state: dict) -> None:
         fighters=([source_permanent,next((permanent for owner in state["players"] for permanent in owner["battlefield"] if permanent["instance_id"]==valid_fight_ids[0]),None)] if len(fight_steps)==1 else [next((permanent for owner in state["players"] for permanent in owner["battlefield"] if permanent["instance_id"]==fighter_id),None) for fighter_id in valid_fight_ids[:2]])
         if all(fighters) and fighters[0] is not fighters[1]:
             first,second=fighters;first_power=max(0,_parse_stats(first,state)[0]);second_power=max(0,_parse_stats(second,state)[0]);_damage_permanent(state,second,first_power,first);_damage_permanent(state,first,second_power,second);first["fought_turn"]=state["turn"];second["fought_turn"]=state["turn"];_log(state,f"{first['name']} fought {second['name']}.")
-    if target and target_owner and re.search(r"destroy target (?:creature|permanent|nonland permanent)", effect_text):
+    if target and target_owner and re.search(r"destroy target (?:artifact|creature|enchantment|land|planeswalker|permanent|nonland permanent)", effect_text):
         if _destroy_permanent(state,target_owner,target,"can't be regenerated" in effect_text):_log(state, f"{target['name']} was destroyed.")
-    if target and target_owner and re.search(r"exile target (?:creature|permanent|nonland permanent)", effect_text):
+    if target and target_owner and re.search(r"exile target (?:artifact|creature|enchantment|land|planeswalker|permanent|nonland permanent)", effect_text):
         _leave_battlefield(state,target_owner,target,"exile",exile_actor_id=caster["id"]);_log(state,f"{target['name']} was exiled.")
     if target and target_owner and re.search(r"return target (?:creature|permanent|nonland permanent).* to (?:its|their) owner'?s hand", effect_text):
         _leave_battlefield(state, target_owner, target, "hand"); _log(state, f"{target['name']} returned to its owner's hand.")
@@ -3517,11 +3538,11 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
     elif action_type == "cast":
         requested_source=action.get("source");zone_name="graveyard" if requested_source in {"flashback","escape","mutate_graveyard"} else "exile" if requested_source in {"airbend","suspend","foretell","plot","rebound"} else "hand" if requested_source in {"mutate_hand","evoke","dash_hand"} else "command" if requested_source in {"mutate_command","dash_command"} else requested_source if requested_source in {"hand","command"} else next((zone for zone in ("hand","command") if any(card["instance_id"]==action.get("card_id") for card in player.get(zone,[]))),None)
         source=requested_source if requested_source in {"flashback","escape","mutate_graveyard","airbend","suspend","foretell","plot","rebound","mutate_hand","mutate_command","evoke","dash_hand","dash_command"} else zone_name;card=next((card for card in player.get(zone_name or "hand",[]) if card["instance_id"]==action.get("card_id")),None);flashback=_flashback_ability(card or {}) if source=="flashback" else None;escape=_escape_ability(card or {}) if source=="escape" else None
-        requested_kicked=bool(action.get("kicked"));requested_buyback=bool(action.get("buyback"));requested_convoke=bool(action.get("convoke"));requested_waterbend=bool(action.get("waterbend"));requested_evoked=requested_source=="evoke";requested_dashed=requested_source in {"dash_hand","dash_command"};requested_delve=bool(action.get("delve"));requested_mutating=bool(action.get("mutating") or requested_source in {"mutate_hand","mutate_graveyard","mutate_command"});requested_blight=bool(action.get("blighted") or (action.get("cost_card_ids") and _optional_blight_cost(card or {})));available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="cast" and entry["card_id"]==action.get("card_id") and entry.get("source")==source and bool(entry.get("evoked"))==requested_evoked and bool(entry.get("dashed"))==requested_dashed and bool(entry.get("delve"))==requested_delve and (not requested_delve or entry.get("cost_amount")==len(action.get("cost_card_ids") or [])) and bool(entry.get("mutating"))==requested_mutating and entry.get("mutate_position")==action.get("mutate_position") and bool(entry.get("kicked"))==requested_kicked and bool(entry.get("buyback"))==requested_buyback and bool(entry.get("convoke"))==requested_convoke and bool(entry.get("waterbend"))==requested_waterbend and bool(entry.get("blighted"))==requested_blight),None)
+        requested_kicked=bool(action.get("kicked"));requested_buyback=bool(action.get("buyback"));requested_convoke=bool(action.get("convoke"));requested_waterbend=bool(action.get("waterbend"));requested_overloaded=bool(action.get("overloaded"));requested_evoked=requested_source=="evoke";requested_dashed=requested_source in {"dash_hand","dash_command"};requested_delve=bool(action.get("delve"));requested_mutating=bool(action.get("mutating") or requested_source in {"mutate_hand","mutate_graveyard","mutate_command"});requested_blight=bool(action.get("blighted") or (action.get("cost_card_ids") and _optional_blight_cost(card or {})));available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="cast" and entry["card_id"]==action.get("card_id") and entry.get("source")==source and bool(entry.get("overloaded"))==requested_overloaded and bool(entry.get("evoked"))==requested_evoked and bool(entry.get("dashed"))==requested_dashed and bool(entry.get("delve"))==requested_delve and (not requested_delve or entry.get("cost_amount")==len(action.get("cost_card_ids") or [])) and bool(entry.get("mutating"))==requested_mutating and entry.get("mutate_position")==action.get("mutate_position") and bool(entry.get("kicked"))==requested_kicked and bool(entry.get("buyback"))==requested_buyback and bool(entry.get("convoke"))==requested_convoke and bool(entry.get("waterbend"))==requested_waterbend and bool(entry.get("blighted"))==requested_blight),None)
         tax = _commander_tax(player, card) if card and source in {"command","mutate_command","dash_command"} else 0;affinity_reduction=_affinity_reduction(player,card or {});buyback=_buyback_ability(card or {}) if requested_buyback else None;generic_adjustment=tax-affinity_reduction-(_dash_reduction(player) if requested_dashed else 0)-int(available.get("buyback_reduction",0) if available else 0)
         if not card:raise RuleViolation("That spell cannot be cast")
         if not available:raise RuleViolation("That spell cannot be cast from that zone")
-        cost_card={**card,"mana_cost":_dash_cost(card)} if requested_dashed else {**card,"mana_cost":(_evoke_ability(card) or {}).get("mana_cost","")} if requested_evoked else {**card,"mana_cost":_mutate_cost(card)} if requested_mutating else {**card,"mana_cost":_foretell_cost(card) or ""} if source=="foretell" else {**card,"mana_cost":"{0}"} if source in {"suspend","plot","rebound"} else {**card,"mana_cost":"{2}"} if source=="airbend" else {**card,"mana_cost":flashback["mana_cost"]} if flashback else {**card,"mana_cost":escape["mana_cost"]} if escape else card
+        cost_card={**card,"mana_cost":_overload_cost(card) or ""} if requested_overloaded else {**card,"mana_cost":_dash_cost(card)} if requested_dashed else {**card,"mana_cost":(_evoke_ability(card) or {}).get("mana_cost","")} if requested_evoked else {**card,"mana_cost":_mutate_cost(card)} if requested_mutating else {**card,"mana_cost":_foretell_cost(card) or ""} if source=="foretell" else {**card,"mana_cost":"{0}"} if source in {"suspend","plot","rebound"} else {**card,"mana_cost":"{2}"} if source=="airbend" else {**card,"mana_cost":flashback["mana_cost"]} if flashback else {**card,"mana_cost":escape["mana_cost"]} if escape else card
         if requested_kicked:cost_card={**cost_card,"mana_cost":f"{cost_card.get('mana_cost') or ''}{_kicker_cost(card) or ''}"}
         if buyback:cost_card={**cost_card,"mana_cost":f"{cost_card.get('mana_cost') or ''}{buyback['mana_cost']}"}
         waterbend_symbol=_spell_waterbend_symbol(card);x_value=int(action.get("x_value") or 0);has_x=_has_x_cost(cost_card) or waterbend_symbol=="X";x_max=available.get("x_max",_maximum_x(player,cost_card,generic_adjustment))
@@ -3564,6 +3585,8 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if requested_mutating:
             target_id=action.get("target_id")
             if target_id not in {target["id"] for target in available.get("targets",[])}:raise RuleViolation("Choose a non-Human creature you own to mutate")
+        elif requested_overloaded:
+            if target_id is not None:raise RuleViolation("An overloaded spell does not target")
         elif not modal_spec and _target_kind(targeting_card) and target_id not in {target["id"] for target in targets}: raise RuleViolation("Choose a legal target")
         if requested_waterbend:
             _pay_mana(state,player,waterbend_residual or {"mana_cost":""},excluded_ids=set(selected_cost_ids),x_value=x_value if _has_x_cost(cost_card) else 0)
@@ -3608,7 +3631,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if source=="rebound":state["pending_rebound"]=None
         card.pop("rebound_triggered",None);card.pop("rebound_after_turn",None);card.pop("airbent",None);card.pop("suspended_ready",None);card.pop("suspended",None);card.pop("foretold",None);card.pop("foretold_turn",None);card.pop("plotted",None);card.pop("plotted_turn",None)
         if card.get("commander"): player["commander_casts"] = player.get("commander_casts", 0) + 1
-        effective_target=target_id or (mode_targets[0] if len(mode_targets)==1 else None);stack_item={"id": _id(), "card": card, "controller_id": player_id, "target_id": effective_target,"target_ids":target_ids,"mode_indices":chosen_modes,"mode_targets":mode_targets,"x_value":x_value,"flashback":bool(flashback),"buyback":requested_buyback,"rebound_cast":source=="rebound","escaped":bool(escape),"escape_counters":escape["counters"] if escape else 0,"escape_counter_choice":escape["counter_choice"] if escape else False,"suspended_cast":source=="suspend","kicked":requested_kicked,"blighted":requested_blight,"evoked":requested_evoked,"dashed":requested_dashed,"delved_cards":delved_cards if requested_delve else [],"mutating":requested_mutating,"mutate_position":action.get("mutate_position"),"cast_source_zone":"graveyard" if source in {"flashback","escape","mutate_graveyard"} else "exile" if source in {"airbend","suspend","foretell","plot","rebound"} else "hand" if source in {"mutate_hand","evoke","dash_hand"} else "command" if source in {"mutate_command","dash_command"} else source};state["stack"].append(stack_item);state["stack"].extend(cost_triggers); state["consecutive_passes"] = 0; state["pending_phase_advance"] = False
+        effective_target=target_id or (mode_targets[0] if len(mode_targets)==1 else None);stack_item={"id": _id(), "card": card, "controller_id": player_id, "target_id": effective_target,"target_ids":target_ids,"mode_indices":chosen_modes,"mode_targets":mode_targets,"x_value":x_value,"flashback":bool(flashback),"buyback":requested_buyback,"rebound_cast":source=="rebound","escaped":bool(escape),"escape_counters":escape["counters"] if escape else 0,"escape_counter_choice":escape["counter_choice"] if escape else False,"suspended_cast":source=="suspend","kicked":requested_kicked,"overloaded":requested_overloaded,"blighted":requested_blight,"evoked":requested_evoked,"dashed":requested_dashed,"delved_cards":delved_cards if requested_delve else [],"mutating":requested_mutating,"mutate_position":action.get("mutate_position"),"cast_source_zone":"graveyard" if source in {"flashback","escape","mutate_graveyard"} else "exile" if source in {"airbend","suspend","foretell","plot","rebound"} else "hand" if source in {"mutate_hand","evoke","dash_hand"} else "command" if source in {"mutate_command","dash_command"} else source};state["stack"].append(stack_item);state["stack"].extend(cost_triggers); state["consecutive_passes"] = 0; state["pending_phase_advance"] = False
         if requested_waterbend:_queue_triggers(state,"waterbend",card,player)
         _record_spell_cast(state,player);card["cast_source_zone"]="graveyard" if source in {"flashback","escape","mutate_graveyard"} else "exile" if source in {"airbend","suspend","foretell","plot"} else "hand" if source=="mutate_hand" else "command" if source=="mutate_command" else source
         _queue_triggers(state,"cast",card,player);_queue_cascade_triggers(state,player,card);_queue_storm_trigger(state,player,card,stack_item);card.pop("cast_source_zone",None)
