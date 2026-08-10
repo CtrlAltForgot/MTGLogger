@@ -2016,6 +2016,12 @@ def _multi_target_step_variants(state:dict,caster_id:str,card:dict)->list[list[d
             targeting={**card,"oracle_text":f"Destroy target {kind}."};targets=_targets(state,caster_id,targeting)
             steps.append({"label":f"Choose an {kind} (or none)","targets":targets,"convert_kind":kind})
         return [[steps[index] for index in range(3) if index in selected] for count in range(4) for selected in combinations(range(3),count) if all(steps[index]["targets"] for index in selected)]
+    if "return up to one target creature card and up to one target land card from your graveyard to your hand" in text:
+        player=_player(state,caster_id);steps=[]
+        for kind in ("creature","land"):
+            targets=[{"id":candidate["instance_id"],"name":candidate["name"],"kind":"graveyard","controller_id":caster_id} for candidate in player["graveyard"] if kind.title() in candidate.get("type_line","")]
+            steps.append({"label":f"Choose a {kind} card (or none)","targets":targets,"graveyard_kind":kind})
+        return [[steps[index] for index in range(2) if index in selected] for count in range(3) for selected in combinations(range(2),count) if all(steps[index]["targets"] for index in selected)]
     match=re.search(r"\b(tap|untap) (up to )?(two|three|four|\d+) target (creatures|lands)\b",text);damage=re.search(r"deals (\d+) damage to each of up to (two|three|four|\d+) targets?",text)
     if match:
         maximum=words.get(match.group(3),int(match.group(3)) if match.group(3).isdigit() else 0);minimum=1 if match.group(2) else maximum;kind="creature" if match.group(4)=="creatures" else "land";targeting={**card,"oracle_text":f"{match.group(1).title()} target {kind}."}
@@ -2671,7 +2677,7 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
             selection_costs=ability.get("selection_costs",[]);selection_has_x=any(cost["amount"]=="X" for cost in selection_costs);cost_requirements,cost_combinations=_selection_cost_combinations(player,permanent,selection_costs)
             if selection_costs and not selection_has_x and not cost_combinations:continue
             cost_options=list(dict.fromkeys(card_id for requirement in cost_requirements for card_id in requirement["options"]))
-            fight_steps=_fight_target_steps(state,player_id,ability["card"],permanent);multi_requested=bool(re.search(r"\b(?:tap|untap) (?:up to )?(?:two|three|four|\d+) target (?:creatures|lands)\b",ability["effect"],re.IGNORECASE));multi_variants=_multi_target_step_variants(state,player_id,ability["card"]) if multi_requested else [];targets=[] if fight_steps or multi_requested else _targets(state, player_id, ability["card"])
+            fight_steps=_fight_target_steps(state,player_id,ability["card"],permanent);multi_requested=bool(re.search(r"\b(?:tap|untap) (?:up to )?(?:two|three|four|\d+) target (?:creatures|lands)\b",ability["effect"],re.IGNORECASE) or "return up to one target creature card and up to one target land card from your graveyard to your hand" in ability["effect"].casefold());multi_variants=_multi_target_step_variants(state,player_id,ability["card"]) if multi_requested else [];targets=[] if fight_steps or multi_requested else _targets(state, player_id, ability["card"])
             if (fight_steps and any(not step["targets"] for step in fight_steps)) or (multi_requested and not multi_variants) or (not fight_steps and not multi_requested and _target_kind(ability["card"]) and not targets): continue
             fixed_cost_amount=sum(cost["amount"] for cost in selection_costs if cost["amount"]!="X");action = {"type": "activate", "card_id": permanent["instance_id"], "ability_index": index, "label": f"{ability['cost']}: {ability['effect']}","life_cost":ability["life_cost"],"energy_cost":energy_cost,"self_sacrifice":ability["self_sacrifice"],"counter_cost":ability["counter_cost"],"cost_kind":selection_costs[0]["kind"] if len(selection_costs)==1 else "compound" if selection_costs else None,"cost_amount":fixed_cost_amount,"cost_options":cost_options,"cost_requirements":cost_requirements,"cost_combinations":cost_combinations,"selection_x":selection_has_x,"generic_reduction":reduction}
             if len(selection_costs)==1 and selection_costs[0]["kind"]=="blight":action["blight_amount"]=selection_costs[0]["blight_amount"]
@@ -2903,7 +2909,9 @@ def _resolve_spell(state: dict) -> None:
     if multi_damage_target:targeting_card={**targeting_card,"oracle_text":f"This spell deals {multi_damage_target.group(1)} damage to any target."}
     target_kind=_target_kind(targeting_card);target_id=item.get("target_id")
     source_permanent=next((permanent for player in state["players"] for permanent in player["battlefield"] if permanent["instance_id"]==item.get("source_id")),None);target_ids=item.get("target_ids") or [];fight_steps=_fight_target_steps(state,caster["id"],rules_card,source_permanent);valid_fight_ids=[target_value for position,target_value in enumerate(target_ids) if position<len(fight_steps) and target_value in {target["id"] for target in fight_steps[position]["targets"]}]
-    convert_to_slime="destroy up to one target artifact, up to one target creature, and up to one target enchantment" in (rules_card.get("oracle_text") or "").casefold();valid_multi_ids=[target_value for target_value in target_ids if target_value in ({permanent["instance_id"] for owner in state["players"] for permanent in owner["battlefield"]} if convert_to_slime else {target["id"] for target in _targets(state,caster["id"],targeting_card)})] if target_ids and not fight_steps else []
+    rules_text=(rules_card.get("oracle_text") or "").casefold();convert_to_slime="destroy up to one target artifact, up to one target creature, and up to one target enchantment" in rules_text;crop_sigil_return="return up to one target creature card and up to one target land card from your graveyard to your hand" in rules_text
+    valid_pool={permanent["instance_id"] for owner in state["players"] for permanent in owner["battlefield"]} if convert_to_slime else {candidate["instance_id"] for candidate in caster["graveyard"] if any(kind in candidate.get("type_line","") for kind in ("Creature","Land"))} if crop_sigil_return else {target["id"] for target in _targets(state,caster["id"],targeting_card)}
+    valid_multi_ids=[target_value for target_value in target_ids if target_value in valid_pool] if target_ids and not fight_steps else []
     if item.get("kind")=="trigger" and source_permanent and "sacrifice it unless it escaped" in (card.get("oracle_text") or "").casefold():
         if not source_permanent.get("escaped"):
             owner=next(owner for owner in state["players"] if source_permanent in owner["battlefield"]);_leave_battlefield(state,owner,source_permanent,"graveyard");_log(state,f"{source_permanent['name']} was sacrificed because it did not escape.")
@@ -2973,6 +2981,10 @@ def _resolve_spell(state: dict) -> None:
     target_stack_item = next((entry for entry in state["stack"] if entry["id"] == target_id), None)
     graveyard_owner=next((player for player in state["players"] if any(graveyard_card["instance_id"]==target_id for graveyard_card in player["graveyard"])),None)
     graveyard_target=next((graveyard_card for player in state["players"] for graveyard_card in player["graveyard"] if graveyard_card["instance_id"]==target_id),None)
+    if crop_sigil_return:
+        returning=[candidate for candidate in list(caster["graveyard"]) if candidate["instance_id"] in set(target_ids) and any(kind in candidate.get("type_line","") for kind in ("Creature","Land"))]
+        if returning:_leave_graveyard(state,caster,returning);caster["hand"].extend(returning)
+        _log(state,f"{card['name']} returned {len(returning)} card(s) from the graveyard to {caster['name']}'s hand.");return
     multi_damage=re.search(r"deals (\d+) damage to each of (?:them|up to (?:two|three|four|\d+) targets?)",effect_text)
     if target_ids and re.search(r"return up to (?:two|three|four|\d+) target non-spacecraft creatures? to their owners'? hands",effect_text):
         returned=0
