@@ -198,6 +198,10 @@ def _sync_city_blessing(state:dict)->None:
                 for source in source_owner["battlefield"]:
                     chosen=(source.get("chosen_creature_type") or "").casefold()
                     if chosen and source.get("controller_id",source_owner["id"])==controller_id and controller_id in blessed and "they also have vigilance" in (source.get("oracle_text") or "").casefold() and re.search(rf"\b{re.escape(chosen)}\b",card.get("type_line","").casefold()):granted.append("Vigilance")
+                    text=(source.get("oracle_text") or "").casefold();card_types=card.get("type_line","").casefold()
+                    if source.get("controller_id",source_owner["id"])==controller_id and "land" in card_types and "creature" in card_types:
+                        for keyword in ("trample","vigilance"):
+                            if f"land creatures you control have {keyword}" in text:granted.append(keyword.title())
             card["continuous_keywords"]=sorted(set(granted))
 
 
@@ -1556,6 +1560,7 @@ def _target_kind(card: dict) -> str | None:
     if re.search(r"\bairbend (?:up to one )?target spell\b",text):return "spell"
     if re.search(r"\bairbend (?:up to one )?target creature\b",text):return "creature"
     if re.search(r"\bearthbend\s+(?:\d+|x)\b",text):return "land"
+    if re.search(r"\btarget land you control become a \d+/\d+",text):return "land"
     if re.search(r"target creature card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_creature"
     if re.search(r"target (?:nonland permanent |nonland )?card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_card"
     if "target face-down permanent you control" in text:return "permanent"
@@ -2637,6 +2642,11 @@ def _resolve_spell(state: dict) -> None:
     experience_match=re.search(r"\byou get (?:an?|one) experience counter\b",effect_text)
     if experience_match:
         caster["experience"]=caster.get("experience",0)+1;_log(state,f"{caster['name']} got an experience counter.")
+    animate_land=re.search(r"target land you control become a (\d+)/(\d+) ([a-z ]+?) creature with haste until end of turn",effect_text)
+    if animate_land and target and target_owner and "Land" in target.get("type_line","") and target.get("controller_id")==caster["id"]:
+        if target.get("temporary_type_line") is None:target["temporary_type_line"]=target.get("type_line","")
+        parts=target["temporary_type_line"].split(" — ",1);subtypes=f"{parts[1]} {animate_land.group(3).title()}" if len(parts)>1 else animate_land.group(3).title();target["type_line"]=f"{parts[0]} Creature — {subtypes}"
+        target["temporary_base_power"]=int(animate_land.group(1));target["temporary_base_toughness"]=int(animate_land.group(2));target["temporary_keywords"]=sorted(set(target.get("temporary_keywords",[]))|{"Haste"});_sync_city_blessing(state);_log(state,f"{target['name']} became a {animate_land.group(1)}/{animate_land.group(2)} {animate_land.group(3).title()} land creature with haste until end of turn.")
     earthbend=_earthbend_value(rules_card,caster)
     if earthbend is not None and target and target_owner and "Land" in target.get("type_line","") and target["controller_id"]==caster["id"]:
         if not target.get("earthbent"):
@@ -3692,10 +3702,12 @@ def _begin_next_turn(state:dict)->None:
     for owner in state["players"]:
         owner["firebending_mana"]=0;owner["any_color_mana"]=0;owner["bent_this_turn"]=[];owner["energy_paid_this_turn"]=0
         for permanent in owner["battlefield"]:
+            if permanent.get("temporary_type_line") is not None:permanent["type_line"]=permanent.pop("temporary_type_line")
             permanent.pop("temporary_power",None);permanent.pop("temporary_toughness",None);permanent.pop("temporary_base_power",None);permanent.pop("temporary_base_toughness",None);permanent.pop("temporary_keywords",None);permanent.pop("temporary_removed_keywords",None);permanent.pop("temporary_backup_rules",None);permanent.pop("cant_attack_until_turn",None);permanent.pop("cant_block_until_turn",None);permanent.pop("must_block_source_ids",None);permanent.pop("attacks_this_turn",None);permanent.pop("regeneration_shields",None);permanent.pop("deathtouch_damage",None);permanent.pop("crewed_turn",None);permanent["damage"]=0
             if permanent.get("goaded_until_turn",0)<state["turn"]:permanent.pop("goaded_until_turn",None);permanent.pop("goaded_by",None)
             if permanent.get("hexproof_until_turn",0)<state["turn"]:permanent.pop("hexproof_until_turn",None)
             if permanent.get("base_type_line") is not None:permanent["type_line"]=permanent.pop("base_type_line")
+    _sync_city_blessing(state)
     _set_tapped(state,list(active["battlefield"]),False,active["id"],"untap_step")
     for permanent in active["battlefield"]:permanent["summoning_sick"]=False
     _log(state, f"Turn {state['turn']} began for {active['name']}. Untap and upkeep started.")
