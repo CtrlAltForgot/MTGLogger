@@ -431,7 +431,10 @@ def _parse_stats(card: dict,state:dict|None=None) -> tuple[int, int]:
             if blessing:blessing_power,blessing_toughness=int(blessing.group(1)),int(blessing.group(2))
         basic_bonus=int(card.get("controller_basic_land_count",0)) if "gets +1/+1 for each basic land you control" in _active_level_text(card).casefold() else 0;artifact_bonus=int(card.get("controller_artifact_count",0)) if "gets +1/+0 for each artifact you control" in _active_level_text(card).casefold() else 0
         opposing_black_bonus=int(card.get("opponent_black_permanent_count",0)) if "gets +1/+1 for each black permanent your opponents control" in _active_level_text(card).casefold() else 0
-        return base_power + plus - minus + card.get("temporary_power", 0)+static_power+blessing_power+speed_static[0]+basic_bonus+artifact_bonus+opposing_black_bonus, base_toughness + plus - minus + card.get("temporary_toughness", 0)+static_toughness+blessing_toughness+speed_static[1]+basic_bonus+opposing_black_bonus
+        rising_dawn=0
+        if state and any("where x is the number of permanents you control that are spirits and/or enchantments" in rules.casefold() for rules in card.get("attachment_rules",{}).values()):
+            controller=_player(state,card.get("controller_id",card.get("owner_id")));rising_dawn=sum("Spirit" in permanent.get("type_line","") or "Enchantment" in permanent.get("type_line","") for permanent in controller["battlefield"])
+        return base_power + plus - minus + card.get("temporary_power", 0)+static_power+blessing_power+speed_static[0]+basic_bonus+artifact_bonus+opposing_black_bonus+rising_dawn, base_toughness + plus - minus + card.get("temporary_toughness", 0)+static_toughness+blessing_toughness+speed_static[1]+basic_bonus+opposing_black_bonus+rising_dawn
     except ValueError:
         return 0, 0
 
@@ -993,7 +996,7 @@ def _aura_allowed_types(card:dict)->set[str]:
 
 def _effective_rules_text(state:dict,card:dict)->str:
     attachment_texts=[_active_level_text(attachment) for owner in state["players"] for attachment in owner["battlefield"] if attachment.get("attached_to")==card.get("instance_id")]
-    text="\n".join([_active_level_text(card),*(card.get("temporary_backup_rules") or []),*attachment_texts]);blessed=_player(state,card.get("controller_id",card.get("owner_id"))).get("city_blessing")
+    text="\n".join([_active_level_text(card),*(card.get("temporary_backup_rules") or []),*card.get("attachment_rules",{}).values(),*attachment_texts]);blessed=_player(state,card.get("controller_id",card.get("owner_id"))).get("city_blessing")
     clauses=re.split(r"(?<=[.!])\s+|\n",text);visible=[clause for clause in clauses if blessed or "city's blessing" not in clause.casefold() or "unless you have the city's blessing" in clause.casefold()]
     return "\n".join(visible).casefold()
 
@@ -1026,7 +1029,10 @@ def _can_block_pair(state:dict,attacker:dict,blocker:dict)->bool:
         if not conditional:return False
     elif conditional:return False
     if "can't block" in blocker_text and "can't attack or block alone" not in blocker_text and "can't attack or block unless" not in blocker_text and "can't block or be blocked by non-spirit creatures" not in blocker_text:return False
-    if "can't be blocked" in attacker_text and "can't be blocked by" not in attacker_text or "unblockable" in attacker_text:return False
+    if "can block only creatures with flying" in blocker_text and not _has_keyword(attacker,"Flying"):return False
+    if re.search(r"can't be blocked as long as it.s attacking alone",attacker_text) and len(state.get("combat",{}).get("attackers",[]))==1:return False
+    if "unblockable" in attacker_text:return False
+    if "can't be blocked" in attacker_text and "can't be blocked by" not in attacker_text and not re.search(r"can't be blocked as long as it.s attacking alone",attacker_text):return False
     attacker_controller=_player(state,attacker.get("controller_id"));attacker_type=attacker.get("type_line","").casefold()
     if attacker_controller.get("city_blessing") and any("detectives you control can't be blocked" in (source.get("oracle_text") or "").casefold() for source in attacker_controller["battlefield"]) and "detective" in attacker_type:return False
     if "can't be blocked by non-spirit creatures" in attacker_text and "spirit" not in blocker.get("type_line","").casefold():return False
@@ -1117,6 +1123,8 @@ def _protection_text_matches(text:str,source:dict)->bool:
     source_types=(source.get("source_type_line") or source.get("type_line","")).casefold()
     for kind in ("artifact","creature","enchantment","instant","land","planeswalker","sorcery"):
         if kind in source_types and re.search(rf"protection from (?:all )?{kind}s?\b",text):return True
+    subtypes=source_types.split("—",1)[1] if "—" in source_types else ""
+    if any(re.search(rf"protection from (?:all )?{re.escape(subtype)}s?\b",text) for subtype in re.findall(r"[a-z][a-z'-]*",subtypes)):return True
     return len(colors)>1 and "protection from multicolored" in text
 
 
@@ -2180,6 +2188,9 @@ def _queue_ward(state:dict,caster:dict,target_id:str|None,stack_item:dict)->None
     if not target_id:return
     target_owner=next((owner for owner in state["players"] if any(card["instance_id"]==target_id for card in owner["battlefield"])),None)
     target=next((card for owner in state["players"] for card in owner["battlefield"] if card["instance_id"]==target_id),None);details=_ward_details(target or {})
+    if target and target_owner and not details and "Creature" in target.get("type_line",""):
+        ward_source=next((permanent for permanent in target_owner["battlefield"] if "each creature you control has ward {1}" in _active_level_text(permanent).casefold()),None)
+        if ward_source:details={"cost_type":"mana","mana_cost":"{1}","amount":0,"label":"{1}"}
     if target and target_owner:_queue_triggers(state,"targeted",target,target_owner)
     if target and target_owner and target_owner["id"]!=caster["id"] and details:
         entry={"player_id":caster["id"],"stack_id":stack_item["id"],"source_name":target["name"],**details}
