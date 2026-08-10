@@ -777,6 +777,47 @@ def _squad_cost(card:dict)->str|None:
     return match.group(1).upper() if match else None
 
 
+def _craft_ability(card:dict)->dict|None:
+    match=re.search(r"(?:^|\n)Craft with (.+?)\s+((?:\{[^}]+\})+)(?:\s|$)",card.get("oracle_text") or "",re.IGNORECASE)
+    if not match:return None
+    descriptor=match.group(1).strip().casefold();minimum=maximum=1
+    if descriptor.startswith("one or more"):minimum,maximum=1,99
+    elif descriptor.startswith("four or more"):minimum,maximum=4,99
+    elif descriptor.startswith("two ") or descriptor=="two that share a card type":minimum=maximum=2
+    elif descriptor.startswith("six "):minimum=maximum=6
+    elif "a dinosaur, a merfolk, a pirate, and a vampire" in descriptor:minimum=maximum=4
+    return {"descriptor":descriptor,"mana_cost":match.group(2).upper(),"min":minimum,"max":maximum}
+
+
+def _craft_card_types(card:dict)->set[str]:
+    return {kind for kind in ("Artifact","Battle","Creature","Enchantment","Instant","Kindred","Land","Planeswalker","Sorcery","Tribal") if re.search(rf"\b{kind}\b",card.get("type_line","").split("—",1)[0],re.IGNORECASE)}
+
+
+def _craft_candidates(player:dict,source:dict,spec:dict)->list[dict]:
+    descriptor=spec["descriptor"];candidates=[card for card in [*player["battlefield"],*player["graveyard"]] if card is not source and card.get("instance_id")!=source.get("instance_id")]
+    def eligible(card:dict)->bool:
+        type_line=card.get("type_line","");text=card.get("oracle_text") or ""
+        if "red instant and/or sorcery" in descriptor:return card in player["graveyard"] and "R" in set(card.get("colors") or []) and any(kind in type_line for kind in ("Instant","Sorcery"))
+        if "nonlands with activated abilities" in descriptor:return "Land" not in type_line and re.search(r"(?:^|\n)[^\n:]+:\s*",text) is not None
+        if "a dinosaur, a merfolk, a pirate, and a vampire" in descriptor:return any(re.search(rf"\b{kind}\b",type_line,re.IGNORECASE) for kind in ("Dinosaur","Merfolk","Pirate","Vampire"))
+        if "share a card type" in descriptor:return bool(_craft_card_types(card))
+        if "dinosaur" in descriptor:return re.search(r"\bDinosaur\b",type_line,re.IGNORECASE) is not None
+        if "artifact" in descriptor:return "Artifact" in type_line
+        if "creature" in descriptor:return "Creature" in type_line
+        if descriptor=="cave":return re.search(r"\bCave\b",type_line,re.IGNORECASE) is not None
+        if descriptor=="island":return re.search(r"\bIsland\b",type_line,re.IGNORECASE) is not None
+        return descriptor=="one or more"
+    return [card for card in candidates if eligible(card)]
+
+
+def _craft_selection_valid(spec:dict,selected:list[dict])->bool:
+    if not spec["min"]<=len(selected)<=spec["max"] or len({card["instance_id"] for card in selected})!=len(selected):return False
+    descriptor=spec["descriptor"]
+    if "share a card type" in descriptor:return bool(set.intersection(*(_craft_card_types(card) for card in selected)))
+    if "a dinosaur, a merfolk, a pirate, and a vampire" in descriptor:return all(any(re.search(rf"\b{kind}\b",card.get("type_line",""),re.IGNORECASE) for card in selected) for kind in ("Dinosaur","Merfolk","Pirate","Vampire"))
+    return True
+
+
 def _overload_cost(card:dict)->str|None:
     match=re.search(r"(?:^|\n)Overload\s+((?:\{[^}]+\})+)",card.get("oracle_text") or "",re.IGNORECASE)
     return match.group(1).upper() if match else None
@@ -2952,6 +2993,11 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
                 ability=_ninjutsu_ability(ninja)
                 if ability and _can_pay(player,{"mana_cost":ability["mana_cost"]}):actions.append({"type":"ninjutsu","card_id":ninja["instance_id"],"source":source,"mana_cost":ability["mana_cost"],"targets":targets,"label":f"{'Commander ' if ability['commander'] else ''}Ninjutsu {ninja['name']} · {ability['mana_cost']} · return an unblocked attacker"})
     if active and main and not state["stack"]:
+        for permanent in player["battlefield"]:
+            craft=_craft_ability(permanent)
+            if not craft or not _can_pay(player,{"mana_cost":craft["mana_cost"]}):continue
+            candidates=_craft_candidates(player,permanent,craft);maximum=min(craft["max"],len(candidates));has_valid=any(_craft_selection_valid(craft,list(group)) for amount in range(craft["min"],maximum+1) for group in combinations(candidates,amount))
+            if has_valid:actions.append({"type":"craft","card_id":permanent["instance_id"],"source":"craft","mana_cost":craft["mana_cost"],"cost_kind":"craft","cost_amount":craft["min"],"cost_min_amount":craft["min"],"cost_max_amount":maximum,"cost_options":[candidate["instance_id"] for candidate in candidates],"label":f"Craft {permanent['name']} with {craft['descriptor']} · {craft['mana_cost']}"})
         station_creatures=[candidate for candidate in player["battlefield"] if "Creature" in candidate.get("type_line","") and not candidate.get("tapped")]
         for permanent in player["battlefield"]:
             if not re.search(r"(?:^|\n)Station\b",permanent.get("oracle_text") or "",re.IGNORECASE):continue
@@ -4352,7 +4398,7 @@ def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str, t
         return
     blitzed=bool(card.get("blitzed") and destination=="graveyard" and "Creature" in card.get("type_line",""));blitz_controller=card.get("controller_id",owner["id"])
     card["damage"] = 0; card["tapped"] = False;card.pop("escaped",None);card.pop("disturbed",None);card.pop("evoked",None);card.pop("echo_due_controller_id",None);card.pop("dashed",None);card.pop("dash_return_triggered",None);card.pop("blitzed",None);card.pop("blitz_controller_id",None);card.pop("blitz_sacrifice_turn",None);card.pop("deathtouch_damage",None);card.pop("crewed_turn",None);card.pop("temporary_control_return_to",None);card.pop("control_while_source_id",None);card.pop("control_return_to_id",None);card.pop("activated_ability_usage",None);card.pop("temporary_power",None);card.pop("temporary_toughness",None);card.pop("temporary_base_power",None);card.pop("temporary_base_toughness",None);card.pop("temporary_keywords",None);card.pop("until_next_turn_keywords",None);card.pop("until_next_turn_player_id",None);card.pop("cant_be_blocked_until_turn",None);card.pop("max_blocker_power_until_turn",None);card.pop("max_blocker_power",None);card.pop("temporary_removed_keywords",None);card.pop("temporary_backup_rules",None);card.pop("temporary_protection_colors",None);card.pop("unearthed",None);card.pop("unearth_controller_id",None);card.pop("unearth_end_triggered",None);card.pop("populate_sacrifice_turn",None);card.pop("monstrous",None);card.pop("monstrosity_value",None)
-    card.pop("damage_prevention",None);card.pop("damage_source_ids_turn",None)
+    card.pop("damage_prevention",None);card.pop("damage_source_ids_turn",None);card.pop("crafted_with_cards",None);card.pop("crafted_with_ids",None)
     if card.get("face_down"):
         values=card.pop("face_down_values",{})
         for key,value in values.items():card[key]=value
@@ -5926,6 +5972,17 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         card=next((candidate for candidate in player["graveyard"] if candidate["instance_id"]==action.get("card_id")),None);available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="activate_speed_graveyard" and entry["card_id"]==action.get("card_id")),None)
         if not card or not available:raise RuleViolation("That max-speed graveyard ability cannot be activated")
         _pay_mana(state,player,{"mana_cost":"{3}"});_leave_graveyard(state,player,[card]);_put_into_exile(state,player,[card],"graveyard",player_id);_draw(state,player);state["consecutive_passes"]=0;state["pending_phase_advance"]=False;_log(state,f"{player['name']} exiled {card['name']} from their graveyard and drew a card at max speed.")
+    elif action_type=="craft":
+        source=next((card for card in player["battlefield"] if card["instance_id"]==action.get("card_id")),None);available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="craft" and entry["card_id"]==action.get("card_id")),None);selected_ids=action.get("cost_card_ids") or []
+        if not source or not available:raise RuleViolation("That permanent cannot be crafted now")
+        craft=_craft_ability(source);candidates=_craft_candidates(player,source,craft or {});candidate_by_id={card["instance_id"]:card for card in candidates};selected=[candidate_by_id[card_id] for card_id in selected_ids if card_id in candidate_by_id]
+        if not craft or len(selected)!=len(selected_ids) or not _craft_selection_valid(craft,selected):raise RuleViolation("Choose cards that satisfy the Craft cost")
+        _pay_mana(state,player,{"mana_cost":craft["mana_cost"]});crafted_cards=deepcopy(selected);source_owner=_player(state,source.get("owner_id",player_id));_leave_battlefield(state,player,source,"exile",exile_actor_id=player_id)
+        for material in selected:
+            if material in player["battlefield"]:_leave_battlefield(state,player,material,"exile",exile_actor_id=player_id)
+            elif material in player["graveyard"]:_leave_graveyard(state,player,[material]);_put_into_exile(state,player,[material],"graveyard",player_id)
+        if source not in source_owner["exile"]:raise RuleViolation("The Craft source did not remain in exile")
+        _leave_exile(state,source_owner,[source]);source["crafted_with_cards"]=crafted_cards;source["crafted_with_ids"]=[card["instance_id"] for card in crafted_cards];source["controller_id"]=source_owner["id"];source["summoning_sick"]=True;source["tapped"]=False;source["counters"]={};_set_card_face(source,1);_enter_battlefield(state,source_owner,[source],"exile");state["consecutive_passes"]=0;state["pending_phase_advance"]=False;_log(state,f"{player['name']} crafted {source['name']} with {len(selected)} exiled card{'s' if len(selected)!=1 else ''}.")
     elif action_type=="station":
         permanent=next((card for card in player["battlefield"] if card["instance_id"]==action.get("card_id") and re.search(r"(?:^|\n)Station\b",card.get("oracle_text") or "",re.IGNORECASE)),None);selected=action.get("cost_card_ids") or []
         available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="station" and entry["card_id"]==action.get("card_id")),None)
