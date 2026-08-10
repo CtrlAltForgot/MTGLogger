@@ -1978,7 +1978,7 @@ def _target_kind(card: dict) -> str | None:
     if "target creature or planeswalker" in text:return "creature_or_planeswalker"
     if "target creature or vehicle" in text:return "creature_or_vehicle"
     if re.search(r"role token attached to target creature",text):return "creature"
-    if re.search(r"target player mills?", text): return "player"
+    if re.search(r"target (?:player|opponent) mills?", text): return "player"
     if "target opponent's library" in text:return "player"
     if re.search(r"target player sacrifices?",text):return "player"
     if re.search(r"target player discards?",text):return "player"
@@ -3747,6 +3747,11 @@ def _resolve_spell(state: dict) -> None:
     elif "double the number of +1/+1 counters on that creature" in effect_text and target:_add_counters(state,target,"+1/+1",target.get("counters",{}).get("+1/+1",0),caster["id"],"effect")
     elif source_permanent and "double the number of +1/+1 counters on this creature" in effect_text:_add_counters(state,source_permanent,"+1/+1",source_permanent.get("counters",{}).get("+1/+1",0),caster["id"],"effect")
     mill_match = re.search(r"target player mills? (\d+|one|two|three|four|five|six|seven|eight|nine|ten) cards?", effect_text)
+    half_library_mill=target_player and "target opponent mills half their library, rounded down" in effect_text
+    if half_library_mill:
+        amount=len(target_player["library"])//2
+        for _ in range(amount):target_player["graveyard"].append(target_player["library"].pop())
+        _log(state,f"{target_player['name']} milled half their library, {amount} card(s).")
     each_opponent_mill=re.search(r"each opponent mills? (\d+|one|two|three|four|five|six|seven|eight|nine|ten) cards?",effect_text)
     if each_opponent_mill:
         words={"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10};amount=words.get(each_opponent_mill.group(1),int(each_opponent_mill.group(1)) if each_opponent_mill.group(1).isdigit() else 0)
