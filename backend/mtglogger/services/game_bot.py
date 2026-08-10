@@ -234,6 +234,14 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
             best=max(by_type["choose_same_name_cards"],key=lambda entry:float((entry.get("card") or {}).get("mana_value") or 0));return {"type":"choose_same_name_cards","card_id":best["card_id"]}
         return {"type":"choose_same_name_cards","card_ids":action.get("card_ids",[])}
     if "choose_winter_exile" in by_type:return {"type":"choose_winter_exile","card_ids":by_type["choose_winter_exile"][0].get("card_ids",[])}
+    if "cast_miracle" in by_type or "decline_miracle" in by_type:
+        if "cast_miracle" not in by_type:return by_type["decline_miracle"][0]
+        choice=max(by_type["cast_miracle"],key=lambda action:_ability_score(state,action))
+        if choice.get("x_max") is not None:
+            choice={**choice,"x_value":_choose_x(state,choice)};choice["target_steps"]=(choice.get("target_steps_by_x") or {}).get(choice["x_value"],choice.get("target_steps",[]))
+        if choice.get("targets"):choice={**choice,"target_id":_choose_target(state,choice)}
+        if choice.get("target_steps"):choice={**choice,"target_ids":_choose_fight_targets(state,choice)}
+        return choice
     if "encore" in by_type:return max(by_type["encore"],key=lambda action:float((_card(state,"bot",action["card_id"])).get("mana_value") or 0))
     for alternate_type in ("cast_after_adventure","cast_adventure","cast_disturb"):
         if alternate_type in by_type:

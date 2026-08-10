@@ -44,6 +44,9 @@ def _draw(state: dict, player: dict, amount: int = 1,emit_events:bool=True) -> N
         if emit_events:
             if player.get("draw_event_turn")!=state["turn"]:player["draw_event_turn"]=state["turn"];player["draws_this_turn"]=0
             player["draws_this_turn"]=player.get("draws_this_turn",0)+1
+            miracle_cost=_miracle_cost(drawn)
+            if player["draws_this_turn"]==1 and miracle_cost and not state.get("pending_miracle"):
+                state["pending_miracle"]={"player_id":player["id"],"card_id":drawn["instance_id"],"card":deepcopy(drawn),"mana_cost":miracle_cost};state["priority_player_id"]=player["id"]
             _queue_triggers(state,"draw",drawn,player,trigger_dedupe)
 
 
@@ -843,6 +846,11 @@ def _blitz_ability(card:dict)->dict|None:
     mana=re.search(r"Blitz\s*[—-]*\s*((?:\{[^}]+\})+)",line,re.IGNORECASE);life=re.search(r"Pay (\d+) life",line,re.IGNORECASE)
     if not mana:return None
     return {"mana_cost":mana.group(1).upper(),"discard_count":1 if re.search(r"Discard a card",line,re.IGNORECASE) else 0,"life_cost":int(life.group(1)) if life else 0}
+
+
+def _miracle_cost(card:dict)->str|None:
+    match=re.search(r"(?:^|\n)Miracle\s+((?:\{[^}]+\})+)",card.get("oracle_text") or "",re.IGNORECASE)
+    return match.group(1).upper() if match else None
 
 
 def _dash_reduction(player:dict)->int:
@@ -1899,6 +1907,7 @@ def new_game(player_deck: list[dict], opponent_deck: list[dict], play_first: boo
     state["pending_explore"]=None;state["pending_explore_queue"]=[]
     state["pending_connive"]=None;state["pending_connive_queue"]=[]
     state["pending_zethi_copies"]=None
+    state["pending_miracle"]=None
     state["day_night"]=None
     for player in players:
         _draw(state, player, 7,False)
@@ -1931,6 +1940,9 @@ def public_state(state: dict, viewer_id: str = "player") -> dict:
     if pending_zone and pending_zone.get("player_id")!=viewer_id:pending_zone["card_ids"]=[]
     pending_top=visible.get("pending_top_card_choice")
     if pending_top and pending_top.get("player_id")!=viewer_id:pending_top.pop("card",None)
+    pending_miracle=visible.get("pending_miracle")
+    if pending_miracle and pending_miracle.get("player_id")!=viewer_id:
+        for key in ("card_id","card","mana_cost"):pending_miracle.pop(key,None)
     pending_revealed=visible.get("pending_revealed_discard")
     if pending_revealed and pending_revealed.get("player_id")!=viewer_id:pending_revealed["cards"]=[]
     pending_same_name=visible.get("pending_same_name_search")
@@ -2230,7 +2242,7 @@ def _pending_decision(state:dict)->bool:
     if state.get("pending_zone_choice"):return True
     if state.get("pending_counter_choice"):return True
     if state.get("pending_color_choice"):return True
-    return bool(state.get("pending_impulsivity") or state.get("pending_library_placement") or state.get("pending_sticktwister") or state.get("pending_eumidian_choice") or state.get("pending_rad_choice") or state.get("pending_top_card_choice") or state.get("pending_revealed_discard") or state.get("pending_same_name_search") or state.get("pending_winter_exile") or state.get("pending_optional_discard") or state.get("pending_optional_payment") or state.get("pending_tilonalli") or state.get("pending_creature_type") or state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_populate") or state.get("pending_bolster") or state.get("pending_discovery") or state.get("pending_madness") or state.get("pending_rebound") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
+    return bool(state.get("pending_miracle") or state.get("pending_impulsivity") or state.get("pending_library_placement") or state.get("pending_sticktwister") or state.get("pending_eumidian_choice") or state.get("pending_rad_choice") or state.get("pending_top_card_choice") or state.get("pending_revealed_discard") or state.get("pending_same_name_search") or state.get("pending_winter_exile") or state.get("pending_optional_discard") or state.get("pending_optional_payment") or state.get("pending_tilonalli") or state.get("pending_creature_type") or state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_populate") or state.get("pending_bolster") or state.get("pending_discovery") or state.get("pending_madness") or state.get("pending_rebound") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
 
 
 def _split_second_on_stack(state:dict)->bool:
@@ -2285,6 +2297,22 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
     if state["status"] == "complete":
         return []
     player = _player(state, player_id)
+    pending_miracle=state.get("pending_miracle")
+    if pending_miracle:
+        if pending_miracle["player_id"]!=player_id:return []
+        candidate=next((card for card in player["hand"] if card["instance_id"]==pending_miracle["card_id"]),None);actions=[]
+        if candidate:
+            cost_card={**candidate,"mana_cost":pending_miracle["mana_cost"]};targeting_card=_spell_targeting_card(candidate);targets=_targets(state,player_id,targeting_card);required=bool(_target_kind(targeting_card));variants=_multi_target_step_variants(state,player_id,candidate)
+            action={"type":"cast_miracle","card_id":candidate["instance_id"],"card":candidate,"mana_cost":pending_miracle["mana_cost"],"label":f"Cast {candidate['name']} for Miracle {pending_miracle['mana_cost']}"}
+            if _has_x_cost(cost_card):
+                maximum=_maximum_x(player,cost_card);action.update({"x_min":0,"x_max":maximum})
+                if re.search(r"return X target creature cards from your graveyard",candidate.get("oracle_text") or "",re.IGNORECASE):
+                    graveyard_targets=_targets(state,player_id,{**candidate,"oracle_text":"Return target creature card from your graveyard to the battlefield."});maximum=min(maximum,len(graveyard_targets));action["x_max"]=maximum;action["target_steps_by_x"]={value:[{"label":f"Choose creature card {position+1} of {value}","targets":graveyard_targets,"distinct":True} for position in range(value)] for value in range(maximum+1)}
+            if _can_pay(player,cost_card,x_value=0) or _has_x_cost(cost_card) and action.get("x_max",-1)>=0:
+                if variants:
+                    actions.extend({**action,"target_steps":steps,"target_count":len(steps),"allow_zero_targets":not steps} for steps in variants)
+                elif not required or targets:actions.append({**action,**({"targets":targets} if targets else {})})
+        actions.append({"type":"decline_miracle","card_id":pending_miracle["card_id"],"card":pending_miracle["card"],"label":f"Keep {pending_miracle['card']['name']} in hand"});return actions+[{"type":"concede"}]
     pending_placement=state.get("pending_library_placement")
     if pending_placement:
         if pending_placement["player_id"]!=player_id:return []
@@ -3177,12 +3205,12 @@ def _resolve_spell(state: dict) -> None:
     if burn_together and len(target_ids)==2 and target_ids[0]!=target_ids[1]:
         source_candidate=next((permanent for permanent in caster["battlefield"] if permanent["instance_id"]==target_ids[0] and "Creature" in permanent.get("type_line","")),None);damage_ids={target["id"] for target in _targets(state,caster["id"],{**rules_card,"oracle_text":"This spell deals 1 damage to any target."})}
         valid_fight_ids=target_ids if source_candidate and target_ids[1] in damage_ids else []
-    convert_to_slime="destroy up to one target artifact, up to one target creature, and up to one target enchantment" in rules_text;crop_sigil_return="return up to one target creature card and up to one target land card from your graveyard to your hand" in rules_text;castigator_shuffle="shuffle up to three target cards from your graveyard into your library" in rules_text;flytrap_distribution="distribute two +1/+1 counters among one or two target creatures" in rules_text and "omnivorous flytrap" in f"{card.get('name','')} {(source_permanent or {}).get('name','')}".casefold();control_exchange="exchange control of two target nonland permanents that share a card type" in rules_text;adventure_distribution=re.search(r"distribute (?:\d+|two|three|four) \+1/\+1 counters among (?:any number of|one or two) target creatures(?: you control)?",rules_text);adventure_divided_damage=re.search(r"deals \d+ damage divided as you choose among any number of targets",rules_text)
+    convert_to_slime="destroy up to one target artifact, up to one target creature, and up to one target enchantment" in rules_text;crop_sigil_return="return up to one target creature card and up to one target land card from your graveyard to your hand" in rules_text;castigator_shuffle="shuffle up to three target cards from your graveyard into your library" in rules_text;miracle_multi_return=bool(re.search(r"return (?:up to )?\d+ target creature cards? from your graveyard to the battlefield",rules_text));flytrap_distribution="distribute two +1/+1 counters among one or two target creatures" in rules_text and "omnivorous flytrap" in f"{card.get('name','')} {(source_permanent or {}).get('name','')}".casefold();control_exchange="exchange control of two target nonland permanents that share a card type" in rules_text;adventure_distribution=re.search(r"distribute (?:\d+|two|three|four) \+1/\+1 counters among (?:any number of|one or two) target creatures(?: you control)?",rules_text);adventure_divided_damage=re.search(r"deals \d+ damage divided as you choose among any number of targets",rules_text)
     if adventure_divided_damage:valid_pool={target["id"] for target in _targets(state,caster["id"],{**targeting_card,"oracle_text":"This spell deals 1 damage to any target."})}
     elif adventure_distribution:
         scope=" you control" if "you control" in adventure_distribution.group(0) else "";valid_pool={target["id"] for target in _targets(state,caster["id"],{**targeting_card,"oracle_text":f"Put a +1/+1 counter on target creature{scope}."})}
     elif convert_to_slime or flytrap_distribution or control_exchange:valid_pool={permanent["instance_id"] for owner in state["players"] for permanent in owner["battlefield"] if (not flytrap_distribution or "Creature" in permanent.get("type_line","")) and (not control_exchange or "Land" not in permanent.get("type_line",""))}
-    elif crop_sigil_return or castigator_shuffle:valid_pool={candidate["instance_id"] for candidate in caster["graveyard"] if castigator_shuffle or any(kind in candidate.get("type_line","") for kind in ("Creature","Land"))}
+    elif crop_sigil_return or castigator_shuffle or miracle_multi_return:valid_pool={candidate["instance_id"] for candidate in caster["graveyard"] if castigator_shuffle or "Creature" in candidate.get("type_line","") or crop_sigil_return and "Land" in candidate.get("type_line","")}
     else:valid_pool={target["id"] for target in _targets(state,caster["id"],targeting_card)}
     valid_multi_ids=[target_value for target_value in target_ids if target_value in valid_pool] if target_ids and not fight_steps else []
     if item.get("kind")=="trigger" and source_permanent and "sacrifice it unless it escaped" in (card.get("oracle_text") or "").casefold():
@@ -3387,7 +3415,7 @@ def _resolve_spell(state: dict) -> None:
         for multi_target_id in target_ids:
             target_permanent=next((candidate for owner in state["players"] for candidate in owner["battlefield"] if candidate["instance_id"]==multi_target_id),None)
             if target_permanent:target_permanent["temporary_keywords"]=sorted(set(target_permanent.get("temporary_keywords",[]))|{"Flying"})
-    multi_return=re.search(r"return up to \d+ target creature cards? from your graveyard to the battlefield",effect_text)
+    multi_return=re.search(r"return (?:up to )?\d+ target creature cards? from your graveyard to the battlefield",effect_text)
     if multi_return:
         returning=[candidate for candidate in list(caster["graveyard"]) if candidate["instance_id"] in set(target_ids) and "Creature" in candidate.get("type_line","")]
         if returning:
@@ -5452,6 +5480,27 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         pending=state.get("pending_rebound") or {};card=next((candidate for candidate in player["exile"] if candidate["instance_id"]==pending.get("card_id")),None)
         if pending.get("player_id")!=player_id or not card:raise RuleViolation("That Rebound choice is no longer available")
         state["pending_rebound"]=None;card.pop("rebound_triggered",None);card.pop("rebound_after_turn",None);state["priority_player_id"]=state["active_player_id"];_log(state,f"{player['name']} declined to cast {card['name']} from Rebound.")
+    elif action_type in {"cast_miracle","decline_miracle"}:
+        pending=state.get("pending_miracle") or {};candidate=next((card for card in player["hand"] if card["instance_id"]==pending.get("card_id")),None)
+        if pending.get("player_id")!=player_id or not candidate:raise RuleViolation("That Miracle window is no longer available")
+        if action_type=="decline_miracle":
+            state["pending_miracle"]=None;state["priority_player_id"]=state["active_player_id"];_log(state,f"{player['name']} kept their first drawn card in hand without revealing it.")
+        else:
+            cost_card={**candidate,"mana_cost":pending["mana_cost"]};x_value=int(action.get("x_value") or 0);has_x=_has_x_cost(cost_card);maximum=_maximum_x(player,cost_card)
+            if (has_x and not 0<=x_value<=maximum) or (not has_x and action.get("x_value") is not None):raise RuleViolation("Choose a legal Miracle X value")
+            targeting_card=_spell_targeting_card(_x_rules_card(candidate,x_value));target_id=action.get("target_id");target_ids=action.get("target_ids") or [];variants=_multi_target_step_variants(state,player_id,_x_rules_card(candidate,x_value));target_steps=[]
+            if re.search(r"return X target creature cards from your graveyard",candidate.get("oracle_text") or "",re.IGNORECASE):
+                graveyard_targets=_targets(state,player_id,{**candidate,"oracle_text":"Return target creature card from your graveyard to the battlefield."});target_steps=[{"targets":graveyard_targets,"distinct":True} for _ in range(x_value)]
+            elif variants:
+                target_steps=next((steps for steps in variants if len(steps)==len(target_ids) and all(target_ids[position] in {target["id"] for target in step["targets"]} for position,step in enumerate(steps))),[])
+            if target_steps:
+                if len(target_ids)!=len(target_steps) or any(target_value not in {target["id"] for target in target_steps[position]["targets"]} for position,target_value in enumerate(target_ids)) or any(step.get("distinct") and target_ids[position] in target_ids[:position] for position,step in enumerate(target_steps)):raise RuleViolation("Choose every legal Miracle target")
+            elif variants and target_ids:raise RuleViolation("Choose a legal Miracle target allocation")
+            elif _target_kind(targeting_card) and target_id not in {target["id"] for target in _targets(state,player_id,targeting_card)}:raise RuleViolation("Choose a legal target for the Miracle spell")
+            if not _can_pay(player,cost_card,x_value=x_value):raise RuleViolation("That Miracle cost can no longer be paid")
+            _pay_mana(state,player,cost_card,x_value=x_value);player["hand"].remove(candidate);state["pending_miracle"]=None;stack_item={"id":_id(),"kind":"spell","card":candidate,"controller_id":player_id,"target_id":target_id,"target_ids":target_ids,"mode_indices":[],"mode_targets":[],"x_value":x_value,"miracle_cast":True,"cast_source_zone":"hand"};state["stack"].append(stack_item);_record_spell_cast(state,player);candidate["cast_source_zone"]="hand";_queue_triggers(state,"cast",candidate,player);_queue_cascade_triggers(state,player,candidate);_queue_storm_trigger(state,player,candidate,stack_item);candidate.pop("cast_source_zone",None);[_queue_ward(state,player,target,stack_item) for target in [target_id,*target_ids] if target];state["consecutive_passes"]=0;state["pending_phase_advance"]=False
+            if (_multiplayer(state) or not allow_direct_resolution) and not state.get("pending_ward") and not state.get("pending_trigger_targets"):state["priority_player_id"]=opponent(state,player_id)["id"]
+            _log(state,f"{player['name']} cast {candidate['name']} for its Miracle cost {pending['mana_cost']}{f' with X={x_value}' if has_x else ''}.")
     elif action_type in {"cast_impulsivity","decline_impulsivity"}:
         pending=state.get("pending_impulsivity") or {};owner=next((candidate for candidate in state["players"] if candidate["id"]==pending.get("owner_id")),None);candidate=next((card for card in (owner or {}).get("graveyard",[]) if card["instance_id"]==pending.get("card_id")),None)
         if pending.get("player_id")!=player_id or not candidate:raise RuleViolation("That Impulsivity choice is no longer available")
