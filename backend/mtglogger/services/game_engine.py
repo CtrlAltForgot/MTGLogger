@@ -2552,6 +2552,7 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
         if player["land_plays_remaining"]:
             actions.extend({"type": "play_land", "card_id": card["instance_id"]} for card in player["hand"] if "Land" in card.get("type_line", ""))
             actions.extend({"type":"play_land","card_id":card["instance_id"],"source":"exile_permission"} for card in player["exile"] if "Land" in card.get("type_line","") and card.get("exile_play_until_turn",-1)>=state["turn"])
+            actions.extend({"type":"play_land","card_id":card["instance_id"],"source":"after_adventure","label":f"Play {card['name']} after its Adventure"} for card in player["exile"] if card.get("adventured") and "Land" in (_face_rules_card(card,0) or {}).get("type_line",""))
         if _can_pay(player,{"mana_cost":"{3}"}):
             for hand_card in player["hand"]:
                 face_down=_face_down_ability(hand_card)
@@ -2605,7 +2606,8 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
         adventure=_adventure_ability(hand_card)
         if adventure:alternate_casts.append((hand_card,"adventure",adventure["card"],adventure["mana_cost"]))
     for exiled_card in player["exile"]:
-        if exiled_card.get("adventured"):alternate_casts.append((exiled_card,"after_adventure",_face_rules_card(exiled_card,0),(_face_rules_card(exiled_card,0) or {}).get("mana_cost","")))
+        front=_face_rules_card(exiled_card,0)
+        if exiled_card.get("adventured") and "Land" not in (front or {}).get("type_line",""):alternate_casts.append((exiled_card,"after_adventure",front,(front or {}).get("mana_cost","")))
     for original,source,rules_card,cost in alternate_casts:
         if not rules_card:continue
         instant_speed="Instant" in rules_card.get("type_line","") or _has_keyword(rules_card,"Flash")
@@ -4075,6 +4077,7 @@ def _enter_battlefield(state:dict,controller:dict,cards:list[dict],origin:str="e
         if _has_keyword(card,"Daybound"):
             if state.get("day_night") is None:_set_day_night(state,"day")
             elif state.get("day_night")=="night":_set_card_face(card,1)
+        if re.search(r"\benters tapped(?:\.|\n|$)",card.get("oracle_text") or "",re.IGNORECASE):card["tapped"]=True
         card["controller_id"]=controller["id"];card["entered_turn"]=state["turn"];card["entry_event_origin"]=origin;card["entry_event_was_cast"]=was_cast;card["entry_event_played"]=played;card["entry_event_batch_size"]=batch_size
         if _echo_cost(card):card["echo_due_controller_id"]=controller["id"]
         controller["battlefield"].append(card)
@@ -5280,10 +5283,10 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if _multiplayer(state) or not allow_direct_resolution:state["priority_player_id"]=opponent(state,player_id)["id"]
         _log(state,f"{player['name']} cast a creature spell face down for {{3}}.")
     elif action_type == "play_land":
-        source=action.get("source","hand");zone=player["exile"] if source=="exile_permission" else player["hand"]
-        card = next((card for card in zone if card["instance_id"] == action.get("card_id") and "Land" in card.get("type_line", "") and (source!="exile_permission" or card.get("exile_play_until_turn",-1)>=state["turn"])), None)
+        source=action.get("source","hand");zone=player["exile"] if source in {"exile_permission","after_adventure"} else player["hand"]
+        card = next((card for card in zone if card["instance_id"] == action.get("card_id") and "Land" in (_face_rules_card(card,0) or card).get("type_line", "") and (source!="exile_permission" or card.get("exile_play_until_turn",-1)>=state["turn"]) and (source!="after_adventure" or card.get("adventured"))), None)
         if not card: raise RuleViolation("That land cannot be played from that zone")
-        zone.remove(card);card["summoning_sick"]=True;_enter_battlefield(state,player,[card],"exile" if source=="exile_permission" else "hand",played=True);player["lands_played_this_turn"]=player.get("lands_played_this_turn",0)+1;player["land_plays_remaining"]-=1;_log(state,f"{player['name']} played {card['name']}.")
+        zone.remove(card);_set_card_face(card,0);card.pop("adventured",None);card.setdefault("tapped",False);card["summoning_sick"]=True;_enter_battlefield(state,player,[card],"exile" if source in {"exile_permission","after_adventure"} else "hand",played=True);player["lands_played_this_turn"]=player.get("lands_played_this_turn",0)+1;player["land_plays_remaining"]-=1;_log(state,f"{player['name']} played {card['name']}{' from exile after its Adventure' if source=='after_adventure' else ''}.")
     elif action_type=="channel":
         card=next((card for card in player["hand"] if card["instance_id"]==action.get("card_id")),None);abilities=_channel_abilities(card or {});ability_index=int(action.get("ability_index") or 0);ability=abilities[ability_index] if 0<=ability_index<len(abilities) else None;requested_target_count=len(action.get("target_ids") or []);available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="channel" and entry["card_id"]==action.get("card_id") and entry.get("ability_index")==ability_index and (entry.get("channel_target_count") is None or entry.get("channel_target_count")==requested_target_count)),None)
         if not card or not ability or not available:raise RuleViolation("That Channel ability cannot be activated now")
