@@ -1549,7 +1549,7 @@ def _target_kind(card: dict) -> str | None:
     if re.search(r"\bairbend (?:up to one )?target creature\b",text):return "creature"
     if re.search(r"\bearthbend\s+\d+\b",text):return "land"
     if re.search(r"target creature card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_creature"
-    if re.search(r"target (?:nonland )?card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_card"
+    if re.search(r"target (?:nonland permanent |nonland )?card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_card"
     if re.search(r"target player mills?", text): return "player"
     if re.search(r"target player sacrifices?",text):return "player"
     if re.search(r"target player discards?",text):return "player"
@@ -1616,7 +1616,8 @@ def _targets(state: dict, caster_id: str, card: dict, ignore_target_protection:b
         own_only="your graveyard" in text
         soulshift=card.get("soulshift_value")
         instant_or_sorcery="instant or sorcery" in text
-        return [{"id":graveyard_card["instance_id"],"name":graveyard_card["name"],"kind":"card","controller_id":owner["id"]} for owner in state["players"] if not own_only or owner["id"]==caster_id for graveyard_card in owner["graveyard"] if (kind=="graveyard_card" or "Creature" in graveyard_card.get("type_line","")) and (not instant_or_sorcery or any(kind_name in graveyard_card.get("type_line","") for kind_name in ("Instant","Sorcery"))) and (soulshift is None or (re.search(r"\bSpirit\b",graveyard_card.get("type_line",""),re.IGNORECASE) and float(graveyard_card.get("mana_value") or 0)<=float(soulshift)))]
+        nonland_permanent="nonland permanent card" in text
+        return [{"id":graveyard_card["instance_id"],"name":graveyard_card["name"],"kind":"card","controller_id":owner["id"]} for owner in state["players"] if not own_only or owner["id"]==caster_id for graveyard_card in owner["graveyard"] if (kind=="graveyard_card" or "Creature" in graveyard_card.get("type_line","")) and (not nonland_permanent or ("Land" not in graveyard_card.get("type_line","") and any(card_type in graveyard_card.get("type_line","") for card_type in ("Artifact","Battle","Creature","Enchantment","Planeswalker")))) and (not instant_or_sorcery or any(kind_name in graveyard_card.get("type_line","") for kind_name in ("Instant","Sorcery"))) and (soulshift is None or (re.search(r"\bSpirit\b",graveyard_card.get("type_line",""),re.IGNORECASE) and float(graveyard_card.get("mana_value") or 0)<=float(soulshift)))]
     for player in state["players"]:
         aura_types=_aura_allowed_types(card)
         if (kind in {"any", "player"} or (kind=="permanent" and "player" in aura_types)) and not ("target opponent" in text and player["id"]==caster_id) and not _player_protected_from(state,player,card): targets.append({"id": player["id"], "name": player["name"], "kind": "player", "controller_id": player["id"]})
@@ -2726,9 +2727,9 @@ def _resolve_spell(state: dict) -> None:
         state["stack"].remove(target_stack_item);countered=target_stack_item["card"];_counter_stack_item(state,target_stack_item)
         _log(state, f"{countered['name']} was countered.")
     if graveyard_target and graveyard_owner:
-        if re.search(r"(?:return|put) target (?:creature )?card .*graveyard (?:to|into|onto) (?:the battlefield|play)",effect_text):
+        if re.search(r"(?:return|put) (?:target|that) (?:creature |nonland permanent )?card (?:.*graveyard )?(?:to|into|onto) (?:the battlefield|play)",effect_text):
             _leave_graveyard(state,graveyard_owner,[graveyard_target]);graveyard_target["controller_id"]=caster["id"];graveyard_target["summoning_sick"]=True;_enter_battlefield(state,caster,[graveyard_target],"graveyard");_log(state,f"{graveyard_target['name']} returned to the battlefield under {caster['name']}'s control.")
-        elif re.search(r"return target (?:creature )?card .*graveyard to (?:your|its owner'?s) hand",effect_text):
+        elif re.search(r"return (?:target|that) (?:creature |nonland permanent )?card .*graveyard to (?:your|its owner'?s) hand",effect_text):
             _leave_graveyard(state,graveyard_owner,[graveyard_target]);graveyard_target["controller_id"]=graveyard_target.get("owner_id",graveyard_owner["id"]);_player(state,graveyard_target["controller_id"])["hand"].append(graveyard_target);_log(state,f"{graveyard_target['name']} returned to its owner's hand.")
         elif re.search(r"exile target (?:creature )?card .*graveyard",effect_text):
             _leave_graveyard(state,graveyard_owner,[graveyard_target]);_put_into_exile(state,graveyard_owner,[graveyard_target],"graveyard",caster["id"]);_log(state,f"{graveyard_target['name']} was exiled from a graveyard.")
