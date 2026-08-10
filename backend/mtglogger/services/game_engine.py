@@ -2137,6 +2137,15 @@ def _multi_target_step_variants(state:dict,caster_id:str,card:dict)->list[list[d
     if "exile two target creatures and/or lands you control" in text:
         targets=[{"id":candidate["instance_id"],"name":candidate["name"],"kind":"permanent","controller_id":caster_id} for candidate in _player(state,caster_id)["battlefield"] if any(kind in candidate.get("type_line","") for kind in ("Creature","Land")) and not _has_keyword(candidate,"Shroud") and not _protected_from(candidate,card)]
         return [[{"label":f"Choose permanent {position+1}","targets":targets,"distinct":True} for position in range(2)]] if len(targets)>=2 else []
+    divided_damage=re.search(r"deals (\d+) damage divided as you choose among any number of targets",text)
+    distributed_counters=re.search(r"distribute (two|three|four|\d+) \+1/\+1 counters among (?:any number of|one or two) target creatures( you control)?",text)
+    if divided_damage:
+        amount=int(divided_damage.group(1));targeting={**card,"oracle_text":"This spell deals 1 damage to any target."};targets=_targets(state,caster_id,targeting)
+        return [[],[{"label":f"Assign damage {position+1} of {amount}","targets":targets} for position in range(amount)]] if targets else [[]]
+    if distributed_counters:
+        amount=words.get(distributed_counters.group(1),int(distributed_counters.group(1)) if distributed_counters.group(1).isdigit() else 0);scope=" you control" if distributed_counters.group(2) else "";targeting={**card,"oracle_text":f"Put a +1/+1 counter on target creature{scope}."};targets=_targets(state,caster_id,targeting)
+        if "one or two" in distributed_counters.group(0):return [[{"label":"Put both counters on one creature","targets":targets}],[{"label":f"Choose creature {position+1}","targets":targets,"distinct":True} for position in range(2)]] if targets else []
+        return [[],[{"label":f"Assign counter {position+1} of {amount}","targets":targets} for position in range(amount)]] if targets else [[]]
     match=re.search(r"\b(tap|untap) (up to )?(two|three|four|\d+) target (creatures|lands)\b",text);damage=re.search(r"deals (\d+) damage to each of up to (two|three|four|\d+) targets?",text)
     if match:
         maximum=words.get(match.group(3),int(match.group(3)) if match.group(3).isdigit() else 0);minimum=0 if match.group(2) else maximum;kind="creature" if match.group(4)=="creatures" else "land";targeting={**card,"oracle_text":f"{match.group(1).title()} target {kind}."}
@@ -2659,6 +2668,8 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
             x_targets=re.search(r"\b(?:tap )?X target creatures\b",rules_card.get("oracle_text") or "",re.IGNORECASE)
             if x_targets:
                 maximum=min(maximum,len(targets));action["x_max"]=maximum;action["target_steps_by_x"]={value:[{"label":f"Choose target {position+1}","targets":targets,"distinct":True} for position in range(value)] for value in range(maximum+1)}
+            if re.search(r"distribute X \+1/\+1 counters among any number of target creatures you control",rules_card.get("oracle_text") or "",re.IGNORECASE):
+                counter_targets=_targets(state,player_id,{**rules_card,"oracle_text":"Put a +1/+1 counter on target creature you control."});action.pop("targets",None);action["target_steps_by_x"]={value:[{"label":f"Assign counter {position+1} of {value}","targets":counter_targets} for position in range(value)] for value in range(maximum+1)}
         if multi_variants:
             for steps in multi_variants:actions.append({**action,"target_steps":steps,"target_count":len(steps),"allow_zero_targets":not steps,"label":f"{action['label']} · choose {len(steps)} target{'s' if len(steps)!=1 else ''}"})
         else:actions.append(action)
@@ -2725,13 +2736,16 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
                 targeting_card=_spell_targeting_card(base_rules);targets = _targets(state, player_id, targeting_card)
                 if _target_kind(targeting_card) and not targets: continue
                 if targets: action["targets"] = targets
+        x_distribution=re.search(r"distribute x \+1/\+1 counters among any number of target creatures you control",(base_rules.get("oracle_text") or "").casefold()) if not modal_spec else None
+        if x_distribution and action.get("x_max") is not None:
+            targets=_targets(state,player_id,{**base_rules,"oracle_text":"Put a +1/+1 counter on target creature you control."});action.pop("targets",None);action.pop("target_steps",None);action.pop("target_step_variants",None);action["target_steps_by_x"]={value:[{"label":f"Assign counter {position+1} of {value}","targets":targets} for position in range(value)] for value in range(action.get("x_min",0),action["x_max"]+1)}
         station_permission=source=="graveyard_permission" and station_graveyard_source and card.get("graveyard_cast_until_turn")!=state["turn"]
         if station_permission:
             lands=[candidate for candidate in player["battlefield"] if "Land" in candidate.get("type_line","") and _can_pay(player,cost_card,generic_adjustment,excluded_ids={candidate["instance_id"]})];action.update({"station_source_id":station_graveyard_source["instance_id"],"cost_kind":"sacrifice","cost_amount":1,"cost_options":[candidate["instance_id"] for candidate in lands],"label":f"{action['label']} · sacrifice a land"})
         if normal_payable and (not station_permission or lands):
             if action.get("target_step_variants"):
                 for steps in action["target_step_variants"]:
-                    variant={key:value for key,value in action.items() if key!="target_step_variants"};variant.update({"target_steps":steps,"target_count":len(steps)});actions.append(variant)
+                    variant={key:value for key,value in action.items() if key!="target_step_variants"};variant.update({"target_steps":steps,"target_count":len(steps),"allow_zero_targets":not steps});actions.append(variant)
             else:actions.append(action)
         multikicker_cost=_multikicker_cost(card) if source in {"hand","command"} else None
         if multikicker_cost:
@@ -3133,8 +3147,13 @@ def _resolve_spell(state: dict) -> None:
     if multi_damage_target:targeting_card={**targeting_card,"oracle_text":f"This spell deals {multi_damage_target.group(1)} damage to any target."}
     target_kind=_target_kind(targeting_card);target_id=item.get("target_id")
     source_permanent=next((permanent for player in state["players"] for permanent in player["battlefield"] if permanent["instance_id"]==item.get("source_id")),None);target_ids=item.get("target_ids") or [];fight_steps=_fight_target_steps(state,caster["id"],rules_card,source_permanent);valid_fight_ids=[target_value for position,target_value in enumerate(target_ids) if position<len(fight_steps) and target_value in {target["id"] for target in fight_steps[position]["targets"]}]
-    rules_text=(rules_card.get("oracle_text") or "").casefold();convert_to_slime="destroy up to one target artifact, up to one target creature, and up to one target enchantment" in rules_text;crop_sigil_return="return up to one target creature card and up to one target land card from your graveyard to your hand" in rules_text;castigator_shuffle="shuffle up to three target cards from your graveyard into your library" in rules_text;flytrap_distribution="distribute two +1/+1 counters among one or two target creatures" in rules_text;control_exchange="exchange control of two target nonland permanents that share a card type" in rules_text
-    valid_pool={permanent["instance_id"] for owner in state["players"] for permanent in owner["battlefield"] if (not flytrap_distribution or "Creature" in permanent.get("type_line","")) and (not control_exchange or "Land" not in permanent.get("type_line",""))} if convert_to_slime or flytrap_distribution or control_exchange else {candidate["instance_id"] for candidate in caster["graveyard"] if castigator_shuffle or any(kind in candidate.get("type_line","") for kind in ("Creature","Land"))} if crop_sigil_return or castigator_shuffle else {target["id"] for target in _targets(state,caster["id"],targeting_card)}
+    rules_text=(rules_card.get("oracle_text") or "").casefold();convert_to_slime="destroy up to one target artifact, up to one target creature, and up to one target enchantment" in rules_text;crop_sigil_return="return up to one target creature card and up to one target land card from your graveyard to your hand" in rules_text;castigator_shuffle="shuffle up to three target cards from your graveyard into your library" in rules_text;flytrap_distribution="distribute two +1/+1 counters among one or two target creatures" in rules_text and "omnivorous flytrap" in f"{card.get('name','')} {(source_permanent or {}).get('name','')}".casefold();control_exchange="exchange control of two target nonland permanents that share a card type" in rules_text;adventure_distribution=re.search(r"distribute (?:\d+|two|three|four) \+1/\+1 counters among (?:any number of|one or two) target creatures(?: you control)?",rules_text);adventure_divided_damage=re.search(r"deals \d+ damage divided as you choose among any number of targets",rules_text)
+    if adventure_divided_damage:valid_pool={target["id"] for target in _targets(state,caster["id"],{**targeting_card,"oracle_text":"This spell deals 1 damage to any target."})}
+    elif adventure_distribution:
+        scope=" you control" if "you control" in adventure_distribution.group(0) else "";valid_pool={target["id"] for target in _targets(state,caster["id"],{**targeting_card,"oracle_text":f"Put a +1/+1 counter on target creature{scope}."})}
+    elif convert_to_slime or flytrap_distribution or control_exchange:valid_pool={permanent["instance_id"] for owner in state["players"] for permanent in owner["battlefield"] if (not flytrap_distribution or "Creature" in permanent.get("type_line","")) and (not control_exchange or "Land" not in permanent.get("type_line",""))}
+    elif crop_sigil_return or castigator_shuffle:valid_pool={candidate["instance_id"] for candidate in caster["graveyard"] if castigator_shuffle or any(kind in candidate.get("type_line","") for kind in ("Creature","Land"))}
+    else:valid_pool={target["id"] for target in _targets(state,caster["id"],targeting_card)}
     valid_multi_ids=[target_value for target_value in target_ids if target_value in valid_pool] if target_ids and not fight_steps else []
     if item.get("kind")=="trigger" and source_permanent and "sacrifice it unless it escaped" in (card.get("oracle_text") or "").casefold():
         if not source_permanent.get("escaped"):
@@ -3156,6 +3175,25 @@ def _resolve_spell(state: dict) -> None:
     is_permanent_spell = item.get("kind", "spell") in {"spell","storm_copy"} and any(kind in card.get("type_line", "") for kind in ("Creature", "Artifact", "Enchantment", "Planeswalker", "Battle"))
     effect_text = "" if is_permanent_spell and re.search(r"\b(?:when|whenever|at the beginning)\b", text) else text
     if "damage can't be prevented this turn" in effect_text:state["damage_cant_be_prevented_until_turn"]=state["turn"]
+    counter_distribution=re.search(r"distribute (\d+|two|three|four) \+1/\+1 counters among (?:any number of|one or two) target creatures(?: you control)?",effect_text)
+    divided_damage=re.search(r"deals (\d+) damage divided as you choose among any number of targets",effect_text)
+    if counter_distribution and not flytrap_distribution:
+        words={"two":2,"three":3,"four":4};amount=words.get(counter_distribution.group(1),int(counter_distribution.group(1)) if counter_distribution.group(1).isdigit() else 0);allocations={}
+        if len(valid_multi_ids)==1:allocations[valid_multi_ids[0]]=amount
+        else:
+            for target_value in valid_multi_ids:allocations[target_value]=allocations.get(target_value,0)+1
+        for target_value,counters in allocations.items():
+            permanent=next((candidate for owner in state["players"] for candidate in owner["battlefield"] if candidate["instance_id"]==target_value),None)
+            if permanent:_add_counters(state,permanent,"+1/+1",counters,caster["id"],"effect")
+        _log(state,f"{card['name']} distributed {sum(allocations.values())} +1/+1 counter(s) among {len(allocations)} creature(s).");effect_text=""
+    elif divided_damage:
+        allocations={}
+        for target_value in valid_multi_ids:allocations[target_value]=allocations.get(target_value,0)+1
+        for target_value,amount in allocations.items():
+            target_player=next((owner for owner in state["players"] if owner["id"]==target_value),None);permanent=next((candidate for owner in state["players"] for candidate in owner["battlefield"] if candidate["instance_id"]==target_value),None)
+            if target_player:_damage_player(state,target_player,amount,card)
+            elif permanent:_damage_permanent(state,permanent,amount,card)
+        _log(state,f"{card['name']} divided {sum(allocations.values())} damage among {len(allocations)} target(s).");effect_text=""
     if re.search(r"create \d+ map tokens?, where \d+ is one plus the number of opponents who control an artifact",effect_text):
         map_count=1+sum(any("Artifact" in permanent.get("type_line","") for permanent in owner["battlefield"]) for owner in state["players"] if owner["id"]!=caster["id"]);effect_text=re.sub(r"create \d+ map tokens?",f"create {map_count} Map tokens",effect_text,count=1)
     if re.search(r"you gain \d+ life and each opponent loses \d+ life, where \d+ is the number of knights you control",effect_text):
