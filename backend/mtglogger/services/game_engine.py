@@ -166,7 +166,9 @@ def _continuous_stats(state:dict|None,card:dict)->tuple[int,int]:
             if chosen_type and controller==source.get("controller_id",owner["id"]) and re.search(rf"\b{re.escape(chosen_type)}\b",type_line) and "creatures you control of the chosen type get +1/+1" in (source.get("oracle_text") or "").casefold():power+=1;toughness+=1
             if source.get("attached_to")==card.get("instance_id"):
                 attachment_text=_active_level_text(source).casefold()
-                for attachment_match in re.finditer(r"(?:equipped|enchanted) creature gets (?:an additional )?([+-]\d+)/([+-]\d+)(?! until end of turn)",attachment_text):power+=int(attachment_match.group(1));toughness+=int(attachment_match.group(2))
+                for attachment_match in re.finditer(r"(?:equipped|enchanted) creature gets (?:an additional )?([+-]\d+)/([+-]\d+)(?! (?:until end of turn|for each))",attachment_text):power+=int(attachment_match.group(1));toughness+=int(attachment_match.group(2))
+                if "enchanted creature gets +1/+1 for each spirit you control" in attachment_text:
+                    spirit_count=sum("Spirit" in permanent.get("type_line","") for permanent in owner["battlefield"]);power+=spirit_count;toughness+=spirit_count
             clauses=re.split(r"(?<=[.!])\s+|\n",_active_level_text(source))
             for clause in clauses:
                 lower=clause.casefold()
@@ -2197,7 +2199,8 @@ def _queue_ward(state:dict,caster:dict,target_id:str|None,stack_item:dict)->None
     if target and target_owner and not details and "Creature" in target.get("type_line",""):
         ward_source=next((permanent for permanent in target_owner["battlefield"] if "each creature you control has ward {1}" in _active_level_text(permanent).casefold()),None)
         if ward_source:details={"cost_type":"mana","mana_cost":"{1}","amount":0,"label":"{1}"}
-    if target and target_owner:_queue_triggers(state,"targeted",target,target_owner)
+    if target and target_owner:
+        target["target_event_source_is_aura"]="Aura" in stack_item.get("card",{}).get("type_line","");_queue_triggers(state,"targeted",target,target_owner);target.pop("target_event_source_is_aura",None)
     if target and target_owner and target_owner["id"]!=caster["id"] and details:
         entry={"player_id":caster["id"],"stack_id":stack_item["id"],"source_name":target["name"],**details}
         if state.get("pending_ward"):state["pending_ward"].setdefault("remaining",[]).append(entry)
@@ -3302,6 +3305,7 @@ def _resolve_spell(state: dict) -> None:
         if enchanted:
             token=deepcopy(enchanted);token["instance_id"]=_id();token["owner_id"]=caster["id"];token["controller_id"]=caster["id"];token["token"]=True;token["damage"]=0;token["counters"]={};token["tapped"]=False;token["summoning_sick"]=True
             for key in ("attached_to","attachment_keywords","attachment_rules","temporary_power","temporary_toughness","temporary_keywords","temporary_backup_rules","continuous_keywords","deathtouch_damage","activated_ability_usage","entered_turn"):token.pop(key,None)
+            if re.search(r"except it.s a spirit in addition to its other types",effect_text) and not re.search(r"\bSpirit\b",token.get("type_line","")):token["type_line"]+=f"{' —' if '—' not in token['type_line'] else ''} Spirit"
             _enter_battlefield(state,caster,[token],"token");_log(state,f"{caster['name']} created a token copy of {enchanted['name']}.")
         else:
             fallback={"name":f"{source_permanent['name']} fallback","oracle_text":"Create a 1/1 green Insect creature token.","type_line":"Ability","mana_cost":""};state["stack"].append({"id":_id(),"kind":"trigger","card":fallback,"controller_id":caster["id"],"target_id":None,"source_id":source_permanent["instance_id"]});_resolve_spell(state)
@@ -4462,7 +4466,8 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
             elif event=="transformed" and event_card:
                 matches=source is event_card and re.search(r"when this creature transforms into",lower) is not None
             elif event=="targeted" and event_card:
-                matches=source is event_card and re.search(r"when this creature becomes the target of a spell or ability",lower) is not None
+                aura_target=bool(event_card.get("target_event_source_is_aura"));self_target=source is event_card and re.search(r"(?:this creature|[a-z][a-z '-]+) becomes the target of an aura spell",lower) is not None;enchanted_target=source.get("attached_to")==event_card.get("instance_id") and "enchanted creature becomes the target of an aura spell" in lower
+                matches=(source is event_card and re.search(r"when this creature becomes the target of a spell or ability",lower) is not None) or aura_target and (self_target or enchanted_target)
             elif event == "leaves" and event_card:
                 matches=source is not event_card and owner["id"]==event_owner["id"] and "Creature" in event_card.get("type_line","") and "when another creature you control leaves the battlefield" in lower
             elif event == "upkeep":
