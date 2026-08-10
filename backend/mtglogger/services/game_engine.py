@@ -2119,11 +2119,19 @@ def _commander_tax(player: dict, card: dict) -> int:
     return player.get("commander_casts", 0) * 2 if card.get("commander") else 0
 
 
-def _maximum_hand_size(player:dict)->int|None:
+def _maximum_hand_size(state:dict,player:dict)->int|None:
     texts=[(card.get("oracle_text") or "").casefold() for card in player["battlefield"]]
-    if any("you have no maximum hand size" in text for text in texts):return None
+    winter_limits=[]
+    for owner in state["players"]:
+        if owner["id"]==player["id"]:continue
+        for permanent in owner["battlefield"]:
+            active_text=_active_level_text(permanent).casefold()
+            if "each opponent's maximum hand size is equal to seven minus the number of those card types" in active_text:
+                winter_limits.append(max(0,7-_graveyard_card_type_count(_player(state,permanent.get("controller_id",owner["id"])))))
+    if any("you have no maximum hand size" in text for text in texts) and not winter_limits:return None
     increases=sum(int(value) for text in texts for value in re.findall(r"maximum hand size is increased by (\d+)",text))
-    return 7+increases
+    maximum=7+increases
+    return min([maximum,*winter_limits]) if winter_limits else maximum
 
 
 def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True) -> list[dict]:
@@ -4558,7 +4566,7 @@ def _advance_turn_phase(state: dict) -> None:
         origin=state.pop("additional_combat_origin_phase");state.pop("additional_combat_active",None);state.pop("additional_combats_pending",None);state.pop("additional_combat_untap_all",None);state["phase"]=origin;_advance_turn_phase(state);return
     index = PHASES.index(state["phase"])
     if index == len(PHASES) - 1:
-        ending=_player(state,state["active_player_id"]);maximum=_maximum_hand_size(ending);excess=max(0,len(ending["hand"])-maximum) if maximum is not None else 0
+        ending=_player(state,state["active_player_id"]);maximum=_maximum_hand_size(state,ending);excess=max(0,len(ending["hand"])-maximum) if maximum is not None else 0
         if excess:
             state["pending_discard"]={"player_id":ending["id"],"amount":excess};state["priority_player_id"]=ending["id"];state["pending_phase_advance"]=False;state["consecutive_passes"]=0;_log(state,f"{ending['name']} must discard {excess} card(s) to hand size.");return
         _begin_next_turn(state)
