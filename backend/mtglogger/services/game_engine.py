@@ -787,7 +787,7 @@ def _cumulative_upkeep_cost(card:dict)->dict|None:
 
 
 def _mutate_original(card:dict)->dict:
-    runtime={"tapped","damage","counters","summoning_sick","temporary_power","temporary_toughness","temporary_base_power","temporary_base_toughness","temporary_keywords","temporary_removed_keywords","temporary_protection_colors","attachment_keywords","attached_to","mutate_pile","mutate_count","mutate_top_component_id","effective_power","effective_toughness","entry_trigger_turns","activated_ability_usage","station_graveyard_cast_turn"}
+    runtime={"tapped","damage","counters","summoning_sick","temporary_power","temporary_toughness","temporary_base_power","temporary_base_toughness","temporary_keywords","temporary_removed_keywords","temporary_protection_colors","attachment_keywords","attached_to","mutate_pile","mutate_count","mutate_top_component_id","effective_power","effective_toughness","entry_trigger_turns","activated_ability_usage","station_graveyard_cast_turn","damage_source_ids_turn"}
     return {key:deepcopy(value) for key,value in card.items() if key not in runtime}
 
 
@@ -1078,6 +1078,10 @@ def _damage_permanent(state:dict,target:dict,amount:int,source:dict)->int:
     elif "Planeswalker" in target.get("type_line",""):
         _remove_counters(target,"loyalty",amount)
     else:target["damage"]+=amount
+    source_id=source.get("instance_id")
+    if source_id:
+        sources=target.setdefault("damage_source_ids_turn",[])
+        if source_id not in sources:sources.append(source_id)
     if _has_keyword(source,"Deathtouch"):target["deathtouch_damage"]=True
     if _has_keyword(source,"Lifelink"):_gain_life(state,_player(state,source.get("controller_id",source.get("owner_id"))),amount)
     _queue_damage_event(state,source,target,amount)
@@ -3125,8 +3129,11 @@ def _resolve_spell(state: dict) -> None:
         target["power"]="0";target["toughness"]="0";target["earthbent"]=True;target["earthbend_controller"]=caster["id"];_add_counters(state,target,"+1/+1",earthbend,caster["id"],"effect")
         _log(state,f"{caster['name']} earthbent {target['name']} for {earthbend}.");_queue_triggers(state,"earthbend",target,caster)
     each_draw_match=re.search(r"each player draws? (?:a|one|two|three|four|\d+) cards?",effect_text)
+    target_draw_match=re.search(r"target player draws? (a|one|two|three|four|\d+) cards?",effect_text)
     draw_match = re.search(r"(?<!each player )draw (?:a|one|two|three|four|\d+) cards?", effect_text);ordered_scry_draw=bool(draw_match and re.search(r"(?:scry|surveil) [^,.]+, then draw",effect_text))
-    if each_draw_match:
+    if target_draw_match and target_player:
+        word=target_draw_match.group(1);_draw(state,target_player,{"a":1,"one":1,"two":2,"three":3,"four":4}.get(word,int(word) if word.isdigit() else 0))
+    elif each_draw_match:
         word=each_draw_match.group(0).split()[-2];amount={"a":1,"one":1,"two":2,"three":3,"four":4}.get(word,int(word) if word.isdigit() else 0)
         for drawing_player in state["players"]:_draw(state,drawing_player,amount)
     elif draw_match and not ordered_scry_draw:
@@ -3223,9 +3230,9 @@ def _resolve_spell(state: dict) -> None:
     if target and counter_match:
         words={"a":1,"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10};amount=words.get(counter_match.group(1),int(counter_match.group(1)) if counter_match.group(1).isdigit() else 1);name=counter_match.group(2).replace("−","-")
         placed=_add_counters(state,target,name,amount,caster["id"],"effect");_log(state,f"{target['name']} received {placed} {name} counter(s).")
-    source_counter_name=re.escape((source_permanent or {}).get("name","").casefold());self_counter=re.search(rf"put (a|one|two|three|four|five|\d+) ([+−-]\d+/[+−-]\d+|[a-z][a-z-]*) counters? on (?:him|her|them|it|this (?:creature|spacecraft|permanent|artifact|enchantment|planeswalker)|{source_counter_name})",effect_text)
+    source_counter_name=re.escape((source_permanent or {}).get("name","").casefold());self_counter=re.search(rf"put (another|a|one|two|three|four|five|\d+) ([+−-]\d+/[+−-]\d+|[a-z][a-z-]*) counters? on (?:him|her|them|it|this (?:creature|spacecraft|permanent|artifact|enchantment|planeswalker)|{source_counter_name})",effect_text)
     if source_permanent and self_counter:
-        words={"a":1,"one":1,"two":2,"three":3,"four":4,"five":5};amount=words.get(self_counter.group(1),int(self_counter.group(1)) if self_counter.group(1).isdigit() else 1);name=self_counter.group(2).replace("−","-");_add_counters(state,source_permanent,name,amount,caster["id"],"effect")
+        words={"another":1,"a":1,"one":1,"two":2,"three":3,"four":4,"five":5};amount=words.get(self_counter.group(1),int(self_counter.group(1)) if self_counter.group(1).isdigit() else 1);name=self_counter.group(2).replace("−","-");_add_counters(state,source_permanent,name,amount,caster["id"],"effect")
     keyword_match=re.search(r"target creature gains? ([^.]+?) until end of turn",effect_text)
     if target and keyword_match:
         supported=("flying","first strike","double strike","deathtouch","haste","hexproof","indestructible","lifelink","menace","reach","trample","vigilance")
@@ -3300,8 +3307,12 @@ def _resolve_spell(state: dict) -> None:
         eligible=[library_card["instance_id"] for library_card in caster["library"] if _matches_library_search(library_card,search_spec["descriptor"])];maximum=min(search_spec["amount"],len(eligible))
         state["pending_library_search"]={"player_id":caster["id"],"card_ids":eligible,"min_amount":0,"max_amount":maximum,**search_spec};state["priority_player_id"]=caster["id"]
         _log(state,f"{caster['name']} is searching their library for up to {maximum} matching card(s).")
+    target_player_discard=re.search(r"target player draws? [^,.]+, then discards? (a|one|two|three|four|five|six|seven|eight|nine|ten|\d+) cards?",effect_text)
     discard_match = re.search(r"(?:(target|each) opponent|you) discards? (a|one|two|three|four|five|six|seven|eight|nine|ten|\d+) cards?", effect_text)
-    if discard_match:
+    if target_player_discard and target_player:
+        amount_word=target_player_discard.group(1);words={"a":1,"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10};amount=words.get(amount_word,int(amount_word) if amount_word.isdigit() else 0);required=min(amount,len(target_player["hand"]))
+        if required:state["pending_discard"]={"player_id":target_player["id"],"amount":required,"reason":"effect"};state["priority_player_id"]=target_player["id"];_log(state,f"{target_player['name']} must discard {required} card(s).")
+    elif discard_match:
         amount_word=discard_match.group(2);words={"a":1,"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10};amount=words.get(amount_word,int(amount_word) if amount_word.isdigit() else 0);affected=caster if discard_match.group(0).startswith("you") else other;required=min(amount,len(affected["hand"]))
         if required:state["pending_discard"]={"player_id":affected["id"],"amount":required,"reason":"effect"};state["priority_player_id"]=affected["id"];_log(state,f"{affected['name']} must discard {required} card(s).")
         elif (fallback:=re.search(r"who can't loses? (\d+) life",effect_text)):affected["life"]-=int(fallback.group(1));_log(state,f"{affected['name']} had no card to discard and lost {fallback.group(1)} life.")
@@ -3544,7 +3555,7 @@ def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str, t
             _queue_commander_zone_choice(state,zone_owner,component,destination)
         return
     card["damage"] = 0; card["tapped"] = False;card.pop("escaped",None);card.pop("evoked",None);card.pop("echo_due_controller_id",None);card.pop("dashed",None);card.pop("dash_return_triggered",None);card.pop("deathtouch_damage",None);card.pop("crewed_turn",None);card.pop("temporary_control_return_to",None);card.pop("control_while_source_id",None);card.pop("control_return_to_id",None);card.pop("activated_ability_usage",None);card.pop("temporary_power",None);card.pop("temporary_toughness",None);card.pop("temporary_base_power",None);card.pop("temporary_base_toughness",None);card.pop("temporary_keywords",None);card.pop("temporary_removed_keywords",None);card.pop("temporary_backup_rules",None);card.pop("temporary_protection_colors",None);card.pop("unearthed",None);card.pop("unearth_controller_id",None);card.pop("unearth_end_triggered",None);card.pop("populate_sacrifice_turn",None);card.pop("monstrous",None);card.pop("monstrosity_value",None)
-    card.pop("damage_prevention",None)
+    card.pop("damage_prevention",None);card.pop("damage_source_ids_turn",None)
     if card.get("face_down"):
         values=card.pop("face_down_values",{})
         for key,value in values.items():card[key]=value
@@ -3922,7 +3933,8 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 opposing=is_creature and not same_controller and re.search(r"whenever (?:another |a )?creature an opponent controls dies",lower) is not None
                 any_creature=is_creature and re.search(r"whenever a creature dies",lower) is not None
                 one_or_more=is_creature and source is not event_card and "whenever one or more other creatures die" in lower;dedupe_key=f"dies:{source.get('instance_id')}"
-                matches=self_dies or another or controlled or graveyard_entry or opposing or any_creature or (one_or_more and (dedupe is None or dedupe_key not in dedupe))
+                damaged_by_source=is_creature and source.get("instance_id") in event_card.get("damage_source_ids_turn",[]) and "whenever a creature dealt damage by this creature this turn dies" in lower
+                matches=self_dies or another or controlled or graveyard_entry or opposing or any_creature or damaged_by_source or (one_or_more and (dedupe is None or dedupe_key not in dedupe))
                 if matches and one_or_more and dedupe is not None:dedupe.add(dedupe_key)
             elif event == "sacrifice" and event_card:
                 under_control=event_card.get("controller_id")==source.get("controller_id",owner["id"]);type_line=event_card.get("type_line","").casefold();is_token=bool(event_card.get("token"));one_or_more="one or more" in lower;dedupe_key=f"sacrifice:{source.get('instance_id')}"
@@ -4325,7 +4337,7 @@ def _begin_next_turn(state:dict)->None:
         owner.pop("damage_prevention",None);owner["firebending_mana"]=0;owner["any_color_mana"]=0;owner["bent_this_turn"]=[];owner["energy_paid_this_turn"]=0
         for permanent in owner["battlefield"]:
             if permanent.get("temporary_type_line") is not None:permanent["type_line"]=permanent.pop("temporary_type_line")
-            permanent.pop("temporary_power",None);permanent.pop("temporary_toughness",None);permanent.pop("temporary_base_power",None);permanent.pop("temporary_base_toughness",None);permanent.pop("temporary_keywords",None);permanent.pop("temporary_removed_keywords",None);permanent.pop("temporary_backup_rules",None);permanent.pop("temporary_protection_colors",None);permanent.pop("cant_attack_until_turn",None);permanent.pop("cant_block_until_turn",None);permanent.pop("must_block_source_ids",None);permanent.pop("attacks_this_turn",None);permanent.pop("regeneration_shields",None);permanent.pop("deathtouch_damage",None);permanent.pop("crewed_turn",None);permanent["damage"]=0
+            permanent.pop("temporary_power",None);permanent.pop("temporary_toughness",None);permanent.pop("temporary_base_power",None);permanent.pop("temporary_base_toughness",None);permanent.pop("temporary_keywords",None);permanent.pop("temporary_removed_keywords",None);permanent.pop("temporary_backup_rules",None);permanent.pop("temporary_protection_colors",None);permanent.pop("cant_attack_until_turn",None);permanent.pop("cant_block_until_turn",None);permanent.pop("must_block_source_ids",None);permanent.pop("attacks_this_turn",None);permanent.pop("regeneration_shields",None);permanent.pop("deathtouch_damage",None);permanent.pop("damage_source_ids_turn",None);permanent.pop("crewed_turn",None);permanent["damage"]=0
             permanent.pop("damage_prevention",None)
             if permanent.get("goaded_until_turn",0)<state["turn"]:permanent.pop("goaded_until_turn",None);permanent.pop("goaded_by",None)
             if permanent.get("hexproof_until_turn",0)<state["turn"]:permanent.pop("hexproof_until_turn",None)
