@@ -1988,9 +1988,10 @@ def _targets(state: dict, caster_id: str, card: dict, ignore_target_protection:b
 
 def _fight_target_steps(state:dict,caster_id:str,card:dict,source:dict|None=None)->list[dict]:
     text=(card.get("oracle_text") or "").casefold()
-    if "fight" not in text:return []
+    one_way=bool(re.search(r"choose target creature you control and target creature an opponent controls",text) and "deals damage equal to its power to the creature an opponent controls" in text)
+    if "fight" not in text and not one_way:return []
     source_fight=bool(source and (re.search(r"(?:this creature|this permanent|it) fights? (?:up to one )?target creature",text) or re.search(rf"\b{re.escape(source.get('name','').casefold())}\b fights? (?:up to one )?target creature",text)))
-    two_target=bool(re.search(r"target creature(?: you control)? fights? (?:another )?target creature",text) or re.search(r"two target creatures fight",text) or "fight each other" in text)
+    two_target=one_way or bool(re.search(r"target creature(?: you control)? fights? (?:another )?target creature",text) or re.search(r"two target creatures fight",text) or "fight each other" in text)
     if not source_fight and not two_target:return []
     candidates=[]
     for owner in state["players"]:
@@ -2009,6 +2010,12 @@ def _fight_target_steps(state:dict,caster_id:str,card:dict,source:dict|None=None
 def _multi_target_step_variants(state:dict,caster_id:str,card:dict)->list[list[dict]]:
     """Build deliberate, distinct target steps for common fixed and up-to-N effects."""
     text=(card.get("oracle_text") or "").casefold();words={"two":2,"three":3,"four":4}
+    if "destroy up to one target artifact, up to one target creature, and up to one target enchantment" in text:
+        steps=[]
+        for kind in ("artifact","creature","enchantment"):
+            targeting={**card,"oracle_text":f"Destroy target {kind}."};targets=_targets(state,caster_id,targeting)
+            steps.append({"label":f"Choose an {kind} (or none)","targets":targets,"convert_kind":kind})
+        return [[steps[index] for index in range(3) if index in selected] for count in range(4) for selected in combinations(range(3),count) if all(steps[index]["targets"] for index in selected)]
     match=re.search(r"\b(tap|untap) (up to )?(two|three|four|\d+) target (creatures|lands)\b",text);damage=re.search(r"deals (\d+) damage to each of up to (two|three|four|\d+) targets?",text)
     if match:
         maximum=words.get(match.group(3),int(match.group(3)) if match.group(3).isdigit() else 0);minimum=1 if match.group(2) else maximum;kind="creature" if match.group(4)=="creatures" else "land";targeting={**card,"oracle_text":f"{match.group(1).title()} target {kind}."}
@@ -2896,7 +2903,7 @@ def _resolve_spell(state: dict) -> None:
     if multi_damage_target:targeting_card={**targeting_card,"oracle_text":f"This spell deals {multi_damage_target.group(1)} damage to any target."}
     target_kind=_target_kind(targeting_card);target_id=item.get("target_id")
     source_permanent=next((permanent for player in state["players"] for permanent in player["battlefield"] if permanent["instance_id"]==item.get("source_id")),None);target_ids=item.get("target_ids") or [];fight_steps=_fight_target_steps(state,caster["id"],rules_card,source_permanent);valid_fight_ids=[target_value for position,target_value in enumerate(target_ids) if position<len(fight_steps) and target_value in {target["id"] for target in fight_steps[position]["targets"]}]
-    valid_multi_ids=[target_value for target_value in target_ids if target_value in {target["id"] for target in _targets(state,caster["id"],targeting_card)}] if target_ids and not fight_steps else []
+    convert_to_slime="destroy up to one target artifact, up to one target creature, and up to one target enchantment" in (rules_card.get("oracle_text") or "").casefold();valid_multi_ids=[target_value for target_value in target_ids if target_value in ({permanent["instance_id"] for owner in state["players"] for permanent in owner["battlefield"]} if convert_to_slime else {target["id"] for target in _targets(state,caster["id"],targeting_card)})] if target_ids and not fight_steps else []
     if item.get("kind")=="trigger" and source_permanent and "sacrifice it unless it escaped" in (card.get("oracle_text") or "").casefold():
         if not source_permanent.get("escaped"):
             owner=next(owner for owner in state["players"] if source_permanent in owner["battlefield"]);_leave_battlefield(state,owner,source_permanent,"graveyard");_log(state,f"{source_permanent['name']} was sacrificed because it did not escape.")
@@ -3277,7 +3284,12 @@ def _resolve_spell(state: dict) -> None:
     if fight_steps and len(valid_fight_ids)==len(fight_steps):
         fighters=([source_permanent,next((permanent for owner in state["players"] for permanent in owner["battlefield"] if permanent["instance_id"]==valid_fight_ids[0]),None)] if len(fight_steps)==1 else [next((permanent for owner in state["players"] for permanent in owner["battlefield"] if permanent["instance_id"]==fighter_id),None) for fighter_id in valid_fight_ids[:2]])
         if all(fighters) and fighters[0] is not fighters[1]:
-            first,second=fighters;first_power=max(0,_parse_stats(first,state)[0]);second_power=max(0,_parse_stats(second,state)[0]);_damage_permanent(state,second,first_power,first);_damage_permanent(state,first,second_power,second);first["fought_turn"]=state["turn"];second["fought_turn"]=state["turn"];_log(state,f"{first['name']} fought {second['name']}.")
+            first,second=fighters
+            if "deals damage equal to its power to the creature an opponent controls" in effect_text:
+                if "put two +1/+1 counters on the creature you control" in effect_text:_add_counters(state,first,"+1/+1",2,caster["id"],"delirium")
+                first_power=max(0,_parse_stats(first,state)[0]);_damage_permanent(state,second,first_power,first);_log(state,f"{first['name']} dealt {first_power} damage to {second['name']}.")
+            else:
+                first_power=max(0,_parse_stats(first,state)[0]);second_power=max(0,_parse_stats(second,state)[0]);_damage_permanent(state,second,first_power,first);_damage_permanent(state,first,second_power,second);first["fought_turn"]=state["turn"];second["fought_turn"]=state["turn"];_log(state,f"{first['name']} fought {second['name']}.")
     if target and target_owner and re.search(r"destroy target (?:artifact|creature|enchantment|land|planeswalker|permanent|noncreature permanent|nonland permanent)", effect_text):
         if _destroy_permanent(state,target_owner,target,"can't be regenerated" in effect_text):_log(state, f"{target['name']} was destroyed.")
     if target and target_owner and re.search(r"exile target (?:artifact|creature|enchantment|land|planeswalker|permanent|nonland permanent)", effect_text):
@@ -3500,6 +3512,16 @@ def _resolve_spell(state: dict) -> None:
             if destination=="graveyard":_destroy_permanent(state,owner,permanent,"can't be regenerated" in effect_text,trigger_sources,trigger_dedupe)
             else:_leave_battlefield(state,owner,permanent,destination,trigger_sources,trigger_dedupe,caster["id"],len(affected))
         _log(state,f"All {kind} were {'destroyed' if destination=='graveyard' else 'exiled'}.")
+    if convert_to_slime:
+        destroyed_value=0
+        for target_value in valid_multi_ids:
+            permanent=next((candidate for owner in state["players"] for candidate in owner["battlefield"] if candidate["instance_id"]==target_value),None)
+            if permanent:
+                owner=next(owner for owner in state["players"] if permanent in owner["battlefield"]);mana_value=int(permanent.get("mana_value") or 0)
+                if _destroy_permanent(state,owner,permanent):destroyed_value+=mana_value
+        if "create an x/x green ooze creature token" in effect_text:
+            token={"instance_id":_id(),"scryfall_id":"token-ooze","name":"Ooze Token","image_url":None,"type_line":"Token Creature — Ooze","oracle_text":"","mana_cost":"","mana_value":0,"colors":["G"],"power":str(destroyed_value),"toughness":str(destroyed_value),"owner_id":caster["id"],"controller_id":caster["id"],"tapped":False,"damage":0,"counters":{},"summoning_sick":True,"token":True,"keywords":[]};_enter_battlefield(state,caster,[token],"token")
+        _log(state,f"Convert to Slime destroyed permanents with total mana value {destroyed_value}.")
     attacking_stats=re.search(r"(other )?attacking creatures get ([+-]\d+)/([+-]\d+)(?: and gains? ([^.]+?))? until end of turn",effect_text)
     if attacking_stats:
         supported=("flying","first strike","double strike","deathtouch","haste","hexproof","indestructible","lifelink","menace","reach","trample","vigilance");gained={keyword for keyword in supported if attacking_stats.group(4) and re.search(rf"\b{re.escape(keyword)}\b",attacking_stats.group(4))}
