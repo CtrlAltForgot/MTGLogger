@@ -2375,7 +2375,7 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
     pending_zone=state.get("pending_zone_choice")
     if pending_zone:
         if pending_zone["player_id"]!=player_id:return []
-        zone=player.get(pending_zone["zone"],[]);cards=[card for card in zone if card["instance_id"] in set(pending_zone["card_ids"])]
+        zone=[card for owner in state["players"] for card in owner["battlefield"]] if pending_zone.get("global_battlefield") else player.get(pending_zone["zone"],[]);cards=[card for card in zone if card["instance_id"] in set(pending_zone["card_ids"])]
         actions=[{"type":"choose_zone_card","card_id":card["instance_id"],"card":card,"source_name":pending_zone["source_name"],"label":f"Choose {card['name']}"} for card in cards]
         if pending_zone.get("optional"):actions.append({"type":"decline_zone_choice","source_name":pending_zone["source_name"],"label":"Choose none"})
         return actions+[{"type":"concede"}]
@@ -3887,6 +3887,9 @@ def _resolve_spell(state: dict) -> None:
             card["bestow_original_type_line"]=card.get("type_line","");card["type_line"]="Enchantment — Aura";card["bestowed"]=True
         if re.search(r"\benters (?:the battlefield )?tapped\b",text):card["tapped"]=True
         enters_counters=re.search(r"enters(?: the battlefield)? with (a|one|two|three|four|five|six|seven|eight|nine|ten|twelve|\d+) ([+−-]\d+/[+−-]\d+|loyalty|charge|shield|stun) counters?",text)
+        if "you may have this creature enter as a copy of any creature on the battlefield" in text:
+            creatures=[permanent for owner in state["players"] for permanent in owner["battlefield"] if "Creature" in permanent.get("type_line","")]
+            state["pending_zone_choice"]={"player_id":caster["id"],"source_name":card["name"],"zone":"battlefield","destination":"copy_entry","card_ids":[permanent["instance_id"] for permanent in creatures],"optional":True,"global_battlefield":True,"copy_entry_card":card,"copy_entry_origin":item.get("cast_source_zone","stack")};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} may choose a creature for {card['name']} to copy as it enters.");return
         _enter_battlefield(state,caster,[card],item.get("cast_source_zone","stack"),item.get("kind","spell")=="spell")
         delved_cards=item.get("delved_cards") or []
         if delved_cards:
@@ -5882,6 +5885,16 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
     elif action_type in {"choose_zone_card","decline_zone_choice"}:
         pending=state.get("pending_zone_choice") or {}
         if pending.get("player_id")!=player_id:raise RuleViolation("There is no zone choice for this player")
+        if pending.get("destination")=="copy_entry":
+            original=pending["copy_entry_card"];chosen=next((card for owner in state["players"] for card in owner["battlefield"] if card["instance_id"]==action.get("card_id") and card["instance_id"] in set(pending["card_ids"])),None) if action_type=="choose_zone_card" else None
+            if action_type=="choose_zone_card" and not chosen:raise RuleViolation("Choose a creature still on the battlefield")
+            if chosen:
+                _become_temporary_copy(original,chosen)
+                if not re.search(r"\bSpirit\b",original.get("type_line","")):original["type_line"]+=f"{' —' if '—' not in original['type_line'] else ''} Spirit"
+                _log(state,f"{pending['source_name']} will enter as a Spirit copy of {chosen['name']}.")
+            else:_log(state,f"{player['name']} chose for {pending['source_name']} to enter without copying a creature.")
+            original["controller_id"]=player_id;original["summoning_sick"]=True;_enter_battlefield(state,player,[original],pending.get("copy_entry_origin","stack"));state["pending_zone_choice"]=None;state["priority_player_id"]=state["active_player_id"]
+            _update_speed_for_life_loss(state,life_before);_state_based_actions(state);_check_winner(state);state["version"]+=1;return state
         if action_type=="choose_zone_card":
             zone=player.get(pending["zone"],[]);chosen=next((card for card in zone if card["instance_id"]==action.get("card_id") and card["instance_id"] in set(pending["card_ids"])),None)
             if not chosen:raise RuleViolation("Choose an eligible card")
