@@ -31,7 +31,7 @@ def _target_card(state:dict,target_id:str)->dict|None:
 
 def _choose_target(state:dict,action:dict)->str:
     text=" ".join(filter(None,(action.get("label") or "",_card(state,"bot",action["card_id"]).get("oracle_text","") if action.get("card_id") else ""))).casefold()
-    harmful=any(word in text for word in ("damage","destroy","exile","tap target","gets -","loses","counter target","gain control of target","control enchanted"));targets=action["targets"]
+    harmful=any(word in text for word in ("damage","destroy","exile","tap target","gets -","loses","discards","counter target","gain control of target","control enchanted"));targets=action["targets"]
     preferred=[target for target in targets if (target["controller_id"]!="bot")==harmful] or targets
     damage=re.search(r"deals (\d+) damage",text)
     if harmful and damage:
@@ -58,6 +58,14 @@ def _choose_fight_targets(state:dict,action:dict)->list[str]:
         else:score=_threat_score(state,fighters[-1] or {}) if fighters else 0
         choices.append((score,ids))
     return max(choices,key=lambda choice:choice[0])[1] if choices else []
+
+
+def _choose_channel_targets(state:dict,action:dict)->list[str]:
+    selected=[]
+    for step in action.get("target_steps",[]):
+        targets=[target for target in step.get("targets",[]) if not step.get("distinct") or target["id"] not in selected]
+        if targets:selected.append(_choose_target(state,{**action,"targets":targets}))
+    return selected
 
 
 def _choose_crew_cost(state:dict,action:dict)->list[str]:
@@ -357,6 +365,13 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
         choice=max(by_type["unearth"],key=lambda action:_threat_score(state,_card(state,"bot",action["card_id"])))
         best_cast=max((_threat_score(state,_card(state,"bot",action["card_id"])) for action in by_type.get("cast",[])),default=-1)
         if difficulty=="beginner" and random.random()<.5 or "cast" not in by_type or _threat_score(state,_card(state,"bot",choice["card_id"]))>=best_cast:return choice
+    if "channel" in by_type:
+        choice=max(by_type["channel"],key=lambda action:_ability_score(state,action))
+        if choice.get("x_max") is not None:
+            choice={**choice,"x_value":_choose_x(state,choice)};choice["target_steps"]=(choice.get("target_steps_by_x") or {}).get(choice["x_value"],choice.get("target_steps",[]))
+        if choice.get("targets"):choice={**choice,"target_id":_choose_target(state,choice)}
+        if choice.get("target_steps"):choice={**choice,"target_ids":_choose_channel_targets(state,choice)}
+        if "cast" not in by_type or difficulty=="expert" or _ability_score(state,choice)>2:return choice
     if "cast" in by_type:
         spells = by_type["cast"]
         if state["stack"]:

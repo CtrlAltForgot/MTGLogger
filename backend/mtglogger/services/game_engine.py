@@ -463,6 +463,22 @@ def _buyback_reduction(player:dict)->int:
     return sum(int(match.group(1)) for permanent in player["battlefield"] for match in re.finditer(r"Buyback costs cost \{(\d+)\} less",permanent.get("oracle_text") or "",re.IGNORECASE))
 
 
+def _channel_abilities(card:dict)->list[dict]:
+    abilities=[]
+    for line in (card.get("oracle_text") or "").splitlines():
+        match=re.match(r"^Channel\s*[—-]+\s*(.+?),\s*Discard this card:\s*(.+)$",line.strip(),re.IGNORECASE)
+        if not match:continue
+        cost_text,effect=match.groups();mana_cost="".join(re.findall(r"\{[^}]+\}",cost_text)).upper()
+        if not mana_cost:continue
+        ability_card={**card,"name":f"{card['name']} — Channel","oracle_text":effect,"source_type_line":card.get("type_line",""),"source_mana_cost":card.get("mana_cost",""),"type_line":"Ability","mana_cost":""}
+        abilities.append({"mana_cost":mana_cost,"effect":effect,"card":ability_card,"sorcery_only":"activate only as a sorcery" in effect.casefold(),"legendary_reduction":"costs {1} less to activate for each legendary creature you control" in effect.casefold()})
+    return abilities
+
+
+def _channel_reduction(player:dict,ability:dict)->int:
+    return sum("Legendary" in permanent.get("type_line","") and "Creature" in permanent.get("type_line","") for permanent in player["battlefield"]) if ability["legendary_reduction"] else 0
+
+
 def _has_convoke(card:dict)->bool:
     return _has_keyword(card,"Convoke")
 
@@ -1213,6 +1229,7 @@ def _target_kind(card: dict) -> str | None:
     if re.search(r"target (?:nonland )?card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_card"
     if re.search(r"target player mills?", text): return "player"
     if re.search(r"target player sacrifices?",text):return "player"
+    if re.search(r"target player discards?",text):return "player"
     if re.search(r"deals (?:\d+|x) damage to target (?:opponent|player)",text):return "player"
     if re.search(r"(?:destroy|exile|gain control of) target (?:artifact, creature, enchantment, planeswalker|nonland permanent|permanent)", text): return "permanent"
     if re.search(r"(?:destroy|exile|tap|untap|return|regenerate|gain control of) target creature", text) or re.search(r"target creature .*(?:gets [+-](?:\d+|x)/[+-](?:\d+|x)|gains? [^.]+ until end of turn|can(?:not|'t) (?:attack|block))", text) or re.search(r"(?:deals (?:\d+|x) damage|put .+ counters?) (?:to|on) target creature", text): return "creature"
@@ -1647,6 +1664,29 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
                 if _has_x_cost(buyback_cost):variant.update({"x_min":0,"x_max":_maximum_x(player,buyback_cost,buyback_adjustment)})
                 actions.append(variant)
     for card in player["hand"]:
+        for ability_index,ability in enumerate(_channel_abilities(card)):
+            if ability["sorcery_only"] and not (active and main and not state["stack"]):continue
+            reduction=_channel_reduction(player,ability);cost_card={**card,"mana_cost":ability["mana_cost"]}
+            if not _can_pay(player,cost_card,-reduction):continue
+            targeting_card=_spell_targeting_card(ability["card"]);multi_match=re.search(r"\bX target (nonlegendary )?(cards|creatures)\b",ability["effect"],re.IGNORECASE);multi_x=multi_match is not None;up_to_match=re.search(r"up to (one|two|three|\d+) target creatures( you (?:do not |don't )?control)?",ability["effect"],re.IGNORECASE)
+            if multi_match and multi_match.group(2).casefold()=="creatures":targets=[{"id":candidate["instance_id"],"name":candidate["name"],"kind":"permanent","controller_id":candidate["controller_id"]} for owner in state["players"] for candidate in owner["battlefield"] if "Creature" in candidate.get("type_line","")]
+            elif multi_match:targets=[{"id":candidate["instance_id"],"name":candidate["name"],"kind":"graveyard","controller_id":player_id} for candidate in player["graveyard"] if not multi_match.group(1) or "Legendary" not in candidate.get("type_line","")]
+            elif up_to_match:
+                scope=(up_to_match.group(2) or "").casefold();targets=[{"id":candidate["instance_id"],"name":candidate["name"],"kind":"permanent","controller_id":candidate["controller_id"]} for owner in state["players"] for candidate in owner["battlefield"] if "Creature" in candidate.get("type_line","") and (not scope or (candidate["controller_id"]!=player_id if "not" in scope or "don't" in scope else candidate["controller_id"]==player_id))]
+            else:targets=_targets(state,player_id,targeting_card)
+            requires_target=bool(_target_kind(targeting_card))
+            action={"type":"channel","card_id":card["instance_id"],"ability_index":ability_index,"mana_cost":ability["mana_cost"],"channel_reduction":reduction,"label":f"Channel {card['name']} · {ability['mana_cost']}{f' · reduced by {reduction}' if reduction else ''}: {ability['effect']}"}
+            if _has_x_cost(cost_card):
+                maximum=_maximum_x(player,cost_card,-reduction);maximum=min(maximum,len(targets)) if multi_x else maximum;action.update({"x_min":0,"x_max":maximum})
+                if multi_x:action["target_steps_by_x"]={value:[{"label":f"Choose target {position+1}","targets":targets,"distinct":True} for position in range(value)] for value in range(maximum+1)}
+            elif requires_target:
+                if not targets:continue
+                action["targets"]=targets
+            if up_to_match:
+                maximum={"one":1,"two":2,"three":3}.get(up_to_match.group(1).casefold(),int(up_to_match.group(1)) if up_to_match.group(1).isdigit() else 0)
+                for amount in range(min(maximum,len(targets))+1):actions.append({**action,"channel_target_count":amount,"target_steps":[{"label":f"Choose target {position+1}","targets":targets,"distinct":True} for position in range(amount)],"label":f"{action['label']} · choose {amount} target{'s' if amount!=1 else ''}"})
+                continue
+            actions.append(action)
         cycling=_cycling_ability(card)
         if cycling and _can_pay(player,{"mana_cost":cycling["mana_cost"]}):
             actions.append({"type":"cycle","card_id":card["instance_id"],"label":f"{cycling['keyword']} · {cycling['mana_cost']}","mana_cost":cycling["mana_cost"]})
@@ -1789,6 +1829,10 @@ def _resolve_spell(state: dict) -> None:
         if "Creature" not in vehicle.get("type_line",""):
             vehicle["base_type_line"]=vehicle.get("type_line","");vehicle["type_line"]=vehicle["type_line"].replace("Artifact — Vehicle","Artifact Creature — Vehicle").replace("Artifact —","Artifact Creature —")
         vehicle["crewed_turn"]=state["turn"];_log(state,f"{vehicle['name']} became an artifact creature until end of turn.");return
+    if item.get("kind")=="channel_ability" and item.get("target_ids"):
+        for target_id in item["target_ids"]:
+            single_card=_x_rules_card(item["card"],item.get("x_value"));single_text=re.sub(r"\b\d+ target (nonlegendary )?(cards|creatures)\b",lambda match:f"target {match.group(1) or ''}{match.group(2)[:-1]}",single_card.get("oracle_text") or "",flags=re.IGNORECASE);single_text=re.sub(r"(?:each of )?up to (?:one|two|three|\d+) target creatures", "target creature",single_text,flags=re.IGNORECASE);single_card={**single_card,"oracle_text":single_text};state["stack"].append({**item,"id":_id(),"kind":"ability","card":single_card,"target_id":target_id,"target_ids":[]});_resolve_spell(state)
+        _log(state,f"{card['name']} resolved for {len(item['target_ids'])} targets.");return
     if item.get("kind","spell")=="spell" and len(item.get("mode_indices") or [])>1:
         options={option["index"]:option for option in _modal_options(card)};targets=item.get("mode_targets") or []
         for position,index in enumerate(item["mode_indices"]):
@@ -2873,6 +2917,21 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         card = next((card for card in player["hand"] if card["instance_id"] == action.get("card_id") and "Land" in card.get("type_line", "")), None)
         if not card: raise RuleViolation("That land is not in your hand")
         player["hand"].remove(card);card["summoning_sick"]=True;_enter_battlefield(state,player,[card],"hand",played=True);player["land_plays_remaining"]-=1;_log(state,f"{player['name']} played {card['name']}.")
+    elif action_type=="channel":
+        card=next((card for card in player["hand"] if card["instance_id"]==action.get("card_id")),None);abilities=_channel_abilities(card or {});ability_index=int(action.get("ability_index") or 0);ability=abilities[ability_index] if 0<=ability_index<len(abilities) else None;requested_target_count=len(action.get("target_ids") or []);available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="channel" and entry["card_id"]==action.get("card_id") and entry.get("ability_index")==ability_index and (entry.get("channel_target_count") is None or entry.get("channel_target_count")==requested_target_count)),None)
+        if not card or not ability or not available:raise RuleViolation("That Channel ability cannot be activated now")
+        cost_card={**card,"mana_cost":ability["mana_cost"]};x_value=int(action.get("x_value") or 0);has_x=_has_x_cost(cost_card)
+        if (has_x and not available.get("x_min",0)<=x_value<=available.get("x_max",0)) or (not has_x and action.get("x_value") is not None):raise RuleViolation("Choose a legal Channel X value")
+        target_id=action.get("target_id");targets=_targets(state,player_id,_spell_targeting_card(ability["card"]));target_steps=(available.get("target_steps_by_x") or {}).get(x_value,available.get("target_steps",[]));target_ids=action.get("target_ids") or []
+        if target_steps:
+            if len(target_ids)!=len(target_steps) or any(target_id_value not in {target["id"] for target in target_steps[index]["targets"]} for index,target_id_value in enumerate(target_ids)) or len(target_ids)!=len(set(target_ids)):raise RuleViolation("Choose the required number of distinct Channel targets")
+        elif target_ids:raise RuleViolation("That Channel ability does not use multiple targets")
+        elif _target_kind(_spell_targeting_card(ability["card"])) and target_id not in {target["id"] for target in targets}:raise RuleViolation("Choose a legal Channel target")
+        stack_before_cost=len(state["stack"]);_pay_mana(state,player,cost_card,-_channel_reduction(player,ability),x_value=x_value);_discard_cards(state,player,[card]);cost_triggers=state["stack"][stack_before_cost:];del state["stack"][stack_before_cost:]
+        stack_item={"id":_id(),"kind":"channel_ability","card":ability["card"],"controller_id":player_id,"source_id":card["instance_id"],"target_id":target_id,"target_ids":target_ids,"x_value":x_value};state["stack"].append(stack_item);state["stack"].extend(cost_triggers);state["consecutive_passes"]=0;state["pending_phase_advance"]=False
+        for ward_target in [target for target in [target_id,*target_ids] if target]:_queue_ward(state,player,ward_target,stack_item)
+        if (_multiplayer(state) or not allow_direct_resolution) and not state.get("pending_ward"):state["priority_player_id"]=opponent(state,player_id)["id"]
+        _log(state,f"{player['name']} channeled {card['name']}{f' with X={x_value}' if has_x else ''}.")
     elif action_type == "cast":
         requested_source=action.get("source");zone_name="graveyard" if requested_source in {"flashback","escape"} else "exile" if requested_source in {"airbend","suspend","foretell","plot"} else requested_source if requested_source in {"hand","command"} else next((zone for zone in ("hand","command") if any(card["instance_id"]==action.get("card_id") for card in player.get(zone,[]))),None)
         source=requested_source if zone_name=="graveyard" and requested_source in {"flashback","escape"} else requested_source if zone_name=="exile" and requested_source in {"airbend","suspend","foretell","plot"} else zone_name;card=next((card for card in player.get(zone_name or "hand",[]) if card["instance_id"]==action.get("card_id")),None);flashback=_flashback_ability(card or {}) if source=="flashback" else None;escape=_escape_ability(card or {}) if source=="escape" else None
