@@ -212,6 +212,14 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
     by_type = {kind: [action for action in actions if action["type"] == kind] for kind in {action["type"] for action in actions}}
     if "keep" in by_type:
         return by_type.get("mulligan",by_type["keep"])[0] if _should_mulligan(state,difficulty) else by_type["keep"][0]
+    if "pay_cumulative_upkeep" in by_type or "sacrifice_cumulative_upkeep" in by_type:
+        if "pay_cumulative_upkeep" not in by_type or difficulty=="beginner" and random.random()<.2:return by_type["sacrifice_cumulative_upkeep"][0]
+        action=by_type["pay_cumulative_upkeep"][0];options=action.get("cost_options",[]);amount=action.get("cost_amount",0)
+        ranked=sorted(options,key=lambda card_id:_threat_score(state,_target_card(state,card_id) or _card(state,"bot",card_id)))
+        return {**action,"cost_card_ids":ranked[:amount]}
+    if "pay_echo" in by_type or "sacrifice_echo" in by_type:
+        if "pay_echo" not in by_type or difficulty=="beginner" and random.random()<.2:return by_type["sacrifice_echo"][0]
+        action=by_type["pay_echo"][0];return {**action,"cost_card_ids":_choose_ability_cost(state,action)}
     if "pay_ward" in by_type or "decline_ward" in by_type:
         if "pay_ward" in by_type and difficulty!="beginner":
             action=by_type["pay_ward"][0]

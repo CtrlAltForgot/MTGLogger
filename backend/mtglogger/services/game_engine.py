@@ -523,6 +523,21 @@ def _echo_cost(card:dict)->dict|None:
     return None
 
 
+def _cumulative_upkeep_cost(card:dict)->dict|None:
+    line=next((line.strip() for line in (card.get("oracle_text") or "").splitlines() if re.match(r"^Cumulative upkeep(?:\s|—|-)",line.strip(),re.IGNORECASE)),None)
+    if not line:return None
+    prefix=line.split("(",1)[0].strip();mana_options=re.findall(r"((?:\{[^}]+\})+)",prefix)
+    life=re.search(r"Pay (\d+) life",prefix,re.IGNORECASE)
+    if life:
+        mana="".join(re.findall(r"\{[^}]+\}",prefix)).upper();return {"kind":"mana_life" if mana else "life","mana_options":[mana] if mana else [],"amount":int(life.group(1)),"effect":""}
+    if mana_options:return {"kind":"mana","mana_options":[cost.upper() for cost in mana_options],"amount":0,"effect":""}
+    if re.search(r"Discard a card",prefix,re.IGNORECASE):return {"kind":"discard","mana_options":[],"amount":1,"effect":""}
+    sacrifice=re.search(r"Sacrifice a (creature|land)",prefix,re.IGNORECASE)
+    if sacrifice:return {"kind":f"sacrifice_{sacrifice.group(1).casefold()}","mana_options":[],"amount":1,"effect":""}
+    effect=re.sub(r"^Cumulative upkeep\s*[—-]\s*","",prefix,flags=re.IGNORECASE).rstrip(".")
+    return {"kind":"effect","mana_options":[],"amount":1,"effect":effect} if effect else None
+
+
 def _mutate_original(card:dict)->dict:
     runtime={"tapped","damage","counters","summoning_sick","temporary_power","temporary_toughness","temporary_keywords","attachment_keywords","attached_to","mutate_pile","mutate_count","mutate_top_component_id","effective_power","effective_toughness","entry_trigger_turns","activated_ability_usage"}
     return {key:deepcopy(value) for key,value in card.items() if key not in runtime}
@@ -1478,6 +1493,40 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
     if state["status"] == "complete":
         return []
     player = _player(state, player_id)
+    pending_cumulative=state.get("pending_cumulative_upkeep") or []
+    if pending_cumulative:
+        pending=pending_cumulative[0]
+        if pending["player_id"]!=player_id:return []
+        permanent=next((card for card in player["battlefield"] if card["instance_id"]==pending["card_id"]),None);cost=_cumulative_upkeep_cost(permanent or {});common={"card_id":pending["card_id"],"card_name":pending["card_name"],"age":pending["age"]};actions=[{"type":"sacrifice_cumulative_upkeep","label":f"Sacrifice {pending['card_name']}",**common},{"type":"concede"}]
+        if not permanent or not cost:return actions
+        age=pending["age"]
+        if cost["kind"]=="mana":
+            for unit in cost["mana_options"]:
+                total=unit*age
+                if "{S}" in total:
+                    options=[card for card in player["battlefield"] if not card.get("tapped") and "Snow" in card.get("type_line","")]
+                    if len(options)>=age:actions.insert(0,{"type":"pay_cumulative_upkeep","mana_cost":"","cost_kind":"snow","cost_amount":age,"cost_options":[card["instance_id"] for card in options],"label":f"Pay {total} from snow sources",**common})
+                elif _can_pay(player,{"mana_cost":total}):actions.insert(0,{"type":"pay_cumulative_upkeep","mana_cost":total,"cost_kind":"mana","cost_amount":0,"label":f"Pay {total}",**common})
+        elif cost["kind"] in {"life","mana_life"}:
+            life=cost["amount"]*age;mana=(cost["mana_options"][0]*age if cost["mana_options"] else "")
+            if player["life"]>=life and (not mana or _can_pay(player,{"mana_cost":mana})):actions.insert(0,{"type":"pay_cumulative_upkeep","mana_cost":mana,"life_cost":life,"cost_kind":cost["kind"],"cost_amount":0,"label":f"Pay {mana}{f' and {life} life' if life else ''}",**common})
+        elif cost["kind"] in {"discard","sacrifice_creature","sacrifice_land"}:
+            options=player["hand"] if cost["kind"]=="discard" else [card for card in player["battlefield"] if ("Creature" if cost["kind"].endswith("creature") else "Land") in card.get("type_line","") and card is not permanent];amount=cost["amount"]*age
+            if len(options)>=amount:actions.insert(0,{"type":"pay_cumulative_upkeep","cost_kind":cost["kind"],"cost_amount":amount,"cost_options":[card["instance_id"] for card in options],"label":f"Pay cumulative upkeep ×{age}",**common})
+        else:
+            effect=cost["effect"].casefold();other=opponent(state,player_id)
+            if "put two cards from a single graveyard" in effect:
+                for grave_owner in state["players"]:
+                    amount=2*age
+                    if len(grave_owner["graveyard"])>=amount:actions.insert(0,{"type":"pay_cumulative_upkeep","cost_kind":"graveyard_bottom","cost_amount":amount,"cost_options":[card["instance_id"] for card in grave_owner["graveyard"]],"upkeep_zone_owner":grave_owner["id"],"upkeep_effect":cost["effect"],"label":f"Bottom {amount} cards from {grave_owner['name']}'s graveyard",**common})
+            elif "put a +1/+1 counter on a creature an opponent controls" in effect:
+                options=[card for card in other["battlefield"] if "Creature" in card.get("type_line","")]
+                if options:actions.insert(0,{"type":"pay_cumulative_upkeep","cost_kind":"opponent_counter","cost_amount":1,"cost_options":[card["instance_id"] for card in options],"upkeep_effect":cost["effect"],"label":f"Put {age} +1/+1 counter(s) on an opposing creature",**common})
+            elif "gain control of a land you don't control" in effect:
+                options=[card for card in other["battlefield"] if "Land" in card.get("type_line","")]
+                if len(options)>=age:actions.insert(0,{"type":"pay_cumulative_upkeep","cost_kind":"gain_lands","cost_amount":age,"cost_options":[card["instance_id"] for card in options],"upkeep_effect":cost["effect"],"label":f"Gain control of {age} opposing land(s)",**common})
+            else:actions.insert(0,{"type":"pay_cumulative_upkeep","cost_kind":"effect","cost_amount":age,"upkeep_effect":cost["effect"],"label":f"{cost['effect']} ×{age}",**common})
+        return actions
     pending_echo=state.get("pending_echo") or []
     if pending_echo:
         pending=pending_echo[0]
@@ -1946,6 +1995,11 @@ def _resolve_spell(state: dict) -> None:
         if permanent:
             owner=next(owner for owner in state["players"] if permanent in owner["battlefield"]);_leave_battlefield(state,owner,permanent,"hand");_log(state,f"{permanent['name']} returned to its owner's hand from dash.")
         return
+    if item.get("kind")=="cumulative_upkeep_trigger":
+        permanent=next((permanent for owner in state["players"] for permanent in owner["battlefield"] if permanent["instance_id"]==item.get("source_id") and permanent.get("controller_id")==caster["id"]),None)
+        if not permanent:return
+        _add_counters(state,permanent,"age",1,caster["id"],"cumulative_upkeep");age=permanent.get("counters",{}).get("age",0)
+        pending=state.get("pending_cumulative_upkeep") or [];pending.append({"player_id":caster["id"],"card_id":permanent["instance_id"],"card_name":permanent["name"],"age":age});state["pending_cumulative_upkeep"]=pending;state["priority_player_id"]=caster["id"];_log(state,f"{permanent['name']} received age counter {age}; its cumulative upkeep is due.");return
     if item.get("mutating"):
         target=next((permanent for owner in state["players"] for permanent in owner["battlefield"] if permanent["instance_id"]==item.get("target_id") and permanent.get("owner_id")==caster["id"] and "Creature" in permanent.get("type_line","") and not re.search(r"\bHuman\b",permanent.get("type_line",""),re.IGNORECASE)),None)
         if target:
@@ -2027,7 +2081,7 @@ def _resolve_spell(state: dict) -> None:
     target_player = next((player for player in state["players"] if player["id"] == target_id), None)
     target_owner = next((player for player in state["players"] if any(permanent["instance_id"] == target_id for permanent in player["battlefield"])), None)
     target = next((permanent for player in state["players"] for permanent in player["battlefield"] if permanent["instance_id"] == target_id), None)
-    event_permanent=next((permanent for player in state["players"] for permanent in player["battlefield"] if permanent["instance_id"]==item.get("event_card_id")),None);event_controller=_player(state,event_permanent.get("controller_id")) if event_permanent else None
+    event_permanent=next((permanent for player in state["players"] for permanent in player["battlefield"] if permanent["instance_id"]==item.get("event_card_id")),None);event_controller=_player(state,item.get("event_owner_id")) if item.get("event_owner_id") else _player(state,event_permanent.get("controller_id")) if event_permanent else None
     target_stack_item = next((entry for entry in state["stack"] if entry["id"] == target_id), None)
     graveyard_owner=next((player for player in state["players"] if any(graveyard_card["instance_id"]==target_id for graveyard_card in player["graveyard"])),None)
     graveyard_target=next((graveyard_card for player in state["players"] for graveyard_card in player["graveyard"] if graveyard_card["instance_id"]==target_id),None)
@@ -2043,6 +2097,8 @@ def _resolve_spell(state: dict) -> None:
     if event_permanent and re.search(r"\buntap (?:it|that (?:creature|permanent|artifact|land))\b",effect_text):_set_tapped(state,[event_permanent],False,caster["id"],"trigger")
     event_life_loss=re.search(r"(?:its|that (?:creature|permanent|artifact|land)'?s) controller loses (\d+) life",effect_text)
     if event_controller and event_life_loss:event_controller["life"]-=int(event_life_loss.group(1))
+    if event_controller and "that player exiles all cards from their library" in effect_text:
+        cards=list(event_controller["library"]);event_controller["library"].clear();_put_into_exile(state,event_controller,cards,"library",caster["id"])
     event_mill=re.search(r"(?:its|that (?:creature|permanent|artifact|land)'?s) controller mills? (a|one|two|three|four|\d+) cards?",effect_text)
     if event_controller and event_mill:
         words={"a":1,"one":1,"two":2,"three":3,"four":4};amount=words.get(event_mill.group(1),int(event_mill.group(1)) if event_mill.group(1).isdigit() else 1)
@@ -2328,6 +2384,12 @@ def _resolve_spell(state: dict) -> None:
 def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str, trigger_sources:list[tuple[dict,dict]]|None=None, trigger_dedupe:set[str]|None=None, exile_actor_id:str|None=None, exile_batch_size:int|None=None) -> None:
     if card.get("unearthed") and destination!="exile":destination="exile";exile_actor_id=card.get("unearth_controller_id",exile_actor_id)
     exile_sources=trigger_sources or ([(source_owner,source) for source_owner in state["players"] for source in source_owner["battlefield"]] if destination=="exile" else None)
+    if card.get("name")=="Herald of Leshrac":
+        for land_controller in state["players"]:
+            if land_controller["id"]!=card.get("controller_id"):continue
+            for land in list(land_controller["battlefield"]):
+                land_owner=_player(state,land.get("owner_id",land_controller["id"]))
+                if "Land" in land.get("type_line","") and land_controller["id"]!=land_owner["id"]:_change_control(state,land,land_owner)
     if card.get("attached_to"):_detach(state,card)
     attachments=[(attachment_owner,attachment) for attachment_owner in state["players"] for attachment in list(attachment_owner["battlefield"]) if attachment.get("attached_to")==card.get("instance_id")]
     for attachment_owner,attachment in attachments:
@@ -2551,6 +2613,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
         for clause in clauses:
             lower = clause.casefold(); matches = False
             if event=="enters" and re.match(r"^backup\b",lower):continue
+            if event=="upkeep" and re.match(r"^cumulative upkeep\b",lower):continue
             trigger_count = 1
             if event == "enters" and event_card:
                 etb_boundary=re.search(r",\s*(?=(?:you\b|put\b|create\b|draw\b|each\b|target\b|this\b|that\b|it\b|its\b|gain\b|tap\b|untap\b|exile\b|investigate\b|proliferate\b|scry\b|mill\b|add\b|amass\b|venture\b|return\b|search\b|[a-z0-9' -]+ deals?\b))",lower);condition=lower[:etb_boundary.start()] if etb_boundary else lower.split(",",1)[0];type_line=event_card.get("type_line","").casefold();under_control=event_card.get("controller_id")==owner["id"];owned=event_card.get("owner_id")==owner["id"];one_or_more="one or more" in condition;dedupe_key=f"enters:{source.get('instance_id')}:{condition}"
@@ -2693,6 +2756,10 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 matches=owner["id"]==event_owner["id"] and "whenever you discover" in lower
             elif event=="mutates" and event_card:
                 matches=source is event_card and re.search(r"whenever this creature mutates\b",lower) is not None
+            elif event in {"coin_win","coin_lose"} and event_card:
+                matches=source is event_card and ((event=="coin_win" and "whenever you win a coin flip" in lower) or (event=="coin_lose" and "whenever you lose a coin flip" in lower))
+            elif event=="cumulative_unpaid" and event_card:
+                matches=source is event_card and "when a player doesn't pay this enchantment's cumulative upkeep" in lower
             elif event=="energy_gain":
                 matches=owner["id"]==event_owner["id"] and ("whenever you get one or more {e}" in lower or "whenever you get {e}" in lower)
             elif event=="turned_face_up" and event_card:
@@ -2794,7 +2861,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
             for _ in range(trigger_count):
                 trigger={"id":_id(),"kind":"trigger","card":ability_card,"controller_id":owner["id"],"target_id":None,"source_id":source["instance_id"]}
                 if event=="mutates":trigger["x_value"]=event_card.get("mutate_count",1)
-                if event_card and event in {"enters","exile","tapped","untapped","counter_added","turned_face_up","dies","discard","graveyard_leave","damage","combat_damage_player"}:trigger["event_card_id"]=event_card.get("instance_id");trigger["event_owner_id"]=event_owner.get("id")
+                if event_card and event in {"enters","exile","tapped","untapped","counter_added","turned_face_up","dies","discard","graveyard_leave","damage","combat_damage_player","cumulative_unpaid"}:trigger["event_card_id"]=event_card.get("instance_id");trigger["event_owner_id"]=event_owner.get("id")
                 if fight_steps:
                     if all(step["targets"] for step in fight_steps):state.setdefault("pending_trigger_targets",[]).append({"controller_id":owner["id"],"source_name":source["name"],"trigger":trigger,"card":ability_card,"target_steps":fight_steps});state["priority_player_id"]=state["pending_trigger_targets"][0]["controller_id"]
                     else:_log(state,f"{source['name']}'s fight trigger had no legal targets and was removed.")
@@ -2928,6 +2995,9 @@ def _begin_next_turn(state:dict)->None:
         state["pending_echo"]=[{"player_id":active["id"],"card_id":card["instance_id"],"card_name":card["name"]} for card in echo_due]
         for card in echo_due:card.pop("echo_due_controller_id",None)
         state["priority_player_id"]=active["id"]
+    for permanent in active["battlefield"]:
+        if _cumulative_upkeep_cost(permanent):
+            ability={"name":f"{permanent['name']} — Cumulative upkeep","oracle_text":"Put an age counter on this permanent, then pay its cumulative upkeep cost for each age counter on it or sacrifice it.","type_line":"Ability","mana_cost":""};state["stack"].append({"id":_id(),"kind":"cumulative_upkeep_trigger","card":ability,"controller_id":active["id"],"target_id":None,"source_id":permanent["instance_id"]})
     if state.get("day_night")=="day" and previous_spells==0:_set_day_night(state,"night")
     elif state.get("day_night")=="night" and previous_spells>=2:_set_day_night(state,"day")
     temporary_controlled=[card for owner in state["players"] for card in owner["battlefield"] if card.get("temporary_control_return_to")]
@@ -3004,7 +3074,58 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
     manual_actions = {"adjust_life", "add_counter", "create_token", "move_zone"}
     if action_type not in allowed and action_type not in manual_actions:
         raise RuleViolation(f"{action_type} is not legal right now")
-    if action_type in {"pay_echo","sacrifice_echo"}:
+    if action_type in {"pay_cumulative_upkeep","sacrifice_cumulative_upkeep"}:
+        pending=(state.get("pending_cumulative_upkeep") or [None])[0]
+        if not pending or pending["player_id"]!=player_id:raise RuleViolation("There is no cumulative upkeep payment due")
+        permanent=next((card for card in player["battlefield"] if card["instance_id"]==pending["card_id"]),None);cost=_cumulative_upkeep_cost(permanent or {});age=pending["age"]
+        if action_type=="pay_cumulative_upkeep":
+            available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="pay_cumulative_upkeep" and entry.get("mana_cost","")==action.get("mana_cost","")),None)
+            if not cost or not available:raise RuleViolation("That cumulative upkeep cost cannot be paid")
+            selected=action.get("cost_card_ids") or [];kind=cost["kind"]
+            if available.get("mana_cost"):_pay_mana(state,player,{"mana_cost":available["mana_cost"]})
+            if available.get("life_cost"):player["life"]-=available["life_cost"]
+            if available.get("cost_kind")=="snow":
+                sources=[card for card in player["battlefield"] if card["instance_id"] in set(selected) and not card.get("tapped") and "Snow" in card.get("type_line","")]
+                if len(sources)!=available["cost_amount"] or len(selected)!=len(sources):raise RuleViolation("Choose enough untapped snow sources")
+                _set_tapped(state,sources,True,player_id,"cumulative_upkeep")
+            elif available.get("cost_kind")=="graveyard_bottom":
+                grave_owner=_player(state,available["upkeep_zone_owner"]);cards=[card for card in grave_owner["graveyard"] if card["instance_id"] in set(selected)]
+                if len(cards)!=available["cost_amount"] or len(selected)!=len(cards):raise RuleViolation("Choose the required cards from one graveyard")
+                for grave_card in cards:grave_owner["graveyard"].remove(grave_card);grave_owner["library"].insert(0,grave_card)
+            elif available.get("cost_kind")=="opponent_counter":
+                target=next((card for card in opponent(state,player_id)["battlefield"] if card["instance_id"] in set(selected) and "Creature" in card.get("type_line","")),None)
+                if len(selected)!=1 or not target:raise RuleViolation("Choose an opponent's creature")
+                _add_counters(state,target,"+1/+1",age,player_id,"cumulative_upkeep")
+            elif available.get("cost_kind")=="gain_lands":
+                other=opponent(state,player_id);lands=[card for card in other["battlefield"] if card["instance_id"] in set(selected) and "Land" in card.get("type_line","")]
+                if len(lands)!=age or len(selected)!=len(lands):raise RuleViolation("Choose one opposing land per age counter")
+                for land in lands:_change_control(state,land,player)
+            elif kind=="discard":
+                cards=[card for card in player["hand"] if card["instance_id"] in set(selected)]
+                if len(selected)!=available["cost_amount"] or len(cards)!=len(selected):raise RuleViolation("Choose every cumulative-upkeep discard")
+                _discard_cards(state,player,cards)
+            elif kind.startswith("sacrifice_"):
+                cards=[card for card in player["battlefield"] if card["instance_id"] in set(selected)]
+                if len(selected)!=available["cost_amount"] or len(cards)!=len(selected):raise RuleViolation("Choose every cumulative-upkeep sacrifice")
+                _sacrifice_permanents(state,player,cards)
+            elif kind=="effect":
+                effect=cost["effect"].casefold();other=opponent(state,player_id)
+                for _ in range(age):
+                    life=re.search(r"opponent gains? (\d+) life",effect)
+                    if life:_gain_life(state,other,int(life.group(1)))
+                    elif "draw a card" in effect:_draw(state,player)
+                    elif "exile the top card of your library" in effect and player["library"]:_put_into_exile(state,player,[player["library"].pop()],"cumulative_upkeep",player_id)
+                    elif "add {r}" in effect:player["firebending_mana"]=player.get("firebending_mana",0)+1
+                    elif "put a -1/-1 counter on this creature" in effect:_add_counters(state,permanent,"-1/-1",1,player_id,"cumulative_upkeep")
+                    elif "have an opponent create a 1/1 red survivor" in effect:_enter_battlefield(state,other,[_dungeon_token(other,"Survivor Token","1","1","Survivor",[])],"token")
+                    elif "flip a coin" in effect:_queue_triggers(state,"coin_win" if random.SystemRandom().randrange(2) else "coin_lose",permanent,player)
+                _log(state,f"{player['name']} performed {cost['effect']} {age} time(s).")
+            _log(state,f"{player['name']} paid {permanent['name']}'s cumulative upkeep for {age} age counter(s).")
+        elif permanent:_queue_triggers(state,"cumulative_unpaid",permanent,player);_leave_battlefield(state,player,permanent,"graveyard");_log(state,f"{permanent['name']} was sacrificed to cumulative upkeep.")
+        state["pending_cumulative_upkeep"].pop(0)
+        if not state["pending_cumulative_upkeep"]:state["pending_cumulative_upkeep"]=None
+        state["priority_player_id"]=(state.get("pending_cumulative_upkeep") or [{"player_id":state["active_player_id"]}])[0]["player_id"]
+    elif action_type in {"pay_echo","sacrifice_echo"}:
         pending=(state.get("pending_echo") or [None])[0]
         if not pending or pending["player_id"]!=player_id:raise RuleViolation("There is no echo payment due")
         permanent=next((card for card in player["battlefield"] if card["instance_id"]==pending["card_id"]),None);cost=_echo_cost(permanent or {})
