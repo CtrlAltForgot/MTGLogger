@@ -54,6 +54,6 @@ export default function App(){
       {installPrompt&&<Button startIcon={<Download/>} onClick={()=>void install()} sx={{display:{xs:'none',xl:'inline-flex'},flex:'0 0 auto'}}>Install</Button>}
       <Tooltip title={dark?'Use light appearance':'Use dark appearance'}><IconButton aria-label={dark?'Use light appearance':'Use dark appearance'} onClick={toggleTheme} sx={{ml:{lg:'auto'},flex:'0 0 auto',border:'1px solid',borderColor:'divider',bgcolor:'action.hover'}}>{dark?<LightMode/>:<DarkMode/>}</IconButton></Tooltip>
     </Toolbar></AppBar>
-    <Box component="main" sx={{maxWidth:page===6?'none':1580,mx:'auto',px:page===6?{xs:1.5,md:2.5}:{xs:2,sm:3,lg:3.5},py:{xs:2.5,md:3},minHeight:'calc(100vh - 64px)'}}><Suspense fallback={<Box minHeight="50vh" display="grid" sx={{placeItems:'center'}}><CircularProgress/></Box>}>{pages[page].content}</Suspense></Box>
+    <Box component="main" sx={{maxWidth:page===6?'none':1580,mx:'auto',px:page===6?0:{xs:2,sm:3,lg:3.5},py:page===6?0:{xs:2.5,md:3},minHeight:'calc(100vh - 64px)'}}><Suspense fallback={<Box minHeight="50vh" display="grid" sx={{placeItems:'center'}}><CircularProgress/></Box>}>{pages[page].content}</Suspense></Box>
   </CardDetailsProvider></ThemeProvider>
 }
