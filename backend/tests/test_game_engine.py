@@ -2294,3 +2294,24 @@ def test_plotted_instant_still_casts_only_as_a_sorcery_and_plot_cost_reducers_st
 
 def test_bot_plots_a_discounted_expensive_spell_instead_of_casting_it_now():
     state=kept_game();state["active_player_id"]="bot";state["priority_player_id"]="bot";state["phase"]="precombat_main";bot=next(p for p in state["players"] if p["id"]=="bot");bot["land_plays_remaining"]=0;lands=[{**card(1900+index,"Mountain","Basic Land — Mountain"),"instance_id":f"bot-plot-land-{index}","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False} for index in range(4)];spell={**card(1904,"Bot Plot Dragon","Creature — Dragon","{3}{R}","5","5"),"mana_value":4,"oracle_text":"Flying\nPlot {1}{R}","instance_id":"bot-plot-dragon","owner_id":"bot","controller_id":"bot"};bot["battlefield"]=lands;bot["hand"]=[spell];choice=choose_bot_action(state,"expert");assert choice["type"]=="plot" and choice["card_id"]=="bot-plot-dragon"
+
+
+def test_escape_cast_exiles_only_selected_other_graveyard_cards_and_adds_counters():
+    state=kept_game();state["phase"]="precombat_main";player=next(p for p in state["players"] if p["id"]=="player");player["land_plays_remaining"]=0
+    lands=[{**card(1910+index,"Forest","Basic Land — Forest"),"instance_id":f"escape-land-{index}","owner_id":"player","controller_id":"player","tapped":False,"damage":0,"counters":{},"summoning_sick":False} for index in range(4)]
+    escapee={**card(1914,"Chainweb Aracnir","Creature — Spider","{G}","1","2"),"oracle_text":"Reach\nEscape—{3}{G}, Exile four other cards from your graveyard.\nChainweb Aracnir escapes with three +1/+1 counters on it.","instance_id":"chainweb-aracnir","owner_id":"player","controller_id":"player"}
+    fodder=[{**card(1915+index,f"Fodder {index}","Sorcery"),"instance_id":f"escape-fodder-{index}","owner_id":"player","controller_id":"player"} for index in range(5)]
+    player["battlefield"]=lands;player["hand"]=[];player["graveyard"]=[escapee,*fodder]
+    action=next(entry for entry in legal_actions(state,"player") if entry.get("source")=="escape");assert action["mana_cost"]=="{3}{G}" and action["cost_amount"]==4 and "chainweb-aracnir" not in action["cost_options"]
+    chosen=[f"escape-fodder-{index}" for index in range(4)];state=perform_action(state,"player",{**action,"cost_card_ids":chosen});player=next(p for p in state["players"] if p["id"]=="player")
+    assert {card["instance_id"] for card in player["exile"]}==set(chosen) and [card["instance_id"] for card in player["graveyard"]]==["escape-fodder-4"] and state["stack"][-1]["escaped"]
+    state=perform_action(state,"player",{"type":"resolve"});player=next(p for p in state["players"] if p["id"]=="player");escaped=next(card for card in player["battlefield"] if card["instance_id"]=="chainweb-aracnir");assert escaped["counters"]["+1/+1"]==3
+
+
+def test_escape_requires_enough_fodder_and_bot_chooses_low_value_cards():
+    state=kept_game();state["active_player_id"]="bot";state["priority_player_id"]="bot";state["phase"]="precombat_main";bot=next(p for p in state["players"] if p["id"]=="bot");bot["land_plays_remaining"]=0
+    lands=[{**card(1920+index,"Swamp","Basic Land — Swamp"),"instance_id":f"bot-escape-land-{index}","owner_id":"bot","controller_id":"bot","tapped":False,"damage":0,"counters":{},"summoning_sick":False} for index in range(2)]
+    escapee={**card(1922,"Underworld Charger","Creature — Nightmare Horse","{2}{B}","3","3"),"oracle_text":"Escape—{1}{B}, Exile three other cards from your graveyard.","instance_id":"underworld-charger","owner_id":"bot","controller_id":"bot"}
+    cheap=[{**card(1923+index,f"Cheap {index}","Sorcery"),"mana_value":index,"instance_id":f"cheap-{index}","owner_id":"bot","controller_id":"bot"} for index in range(3)];valuable={**card(1926,"Valuable","Creature — Dragon","{6}{B}","7","7"),"mana_value":7,"instance_id":"valuable","owner_id":"bot","controller_id":"bot"}
+    bot["battlefield"]=lands;bot["hand"]=[];bot["graveyard"]=[escapee,*cheap[:2]];assert not any(action.get("source")=="escape" for action in legal_actions(state,"bot"))
+    bot["graveyard"].extend([cheap[2],valuable]);choice=choose_bot_action(state,"expert");assert choice["source"]=="escape" and set(choice["cost_card_ids"])=={"cheap-0","cheap-1","cheap-2"}
