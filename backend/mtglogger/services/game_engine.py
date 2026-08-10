@@ -511,6 +511,18 @@ def _dash_reduction(player:dict)->int:
     return sum(int(value) for permanent in player["battlefield"] for value in re.findall(r"Dash costs you pay cost \{(\d+)\} less",permanent.get("oracle_text") or "",re.IGNORECASE))
 
 
+def _echo_cost(card:dict)->dict|None:
+    line=next((line.strip() for line in (card.get("oracle_text") or "").splitlines() if re.match(r"^Echo(?:\s|—|-)",line.strip(),re.IGNORECASE)),None)
+    if not line:return None
+    mana=re.match(r"Echo\s+((?:\{[^}]+\})+)",line,re.IGNORECASE)
+    if mana:return {"kind":"mana","mana_cost":mana.group(1).upper(),"amount":0}
+    if re.search(r"Discard a card",line,re.IGNORECASE):return {"kind":"discard","mana_cost":"","amount":1}
+    lands=re.search(r"Sacrifice (a|one|two|three|\d+) lands?",line,re.IGNORECASE)
+    if lands:
+        words={"a":1,"one":1,"two":2,"three":3};value=lands.group(1).casefold();return {"kind":"sacrifice","mana_cost":"","amount":int(value) if value.isdigit() else words[value]}
+    return None
+
+
 def _mutate_original(card:dict)->dict:
     runtime={"tapped","damage","counters","summoning_sick","temporary_power","temporary_toughness","temporary_keywords","attachment_keywords","attached_to","mutate_pile","mutate_count","mutate_top_component_id","effective_power","effective_toughness","entry_trigger_turns","activated_ability_usage"}
     return {key:deepcopy(value) for key,value in card.items() if key not in runtime}
@@ -1417,6 +1429,7 @@ def _change_control(state:dict,card:dict,new_controller:dict,until_end_of_turn:b
     if until_end_of_turn and not card.get("temporary_control_return_to"):
         card["temporary_control_return_to"]=current["id"]
     current["battlefield"].remove(card);new_controller["battlefield"].append(card);card["controller_id"]=new_controller["id"];card["summoning_sick"]=True;card.pop("suspend_haste",None)
+    if _echo_cost(card):card["echo_due_controller_id"]=new_controller["id"]
     _remove_from_combat(state,card["instance_id"])
 
 
@@ -1465,6 +1478,15 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
     if state["status"] == "complete":
         return []
     player = _player(state, player_id)
+    pending_echo=state.get("pending_echo") or []
+    if pending_echo:
+        pending=pending_echo[0]
+        if pending["player_id"]!=player_id:return []
+        permanent=next((card for card in player["battlefield"] if card["instance_id"]==pending["card_id"]),None);cost=_echo_cost(permanent or {});actions=[{"type":"sacrifice_echo","card_id":pending["card_id"],"card_name":pending["card_name"],"label":f"Sacrifice {pending['card_name']}"},{"type":"concede"}]
+        if permanent and cost:
+            options=[card for card in player["hand"]] if cost["kind"]=="discard" else [card for card in player["battlefield"] if "Land" in card.get("type_line","")] if cost["kind"]=="sacrifice" else []
+            if cost["kind"]!="mana" and len(options)>=cost["amount"] or cost["kind"]=="mana" and _can_pay(player,{"mana_cost":cost["mana_cost"]}):actions.insert(0,{"type":"pay_echo","card_id":permanent["instance_id"],"card_name":permanent["name"],"mana_cost":cost["mana_cost"],"cost_kind":cost["kind"],"cost_amount":cost["amount"],"cost_options":[card["instance_id"] for card in options],"label":f"Pay echo {cost['mana_cost'] or cost['kind']}"})
+        return actions
     pending_escape_counter=state.get("pending_escape_counter")
     if pending_escape_counter:
         if pending_escape_counter["player_id"]!=player_id:return []
@@ -2325,7 +2347,7 @@ def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str, t
             else:zone_owner[destination].append(component)
             _queue_commander_zone_choice(state,zone_owner,component,destination)
         return
-    card["damage"] = 0; card["tapped"] = False;card.pop("escaped",None);card.pop("evoked",None);card.pop("dashed",None);card.pop("dash_return_triggered",None);card.pop("deathtouch_damage",None);card.pop("crewed_turn",None);card.pop("temporary_control_return_to",None);card.pop("activated_ability_usage",None);card.pop("temporary_power",None);card.pop("temporary_toughness",None);card.pop("temporary_keywords",None);card.pop("temporary_backup_rules",None);card.pop("unearthed",None);card.pop("unearth_controller_id",None);card.pop("unearth_end_triggered",None)
+    card["damage"] = 0; card["tapped"] = False;card.pop("escaped",None);card.pop("evoked",None);card.pop("echo_due_controller_id",None);card.pop("dashed",None);card.pop("dash_return_triggered",None);card.pop("deathtouch_damage",None);card.pop("crewed_turn",None);card.pop("temporary_control_return_to",None);card.pop("activated_ability_usage",None);card.pop("temporary_power",None);card.pop("temporary_toughness",None);card.pop("temporary_keywords",None);card.pop("temporary_backup_rules",None);card.pop("unearthed",None);card.pop("unearth_controller_id",None);card.pop("unearth_end_triggered",None)
     if card.get("face_down"):
         values=card.pop("face_down_values",{})
         for key,value in values.items():card[key]=value
@@ -2413,6 +2435,7 @@ def _enter_battlefield(state:dict,controller:dict,cards:list[dict],origin:str="e
             if state.get("day_night") is None:_set_day_night(state,"day")
             elif state.get("day_night")=="night":_set_card_face(card,1)
         card["controller_id"]=controller["id"];card["entry_event_origin"]=origin;card["entry_event_was_cast"]=was_cast;card["entry_event_played"]=played;card["entry_event_batch_size"]=batch_size
+        if _echo_cost(card):card["echo_due_controller_id"]=controller["id"]
         controller["battlefield"].append(card)
     ordered_owners=sorted(state["players"],key=lambda owner:owner["id"]!=state.get("active_player_id"));sources=[(owner,permanent) for owner in ordered_owners for permanent in owner["battlefield"]]
     for card in entering:_queue_triggers(state,"enters",card,controller,dedupe,sources)
@@ -2900,6 +2923,11 @@ def _begin_next_turn(state:dict)->None:
     previous_active=_player(state,state["active_player_id"]);previous_spells=previous_active.get("spells_cast_this_turn",0) if previous_active.get("cast_event_turn")==state["turn"] else 0
     state["pending_discard"]=None;state["turn"] += 1; state["phase"] = PHASES[0];state["beginning_draw_pending"]=True; state["active_player_id"] = opponent(state, state["active_player_id"])["id"]
     active = _player(state, state["active_player_id"]); active["land_plays_remaining"] = 1
+    echo_due=[card for card in active["battlefield"] if card.get("echo_due_controller_id")==active["id"]]
+    if echo_due:
+        state["pending_echo"]=[{"player_id":active["id"],"card_id":card["instance_id"],"card_name":card["name"]} for card in echo_due]
+        for card in echo_due:card.pop("echo_due_controller_id",None)
+        state["priority_player_id"]=active["id"]
     if state.get("day_night")=="day" and previous_spells==0:_set_day_night(state,"night")
     elif state.get("day_night")=="night" and previous_spells>=2:_set_day_night(state,"day")
     temporary_controlled=[card for owner in state["players"] for card in owner["battlefield"] if card.get("temporary_control_return_to")]
@@ -2976,7 +3004,28 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
     manual_actions = {"adjust_life", "add_counter", "create_token", "move_zone"}
     if action_type not in allowed and action_type not in manual_actions:
         raise RuleViolation(f"{action_type} is not legal right now")
-    if action_type == "keep":
+    if action_type in {"pay_echo","sacrifice_echo"}:
+        pending=(state.get("pending_echo") or [None])[0]
+        if not pending or pending["player_id"]!=player_id:raise RuleViolation("There is no echo payment due")
+        permanent=next((card for card in player["battlefield"] if card["instance_id"]==pending["card_id"]),None);cost=_echo_cost(permanent or {})
+        if action_type=="pay_echo":
+            selected=action.get("cost_card_ids") or []
+            if not cost:raise RuleViolation("That echo cost is no longer available")
+            if cost["kind"]=="mana":_pay_mana(state,player,{"mana_cost":cost["mana_cost"]})
+            elif cost["kind"]=="discard":
+                cards=[card for card in player["hand"] if card["instance_id"] in set(selected)]
+                if len(selected)!=cost["amount"] or len(cards)!=cost["amount"]:raise RuleViolation("Choose the required Echo discard")
+                _discard_cards(state,player,cards)
+            else:
+                lands=[card for card in player["battlefield"] if card["instance_id"] in set(selected) and "Land" in card.get("type_line","")]
+                if len(selected)!=cost["amount"] or len(lands)!=cost["amount"]:raise RuleViolation("Choose the required lands for Echo")
+                _sacrifice_permanents(state,player,lands)
+            _log(state,f"{player['name']} paid {permanent['name']}'s echo cost.")
+        elif permanent:_leave_battlefield(state,player,permanent,"graveyard");_log(state,f"{permanent['name']} was sacrificed to echo.")
+        state["pending_echo"].pop(0)
+        if not state["pending_echo"]:state["pending_echo"]=None
+        state["priority_player_id"]=(state.get("pending_echo") or [{"player_id":state["active_player_id"]}])[0]["player_id"]
+    elif action_type == "keep":
         if player.get("mulligans",0):state["pending_mulligan_bottom"]=player_id;_log(state,f"{player['name']} kept and must put {player['mulligans']} card(s) on the bottom.")
         else:
             player["kept_hand"] = True; _log(state, f"{player['name']} kept seven cards.")
