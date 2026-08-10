@@ -1552,6 +1552,7 @@ def _target_kind(card: dict) -> str | None:
     if re.search(r"\bearthbend\s+\d+\b",text):return "land"
     if re.search(r"target creature card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_creature"
     if re.search(r"target (?:nonland permanent |nonland )?card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_card"
+    if "target face-down permanent you control" in text:return "permanent"
     if re.search(r"target player mills?", text): return "player"
     if re.search(r"target player sacrifices?",text):return "player"
     if re.search(r"target player discards?",text):return "player"
@@ -1629,6 +1630,7 @@ def _targets(state: dict, caster_id: str, card: dict, ignore_target_protection:b
                 if "Aura" in card.get("type_line","") and aura_types and not any(allowed in permanent.get("type_line","").casefold() for allowed in aura_types if allowed!="player"):continue
                 if own_target_only and player["id"] != caster_id: continue
                 if opponent_target_only and player["id"] == caster_id: continue
+                if "target face-down permanent you control" in text and (player["id"]!=caster_id or not permanent.get("face_down")):continue
                 if "other than this creature" in text and permanent["instance_id"]==card.get("instance_id"):continue
                 if "nonland permanent" in text and "Land" in permanent.get("type_line", ""): continue
                 if "noncreature artifact" in text and "Creature" in permanent.get("type_line", ""): continue
@@ -2644,6 +2646,12 @@ def _resolve_spell(state: dict) -> None:
         card_owner=_player(state,target.get("owner_id",target_owner["id"]));_leave_battlefield(state,target_owner,target,"library");_log(state,f"{target['name']} was put on top of {card_owner['name']}'s library.")
     if target and re.search(r"\btap target creature",effect_text):_set_tapped(state,[target],True,caster["id"],"effect")
     if target and re.search(r"\buntap target creature",effect_text):_set_tapped(state,[target],False,caster["id"],"effect")
+    if "turn a permanent you control face up" in effect_text:
+        choice_card={"name":f"{source_name} face-up choice","oracle_text":"Turn target face-down permanent you control face up.","type_line":"Ability","mana_cost":""};targets=_targets(state,caster["id"],choice_card)
+        if targets:
+            trigger={"id":_id(),"kind":"trigger","card":choice_card,"controller_id":caster["id"],"target_id":None,"source_id":item.get("source_id")};state.setdefault("pending_trigger_targets",[]).append({"controller_id":caster["id"],"source_name":source_name,"trigger":trigger,"card":choice_card,"optional":True});state["priority_player_id"]=caster["id"]
+        return
+    if target and target.get("face_down") and "turn target face-down permanent you control face up" in effect_text:_turn_face_up(state,caster,target)
     regeneration_target=target if target and ("regenerate target creature" in effect_text or "regenerate it" in effect_text) else source_permanent if source_permanent and "regenerate this creature" in effect_text else None
     if regeneration_target:regeneration_target["regeneration_shields"]=regeneration_target.get("regeneration_shields",0)+1;_log(state,f"{regeneration_target['name']} gained a regeneration shield until end of turn.")
     if "regenerate each other creature you control" in effect_text and sum(any(kind in graveyard_card.get("type_line","") for kind in ("Instant","Sorcery")) for graveyard_card in caster["graveyard"])>=2:
@@ -3140,11 +3148,15 @@ def _resolution_order_effect(text:str,count:int)->str:
         if ordinal_followup is not None and re.match(r"(?:put|return|exile) that card\b",sentence,re.IGNORECASE):
             if ordinal_followup:selected.append(sentence)
             ordinal_followup=None;continue
-        ordinal_followup=None
+        if ordinal_followup is not None and re.match(r"otherwise,",sentence,re.IGNORECASE):
+            if not ordinal_followup:selected.append(re.sub(r"^otherwise,\s*","",sentence,flags=re.IGNORECASE))
+            ordinal_followup=None;continue
         postfix=re.match(r"(.+?)\s+if this is the (first|second|third|fourth) time this ability has resolved this turn\.(.*)",sentence,re.IGNORECASE)
         if postfix:
-            if count==ordinals[postfix.group(2).casefold()]:selected.append(f"{postfix.group(1)}.{postfix.group(3)}".strip())
+            ordinal_followup=count==ordinals[postfix.group(2).casefold()]
+            if ordinal_followup:selected.append(f"{postfix.group(1)}.{postfix.group(3)}".strip())
             continue
+        ordinal_followup=None
         selected.append(sentence)
     return " ".join(selected)
 
@@ -3208,7 +3220,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
         raw_clauses = re.split(r"(?<=[.!])\s+|\n", text);clauses=[]
         for clause in raw_clauses:
             modal_continuation=bool(clauses and (clause.strip().startswith(("•","-")) or clauses[-1].lstrip().startswith(("•","-")) or re.search(r"\n[•-]\s",clauses[-1]) and not re.match(r"(?:when(?:ever)?\b|at the beginning\b|[+−-]?\d+\s*:|\{[^}]+\}[^:]*:)",clause.strip(),re.IGNORECASE)))
-            continuation=bool(clauses and (modal_continuation or ("target" in clauses[-1].casefold() and re.match(r"it gains? [^.]+ until end of turn",clause.strip(),re.IGNORECASE)) or re.match(r"(?:then if|if you do|if you have the city's blessing),?\b",clause.strip(),re.IGNORECASE) or re.match(r"if you control (?:one|two|three|four|five|six|seven|eight|nine|ten|\d+) or more lands",clause.strip(),re.IGNORECASE) or re.match(r"if that land is (?:a |an )?[a-z]+,",clause.strip(),re.IGNORECASE) or re.match(r"if (?:this is|it(?:'s| is)) the (?:first|second|third|fourth) time(?: this ability has resolved)?(?: this turn)?,",clause.strip(),re.IGNORECASE) or ("exile cards from the top of your library until you exile a nonland card" in clauses[-1].casefold() and re.match(r"you may cast that card this turn",clause.strip(),re.IGNORECASE)) or ("create x 1/1 red elemental creature tokens" in clauses[-1].casefold() and re.match(r"at the beginning of the next end step, exile those tokens",clause.strip(),re.IGNORECASE)) or ("reveal the top card of your library and put that card into your hand" in clauses[-1].casefold() and re.match(r"each opponent loses x life\b",clause.strip(),re.IGNORECASE))))
+            continuation=bool(clauses and (modal_continuation or ("target" in clauses[-1].casefold() and re.match(r"it gains? [^.]+ until end of turn",clause.strip(),re.IGNORECASE)) or re.match(r"(?:then if|if you do|if you have the city's blessing|otherwise),?\b",clause.strip(),re.IGNORECASE) or re.match(r"if you control (?:one|two|three|four|five|six|seven|eight|nine|ten|\d+) or more lands",clause.strip(),re.IGNORECASE) or re.match(r"if that land is (?:a |an )?[a-z]+,",clause.strip(),re.IGNORECASE) or re.match(r"if (?:this is|it(?:'s| is)) the (?:first|second|third|fourth) time(?: this ability has resolved)?(?: this turn)?,",clause.strip(),re.IGNORECASE) or ("exile cards from the top of your library until you exile a nonland card" in clauses[-1].casefold() and re.match(r"you may cast that card this turn",clause.strip(),re.IGNORECASE)) or ("create x 1/1 red elemental creature tokens" in clauses[-1].casefold() and re.match(r"at the beginning of the next end step, exile those tokens",clause.strip(),re.IGNORECASE)) or ("reveal the top card of your library and put that card into your hand" in clauses[-1].casefold() and re.match(r"each opponent loses x life\b",clause.strip(),re.IGNORECASE))))
             if continuation:
                 separator="\n" if modal_continuation else " ";clauses[-1]=f"{clauses[-1]}{separator}{clause.strip()}"
             else:clauses.append(clause)
@@ -3454,7 +3466,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
             effect = clause.split(",", 1)[1].strip()
             if owner.get("city_blessing"):effect=re.sub(r"^if you have the city's blessing,\s*","",effect,flags=re.IGNORECASE)
             if event=="enters":
-                etb_effect_boundary=re.search(r",\s*(?=(?:you\b|put\b|create\b|draw\b|each\b|target\b|this\b|that\b|it\b|its\b|gain\b|tap\b|untap\b|exile\b|investigate\b|proliferate\b|scry\b|mill\b|add\b|amass\b|venture\b|return\b|search\b|[a-z0-9' -]+ deals?\b))",clause,re.IGNORECASE)
+                etb_effect_boundary=re.search(r",\s*(?=(?:you\b|put\b|create\b|draw\b|each\b|target\b|this\b|that\b|it\b|its\b|gain\b|tap\b|untap\b|exile\b|investigate\b|proliferate\b|scry\b|mill\b|add\b|amass\b|venture\b|manifest\b|cloak\b|return\b|search\b|[a-z0-9' -]+ deals?\b))",clause,re.IGNORECASE)
                 if etb_effect_boundary:effect=clause[etb_effect_boundary.end():].strip()
             if event in {"tapped","untapped"}:
                 tap_effect_boundary=re.search(r",\s*(?=(?:you\b|put\b|create\b|draw\b|each\b|target\b|this\b|that\b|it\b|its\b|gain\b|tap\b|untap\b|exile\b|investigate\b|proliferate\b|scry\b|mill\b|remove\b|destroy\b|return\b|[a-z0-9' -]+ deals?\b))",clause,re.IGNORECASE)
@@ -3487,7 +3499,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                     if all(step["targets"] for step in fight_steps):state.setdefault("pending_trigger_targets",[]).append({"controller_id":owner["id"],"source_name":source["name"],"trigger":trigger,"card":ability_card,"target_steps":fight_steps});state["priority_player_id"]=state["pending_trigger_targets"][0]["controller_id"]
                     else:_log(state,f"{source['name']}'s fight trigger had no legal targets and was removed.")
                 elif _target_kind(ability_card):
-                    if targets:state.setdefault("pending_trigger_targets",[]).append({"controller_id":owner["id"],"source_name":source["name"],"trigger":trigger,"card":ability_card,"optional":re.match(r"you may\b",effect,re.IGNORECASE) is not None});state["priority_player_id"]=state["pending_trigger_targets"][0]["controller_id"]
+                    if targets:state.setdefault("pending_trigger_targets",[]).append({"controller_id":owner["id"],"source_name":source["name"],"trigger":trigger,"card":ability_card,"optional":re.match(r"(?:otherwise,\s*)?you may\b",effect,re.IGNORECASE) is not None});state["priority_player_id"]=state["pending_trigger_targets"][0]["controller_id"]
                     else:_log(state,f"{source['name']}'s trigger had no legal target and was removed.")
                 else:state["stack"].append(trigger)
                 _log(state, f"{source['name']} triggered: {effect}")
