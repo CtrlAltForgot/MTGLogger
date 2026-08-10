@@ -1449,6 +1449,7 @@ def _activated_abilities(card: dict) -> list[dict]:
 def _activation_timing_legal(state:dict,player_id:str,permanent:dict,index:int,ability:dict)->bool:
     restrictions=ability.get("restrictions",{});active=state["active_player_id"]==player_id;phase=state["phase"]
     if "activate only if you have the city's blessing" in ability.get("effect","").casefold() and not _player(state,player_id).get("city_blessing"):return False
+    if "activate only if this artifact or another artifact entered the battlefield under your control this turn" in ability.get("effect","").casefold() and _player(state,player_id).get("artifact_entered_turn")!=state["turn"]:return False
     if restrictions.get("sorcery") and not (active and phase in {"precombat_main","postcombat_main"} and not state["stack"]):return False
     if restrictions.get("your_turn") and not active:return False
     if restrictions.get("opponent_turn") and active:return False
@@ -2063,6 +2064,7 @@ def _target_kind(card: dict) -> str | None:
     if re.search(r"(?:up to )?x target creatures?(?! cards?\b)",text):return "creature"
     if re.search(r"up to one target non-[a-z]+ creature",text):return "creature"
     if re.search(r"target attacking creature",text):return "creature"
+    if re.search(r"target creature(?: you control)? explores?",text):return "creature"
     if re.search(r"up to (?:two|three|four|\d+) target (?:non-[a-z]+ )?creatures?",text):return "creature"
     if "exile two target creatures and/or lands you control" in text:return "permanent"
     if re.search(r"up to x target creature cards? from your graveyard",text):return "graveyard_creature"
@@ -3427,6 +3429,8 @@ def _resolve_spell(state: dict) -> None:
         _log(state,f"{source_permanent['name']} dealt {amount} damage to the defender it is attacking.");return
     if "instant and sorcery spells you cast this turn cost {1} less to cast" in effect_text:
         caster["instant_sorcery_reduction_turn"]=state["turn"];caster["instant_sorcery_reduction"]=caster.get("instant_sorcery_reduction",0)+1;_log(state,f"{caster['name']}'s instant and sorcery spells cost {{1}} less this turn.");return
+    if source_permanent and "draw a card for each artifact you control, then put this artifact into its owner's library third from the top" in effect_text:
+        amount=sum("Artifact" in permanent.get("type_line","") for permanent in caster["battlefield"]);source_name=source_permanent["name"];_draw(state,caster,amount);source_owner=next(owner for owner in state["players"] if source_permanent in owner["battlefield"]);zone_owner=_player(state,source_permanent.get("owner_id",source_owner["id"]));_leave_battlefield(state,source_owner,source_permanent,"library");zone_owner["library"].remove(source_permanent);zone_owner["library"].insert(max(0,len(zone_owner["library"])-2),source_permanent);_log(state,f"{caster['name']} drew {amount} card(s), then put {source_name} third from the top of its owner's library.");return
     if "each opponent may sacrifice a nonland permanent of their choice or discard a card" in effect_text and "each opponent who didn't sacrifice a permanent or discard a card this way" in effect_text:
         if _graveyard_card_type_count(caster)<4:_log(state,f"{card['name']} did not resolve because its Delirium condition was no longer true.");return
         source=source_permanent or card;choices=[{"player_id":owner["id"]} for owner in state["players"] if owner["id"]!=caster["id"]]
@@ -4539,6 +4543,7 @@ def _enter_battlefield(state:dict,controller:dict,cards:list[dict],origin:str="e
         if "as this enchantment enters, choose a creature type" in (card.get("oracle_text") or "").casefold() and not card.get("chosen_creature_type"):
             state.setdefault("pending_creature_type",[]).append({"player_id":controller["id"],"card_id":card["instance_id"],"card_name":card["name"]});state["priority_player_id"]=controller["id"]
     if any("you may play an additional land on each of your turns" in (card.get("oracle_text") or "").casefold() for card in entering):_refresh_land_plays(state,controller)
+    if any("Artifact" in card.get("type_line","") for card in entering):controller["artifact_entered_turn"]=state["turn"]
     _sync_city_blessing(state)
     ordered_owners=sorted(state["players"],key=lambda owner:owner["id"]!=state.get("active_player_id"));sources=[(owner,permanent) for owner in ordered_owners for permanent in owner["battlefield"]]
     if any("Land" in card.get("type_line","") for card in entering):sources.extend((owner,card) for owner in ordered_owners for card in owner["graveyard"] if re.search(r"landfall\s*[—-].*whenever a land[^.]+enters[^,]*,\s*(?:you may return this card from your graveyard to the battlefield|[^.]*you may pay (?:\{[^}]+\})+\. if you do, return this card from your graveyard to the battlefield|if this card is in your graveyard and it(?:'s| is) your turn, you may cast it from your graveyard this turn)",(card.get("oracle_text") or "").replace("\n"," "),re.IGNORECASE) and ("it's your turn" not in (card.get("oracle_text") or "").casefold() or state.get("active_player_id")==owner["id"]))
