@@ -1926,7 +1926,7 @@ def _target_kind(card: dict) -> str | None:
     if re.search(r"up to x target creature cards? from your graveyard",text):return "graveyard_creature"
     if re.search(r"up to x target instant cards? from your graveyard",text):return "graveyard_card"
     if re.search(r"target creature or enchantment card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_creature_or_enchantment"
-    if re.search(r"target creature card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_creature"
+    if re.search(r"target creature card (?:from|in) (?:your|a|any|defending player's) graveyard",text):return "graveyard_creature"
     if re.search(r"target permanent card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_permanent"
     if re.search(r"target (?:nonland permanent |nonland )?card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_card"
     if "target face-down permanent you control" in text:return "permanent"
@@ -2472,7 +2472,7 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
         if pending["controller_id"]!=player_id:return []
         if pending.get("mode_options"):return [{"type":"choose_trigger_mode","modes":pending["mode_options"],"label":pending["card"]["oracle_text"],"source_name":pending["source_name"]},{"type":"concede"}]
         if pending.get("target_steps"):return [{"type":"choose_trigger_targets","target_steps":pending["target_steps"],"min_targets":pending.get("min_targets",len(pending["target_steps"])),"label":pending["card"]["oracle_text"],"source_name":pending["source_name"]},{"type":"concede"}]
-        targets=_targets(state,player_id,pending["card"])
+        targets=pending.get("targets_override") if pending.get("targets_override") is not None else _targets(state,player_id,pending["card"])
         actions=[{"type":"choose_trigger_target","targets":targets,"label":pending["card"]["oracle_text"],"source_name":pending["source_name"]}] if targets else []
         if pending.get("optional") and not targets:actions.append({"type":"accept_trigger","source_name":pending["source_name"],"label":pending["card"]["oracle_text"]})
         if pending.get("optional") or not targets:actions.append({"type":"skip_trigger","source_name":pending["source_name"]})
@@ -4466,7 +4466,9 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 source["transform_next_upkeep"]=True;_log(state,f"{source['name']} will transform at the beginning of the next upkeep.");continue
             ability_card = {**source, "name": f"{source['name']} trigger", "oracle_text": effect, "source_type_line":source.get("type_line",""),"source_mana_cost":source.get("mana_cost",""), "type_line": "Ability", "mana_cost": ""}
             if event=="attackers_declared" and "firebending" in lower and re.search(r"\badd\b[^.]*\{r\}",lower):ability_card["firebending_trigger"]=True
-            fight_steps=_fight_target_steps(state,owner["id"],ability_card,source);dynamic_steps=[];dynamic_min=None;times_kicked=int(source.get("times_kicked",0))
+            fight_steps=_fight_target_steps(state,owner["id"],ability_card,source);dynamic_steps=[];dynamic_min=None;special_targets=None;times_kicked=int(source.get("times_kicked",0))
+            if event=="attackers_declared" and "target creature card from defending player's graveyard" in effect.casefold():
+                defender_id=state.get("combat",{}).get("attack_targets",{}).get(source.get("instance_id"));defender=next((candidate for candidate in state["players"] if candidate["id"]==defender_id),None);special_targets=[{"id":candidate["instance_id"],"name":candidate["name"],"kind":"card","controller_id":defender["id"]} for candidate in (defender or {}).get("graveyard",[]) if "Creature" in candidate.get("type_line","")]
             if times_kicked and re.search(r"each of up to x targets?[^.]*x is the number of times",effect,re.IGNORECASE):
                 candidates=[{"id":candidate["id"],"name":candidate["name"],"kind":"player","controller_id":candidate["id"]} for candidate in state["players"]]
                 candidates.extend({"id":candidate["instance_id"],"name":candidate["name"],"kind":"permanent","controller_id":candidate["controller_id"]} for candidate_owner in state["players"] for candidate in candidate_owner["battlefield"])
@@ -4486,7 +4488,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
             elif "distribute two +1/+1 counters among one or two target creatures" in effect.casefold():
                 candidates=[{"id":candidate["instance_id"],"name":candidate["name"],"kind":"permanent","controller_id":candidate["controller_id"]} for candidate_owner in state["players"] for candidate in candidate_owner["battlefield"] if "Creature" in candidate.get("type_line","")]
                 dynamic_steps=[{"label":"Choose the first creature","targets":candidates,"distinct":True},{"label":"Choose a second creature (or finish)","targets":candidates,"distinct":True}];dynamic_min=1
-            targets=[] if fight_steps or dynamic_steps else _targets(state, owner["id"], ability_card)
+            targets=special_targets if special_targets is not None else [] if fight_steps or dynamic_steps else _targets(state, owner["id"], ability_card)
             for _ in range(trigger_count):
                 trigger={"id":_id(),"kind":"trigger","card":ability_card,"controller_id":owner["id"],"target_id":None,"source_id":source["instance_id"]}
                 if event=="mutates":trigger["x_value"]=event_card.get("mutate_count",1)
@@ -4510,7 +4512,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                     if all(step["targets"] for step in fight_steps):state.setdefault("pending_trigger_targets",[]).append({"controller_id":owner["id"],"source_name":source["name"],"trigger":trigger,"card":ability_card,"target_steps":fight_steps});state["priority_player_id"]=state["pending_trigger_targets"][0]["controller_id"]
                     else:_log(state,f"{source['name']}'s fight trigger had no legal targets and was removed.")
                 elif _target_kind(ability_card):
-                    if targets:state.setdefault("pending_trigger_targets",[]).append({"controller_id":owner["id"],"source_name":source["name"],"trigger":trigger,"card":ability_card,"optional":re.match(r"(?:otherwise,\s*)?you may\b",effect,re.IGNORECASE) is not None or "up to one target" in effect.casefold()});state["priority_player_id"]=state["pending_trigger_targets"][0]["controller_id"]
+                    if targets:state.setdefault("pending_trigger_targets",[]).append({"controller_id":owner["id"],"source_name":source["name"],"trigger":trigger,"card":ability_card,"optional":re.match(r"(?:otherwise,\s*)?you may\b",effect,re.IGNORECASE) is not None or "up to one target" in effect.casefold(),**({"targets_override":targets} if special_targets is not None else {})});state["priority_player_id"]=state["pending_trigger_targets"][0]["controller_id"]
                     else:_log(state,f"{source['name']}'s trigger had no legal target and was removed.")
                 elif re.match(r"(?:otherwise,\s*)?you may\b",effect,re.IGNORECASE):state.setdefault("pending_trigger_targets",[]).append({"controller_id":owner["id"],"source_name":source["name"],"trigger":trigger,"card":ability_card,"optional":True});state["priority_player_id"]=state["pending_trigger_targets"][0]["controller_id"]
                 else:state["stack"].append(trigger)
