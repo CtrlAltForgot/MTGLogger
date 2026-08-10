@@ -2324,6 +2324,7 @@ def _pending_decision(state:dict)->bool:
     if state.get("pending_counter_choice"):return True
     if state.get("pending_color_choice"):return True
     if state.get("pending_catalyst"):return True
+    if state.get("pending_card_type"):return True
     return bool(state.get("pending_miracle") or state.get("pending_impulsivity") or state.get("pending_library_placement") or state.get("pending_sticktwister") or state.get("pending_eumidian_choice") or state.get("pending_rad_choice") or state.get("pending_tap_choice") or state.get("pending_top_card_choice") or state.get("pending_revealed_discard") or state.get("pending_same_name_search") or state.get("pending_winter_exile") or state.get("pending_optional_discard") or state.get("pending_optional_payment") or state.get("pending_tilonalli") or state.get("pending_creature_type") or state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_populate") or state.get("pending_bolster") or state.get("pending_discovery") or state.get("pending_madness") or state.get("pending_rebound") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
 
 
@@ -2478,6 +2479,11 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
         pending=pending_types[0]
         if pending["player_id"]!=player_id:return []
         return [{"type":"choose_creature_type","card_id":pending["card_id"],"card_name":pending["card_name"],"suggested_types":_creature_subtypes(player),"label":f"Choose a creature type for {pending['card_name']}"},{"type":"concede"}]
+    pending_card_types=state.get("pending_card_type") or []
+    if pending_card_types:
+        pending=pending_card_types[0]
+        if pending["player_id"]!=player_id:return []
+        return [{"type":"choose_card_type","card_id":pending["card_id"],"card_name":pending["card_name"],"card_types":pending["card_types"],"label":f"Choose a shared card type for {pending['card_name']}"},{"type":"concede"}]
     pending_cumulative=state.get("pending_cumulative_upkeep") or []
     if pending_cumulative:
         pending=pending_cumulative[0]
@@ -2843,7 +2849,7 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
     castable.extend((card,"plot") for card in player["exile"] if card.get("plotted") and state["turn"]>card.get("plotted_turn",state["turn"]))
     for card, source in castable:
         card_action_start=len(actions)
-        flashback=_flashback_ability(card) if source=="flashback" else None;escape=_escape_ability(card) if source=="escape" else None;foretell_cost=_foretell_cost(card) if source=="foretell" else None;cost_card={**card,"mana_cost":foretell_cost} if foretell_cost else {**card,"mana_cost":"{0}"} if source in {"suspend","plot"} else {**card,"mana_cost":"{2}"} if source=="airbend" else {**card,"mana_cost":flashback["mana_cost"]} if flashback else {**card,"mana_cost":escape["mana_cost"]} if escape else card;kicker_cost=_kicker_cost(card)
+        flashback=_flashback_ability(card) if source=="flashback" else None;escape=_escape_ability(card) if source=="escape" else None;foretell_cost=_foretell_cost(card) if source=="foretell" else None;apex_free=player.get("apex_free_spell_turn")==state["turn"] and player.get("apex_free_spell_type") in _craft_card_types(card);cost_card={**card,"mana_cost":"{0}"} if apex_free else {**card,"mana_cost":foretell_cost} if foretell_cost else {**card,"mana_cost":"{0}"} if source in {"suspend","plot"} else {**card,"mana_cost":"{2}"} if source=="airbend" else {**card,"mana_cost":flashback["mana_cost"]} if flashback else {**card,"mana_cost":escape["mana_cost"]} if escape else card;kicker_cost=_kicker_cost(card)
         instant_speed = source!="plot" and ("Instant" in card.get("type_line", "") or _has_keyword(card, "Flash"))
         total_tax=_commander_tax(player,card) if source=="command" else 0;affinity_reduction=_affinity_reduction(player,card);delirium_reduction=_delirium_cost_reduction(player,card);speed_reduction=_speed_cost_reduction(player,card);generic_adjustment=total_tax-affinity_reduction-delirium_reduction-speed_reduction
         behold_options=[candidate for zone in (player["hand"],player["battlefield"]) for candidate in zone if flashback and flashback["behold_type"] in candidate.get("type_line","").casefold()]
@@ -2863,6 +2869,7 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
             actions.append(overload_action)
         if "Land" in card.get("type_line", "") or (source!="suspend" and not ((active and main and not state["stack"]) or instant_speed)) or (not normal_payable and convoke_min is None and not delve_possible and not (_has_keyword(card,"Delve") and _has_x_cost(cost_card) and delve_options)) or (flashback and len(behold_options)<flashback["behold_amount"]) or (escape and (len(escape_options)<escape["exile_count"] or len(escape_lands)<escape["land_count"] or len(_graveyard_card_types(escape_options))<escape["card_types_required"])): continue
         cost_label=cost_card.get("mana_cost") or "{0}";action = {"type": "cast", "card_id": card["instance_id"], "source": source, "commander_tax": total_tax,"affinity_reduction":affinity_reduction,"delirium_reduction":delirium_reduction,"label":f"{'Plot cast' if source=='plot' else 'Foretell cast' if source=='foretell' else 'Suspend cast' if source=='suspend' else 'Flashback' if flashback else 'Airbend cast' if source=='airbend' else 'Cast'} {card['name']} · {'without paying its mana cost' if source in {'suspend','plot'} else cost_label}{f' + {{2}}×{player.get("commander_casts",0)} commander tax' if total_tax else ''}{f' · Affinity reduces {{1}}×{affinity_reduction}' if affinity_reduction else ''}{f' · Delirium reduces {{2}}' if delirium_reduction else ''}"}
+        if apex_free:action["apex_free"]=True;action["label"]=f"Cast {card['name']} · without paying its mana cost"
         if flashback:action.update({"flashback":True,"cost_kind":"behold" if flashback["behold_amount"] else None,"cost_amount":flashback["behold_amount"],"cost_options":[candidate["instance_id"] for candidate in behold_options]})
         if escape:
             exile_label=f"exile cards with {escape['card_types_required']}+ types among them" if escape["card_types_required"] else f"exile {escape['exile_count']} other graveyard cards";land_label=" and a land you control" if escape["land_count"] else "";action.update({"escape":True,"mana_cost":escape["mana_cost"],"cost_kind":"compound" if escape["land_count"] or escape["card_types_required"] else "escape","cost_amount":escape["exile_count"]+escape["land_count"],"cost_min_amount":1 if escape["card_types_required"] else escape["exile_count"]+escape["land_count"],"cost_max_amount":len(escape_options) if escape["card_types_required"] else escape["exile_count"]+escape["land_count"],"escape_card_types_required":escape["card_types_required"],"escape_land_count":escape["land_count"],"cost_options":[candidate["instance_id"] for candidate in [*escape_options,*escape_lands]],"label":f"Escape {card['name']} · {cost_label} · {exile_label}{land_label}"})
@@ -3440,6 +3447,10 @@ def _resolve_spell(state: dict) -> None:
         _log(state,f"{source_permanent['name']} dealt {amount} damage to the defender it is attacking.");return
     if "instant and sorcery spells you cast this turn cost {1} less to cast" in effect_text:
         caster["instant_sorcery_reduction_turn"]=state["turn"];caster["instant_sorcery_reduction"]=caster.get("instant_sorcery_reduction",0)+1;_log(state,f"{caster['name']}'s instant and sorcery spells cost {{1}} less this turn.");return
+    if source_permanent and "the next spell you cast this turn of the chosen type can be cast without paying its mana cost" in effect_text:
+        chosen_type=source_permanent.get("chosen_card_type")
+        if chosen_type:caster["apex_free_spell_type"]=chosen_type;caster["apex_free_spell_turn"]=state["turn"]
+        _log(state,f"{source_permanent['name']} made {caster['name']}'s next {chosen_type or 'chosen-type'} spell this turn free.");return
     if source_permanent and "choose an exiled card used to craft" in effect_text and "at random" in effect_text and "cast that card without paying its mana cost" in effect_text:
         crafted_ids=set(source_permanent.get("crafted_with_ids") or []);candidates=[candidate for candidate in caster["exile"] if candidate["instance_id"] in crafted_ids]
         if not candidates:_log(state,f"{source_permanent['name']} had no crafted card remaining in exile to choose.");return
@@ -4561,6 +4572,9 @@ def _enter_battlefield(state:dict,controller:dict,cards:list[dict],origin:str="e
         if "Land" in card.get("type_line",""):controller["land_entered_turn"]=state["turn"]
         if "as this enchantment enters, choose a creature type" in (card.get("oracle_text") or "").casefold() and not card.get("chosen_creature_type"):
             state.setdefault("pending_creature_type",[]).append({"player_id":controller["id"],"card_id":card["instance_id"],"card_name":card["name"]});state["priority_player_id"]=controller["id"]
+        if "as it enters, choose a card type shared among two exiled cards used to craft it" in (card.get("oracle_text") or "").casefold() and not card.get("chosen_card_type"):
+            counts={kind:sum(kind in _craft_card_types(material) for material in card.get("crafted_with_cards",[])) for kind in ("Artifact","Battle","Creature","Enchantment","Instant","Kindred","Land","Planeswalker","Sorcery","Tribal")};choices=[kind for kind,count in counts.items() if count>=2]
+            if choices:state.setdefault("pending_card_type",[]).append({"player_id":controller["id"],"card_id":card["instance_id"],"card_name":card["name"],"card_types":choices});state["priority_player_id"]=controller["id"]
     if any("you may play an additional land on each of your turns" in (card.get("oracle_text") or "").casefold() for card in entering):_refresh_land_plays(state,controller)
     if any("Artifact" in card.get("type_line","") for card in entering):controller["artifact_entered_turn"]=state["turn"]
     _sync_city_blessing(state)
@@ -5564,6 +5578,12 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         permanent=next((card for card in player["battlefield"] if card["instance_id"]==pending["card_id"]),None)
         if not permanent:raise RuleViolation("That permanent is no longer on the battlefield")
         permanent["chosen_creature_type"]=choice.title();pending_list.pop(0);state["pending_creature_type"]=pending_list;_sync_city_blessing(state);state["priority_player_id"]=pending_list[0]["player_id"] if pending_list else state["active_player_id"];_log(state,f"{player['name']} chose {permanent['chosen_creature_type']} for {permanent['name']}.")
+    elif action_type=="choose_card_type":
+        pending_list=state.get("pending_card_type") or [];pending=pending_list[0] if pending_list else None;choice=str(action.get("card_type") or "").title()
+        if not pending or pending["player_id"]!=player_id or choice not in pending["card_types"]:raise RuleViolation("Choose a card type shared by the cards used to craft this permanent")
+        permanent=next((card for card in player["battlefield"] if card["instance_id"]==pending["card_id"]),None)
+        if not permanent:raise RuleViolation("That permanent is no longer on the battlefield")
+        permanent["chosen_card_type"]=choice;pending_list.pop(0);state["pending_card_type"]=pending_list;state["priority_player_id"]=pending_list[0]["player_id"] if pending_list else state["active_player_id"];_log(state,f"{player['name']} chose {choice} for {permanent['name']}.")
     elif action_type in {"pay_cumulative_upkeep","sacrifice_cumulative_upkeep"}:
         pending=(state.get("pending_cumulative_upkeep") or [None])[0]
         if not pending or pending["player_id"]!=player_id:raise RuleViolation("There is no cumulative upkeep payment due")
@@ -5867,7 +5887,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         tax = _commander_tax(player, card) if card and source in {"command","mutate_command","dash_command"} else 0;affinity_reduction=_affinity_reduction(player,card or {});delirium_reduction=_delirium_cost_reduction(player,card or {});speed_reduction=_speed_cost_reduction(player,card or {});buyback=_buyback_ability(card or {}) if requested_buyback else None;generic_adjustment=tax-affinity_reduction-delirium_reduction-speed_reduction-(_dash_reduction(player) if requested_dashed else 0)-int(available.get("buyback_reduction",0) if available else 0)
         if not card:raise RuleViolation("That spell cannot be cast")
         if not available:raise RuleViolation("That spell cannot be cast from that zone")
-        cost_card={**card,"mana_cost":_overload_cost(card) or ""} if requested_overloaded else {**card,"mana_cost":_dash_cost(card)} if requested_dashed else {**card,"mana_cost":(_blitz_ability(card) or {}).get("mana_cost","")} if requested_blitzed else {**card,"mana_cost":_bestow_cost(card)} if requested_bestowing else {**card,"mana_cost":(_evoke_ability(card) or {}).get("mana_cost","")} if requested_evoked else {**card,"mana_cost":_mutate_cost(card)} if requested_mutating else {**card,"mana_cost":_foretell_cost(card) or ""} if source=="foretell" else {**card,"mana_cost":"{0}"} if source in {"suspend","plot","rebound"} else {**card,"mana_cost":"{2}"} if source=="airbend" else {**card,"mana_cost":flashback["mana_cost"]} if flashback else {**card,"mana_cost":escape["mana_cost"]} if escape else card
+        cost_card={**card,"mana_cost":"{0}"} if available.get("apex_free") else {**card,"mana_cost":_overload_cost(card) or ""} if requested_overloaded else {**card,"mana_cost":_dash_cost(card)} if requested_dashed else {**card,"mana_cost":(_blitz_ability(card) or {}).get("mana_cost","")} if requested_blitzed else {**card,"mana_cost":_bestow_cost(card)} if requested_bestowing else {**card,"mana_cost":(_evoke_ability(card) or {}).get("mana_cost","")} if requested_evoked else {**card,"mana_cost":_mutate_cost(card)} if requested_mutating else {**card,"mana_cost":_foretell_cost(card) or ""} if source=="foretell" else {**card,"mana_cost":"{0}"} if source in {"suspend","plot","rebound"} else {**card,"mana_cost":"{2}"} if source=="airbend" else {**card,"mana_cost":flashback["mana_cost"]} if flashback else {**card,"mana_cost":escape["mana_cost"]} if escape else card
         if requested_kicked:cost_card={**cost_card,"mana_cost":f"{cost_card.get('mana_cost') or ''}{_kicker_cost(card) or ''}"}
         if requested_multikicker:cost_card={**cost_card,"mana_cost":f"{cost_card.get('mana_cost') or ''}{(_multikicker_cost(card) or '')*requested_multikicker}"}
         if requested_squad:cost_card={**cost_card,"mana_cost":f"{cost_card.get('mana_cost') or ''}{(_squad_cost(card) or '')*requested_squad}"}
@@ -5972,6 +5992,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
             lands=[candidate for candidate in list(player["battlefield"]) if candidate["instance_id"] in set(selected_cost_ids) and "Land" in candidate.get("type_line","")]
             if len(lands)!=entwine["sacrifice_lands"]:raise RuleViolation("Choose the required lands for entwine")
             _sacrifice_permanents(state,player,lands)
+        if available.get("apex_free"):player.pop("apex_free_spell_type",None);player.pop("apex_free_spell_turn",None)
         if zone_name=="graveyard":_leave_graveyard(state,player,[card])
         elif zone_name=="exile":_leave_exile(state,player,[card])
         else:player[zone_name].remove(card)
