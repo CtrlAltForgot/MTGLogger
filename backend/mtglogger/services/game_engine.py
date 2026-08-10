@@ -1699,8 +1699,10 @@ def _target_kind(card: dict) -> str | None:
     if "choose target creature, then choose another target creature for each time" in text:return "creature"
     if re.search(r"each of up to x targets?",text):return "any"
     if re.search(r"up to x target creatures?(?! cards?\b)",text):return "creature"
+    if re.search(r"up to (?:two|three|four|\d+) target (?:non-[a-z]+ )?creatures?",text):return "creature"
     if re.search(r"up to x target creature cards? from your graveyard",text):return "graveyard_creature"
     if re.search(r"up to x target instant cards? from your graveyard",text):return "graveyard_card"
+    if re.search(r"target creature or enchantment card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_creature_or_enchantment"
     if re.search(r"target creature card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_creature"
     if re.search(r"target (?:nonland permanent |nonland )?card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_card"
     if "target face-down permanent you control" in text:return "permanent"
@@ -1773,12 +1775,12 @@ def _targets(state: dict, caster_id: str, card: dict, ignore_target_protection:b
         return [{"id":item["id"],"name":item["card"]["name"],"kind":"spell" if item.get("kind","spell")=="spell" else "ability","controller_id":item["controller_id"]} for item in state["stack"] if allowed(item) and not ("you don't control" in text and item["controller_id"]==caster_id)]
     if kind == "creature_or_spell":
         targets=[{"id":item["id"],"name":item["card"]["name"],"kind":"spell","controller_id":item["controller_id"]} for item in state["stack"]]
-    if kind in {"graveyard_creature","graveyard_card"}:
+    if kind in {"graveyard_creature","graveyard_creature_or_enchantment","graveyard_card"}:
         own_only="your graveyard" in text
         soulshift=card.get("soulshift_value")
         instant_or_sorcery="instant or sorcery" in text;instant_only=bool(re.search(r"target instant cards?",text))
         nonland_permanent="nonland permanent card" in text
-        return [{"id":graveyard_card["instance_id"],"name":graveyard_card["name"],"kind":"card","controller_id":owner["id"]} for owner in state["players"] if not own_only or owner["id"]==caster_id for graveyard_card in owner["graveyard"] if (kind=="graveyard_card" or "Creature" in graveyard_card.get("type_line","")) and (not nonland_permanent or ("Land" not in graveyard_card.get("type_line","") and any(card_type in graveyard_card.get("type_line","") for card_type in ("Artifact","Battle","Creature","Enchantment","Planeswalker")))) and (not instant_or_sorcery or any(kind_name in graveyard_card.get("type_line","") for kind_name in ("Instant","Sorcery"))) and (not instant_only or "Instant" in graveyard_card.get("type_line","")) and (soulshift is None or (re.search(r"\bSpirit\b",graveyard_card.get("type_line",""),re.IGNORECASE) and float(graveyard_card.get("mana_value") or 0)<=float(soulshift)))]
+        return [{"id":graveyard_card["instance_id"],"name":graveyard_card["name"],"kind":"card","controller_id":owner["id"]} for owner in state["players"] if not own_only or owner["id"]==caster_id for graveyard_card in owner["graveyard"] if (kind=="graveyard_card" or "Creature" in graveyard_card.get("type_line","") or kind=="graveyard_creature_or_enchantment" and "Enchantment" in graveyard_card.get("type_line","")) and (not nonland_permanent or ("Land" not in graveyard_card.get("type_line","") and any(card_type in graveyard_card.get("type_line","") for card_type in ("Artifact","Battle","Creature","Enchantment","Planeswalker")))) and (not instant_or_sorcery or any(kind_name in graveyard_card.get("type_line","") for kind_name in ("Instant","Sorcery"))) and (not instant_only or "Instant" in graveyard_card.get("type_line","")) and (soulshift is None or (re.search(r"\bSpirit\b",graveyard_card.get("type_line",""),re.IGNORECASE) and float(graveyard_card.get("mana_value") or 0)<=float(soulshift)))]
     for player in state["players"]:
         aura_types=_aura_allowed_types(card)
         if (kind in {"any", "player","player_or_planeswalker"} or (kind=="permanent" and "player" in aura_types)) and not ("target opponent" in text and player["id"]==caster_id) and not _player_protected_from(state,player,card): targets.append({"id": player["id"], "name": player["name"], "kind": "player", "controller_id": player["id"]})
@@ -1792,6 +1794,7 @@ def _targets(state: dict, caster_id: str, card: dict, ignore_target_protection:b
                 if "other than this creature" in text and permanent["instance_id"]==card.get("instance_id"):continue
                 if "nonland permanent" in text and "Land" in permanent.get("type_line", ""): continue
                 if "noncreature permanent" in text and "Creature" in permanent.get("type_line", ""): continue
+                if "non-spacecraft" in text and "Spacecraft" in permanent.get("type_line",""):continue
                 if "noncreature artifact" in text and "Creature" in permanent.get("type_line", ""): continue
                 if "creature without flying" in text and _has_keyword(permanent,"Flying"):continue
                 if not ignore_target_protection and (_has_keyword(permanent,"Shroud") or (player["id"] != caster_id and (_has_keyword(permanent,"Hexproof") or permanent.get("hexproof_until_turn",0)>=state["turn"]))): continue
@@ -2717,6 +2720,12 @@ def _resolve_spell(state: dict) -> None:
     graveyard_owner=next((player for player in state["players"] if any(graveyard_card["instance_id"]==target_id for graveyard_card in player["graveyard"])),None)
     graveyard_target=next((graveyard_card for player in state["players"] for graveyard_card in player["graveyard"] if graveyard_card["instance_id"]==target_id),None)
     multi_damage=re.search(r"deals (\d+) damage to each of (?:them|up to \d+ targets?)",effect_text)
+    if target_ids and re.search(r"return up to (?:two|three|four|\d+) target non-spacecraft creatures? to their owners'? hands",effect_text):
+        returned=0
+        for multi_target_id in target_ids:
+            target_owner=next((owner for owner in state["players"] if any(permanent["instance_id"]==multi_target_id for permanent in owner["battlefield"])),None);target_permanent=next((permanent for owner in state["players"] for permanent in owner["battlefield"] if permanent["instance_id"]==multi_target_id),None)
+            if target_owner and target_permanent and "Creature" in target_permanent.get("type_line","") and "Spacecraft" not in target_permanent.get("type_line",""):_leave_battlefield(state,target_owner,target_permanent,"hand");returned+=1
+        _log(state,f"{card['name']} returned {returned} creature(s) to their owners' hands.")
     if multi_damage:
         for multi_target_id in target_ids:
             target_player_entry=next((candidate for candidate in state["players"] if candidate["id"]==multi_target_id),None);target_permanent=next((candidate for owner in state["players"] for candidate in owner["battlefield"] if candidate["instance_id"]==multi_target_id),None)
@@ -3081,6 +3090,11 @@ def _resolve_spell(state: dict) -> None:
             if milling_player["id"]==caster["id"]:continue
             for _ in range(min(amount,len(milling_player["library"]))):milling_player["graveyard"].append(milling_player["library"].pop())
         _log(state,f"Each opponent milled {amount} card(s).")
+    defending_mill=re.search(r"defending player mills? (\d+|one|two|three|four|five|six|seven|eight|nine|ten) cards?",effect_text)
+    if defending_mill:
+        words={"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10};amount=words.get(defending_mill.group(1),int(defending_mill.group(1)) if defending_mill.group(1).isdigit() else 0)
+        for _ in range(min(amount,len(other["library"]))):other["graveyard"].append(other["library"].pop())
+        _log(state,f"{other['name']} milled {amount} card(s).")
     if mill_match and target_player:
         words={"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10}; amount=words.get(mill_match.group(1),int(mill_match.group(1)) if mill_match.group(1).isdigit() else 0)
         for _ in range(min(amount,len(target_player["library"]))): target_player["graveyard"].append(target_player["library"].pop())
@@ -3125,7 +3139,7 @@ def _resolve_spell(state: dict) -> None:
             state["stack"].remove(target_stack_item);countered=target_stack_item["card"];_counter_stack_item(state,target_stack_item)
             _log(state, f"{countered['name']} was countered.")
     if graveyard_target and graveyard_owner:
-        if re.search(r"(?:return|put) (?:target|that) (?:creature |nonland permanent )?card (?:.*graveyard )?(?:to|into|onto) (?:the battlefield|play)",effect_text):
+        if re.search(r"(?:return|put) (?:target|that) (?:(?:creature or enchantment|creature|nonland permanent) )?card (?:.*graveyard )?(?:to|into|onto) (?:the battlefield|play)",effect_text):
             _leave_graveyard(state,graveyard_owner,[graveyard_target]);graveyard_target["controller_id"]=caster["id"];graveyard_target["summoning_sick"]=True;_enter_battlefield(state,caster,[graveyard_target],"graveyard");_log(state,f"{graveyard_target['name']} returned to the battlefield under {caster['name']}'s control.")
         elif re.search(r"return (?:target|that) (?:creature |nonland permanent )?card .*graveyard to (?:your|its owner'?s) hand",effect_text):
             _leave_graveyard(state,graveyard_owner,[graveyard_target]);graveyard_target["controller_id"]=graveyard_target.get("owner_id",graveyard_owner["id"]);_player(state,graveyard_target["controller_id"])["hand"].append(graveyard_target);_log(state,f"{graveyard_target['name']} returned to its owner's hand.")
@@ -3919,6 +3933,9 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
             elif times_kicked and re.search(r"up to x target instant cards? from your graveyard[^.]*x is the number of times",effect,re.IGNORECASE):
                 candidates=[{"id":candidate["instance_id"],"name":candidate["name"],"kind":"card","controller_id":owner["id"]} for candidate in owner["graveyard"] if "Instant" in candidate.get("type_line","")]
                 dynamic_steps=[{"label":f"Choose instant card {position+1} (or finish)","targets":candidates,"distinct":True} for position in range(min(times_kicked,len(candidates)))];dynamic_min=0
+            elif (fixed_targets:=re.search(r"up to (two|three|four|\d+) target non-spacecraft creatures?",effect,re.IGNORECASE)):
+                words={"two":2,"three":3,"four":4};maximum=words.get(fixed_targets.group(1).casefold(),int(fixed_targets.group(1)) if fixed_targets.group(1).isdigit() else 0);candidates=[{"id":candidate["instance_id"],"name":candidate["name"],"kind":"permanent","controller_id":candidate["controller_id"]} for candidate_owner in state["players"] for candidate in candidate_owner["battlefield"] if "Creature" in candidate.get("type_line","") and "Spacecraft" not in candidate.get("type_line","")]
+                dynamic_steps=[{"label":f"Choose creature {position+1} (or finish)","targets":candidates,"distinct":True} for position in range(min(maximum,len(candidates)))];dynamic_min=0
             targets=[] if fight_steps or dynamic_steps else _targets(state, owner["id"], ability_card)
             for _ in range(trigger_count):
                 trigger={"id":_id(),"kind":"trigger","card":ability_card,"controller_id":owner["id"],"target_id":None,"source_id":source["instance_id"]}
