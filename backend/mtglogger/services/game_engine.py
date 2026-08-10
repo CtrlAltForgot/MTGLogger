@@ -736,6 +736,22 @@ def _flashback_ability(card:dict)->dict|None:
     return {"mana_cost":match.group(1).upper(),"behold_amount":amount,"behold_type":(match.group(3) or "").removesuffix("s").casefold()}
 
 
+def _face_rules_card(card:dict,index:int)->dict|None:
+    faces=card.get("card_faces") or []
+    if not 0<=index<len(faces):return None
+    return {**card,**faces[index],"current_face":index}
+
+
+def _disturb_ability(card:dict)->dict|None:
+    match=re.search(r"(?:^|\n)Disturb\s+((?:\{[^}]+\})+)",card.get("oracle_text") or "",re.IGNORECASE);back=_face_rules_card(card,1)
+    return {"mana_cost":match.group(1).upper(),"card":back} if match and back and any(kind in back.get("type_line","") for kind in ("Creature","Enchantment")) else None
+
+
+def _adventure_ability(card:dict)->dict|None:
+    adventure=_face_rules_card(card,1)
+    return {"mana_cost":adventure.get("mana_cost","").upper(),"card":adventure} if adventure and any(kind in adventure.get("type_line","") for kind in ("Instant","Sorcery")) else None
+
+
 def _kicker_cost(card:dict)->str|None:
     match=re.search(r"(?:^|\n)Kicker\s+((?:\{[^}]+\})+)",card.get("oracle_text") or "",re.IGNORECASE)
     return match.group(1).upper() if match else None
@@ -2560,6 +2576,23 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
         if not dash_cost:continue
         tax=_commander_tax(player,dash_card) if dash_source=="dash_command" else 0
         if active and main and not state["stack"] and _can_pay(player,{**dash_card,"mana_cost":dash_cost},tax-dash_reduction):actions.append({"type":"cast","card_id":dash_card["instance_id"],"source":dash_source,"dashed":True,"mana_cost":dash_cost,"dash_reduction":dash_reduction,"commander_tax":tax,"label":f"Dash {dash_card['name']} · {dash_cost}{f' · reduced by {dash_reduction}' if dash_reduction else ''}"})
+    alternate_casts=[]
+    for grave_card in player["graveyard"]:
+        disturb=_disturb_ability(grave_card)
+        if disturb:alternate_casts.append((grave_card,"disturb",disturb["card"],disturb["mana_cost"]))
+    for hand_card in player["hand"]:
+        adventure=_adventure_ability(hand_card)
+        if adventure:alternate_casts.append((hand_card,"adventure",adventure["card"],adventure["mana_cost"]))
+    for exiled_card in player["exile"]:
+        if exiled_card.get("adventured"):alternate_casts.append((exiled_card,"after_adventure",_face_rules_card(exiled_card,0),(_face_rules_card(exiled_card,0) or {}).get("mana_cost","")))
+    for original,source,rules_card,cost in alternate_casts:
+        if not rules_card:continue
+        instant_speed="Instant" in rules_card.get("type_line","") or _has_keyword(rules_card,"Flash")
+        if not ((active and main and not state["stack"]) or instant_speed) or not _can_pay(player,{**rules_card,"mana_cost":cost}):continue
+        targets=_targets(state,player_id,_spell_targeting_card(rules_card));required=bool(_target_kind(_spell_targeting_card(rules_card)))
+        if required and not targets:continue
+        action_type={"disturb":"cast_disturb","adventure":"cast_adventure","after_adventure":"cast_after_adventure"}[source];label={"disturb":f"Disturb as {rules_card['name']}","adventure":f"Adventure — {rules_card['name']}","after_adventure":f"Cast {rules_card['name']} after its Adventure"}[source]
+        actions.append({"type":action_type,"card_id":original["instance_id"],"source":source,"mana_cost":cost,"label":f"{label} · {cost or '{0}'}",**({"targets":targets} if targets else {})})
     castable = [(card, "hand") for card in player["hand"]]
     castable.extend((card, "command") for card in player.get("command", []))
     castable.extend((card,"flashback") for card in player["graveyard"] if _flashback_ability(card))
@@ -3804,6 +3837,7 @@ def _resolve_spell(state: dict) -> None:
         card["was_kicked"]=bool(item.get("kicked"))
         card["times_kicked"]=int(item.get("multikicker_count") or 0)
         card["escaped"]=bool(item.get("escaped"))
+        card["disturbed"]=bool(item.get("disturbed"))
         if item.get("suspended_cast"):card["suspend_haste"]=True
         if item.get("dashed"):card["dashed"]=True;card.setdefault("temporary_keywords",[]).append("Haste")
         card["summoning_sick"] = True
@@ -3836,6 +3870,8 @@ def _resolve_spell(state: dict) -> None:
         if rebound_from_hand:
             card["rebound_pending"]=True;card["rebound_after_turn"]=state["turn"];_put_into_exile(state,caster,[card],"rebound",caster["id"])
         elif item.get("buyback"):caster["hand"].append(card)
+        elif item.get("adventure_cast"):
+            spell_owner=_player(state,card.get("owner_id",caster["id"]));_set_card_face(card,0);card["adventured"]=True;_put_into_exile(state,spell_owner,[card],"adventure",caster["id"]);_log(state,f"{card['name']} was exiled after its Adventure resolved and may be cast from exile.")
         elif item.get("flashback"):
             spell_owner=_player(state,card.get("owner_id",caster["id"]));card["controller_id"]=spell_owner["id"];_put_into_exile(state,spell_owner,[card],"stack",caster["id"])
         else:caster["graveyard"].append(card)
@@ -3846,6 +3882,7 @@ def _resolve_spell(state: dict) -> None:
 
 def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str, trigger_sources:list[tuple[dict,dict]]|None=None, trigger_dedupe:set[str]|None=None, exile_actor_id:str|None=None, exile_batch_size:int|None=None) -> None:
     if card.get("unearthed") and destination!="exile":destination="exile";exile_actor_id=card.get("unearth_controller_id",exile_actor_id)
+    if card.get("disturbed") and destination=="graveyard":destination="exile";exile_actor_id=card.get("controller_id",owner["id"]);_log(state,f"{card['name']} was exiled instead of going to a graveyard because it was disturbed.")
     if destination=="graveyard" and card.get("counters",{}).get("finality",0)>0:
         _remove_counters(card,"finality",card["counters"]["finality"]);destination="exile";exile_actor_id=card.get("controller_id",owner["id"]);_log(state,f"{card['name']}'s finality counter exiled it instead of letting it die.")
     exile_sources=trigger_sources or ([(source_owner,source) for source_owner in state["players"] for source in source_owner["battlefield"]] if destination=="exile" else None)
@@ -3895,7 +3932,7 @@ def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str, t
             else:zone_owner[destination].append(component)
             _queue_commander_zone_choice(state,zone_owner,component,destination)
         return
-    card["damage"] = 0; card["tapped"] = False;card.pop("escaped",None);card.pop("evoked",None);card.pop("echo_due_controller_id",None);card.pop("dashed",None);card.pop("dash_return_triggered",None);card.pop("deathtouch_damage",None);card.pop("crewed_turn",None);card.pop("temporary_control_return_to",None);card.pop("control_while_source_id",None);card.pop("control_return_to_id",None);card.pop("activated_ability_usage",None);card.pop("temporary_power",None);card.pop("temporary_toughness",None);card.pop("temporary_base_power",None);card.pop("temporary_base_toughness",None);card.pop("temporary_keywords",None);card.pop("temporary_removed_keywords",None);card.pop("temporary_backup_rules",None);card.pop("temporary_protection_colors",None);card.pop("unearthed",None);card.pop("unearth_controller_id",None);card.pop("unearth_end_triggered",None);card.pop("populate_sacrifice_turn",None);card.pop("monstrous",None);card.pop("monstrosity_value",None)
+    card["damage"] = 0; card["tapped"] = False;card.pop("escaped",None);card.pop("disturbed",None);card.pop("evoked",None);card.pop("echo_due_controller_id",None);card.pop("dashed",None);card.pop("dash_return_triggered",None);card.pop("deathtouch_damage",None);card.pop("crewed_turn",None);card.pop("temporary_control_return_to",None);card.pop("control_while_source_id",None);card.pop("control_return_to_id",None);card.pop("activated_ability_usage",None);card.pop("temporary_power",None);card.pop("temporary_toughness",None);card.pop("temporary_base_power",None);card.pop("temporary_base_toughness",None);card.pop("temporary_keywords",None);card.pop("temporary_removed_keywords",None);card.pop("temporary_backup_rules",None);card.pop("temporary_protection_colors",None);card.pop("unearthed",None);card.pop("unearth_controller_id",None);card.pop("unearth_end_triggered",None);card.pop("populate_sacrifice_turn",None);card.pop("monstrous",None);card.pop("monstrosity_value",None)
     card.pop("damage_prevention",None);card.pop("damage_source_ids_turn",None)
     if card.get("face_down"):
         values=card.pop("face_down_values",{})
@@ -5200,6 +5237,21 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         for ward_target in [target for target in [target_id,*target_ids] if target]:_queue_ward(state,player,ward_target,stack_item)
         if (_multiplayer(state) or not allow_direct_resolution) and not state.get("pending_ward"):state["priority_player_id"]=opponent(state,player_id)["id"]
         _log(state,f"{player['name']} channeled {card['name']}{f' with X={x_value}' if has_x else ''}.")
+    elif action_type in {"cast_disturb","cast_adventure","cast_after_adventure"}:
+        available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]==action_type and entry["card_id"]==action.get("card_id")),None)
+        source_zone="graveyard" if action_type=="cast_disturb" else "hand" if action_type=="cast_adventure" else "exile";original=next((candidate for candidate in player[source_zone] if candidate["instance_id"]==action.get("card_id")),None)
+        rules_index=1 if action_type in {"cast_disturb","cast_adventure"} else 0;rules_card=_face_rules_card(original or {},rules_index);target_id=action.get("target_id")
+        if not available or not original or not rules_card:raise RuleViolation("That alternate-face cast is no longer available")
+        targets=_targets(state,player_id,_spell_targeting_card(rules_card))
+        if _target_kind(_spell_targeting_card(rules_card)) and target_id not in {target["id"] for target in targets}:raise RuleViolation("Choose a legal target for that face")
+        _pay_mana(state,player,{**rules_card,"mana_cost":available["mana_cost"]})
+        if source_zone=="graveyard":_leave_graveyard(state,player,[original])
+        elif source_zone=="exile":_leave_exile(state,player,[original])
+        else:player["hand"].remove(original)
+        _set_card_face(original,rules_index);original.pop("adventured",None)
+        stack_item={"id":_id(),"kind":"spell","card":original,"controller_id":player_id,"target_id":target_id,"target_ids":[],"mode_indices":[],"mode_targets":[],"x_value":0,"flashback":action_type=="cast_disturb","disturbed":action_type=="cast_disturb","adventure_cast":action_type=="cast_adventure","cast_source_zone":source_zone};state["stack"].append(stack_item);_record_spell_cast(state,player);original["cast_source_zone"]=source_zone;_queue_triggers(state,"cast",original,player);_queue_cascade_triggers(state,player,original);_queue_storm_trigger(state,player,original,stack_item);original.pop("cast_source_zone",None);_queue_ward(state,player,target_id,stack_item);state["consecutive_passes"]=0;state["pending_phase_advance"]=False
+        if (_multiplayer(state) or not allow_direct_resolution) and not state.get("pending_ward") and not state.get("pending_trigger_targets"):state["priority_player_id"]=opponent(state,player_id)["id"]
+        _log(state,f"{player['name']} cast {original['name']}{' with Disturb' if action_type=='cast_disturb' else ' as an Adventure' if action_type=='cast_adventure' else ' from exile after its Adventure'}.")
     elif action_type == "cast":
         requested_source=action.get("source");zone_name="graveyard" if requested_source in {"flashback","escape","mutate_graveyard","graveyard_permission"} else "exile" if requested_source in {"airbend","suspend","foretell","plot","rebound","exile_permission"} else "hand" if requested_source in {"mutate_hand","evoke","dash_hand","bestow"} else "command" if requested_source in {"mutate_command","dash_command"} else requested_source if requested_source in {"hand","command"} else next((zone for zone in ("hand","command") if any(card["instance_id"]==action.get("card_id") for card in player.get(zone,[]))),None)
         source=requested_source if requested_source in {"flashback","escape","mutate_graveyard","graveyard_permission","airbend","suspend","foretell","plot","rebound","exile_permission","mutate_hand","mutate_command","evoke","dash_hand","dash_command","bestow"} else zone_name;card=next((card for card in player.get(zone_name or "hand",[]) if card["instance_id"]==action.get("card_id")),None);flashback=_flashback_ability(card or {}) if source=="flashback" else None;escape=_escape_ability(card or {}) if source=="escape" else None
