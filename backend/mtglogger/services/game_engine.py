@@ -1387,6 +1387,18 @@ def _x_rules_card(card:dict,x_value:int|None)->dict:
     return {**card,"oracle_text":re.sub(r"\bX\b",str(max(0,x_value)),card.get("oracle_text") or "",flags=re.IGNORECASE)}
 
 
+def _city_blessing_rules_card(card:dict,blessed:bool)->dict:
+    if not blessed:return card
+    text=card.get("oracle_text") or ""
+    text=re.sub(r"Draw two cards\.\s*If you have the city's blessing, draw three cards instead\.","Draw three cards.",text,flags=re.IGNORECASE)
+    text=re.sub(r"Creatures you control get \+1/\+1 until end of turn\.\s*If you have the city's blessing, those creatures get \+2/\+2 until end of turn instead\.","Creatures you control get +2/+2 until end of turn.",text,flags=re.IGNORECASE)
+    text=re.sub(r"All creatures get -2/-2 until end of turn\.\s*If you have the city's blessing, instead only creatures your opponents control get -2/-2 until end of turn\.","Creatures your opponents control get -2/-2 until end of turn.",text,flags=re.IGNORECASE)
+    text=re.sub(r"Each opponent sacrifices a creature of their choice\.\s*If you have the city's blessing, instead each opponent sacrifices half the creatures they control of their choice, rounded up\.","Each opponent sacrifices half the creatures they control, rounded up.",text,flags=re.IGNORECASE)
+    text=re.sub(r"Each player draws a card\.\s*If you have the city's blessing, instead only you draw a card\.","Draw a card.",text,flags=re.IGNORECASE)
+    text=re.sub(r"put a \+1/\+1 counter on each creature you control\.\s*If you have the city's blessing, put two \+1/\+1 counters on each creature you control instead\.","put two +1/+1 counters on each creature you control.",text,flags=re.IGNORECASE)
+    return {**card,"oracle_text":text}
+
+
 def _library_search_spec(card:dict)->dict|None:
     text=card.get("oracle_text") or "";match=re.search(r"(?:may )?search your library for (up to )?(a|an|one|two|three|four|five|six|seven|eight|nine|ten|\d+) (.+?) cards?\b",text,re.IGNORECASE)
     if not match:return None
@@ -2325,6 +2337,7 @@ def _resolve_spell(state: dict) -> None:
         _log(state,f"{card['name']} resolved with {len(item['mode_indices'])} modes.");return
     rules_card=_selected_mode_card(card,item.get("mode_indices")) if item.get("kind","spell")=="spell" else card
     if item.get("kind","spell")=="spell":rules_card=_kicked_rules_card(rules_card,bool(item.get("kicked")))
+    rules_card=_city_blessing_rules_card(rules_card,bool(caster.get("city_blessing")))
     rules_card=_x_rules_card(rules_card,item.get("x_value"));targeting_card=_spell_targeting_card(rules_card) if item.get("kind","spell")=="spell" else rules_card;target_kind=_target_kind(targeting_card);target_id=item.get("target_id")
     source_permanent=next((permanent for player in state["players"] for permanent in player["battlefield"] if permanent["instance_id"]==item.get("source_id")),None);target_ids=item.get("target_ids") or [];fight_steps=_fight_target_steps(state,caster["id"],rules_card,source_permanent);valid_fight_ids=[target_value for position,target_value in enumerate(target_ids) if position<len(fight_steps) and target_value in {target["id"] for target in fight_steps[position]["targets"]}]
     if item.get("kind")=="trigger" and source_permanent and "sacrifice it unless it escaped" in (card.get("oracle_text") or "").casefold():
@@ -2556,7 +2569,12 @@ def _resolve_spell(state: dict) -> None:
             _leave_graveyard(state,graveyard_owner,[graveyard_target]);graveyard_target["controller_id"]=graveyard_target.get("owner_id",graveyard_owner["id"]);_player(state,graveyard_target["controller_id"])["hand"].append(graveyard_target);_log(state,f"{graveyard_target['name']} returned to its owner's hand.")
         elif re.search(r"exile target (?:creature )?card .*graveyard",effect_text):
             _leave_graveyard(state,graveyard_owner,[graveyard_target]);_put_into_exile(state,graveyard_owner,[graveyard_target],"graveyard",caster["id"]);_log(state,f"{graveyard_target['name']} was exiled from a graveyard.")
-    sacrifice_match=re.search(r"(?:target player|each opponent) sacrifices? (a|one|two|three|four|\d+) (creature|permanent)s?",effect_text)
+    half_sacrifice=re.search(r"each opponent sacrifices half the creatures they control, rounded up",effect_text)
+    if half_sacrifice:
+        for affected in [owner for owner in state["players"] if owner["id"]!=caster["id"]]:
+            choices=[permanent["instance_id"] for permanent in affected["battlefield"] if "Creature" in permanent.get("type_line","")];required=(len(choices)+1)//2
+            if required:state["pending_sacrifice"]={"player_id":affected["id"],"amount":required,"card_ids":choices};state["priority_player_id"]=affected["id"];_log(state,f"{affected['name']} must sacrifice {required} creature(s).")
+    sacrifice_match=None if half_sacrifice else re.search(r"(?:target player|each opponent) sacrifices? (a|one|two|three|four|\d+) (creature|permanent)s?",effect_text)
     if sacrifice_match:
         words={"a":1,"one":1,"two":2,"three":3,"four":4};amount=words.get(sacrifice_match.group(1),int(sacrifice_match.group(1)) if sacrifice_match.group(1).isdigit() else 1);affected=target_player if "target player" in sacrifice_match.group(0) and target_player else other;kind=sacrifice_match.group(2)
         choices=[permanent["instance_id"] for permanent in affected["battlefield"] if kind=="permanent" or "Creature" in permanent.get("type_line","")];required=min(amount,len(choices))
@@ -2570,7 +2588,7 @@ def _resolve_spell(state: dict) -> None:
             if destination=="graveyard":_destroy_permanent(state,owner,permanent,"can't be regenerated" in effect_text,trigger_sources,trigger_dedupe)
             else:_leave_battlefield(state,owner,permanent,destination,trigger_sources,trigger_dedupe,caster["id"],len(affected))
         _log(state,f"All {kind} were {'destroyed' if destination=='graveyard' else 'exiled'}.")
-    global_stats=re.search(r"(?:all|each) creatures?(?: you control| your opponents control)? get ([+-]\d+)/([+-]\d+) until end of turn",effect_text)
+    global_stats=re.search(r"(?:(?:all|each) )?creatures?(?: you control| your opponents control)? get ([+-]\d+)/([+-]\d+) until end of turn",effect_text)
     if global_stats:
         own_only="you control" in global_stats.group(0);opponents_only="opponents control" in global_stats.group(0)
         for owner in state["players"]:
