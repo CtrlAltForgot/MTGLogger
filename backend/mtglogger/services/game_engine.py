@@ -1551,6 +1551,13 @@ def _explore(state:dict,player:dict,creatures:list[dict])->None:
     if not state.get("pending_explore"):_continue_explore(state,player)
 
 
+def _start_same_name_search(state:dict,chooser:dict,victim:dict,card_name:str,source_name:str)->None:
+    cards=[deepcopy(card) for zone in (victim["graveyard"],victim["hand"],victim["library"]) for card in zone if card.get("name")==card_name]
+    state["pending_same_name_search"]={"player_id":chooser["id"],"victim_id":victim["id"],"victim_name":victim["name"],"source_name":source_name,"card_name":card_name,"cards":cards}
+    state["priority_player_id"]=chooser["id"]
+    _log(state,f"{chooser['name']} may choose any remaining cards named {card_name} from {victim['name']}'s graveyard, hand, and library to exile.")
+
+
 def _continue_connive(state:dict)->None:
     queue=state.setdefault("pending_connive_queue",[])
     while queue:
@@ -1868,6 +1875,8 @@ def public_state(state: dict, viewer_id: str = "player") -> dict:
     if pending_top and pending_top.get("player_id")!=viewer_id:pending_top.pop("card",None)
     pending_revealed=visible.get("pending_revealed_discard")
     if pending_revealed and pending_revealed.get("player_id")!=viewer_id:pending_revealed["cards"]=[]
+    pending_same_name=visible.get("pending_same_name_search")
+    if pending_same_name and pending_same_name.get("player_id")!=viewer_id:pending_same_name["cards"]=[]
     pending_sticktwister=visible.get("pending_sticktwister")
     if pending_sticktwister:
         for selection in pending_sticktwister.get("selections",[]):
@@ -1889,7 +1898,7 @@ def _target_kind(card: dict) -> str | None:
         if allowed or re.search(r"\benchant (?:nonland )?permanent\b",text):return "permanent"
     if re.search(r"counter target (?:spell or (?:activated or triggered )?ability|spell or ability)",text):return "stack"
     if re.search(r"counter target (?:activated or triggered|activated|triggered) ability",text):return "ability"
-    if "counter target spell" in text:return "spell"
+    if "counter target spell" in text or "counter target sorcery spell" in text:return "spell"
     if "copy target spell" in text:return "spell"
     if re.search(r"\bairbend (?:up to one )?target creature or spell\b",text):return "creature_or_spell"
     if re.search(r"\bairbend (?:up to one )?target spell\b",text):return "spell"
@@ -1974,7 +1983,8 @@ def _targets(state: dict, caster_id: str, card: dict, ignore_target_protection:b
         def allowed(item:dict)->bool:
             is_spell=item.get("kind","spell")=="spell"
             controlled_copy="copy target spell you control" in text
-            return (kind=="stack" or (kind=="spell" and is_spell) or (kind=="ability" and not is_spell)) and (not controlled_copy or item.get("controller_id")==caster_id)
+            sorcery_only="target sorcery spell" in text
+            return (kind=="stack" or (kind=="spell" and is_spell) or (kind=="ability" and not is_spell)) and (not sorcery_only or "Sorcery" in item.get("card",{}).get("type_line","")) and (not controlled_copy or item.get("controller_id")==caster_id)
         return [{"id":item["id"],"name":item["card"]["name"],"kind":"spell" if item.get("kind","spell")=="spell" else "ability","controller_id":item["controller_id"]} for item in state["stack"] if allowed(item) and not ("you don't control" in text and item["controller_id"]==caster_id)]
     if kind == "creature_or_spell":
         targets=[{"id":item["id"],"name":item["card"]["name"],"kind":"spell","controller_id":item["controller_id"]} for item in state["stack"]]
@@ -2110,7 +2120,7 @@ def _pending_decision(state:dict)->bool:
     if state.get("pending_zone_choice"):return True
     if state.get("pending_counter_choice"):return True
     if state.get("pending_color_choice"):return True
-    return bool(state.get("pending_sticktwister") or state.get("pending_rad_choice") or state.get("pending_top_card_choice") or state.get("pending_revealed_discard") or state.get("pending_optional_discard") or state.get("pending_optional_payment") or state.get("pending_tilonalli") or state.get("pending_creature_type") or state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_populate") or state.get("pending_bolster") or state.get("pending_discovery") or state.get("pending_madness") or state.get("pending_rebound") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
+    return bool(state.get("pending_sticktwister") or state.get("pending_rad_choice") or state.get("pending_top_card_choice") or state.get("pending_revealed_discard") or state.get("pending_same_name_search") or state.get("pending_optional_discard") or state.get("pending_optional_payment") or state.get("pending_tilonalli") or state.get("pending_creature_type") or state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_populate") or state.get("pending_bolster") or state.get("pending_discovery") or state.get("pending_madness") or state.get("pending_rebound") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
 
 
 def _split_second_on_stack(state:dict)->bool:
@@ -2185,6 +2195,11 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
     if pending_revealed:
         if pending_revealed["player_id"]!=player_id:return []
         return [{"type":"choose_revealed_discard","card_id":card["instance_id"],"card":card,"source_name":pending_revealed["source_name"],"label":f"Choose {card['name']} for {pending_revealed['opponent_name']} to discard"} for card in pending_revealed["cards"]]+[{"type":"concede"}]
+    pending_same_name=state.get("pending_same_name_search")
+    if pending_same_name:
+        if pending_same_name["player_id"]!=player_id:return []
+        if pending_same_name.get("stage")=="seed":return [{"type":"choose_same_name_cards","card_id":card["instance_id"],"card":card,"source_name":pending_same_name["source_name"],"victim_name":pending_same_name["victim_name"],"label":f"Exile {card['name']}"} for card in pending_same_name["cards"]]+[{"type":"concede"}]
+        return [{"type":"choose_same_name_cards","card_ids":[card["instance_id"] for card in pending_same_name["cards"]],"cards":pending_same_name["cards"],"source_name":pending_same_name["source_name"],"card_name":pending_same_name["card_name"],"victim_name":pending_same_name["victim_name"],"label":f"Choose any cards named {pending_same_name['card_name']} to exile"},{"type":"concede"}]
     pending_optional_discard=state.get("pending_optional_discard")
     if pending_optional_discard:
         if pending_optional_discard["player_id"]!=player_id:return []
@@ -3003,6 +3018,11 @@ def _resolve_spell(state: dict) -> None:
     target_player = next((player for player in state["players"] if player["id"] == target_id), None)
     target_owner = next((player for player in state["players"] if any(permanent["instance_id"] == target_id for permanent in player["battlefield"])), None)
     target = next((permanent for player in state["players"] for permanent in player["battlefield"] if permanent["instance_id"] == target_id), None)
+    if target_player and "target opponent reveals their hand" in effect_text and "you choose a nonland card from it and exile that card" in effect_text:
+        choices=[deepcopy(hand_card) for hand_card in target_player["hand"] if "Land" not in hand_card.get("type_line","")]
+        if choices:state["pending_same_name_search"]={"player_id":caster["id"],"victim_id":target_player["id"],"victim_name":target_player["name"],"source_name":card["name"],"stage":"seed","delirium":_graveyard_card_type_count(caster)>=4,"cards":choices};state["priority_player_id"]=caster["id"];_log(state,f"{target_player['name']} revealed their hand; {caster['name']} must choose a nonland card to exile.")
+        else:_log(state,f"{target_player['name']} revealed no nonland cards.")
+        return
     if target and "your choice of a +1/+1 counter or two charge counters on up to one other target artifact" in effect_text:
         state["pending_counter_choice"]={"player_id":caster["id"],"source_name":source_permanent.get("name",card["name"]) if source_permanent else card["name"],"target_id":target["instance_id"]};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} must choose counters for {target['name']}.");return
     if target_player and "target opponent reveals their hand" in effect_text and "you choose an instant or sorcery card from it" in effect_text:
@@ -3523,8 +3543,9 @@ def _resolve_spell(state: dict) -> None:
         if unless_pay:
             payer=_player(state,target_stack_item["controller_id"]);state["pending_counter_payment"]={"player_id":payer["id"],"stack_id":target_stack_item["id"],"mana_cost":unless_pay.group(1).upper(),"source_name":card["name"]};state["priority_player_id"]=payer["id"];_log(state,f"{payer['name']} may pay {unless_pay.group(1).upper()} or {target_stack_item['card']['name']} will be countered.")
         else:
-            state["stack"].remove(target_stack_item);countered=target_stack_item["card"];_counter_stack_item(state,target_stack_item)
+            state["stack"].remove(target_stack_item);countered=target_stack_item["card"];countered_controller=_player(state,target_stack_item["controller_id"]);_counter_stack_item(state,target_stack_item)
             _log(state, f"{countered['name']} was countered.")
+            if card.get("name")=="Invasive Surgery" and _graveyard_card_type_count(caster)>=4:_start_same_name_search(state,caster,countered_controller,countered["name"],card["name"])
     if graveyard_target and graveyard_owner:
         if re.search(r"(?:return|put) (?:target|that) (?:(?:creature or enchantment|creature|nonland permanent) )?card (?:.*graveyard )?(?:to|into|onto) (?:the battlefield|play)",effect_text):
             _leave_graveyard(state,graveyard_owner,[graveyard_target]);graveyard_target["controller_id"]=caster["id"];graveyard_target["summoning_sick"]=True;_enter_battlefield(state,caster,[graveyard_target],"graveyard");_log(state,f"{graveyard_target['name']} returned to the battlefield under {caster['name']}'s control.")
@@ -4733,6 +4754,28 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         victim=_player(state,pending["opponent_id"]);discarded=next((card for card in victim["hand"] if card["instance_id"]==discarded_id),None)
         if not discarded:raise RuleViolation("That revealed card is no longer in the opponent's hand")
         _discard_cards(state,victim,[discarded]);state["pending_revealed_discard"]=None;state["priority_player_id"]=state["active_player_id"];_log(state,f"{player['name']} chose {discarded['name']}; {victim['name']} discarded it.")
+    elif action_type=="choose_same_name_cards":
+        pending=state.get("pending_same_name_search") or {}
+        if pending.get("player_id")!=player_id:raise RuleViolation("There is no same-name search choice for this player")
+        victim=_player(state,pending["victim_id"])
+        if pending.get("stage")=="seed":
+            card_id=action.get("card_id");allowed={card["instance_id"] for card in pending.get("cards",[])}
+            if card_id not in allowed:raise RuleViolation("Choose a revealed nonland card")
+            chosen=next((card for card in victim["hand"] if card["instance_id"]==card_id and "Land" not in card.get("type_line","")),None)
+            if not chosen:raise RuleViolation("That revealed card is no longer in the opponent's hand")
+            victim["hand"].remove(chosen);_put_into_exile(state,victim,[chosen],"hand",player_id);_log(state,f"{player['name']} chose and exiled {chosen['name']} from {victim['name']}'s hand.")
+            if pending.get("delirium"):_start_same_name_search(state,player,victim,chosen["name"],pending["source_name"])
+            else:state["pending_same_name_search"]=None;state["priority_player_id"]=state["active_player_id"]
+        else:
+            requested=action.get("card_ids") or [];allowed={card["instance_id"] for card in pending.get("cards",[])}
+            if len(requested)!=len(set(requested)) or not set(requested).issubset(allowed):raise RuleViolation("Choose only matching cards from the search")
+            exiled=[]
+            for zone_name in ("graveyard","hand","library"):
+                zone=victim[zone_name];selected=[card for card in list(zone) if card["instance_id"] in set(requested)]
+                for chosen in selected:zone.remove(chosen)
+                if selected:_put_into_exile(state,victim,selected,zone_name,player_id);exiled.extend(selected)
+            random.SystemRandom().shuffle(victim["library"]);state["pending_same_name_search"]=None;state["priority_player_id"]=state["active_player_id"]
+            _log(state,f"{player['name']} exiled {len(exiled)} additional card(s) named {pending['card_name']}; {victim['name']} shuffled their library.")
     elif action_type in {"discard_optional_card","decline_optional_discard"}:
         pending=state.get("pending_optional_discard") or {}
         if pending.get("player_id")!=player_id:raise RuleViolation("There is no optional discard choice for this player")

@@ -222,6 +222,11 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
         return by_type["keep_top_card"][0] if difficulty=="beginner" else by_type.get("mill_top_card",by_type["keep_top_card"])[0]
     if "choose_revealed_discard" in by_type:
         return max(by_type["choose_revealed_discard"],key=lambda action:float((action.get("card") or {}).get("mana_value") or 0))
+    if "choose_same_name_cards" in by_type:
+        action=by_type["choose_same_name_cards"][0]
+        if action.get("card_id"):
+            best=max(by_type["choose_same_name_cards"],key=lambda entry:float((entry.get("card") or {}).get("mana_value") or 0));return {"type":"choose_same_name_cards","card_id":best["card_id"]}
+        return {"type":"choose_same_name_cards","card_ids":action.get("card_ids",[])}
     if "discard_optional_card" in by_type or "decline_optional_discard" in by_type:
         if difficulty=="beginner" or "discard_optional_card" not in by_type:return by_type["decline_optional_discard"][0]
         return min(by_type["discard_optional_card"],key=lambda action:float(_card(state,"bot",action["card_id"]).get("mana_value") or 0))
