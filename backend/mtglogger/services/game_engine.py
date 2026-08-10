@@ -2122,6 +2122,12 @@ def _countered_spell_destination(state:dict,controller:dict,card:dict,flashback:
     _queue_commander_zone_choice(state,owner,card,destination)
 
 
+def _stack_item_can_be_countered(state:dict,item:dict)->bool:
+    if item.get("kind","spell")!="spell" or "Creature" in item.get("card",{}).get("type_line",""):return True
+    controller=_player(state,item["controller_id"])
+    return not any("noncreature spells you control can't be countered" in _active_level_text(permanent).casefold() for permanent in controller["battlefield"])
+
+
 def _finish_saga_final_chapter(state:dict,item:dict)->None:
     if not item.get("saga_final"):return
     saga=next((permanent for owner in state["players"] for permanent in owner["battlefield"] if permanent["instance_id"]==item.get("source_id") and "Saga" in permanent.get("type_line","")),None)
@@ -3676,7 +3682,9 @@ def _resolve_spell(state: dict) -> None:
         if required:state["pending_discard"]={"player_id":caster["id"],"amount":required,"reason":"effect"};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} must discard {required} card(s).")
     if target_stack_item and target_kind in {"spell","ability","stack"} and "counter target" in effect_text:
         unless_pay=re.search(r"counter target spell unless its controller pays ((?:\{[^}]+\})+)",effect_text)
-        if unless_pay:
+        if not _stack_item_can_be_countered(state,target_stack_item):
+            _log(state,f"{target_stack_item['card']['name']} can't be countered.")
+        elif unless_pay:
             payer=_player(state,target_stack_item["controller_id"]);state["pending_counter_payment"]={"player_id":payer["id"],"stack_id":target_stack_item["id"],"mana_cost":unless_pay.group(1).upper(),"source_name":card["name"]};state["priority_player_id"]=payer["id"];_log(state,f"{payer['name']} may pay {unless_pay.group(1).upper()} or {target_stack_item['card']['name']} will be countered.")
         else:
             state["stack"].remove(target_stack_item);countered=target_stack_item["card"];countered_controller=_player(state,target_stack_item["controller_id"]);_counter_stack_item(state,target_stack_item)
@@ -5630,7 +5638,8 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if pending.get("player_id")!=player_id or not stack_item:raise RuleViolation("That counter payment is no longer available")
         state["pending_counter_payment"]=None
         if action_type=="pay_counter_payment":_pay_mana(state,player,{"mana_cost":pending["mana_cost"]});_log(state,f"{player['name']} paid {pending['mana_cost']}; {stack_item['card']['name']} was not countered.")
-        else:state["stack"].remove(stack_item);_counter_stack_item(state,stack_item);_log(state,f"{player['name']} declined to pay; {stack_item['card']['name']} was countered.")
+        elif _stack_item_can_be_countered(state,stack_item):state["stack"].remove(stack_item);_counter_stack_item(state,stack_item);_log(state,f"{player['name']} declined to pay; {stack_item['card']['name']} was countered.")
+        else:_log(state,f"{player['name']} declined to pay, but {stack_item['card']['name']} can't be countered.")
         state["priority_player_id"]=state["active_player_id"];state["consecutive_passes"]=0
     elif action_type in {"pay_ward","decline_ward"}:
         pending=state.get("pending_ward") or {}
@@ -5651,9 +5660,9 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
                 _discard_cards(state,player,chosen)
             _log(state,f"{player['name']} paid {pending.get('label',pending.get('mana_cost',''))} for {pending['source_name']}'s ward.")
         else:
-            state["stack"].remove(stack_item)
-            _counter_stack_item(state,stack_item)
-            _log(state,f"{stack_item['card']['name']} was countered by {pending['source_name']}'s ward.")
+            if _stack_item_can_be_countered(state,stack_item):
+                state["stack"].remove(stack_item);_counter_stack_item(state,stack_item);_log(state,f"{stack_item['card']['name']} was countered by {pending['source_name']}'s ward.")
+            else:_log(state,f"{stack_item['card']['name']} can't be countered by {pending['source_name']}'s ward.")
         remaining=pending.get("remaining") or []
         if action_type=="pay_ward" and remaining:
             state["pending_ward"]={**remaining[0],"remaining":remaining[1:]};state["priority_player_id"]=player_id
