@@ -2114,8 +2114,10 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
         if pending_top["player_id"]!=player_id:return []
         common={"source_name":pending_top["source_name"],"card":pending_top["card"]};actions=[]
         if pending_top.get("allow_hand"):actions.append({"type":"take_top_card","label":f"Reveal and put {pending_top['card']['name']} into your hand",**common})
+        if pending_top.get("allow_battlefield"):actions.append({"type":"put_top_card_battlefield","label":f"Put {pending_top['card']['name']} onto the battlefield",**common})
         if pending_top.get("allow_graveyard"):actions.append({"type":"mill_top_card","label":f"Put {pending_top['card']['name']} into your graveyard",**common})
-        return actions+[{"type":"keep_top_card","label":"Leave it on top",**common},{"type":"concede"}]
+        if pending_top.get("allow_keep",True):actions.append({"type":"keep_top_card","label":"Leave it on top",**common})
+        return actions+[{"type":"concede"}]
     pending_revealed=state.get("pending_revealed_discard")
     if pending_revealed:
         if pending_revealed["player_id"]!=player_id:return []
@@ -3164,7 +3166,7 @@ def _resolve_spell(state: dict) -> None:
         if cards:state["pending_library_search"]={"player_id":caster["id"],"source_name":source_name,"card_ids":[candidate["instance_id"] for candidate in cards],"min_amount":1,"max_amount":1,"destination":"hand","look_bottom_unchosen":True};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} must choose one of the top {len(cards)} cards for {source_name}.")
     elif "look at the top card of your library" in effect_text:
         if caster["library"]:
-            top=caster["library"][-1];creature="Creature" in top.get("type_line","");state["pending_top_card_choice"]={"player_id":caster["id"],"source_name":source_name,"card_id":top["instance_id"],"card":deepcopy(top),"allow_hand":creature and "if it's a creature card" in effect_text,"allow_graveyard":"put it into your graveyard" in effect_text};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} looked at the top card of their library for {source_name}.")
+            top=caster["library"][-1];creature="Creature" in top.get("type_line","");land="Land" in top.get("type_line","");wickerfolk="if it's a land card" in effect_text and "put the card onto the battlefield" in effect_text;state["pending_top_card_choice"]={"player_id":caster["id"],"source_name":source_name,"card_id":top["instance_id"],"card":deepcopy(top),"allow_hand":creature and "if it's a creature card" in effect_text or wickerfolk,"allow_battlefield":land and wickerfolk,"allow_graveyard":"put it into your graveyard" in effect_text,"allow_keep":not wickerfolk};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} looked at the top card of their library for {source_name}.")
         return
     dread_match=re.search(r"\bmanifest dread(?: (twice|three times))?\b",face_down_text)
     if dread_match:_start_manifest_dread(state,caster,source_name,{"twice":2,"three times":3}.get(dread_match.group(1),1))
@@ -3992,7 +3994,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
         trigger_text=re.sub(r"\bU\.S\.S\.\s+","USS ",text,flags=re.IGNORECASE);raw_clauses = re.split(r"(?<=[.!])\s+|\n", trigger_text);clauses=[]
         for clause in raw_clauses:
             modal_continuation=bool(clauses and (clause.strip().startswith(("•","-")) or clauses[-1].lstrip().startswith(("•","-")) or re.search(r"\n[•-]\s",clauses[-1]) and not re.match(r"(?:when(?:ever)?\b|at the beginning\b|[+−-]?\d+\s*:|\{[^}]+\}[^:]*:)",clause.strip(),re.IGNORECASE)))
-            top_card_continuation=bool(clauses and (re.match(r"then\b",clause.strip(),re.IGNORECASE) or re.match(r"put a charge counter on this spacecraft",clause.strip(),re.IGNORECASE) or ("look at the top card of your library" in clauses[-1].casefold() and re.match(r"if (?:it(?:'s| is) a creature card|you don.t put the card into your hand)",clause.strip(),re.IGNORECASE)) or ("each opponent sacrifices" in clauses[-1].casefold() and re.match(r"each opponent who can.t discards a card",clause.strip(),re.IGNORECASE)) or ("each opponent discards" in clauses[-1].casefold() and re.match(r"each opponent who can't loses? \d+ life",clause.strip(),re.IGNORECASE))))
+            top_card_continuation=bool(clauses and (re.match(r"then\b",clause.strip(),re.IGNORECASE) or re.match(r"put a charge counter on this spacecraft",clause.strip(),re.IGNORECASE) or ("look at the top card of your library" in clauses[-1].casefold() and re.match(r"if (?:it(?:'s| is) a (?:creature|land) card|you don.t put the card into your hand|you don.t put the card onto the battlefield)",clause.strip(),re.IGNORECASE)) or ("each opponent sacrifices" in clauses[-1].casefold() and re.match(r"each opponent who can.t discards a card",clause.strip(),re.IGNORECASE)) or ("each opponent discards" in clauses[-1].casefold() and re.match(r"each opponent who can't loses? \d+ life",clause.strip(),re.IGNORECASE))))
             continuation=bool(clauses and (modal_continuation or top_card_continuation or re.match(r"after this phase, there (?:is|'s) an additional combat phase",clause.strip(),re.IGNORECASE) or ("additional combat phase after this phase" in clauses[-1].casefold() and re.match(r"at the beginning of that combat",clause.strip(),re.IGNORECASE)) or ("target" in clauses[-1].casefold() and re.match(r"it gains? [^.]+ until end of turn",clause.strip(),re.IGNORECASE)) or re.match(r"(?:then if|if you do|if you didn't|if you did not|if you have the city's blessing|otherwise),?\b",clause.strip(),re.IGNORECASE) or re.match(r"if you control (?:one|two|three|four|five|six|seven|eight|nine|ten|\d+) or more lands",clause.strip(),re.IGNORECASE) or re.match(r"if that land is (?:a |an )?[a-z]+,",clause.strip(),re.IGNORECASE) or re.match(r"if (?:this is|it(?:'s| is)) the (?:first|second|third|fourth) time(?: this ability has resolved)?(?: this turn)?,",clause.strip(),re.IGNORECASE) or ("target opponent reveals their hand" in clauses[-1].casefold() and re.match(r"you choose an instant or sorcery card from it",clause.strip(),re.IGNORECASE)) or ("you choose an instant or sorcery card from it" in clauses[-1].casefold() and re.match(r"that player discards that card",clause.strip(),re.IGNORECASE)) or ("create " in clauses[-1].casefold() and " creature token" in clauses[-1].casefold() and re.match(r"(?:that token attacks this combat if able|exile (?:that|those) tokens? at the beginning of the next end step)",clause.strip(),re.IGNORECASE)) or ("exile the top card of your library" in clauses[-1].casefold() and re.match(r"you may play that card this turn",clause.strip(),re.IGNORECASE)) or ("exile cards from the top of your library until you exile a nonland card" in clauses[-1].casefold() and re.match(r"you may cast that card this turn",clause.strip(),re.IGNORECASE)) or ("create x 1/1 red elemental creature tokens" in clauses[-1].casefold() and re.match(r"at the beginning of the next end step, exile those tokens",clause.strip(),re.IGNORECASE)) or ("reveal the top card of your library and put that card into your hand" in clauses[-1].casefold() and re.match(r"each opponent loses x life\b",clause.strip(),re.IGNORECASE))))
             if continuation:
                 separator="\n" if modal_continuation else " ";clauses[-1]=f"{clauses[-1]}{separator}{clause.strip()}"
@@ -4571,7 +4573,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if action_type=="accept_rad_counters":player["rad"]=player.get("rad",0)+int(pending["amount"]);_log(state,f"{player['name']} got {pending['amount']} rad counter(s) from {pending['source_name']}.")
         else:_log(state,f"{player['name']} declined the rad counters from {pending.get('source_name','the effect')}.")
         state["pending_rad_choice"]=None;state["priority_player_id"]=state["active_player_id"]
-    elif action_type in {"take_top_card","mill_top_card","keep_top_card"}:
+    elif action_type in {"take_top_card","put_top_card_battlefield","mill_top_card","keep_top_card"}:
         pending=state.get("pending_top_card_choice") or {}
         if pending.get("player_id")!=player_id:raise RuleViolation("There is no top-card choice for this player")
         top=player["library"][-1] if player["library"] else None
@@ -4579,6 +4581,9 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if action_type=="take_top_card":
             if not pending.get("allow_hand"):raise RuleViolation("That card cannot be put into your hand")
             player["library"].pop();player["hand"].append(top);_log(state,f"{player['name']} revealed {top['name']} and put it into their hand.")
+        elif action_type=="put_top_card_battlefield":
+            if not pending.get("allow_battlefield"):raise RuleViolation("That card cannot be put onto the battlefield")
+            player["library"].pop();top["controller_id"]=player_id;top["tapped"]=False;top["summoning_sick"]=True;_enter_battlefield(state,player,[top],"library");_log(state,f"{player['name']} put {top['name']} onto the battlefield.")
         elif action_type=="mill_top_card":
             if not pending.get("allow_graveyard"):raise RuleViolation("That card cannot be put into your graveyard")
             player["library"].pop();player["graveyard"].append(top);_log(state,f"{player['name']} put the top card of their library into their graveyard.")
