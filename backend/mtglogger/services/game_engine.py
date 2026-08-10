@@ -1626,6 +1626,7 @@ def _targets(state: dict, caster_id: str, card: dict, ignore_target_protection:b
                 if "Aura" in card.get("type_line","") and aura_types and not any(allowed in permanent.get("type_line","").casefold() for allowed in aura_types if allowed!="player"):continue
                 if own_target_only and player["id"] != caster_id: continue
                 if opponent_target_only and player["id"] == caster_id: continue
+                if "other than this creature" in text and permanent["instance_id"]==card.get("instance_id"):continue
                 if "nonland permanent" in text and "Land" in permanent.get("type_line", ""): continue
                 if "noncreature artifact" in text and "Creature" in permanent.get("type_line", ""): continue
                 if "creature without flying" in text and _has_keyword(permanent,"Flying"):continue
@@ -2614,7 +2615,10 @@ def _resolve_spell(state: dict) -> None:
     if target and target_owner and re.search(r"destroy target (?:artifact|creature|enchantment|land|planeswalker|permanent|nonland permanent)", effect_text):
         if _destroy_permanent(state,target_owner,target,"can't be regenerated" in effect_text):_log(state, f"{target['name']} was destroyed.")
     if target and target_owner and re.search(r"exile target (?:artifact|creature|enchantment|land|planeswalker|permanent|nonland permanent)", effect_text):
-        _leave_battlefield(state,target_owner,target,"exile",exile_actor_id=caster["id"]);_log(state,f"{target['name']} was exiled.")
+        linked_source=source_permanent if source_permanent and "return all cards exiled with" in (source_permanent.get("oracle_text") or "").casefold() else None
+        _leave_battlefield(state,target_owner,target,"exile",exile_actor_id=caster["id"])
+        if linked_source and target in _player(state,target.get("owner_id",target_owner["id"]))["exile"]:target["exiled_with_source_id"]=linked_source["instance_id"]
+        _log(state,f"{target['name']} was exiled.")
     if target and target_owner and re.search(r"return target (?:creature|permanent|nonland permanent).* to (?:its|their) owner'?s hand", effect_text):
         _leave_battlefield(state, target_owner, target, "hand"); _log(state, f"{target['name']} returned to its owner's hand.")
     if target and target_owner and re.search(r"put target (?:creature|permanent|nonland permanent).* on top of (?:its|their) owner'?s library",effect_text):
@@ -2860,6 +2864,10 @@ def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str, t
     linked_controlled=[permanent for controller in state["players"] for permanent in list(controller["battlefield"]) if permanent.get("control_while_source_id")==card.get("instance_id")]
     for permanent in linked_controlled:
         return_to=_player(state,permanent.pop("control_return_to_id"));permanent.pop("control_while_source_id",None);_change_control(state,permanent,return_to)
+    linked_exiled=[(exile_owner,exiled) for exile_owner in state["players"] for exiled in list(exile_owner["exile"]) if exiled.get("exiled_with_source_id")==card.get("instance_id")]
+    for exile_owner,exiled in linked_exiled:
+        exiled.pop("exiled_with_source_id",None);_leave_exile(state,exile_owner,[exiled]);exiled["controller_id"]=exile_owner["id"];exiled["summoning_sick"]=True;_enter_battlefield(state,exile_owner,[exiled],"exile")
+    if linked_exiled:_log(state,f"{len(linked_exiled)} card(s) exiled with {card['name']} returned under their owners' control.")
     if card.get("attached_to"):_detach(state,card)
     attachments=[(attachment_owner,attachment) for attachment_owner in state["players"] for attachment in list(attachment_owner["battlefield"]) if attachment.get("attached_to")==card.get("instance_id")]
     for attachment_owner,attachment in attachments:
@@ -3455,7 +3463,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                     if all(step["targets"] for step in fight_steps):state.setdefault("pending_trigger_targets",[]).append({"controller_id":owner["id"],"source_name":source["name"],"trigger":trigger,"card":ability_card,"target_steps":fight_steps});state["priority_player_id"]=state["pending_trigger_targets"][0]["controller_id"]
                     else:_log(state,f"{source['name']}'s fight trigger had no legal targets and was removed.")
                 elif _target_kind(ability_card):
-                    if targets:state.setdefault("pending_trigger_targets",[]).append({"controller_id":owner["id"],"source_name":source["name"],"trigger":trigger,"card":ability_card});state["priority_player_id"]=state["pending_trigger_targets"][0]["controller_id"]
+                    if targets:state.setdefault("pending_trigger_targets",[]).append({"controller_id":owner["id"],"source_name":source["name"],"trigger":trigger,"card":ability_card,"optional":re.match(r"you may\b",effect,re.IGNORECASE) is not None});state["priority_player_id"]=state["pending_trigger_targets"][0]["controller_id"]
                     else:_log(state,f"{source['name']}'s trigger had no legal target and was removed.")
                 else:state["stack"].append(trigger)
                 _log(state, f"{source['name']} triggered: {effect}")
