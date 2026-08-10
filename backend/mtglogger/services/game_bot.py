@@ -270,6 +270,14 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
             if cast.get("targets"):cast={**cast,"target_id":_choose_target(state,cast)}
             return cast
         return by_type.get("hand_discovered",by_type.get("decline_discovery",[None]))[0]
+    if "cast_zethi_copy" in by_type or "decline_zethi_copy" in by_type:
+        cast=by_type.get("cast_zethi_copy",[None])[0]
+        if cast and difficulty!="beginner":
+            if cast.get("targets"):cast={**cast,"target_id":_choose_target(state,cast)}
+            return cast
+        return by_type.get("decline_zethi_copy",[None])[0]
+    if "pay_counter_payment" in by_type or "decline_counter_payment" in by_type:
+        return by_type.get("pay_counter_payment",by_type.get("decline_counter_payment",[None]))[0] if difficulty!="beginner" else by_type.get("decline_counter_payment",by_type.get("pay_counter_payment",[None]))[0]
     if "choose_manifest_dread" in by_type:
         action=by_type["choose_manifest_dread"][0];choice=max(action.get("cards",[]),key=lambda card:("Creature" in card.get("type_line",""),_threat_score(state,card)),default=None)
         return {"type":"choose_manifest_dread","card_id":choice["instance_id"]} if choice else by_type.get("concede",[None])[0]

@@ -1526,6 +1526,7 @@ def new_game(player_deck: list[dict], opponent_deck: list[dict], play_first: boo
     state = {"version": 1, "status": "mulligan", "winner_id": None, "turn": 1, "phase": "beginning", "beginning_draw_pending":True,"first_turn_draw_skipped":False,"active_player_id": human_id if play_first else bot_id, "priority_player_id": human_id,"monarch_id":None,"initiative_id":None, "players": players, "stack": [], "combat": {"attackers": [], "attackers_declared":False,"blocks": {}, "attack_targets": {},"block_orders":{},"damage_pending":False,"damage_step":None,"first_strike_damage_ids":[],"block_triggers_pending":False}, "consecutive_passes": 0, "pending_phase_advance": False, "pending_discard": None, "pending_mulligan_bottom": None, "pending_sacrifice": None, "pending_legendary": None,"pending_commander_zone":[],"pending_library_search":None,"pending_scry":None,"pending_damage_order":None,"pending_ward":None,"pending_blight":None,"pending_proliferate":None,"pending_amass":None,"pending_populate":None,"pending_bolster":None,"pending_discovery":None,"pending_madness":None,"pending_manifest":None,"pending_transform":None,"pending_dungeon":None,"pending_trigger_targets":[], "log": []}
     state["pending_explore"]=None;state["pending_explore_queue"]=[]
     state["pending_connive"]=None;state["pending_connive_queue"]=[]
+    state["pending_zethi_copies"]=None
     state["day_night"]=None
     for player in players:
         _draw(state, player, 7,False)
@@ -1748,6 +1749,8 @@ def _multiplayer(state: dict) -> bool:
 def _pending_decision(state:dict)->bool:
     if state.get("pending_explore"):return True
     if state.get("pending_connive"):return True
+    if state.get("pending_zethi_copies"):return True
+    if state.get("pending_counter_payment"):return True
     return bool(state.get("pending_rad_choice") or state.get("pending_top_card_choice") or state.get("pending_optional_payment") or state.get("pending_tilonalli") or state.get("pending_creature_type") or state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_populate") or state.get("pending_bolster") or state.get("pending_discovery") or state.get("pending_madness") or state.get("pending_rebound") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
 
 
@@ -1927,6 +1930,12 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
         can_pay=(kind=="mana" and _can_pay(player,{"mana_cost":common["mana_cost"]})) or (kind=="life" and player["life"]>=common["amount"]) or (kind=="discard" and len(player["hand"])>=common["amount"])
         if can_pay:actions.insert(0,{"type":"pay_ward",**common,**({"card_ids":[card["instance_id"] for card in player["hand"]]} if kind=="discard" else {})})
         return actions
+    pending_counter=state.get("pending_counter_payment")
+    if pending_counter:
+        if pending_counter["player_id"]!=player_id:return []
+        common={"mana_cost":pending_counter["mana_cost"],"source_name":pending_counter["source_name"]};actions=[{"type":"decline_counter_payment","label":"Let the spell be countered",**common},{"type":"concede"}]
+        if _can_pay(player,{"mana_cost":pending_counter["mana_cost"]}):actions.insert(0,{"type":"pay_counter_payment","label":f"Pay {pending_counter['mana_cost']}",**common})
+        return actions
     pending_blight=state.get("pending_blight")
     if pending_blight:
         if pending_blight["player_id"]!=player_id:return []
@@ -1966,6 +1975,14 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
     if pending_connive:
         if pending_connive["player_id"]!=player_id:return []
         return [{"type":"discard_connive","card_ids":[card["instance_id"] for card in player["hand"]],"amount":pending_connive["amount"],"creature_name":pending_connive["creature_name"]},{"type":"concede"}]
+    pending_zethi=state.get("pending_zethi_copies")
+    if pending_zethi:
+        if pending_zethi["player_id"]!=player_id:return []
+        candidate=next((card for card in player["exile"] if card["instance_id"]==pending_zethi["card_ids"][0]),None)
+        if not candidate:return [{"type":"decline_zethi_copy","source_name":pending_zethi["source_name"]},{"type":"concede"}]
+        targeting_card=_spell_targeting_card(candidate);targets=_targets(state,player_id,targeting_card);required=bool(_target_kind(targeting_card));common={"card_id":candidate["instance_id"],"card":candidate,"source_name":pending_zethi["source_name"]};actions=[{"type":"decline_zethi_copy","label":f"Don't cast the copy of {candidate['name']}",**common},{"type":"concede"}]
+        if not _modal_spec(candidate) and (not required or targets):actions.insert(0,{"type":"cast_zethi_copy","label":f"Cast a copy of {candidate['name']} without paying its mana cost",**common,**({"targets":targets} if targets else {})})
+        return actions
     pending_discovery=state.get("pending_discovery")
     if pending_discovery:
         if pending_discovery["player_id"]!=player_id:return []
@@ -2560,6 +2577,18 @@ def _resolve_spell(state: dict) -> None:
             _leave_graveyard(state,caster,returning)
             for candidate in returning:candidate["controller_id"]=caster["id"];candidate["summoning_sick"]=True
             _enter_battlefield(state,caster,returning,"graveyard")
+    multi_exile_instants=re.search(r"exile up to \d+ target instant cards? from your graveyard",effect_text)
+    if multi_exile_instants:
+        exiling=[candidate for candidate in list(caster["graveyard"]) if candidate["instance_id"] in set(target_ids) and "Instant" in candidate.get("type_line","")]
+        if exiling:
+            _leave_graveyard(state,caster,exiling)
+            for candidate in exiling:
+                candidate["zethi_source_id"]=item.get("source_id");candidate.setdefault("counters",{})["kick"]=candidate.get("counters",{}).get("kick",0)+1
+            _put_into_exile(state,caster,exiling,"graveyard",caster["id"]);_log(state,f"{card['name']} exiled {len(exiling)} instant card(s) with kick counters.")
+    if "copy each exiled card you own with a kick counter on it" in effect_text:
+        candidates=[candidate["instance_id"] for candidate in caster["exile"] if candidate.get("counters",{}).get("kick",0)>0]
+        if candidates:
+            zethi_name=(source_permanent or card).get("name",card["name"]);state["pending_zethi_copies"]={"player_id":caster["id"],"source_name":zethi_name,"card_ids":candidates};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} may cast {len(candidates)} copied instant(s) from {zethi_name}.");return
     if "add one mana of any color" in effect_text:caster["any_color_mana"]=caster.get("any_color_mana",0)+1;_log(state,f"{caster['name']} added one mana of any color.")
     if re.search(r"reveal cards from the top of your library until you reveal an elf or elemental card",effect_text):
         revealed=[];found=None
@@ -2889,8 +2918,12 @@ def _resolve_spell(state: dict) -> None:
         match=re.search(r"discard (a|one|two|three|four|\d+) cards?",effect_text);word=match.group(1);words={"a":1,"one":1,"two":2,"three":3,"four":4};amount=words.get(word,int(word) if word.isdigit() else 1);required=min(amount,len(caster["hand"]))
         if required:state["pending_discard"]={"player_id":caster["id"],"amount":required,"reason":"effect"};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} must discard {required} card(s).")
     if target_stack_item and target_kind in {"spell","ability","stack"} and "counter target" in effect_text:
-        state["stack"].remove(target_stack_item);countered=target_stack_item["card"];_counter_stack_item(state,target_stack_item)
-        _log(state, f"{countered['name']} was countered.")
+        unless_pay=re.search(r"counter target spell unless its controller pays ((?:\{[^}]+\})+)",effect_text)
+        if unless_pay:
+            payer=_player(state,target_stack_item["controller_id"]);state["pending_counter_payment"]={"player_id":payer["id"],"stack_id":target_stack_item["id"],"mana_cost":unless_pay.group(1).upper(),"source_name":card["name"]};state["priority_player_id"]=payer["id"];_log(state,f"{payer['name']} may pay {unless_pay.group(1).upper()} or {target_stack_item['card']['name']} will be countered.")
+        else:
+            state["stack"].remove(target_stack_item);countered=target_stack_item["card"];_counter_stack_item(state,target_stack_item)
+            _log(state, f"{countered['name']} was countered.")
     if graveyard_target and graveyard_owner:
         if re.search(r"(?:return|put) (?:target|that) (?:creature |nonland permanent )?card (?:.*graveyard )?(?:to|into|onto) (?:the battlefield|play)",effect_text):
             _leave_graveyard(state,graveyard_owner,[graveyard_target]);graveyard_target["controller_id"]=caster["id"];graveyard_target["summoning_sick"]=True;_enter_battlefield(state,caster,[graveyard_target],"graveyard");_log(state,f"{graveyard_target['name']} returned to the battlefield under {caster['name']}'s control.")
@@ -3578,10 +3611,10 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 controlled_attackers = [card for card in owner["battlefield"] if card.get("instance_id") in attacking_ids]
                 source_attacked = source.get("instance_id") in attacking_ids
                 attached_attacked = source.get("attached_to") in attacking_ids
-                source_name = re.escape(source.get("name", "").casefold())
+                source_name = re.escape(source.get("name", "").casefold());short_name=re.escape(source.get("name", "").split(",",1)[0].casefold())
                 if attached_attacked and "whenever equipped creature attacks" in lower:
                     matches = True
-                elif source_attacked and "attacks and isn't blocked" not in lower and "attacks and is not blocked" not in lower and re.search(rf"whenever (?:~|this creature|{source_name}) attacks\b", lower):
+                elif source_attacked and "attacks and isn't blocked" not in lower and "attacks and is not blocked" not in lower and re.search(rf"whenever (?:~|this creature|{source_name}|{short_name}) attacks\b", lower):
                     matches = True
                 elif controlled_attackers and "whenever one or more creatures you control attack" in lower:
                     matches = True
@@ -4095,6 +4128,19 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         _bottom_randomized_exiled(state,player,remaining);state["consecutive_passes"]=0;state["pending_phase_advance"]=False
         if pending["mode"]=="discover":player["discover_event_value"]=pending["value"];_queue_triggers(state,"discover",None,player);player.pop("discover_event_value",None)
         if not state.get("pending_trigger_targets"):state["priority_player_id"]=opponent(state,player_id)["id"] if (_multiplayer(state) or not allow_direct_resolution) and action_type=="cast_discovered" else state["active_player_id"]
+    elif action_type in {"cast_zethi_copy","decline_zethi_copy"}:
+        pending=state.get("pending_zethi_copies") or {};card_ids=pending.get("card_ids") or [];candidate=next((card for card in player["exile"] if card_ids and card["instance_id"]==card_ids[0]),None)
+        if pending.get("player_id")!=player_id or not candidate:raise RuleViolation("That Zethi copy is no longer available")
+        target_id=action.get("target_id");targeting_card=_spell_targeting_card(candidate);targets=_targets(state,player_id,targeting_card)
+        if action_type=="cast_zethi_copy" and _target_kind(targeting_card) and target_id not in {target["id"] for target in targets}:raise RuleViolation("Choose a legal target for the copied instant")
+        pending["card_ids"].pop(0)
+        if action_type=="cast_zethi_copy":
+            copied=deepcopy(candidate);copied["instance_id"]=_id();copied.pop("zethi_source_id",None);copied["counters"]={};stack_item={"id":_id(),"kind":"zethi_copy","card":copied,"controller_id":player_id,"target_id":target_id,"target_ids":[],"mode_indices":[],"mode_targets":[],"x_value":0,"free_cast":True,"cast_source_zone":"copy"};state["stack"].append(stack_item);_record_spell_cast(state,player);_queue_triggers(state,"cast",copied,player);_queue_storm_trigger(state,player,copied,stack_item);_queue_ward(state,player,target_id,stack_item);_log(state,f"{player['name']} cast a copy of {candidate['name']} without paying its mana cost.")
+        else:_log(state,f"{player['name']} declined to cast the copy of {candidate['name']}.")
+        if not pending["card_ids"]:state["pending_zethi_copies"]=None
+        state["consecutive_passes"]=0;state["pending_phase_advance"]=False
+        if state.get("pending_zethi_copies"):state["priority_player_id"]=player_id
+        elif (_multiplayer(state) or not allow_direct_resolution) and not state.get("pending_ward") and not state.get("pending_trigger_targets"):state["priority_player_id"]=opponent(state,player_id)["id"]
     elif action_type=="choose_manifest_dread":
         pending=state.get("pending_manifest") or {};card_id=action.get("card_id")
         if pending.get("player_id")!=player_id or card_id not in pending.get("card_ids",[]):raise RuleViolation("Choose one of the cards seen while manifesting dread")
@@ -4493,6 +4539,13 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
     elif action_type == "resolve_combat_damage":
         if _multiplayer(state) or not state["combat"].get("damage_pending"):raise RuleViolation("Combat damage is not ready")
         _combat_damage(state)
+    elif action_type in {"pay_counter_payment","decline_counter_payment"}:
+        pending=state.get("pending_counter_payment") or {};stack_item=next((item for item in state["stack"] if item["id"]==pending.get("stack_id")),None)
+        if pending.get("player_id")!=player_id or not stack_item:raise RuleViolation("That counter payment is no longer available")
+        state["pending_counter_payment"]=None
+        if action_type=="pay_counter_payment":_pay_mana(state,player,{"mana_cost":pending["mana_cost"]});_log(state,f"{player['name']} paid {pending['mana_cost']}; {stack_item['card']['name']} was not countered.")
+        else:state["stack"].remove(stack_item);_counter_stack_item(state,stack_item);_log(state,f"{player['name']} declined to pay; {stack_item['card']['name']} was countered.")
+        state["priority_player_id"]=state["active_player_id"];state["consecutive_passes"]=0
     elif action_type in {"pay_ward","decline_ward"}:
         pending=state.get("pending_ward") or {}
         if pending.get("player_id")!=player_id:raise RuleViolation("There is no ward cost for this player")
