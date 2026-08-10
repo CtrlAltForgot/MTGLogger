@@ -198,6 +198,19 @@ def _check_ascend(state:dict,player:dict,spell:dict|None=None)->None:
     player["city_blessing"]=True;_sync_city_blessing(state);_log(state,f"{player['name']} received the city's blessing for the rest of the game.")
 
 
+def _additional_land_plays(player:dict)->int:
+    return sum(len(re.findall(r"you may play an additional land on each of your turns",card.get("oracle_text") or "",re.IGNORECASE)) for card in player["battlefield"])
+
+
+def _ensure_land_play_tracking(player:dict)->None:
+    if "lands_played_this_turn" not in player:player["lands_played_this_turn"]=max(0,1+_additional_land_plays(player)-int(player.get("land_plays_remaining",0)))
+
+
+def _refresh_land_plays(state:dict,player:dict)->None:
+    if state.get("active_player_id")!=player["id"]:return
+    player["land_plays_remaining"]=max(0,1+_additional_land_plays(player)-int(player.get("lands_played_this_turn",0)))
+
+
 def _level_sections(card:dict)->tuple[list[str],list[tuple[int,int|None,list[str]]]]:
     preamble=[];sections=[];current=None
     for line in (card.get("oracle_text") or "").splitlines():
@@ -1456,7 +1469,7 @@ def _new_player(player_id: str, name: str, deck: list[dict], is_bot: bool, forma
         if commander:
             library.remove(commander); commander["commander"] = True; command.append(commander)
     random.SystemRandom().shuffle(library)
-    return {"id": player_id, "name": name, "is_bot": is_bot, "format": format_name, "life": 40 if is_commander else 20, "poison": 0,"energy":0,"energy_paid_this_turn":0,"firebending_mana":0,"bent_this_turn":[],"undercity_rooms":[],"city_blessing":False, "library": library, "hand": [], "battlefield": [], "graveyard": [], "exile": [], "command": command, "commander_casts": 0, "commander_damage": {}, "commander_damage_names": {}, "land_plays_remaining": 1, "kept_hand": False, "mulligans": 0, "lost": False}
+    return {"id": player_id, "name": name, "is_bot": is_bot, "format": format_name, "life": 40 if is_commander else 20, "poison": 0,"energy":0,"energy_paid_this_turn":0,"firebending_mana":0,"bent_this_turn":[],"undercity_rooms":[],"city_blessing":False, "library": library, "hand": [], "battlefield": [], "graveyard": [], "exile": [], "command": command, "commander_casts": 0, "commander_damage": {}, "commander_damage_names": {}, "land_plays_remaining": 1,"lands_played_this_turn":0, "kept_hand": False, "mulligans": 0, "lost": False}
 
 
 def new_game(player_deck: list[dict], opponent_deck: list[dict], play_first: bool = True, opponent_is_bot: bool = True, player_format: str = "", opponent_format: str = "") -> dict:
@@ -1655,7 +1668,10 @@ def _change_control(state:dict,card:dict,new_controller:dict,until_end_of_turn:b
     if not current or current["id"]==new_controller["id"]:return
     if until_end_of_turn and not card.get("temporary_control_return_to"):
         card["temporary_control_return_to"]=current["id"]
+    adjusts_land_plays="you may play an additional land on each of your turns" in (card.get("oracle_text") or "").casefold()
+    if adjusts_land_plays:_ensure_land_play_tracking(current);_ensure_land_play_tracking(new_controller)
     current["battlefield"].remove(card);new_controller["battlefield"].append(card);card["controller_id"]=new_controller["id"];card["summoning_sick"]=True;card.pop("suspend_haste",None)
+    if adjusts_land_plays:_refresh_land_plays(state,current);_refresh_land_plays(state,new_controller)
     _sync_city_blessing(state);_check_ascend(state,new_controller)
     if _echo_cost(card):card["echo_due_controller_id"]=new_controller["id"]
     _remove_from_combat(state,card["instance_id"])
@@ -2371,6 +2387,14 @@ def _resolve_spell(state: dict) -> None:
     target_stack_item = next((entry for entry in state["stack"] if entry["id"] == target_id), None)
     graveyard_owner=next((player for player in state["players"] if any(graveyard_card["instance_id"]==target_id for graveyard_card in player["graveyard"])),None)
     graveyard_target=next((graveyard_card for player in state["players"] for graveyard_card in player["graveyard"] if graveyard_card["instance_id"]==target_id),None)
+    if "reveal the top card of your library and put that card into your hand" in effect_text and "where x is that card's mana value" in effect_text:
+        if caster["library"]:
+            revealed=caster["library"].pop();caster["hand"].append(revealed);amount=int(revealed.get("mana_value") or 0)
+            for enemy in state["players"]:
+                if enemy["id"]!=caster["id"]:enemy["life"]-=amount
+            _gain_life(state,caster,amount);_log(state,f"{caster['name']} revealed {revealed['name']}, put it into their hand, and drained each opponent for {amount} life.")
+        else:_log(state,f"{caster['name']} had no card to reveal.")
+        return
     control_change=bool(target and target_owner and re.search(r"\bgain control of target (?:creature|permanent|artifact|enchantment|land|planeswalker)\b",effect_text))
     if control_change:
         temporary="until end of turn" in effect_text;previous_controller=target_owner
@@ -2602,6 +2626,11 @@ def _resolve_spell(state: dict) -> None:
             if own_only and owner["id"]!=caster["id"] or opponents_only and owner["id"]==caster["id"]:continue
             for permanent in owner["battlefield"]:
                 if "Creature" in permanent.get("type_line",""):permanent["temporary_power"]=permanent.get("temporary_power",0)+int(global_stats.group(1));permanent["temporary_toughness"]=permanent.get("temporary_toughness",0)+int(global_stats.group(2))
+    team_counters=re.search(r"put (a|one|two|three|four|\d+) ([+\-]\d+/[+\-]\d+) counters? on each creature you control",effect_text)
+    if team_counters:
+        words={"a":1,"one":1,"two":2,"three":3,"four":4};amount=words.get(team_counters.group(1),int(team_counters.group(1)) if team_counters.group(1).isdigit() else 1)
+        for permanent in caster["battlefield"]:
+            if "Creature" in permanent.get("type_line",""):_add_counters(state,permanent,team_counters.group(2),amount,caster["id"],"effect")
     token_match = re.search(r"create (a|one|two|three|four|five|\d+) (tapped )?(\d+)/(\d+) ([^.]*?) creature tokens?", effect_text)
     if token_match:
         amount = {"a":1,"one":1,"two":2,"three":3,"four":4,"five":5}.get(token_match.group(1),int(token_match.group(1)) if token_match.group(1).isdigit() else 0)
@@ -2703,7 +2732,10 @@ def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str, t
     if destination=="graveyard" and "Creature" in card.get("type_line","") and not card.get("token"):
         if _has_keyword(card,"Persist") and card.get("counters",{}).get("-1/-1",0)<=0:revive_keyword="persist"
         elif _has_keyword(card,"Undying") and card.get("counters",{}).get("+1/+1",0)<=0:revive_keyword="undying"
+    adjusts_land_plays="you may play an additional land on each of your turns" in (card.get("oracle_text") or "").casefold()
+    if adjusts_land_plays:_ensure_land_play_tracking(owner)
     if card in owner["battlefield"]: owner["battlefield"].remove(card)
+    if adjusts_land_plays:_refresh_land_plays(state,owner)
     earthbend_controller=card.get("earthbend_controller") if destination in {"graveyard","exile"} else None
     _queue_triggers(state,"leaves",card,owner,trigger_dedupe,trigger_sources)
     if destination=="graveyard":_queue_triggers(state,"dies",card,owner,trigger_dedupe,trigger_sources)
@@ -2804,6 +2836,7 @@ def _leave_exile(state:dict,owner:dict,cards:list[dict])->list[dict]:
 def _enter_battlefield(state:dict,controller:dict,cards:list[dict],origin:str="effect",was_cast:bool=False,played:bool=False)->list[dict]:
     entering=[card for card in cards if not any(card in owner["battlefield"] for owner in state["players"])]
     if not entering:return []
+    if any("you may play an additional land on each of your turns" in (card.get("oracle_text") or "").casefold() for card in entering):_ensure_land_play_tracking(controller)
     batch_size=len(entering);dedupe:set[str]=set()
     for card in entering:
         if _has_keyword(card,"Daybound"):
@@ -2812,6 +2845,7 @@ def _enter_battlefield(state:dict,controller:dict,cards:list[dict],origin:str="e
         card["controller_id"]=controller["id"];card["entry_event_origin"]=origin;card["entry_event_was_cast"]=was_cast;card["entry_event_played"]=played;card["entry_event_batch_size"]=batch_size
         if _echo_cost(card):card["echo_due_controller_id"]=controller["id"]
         controller["battlefield"].append(card)
+    if any("you may play an additional land on each of your turns" in (card.get("oracle_text") or "").casefold() for card in entering):_refresh_land_plays(state,controller)
     _sync_city_blessing(state)
     ordered_owners=sorted(state["players"],key=lambda owner:owner["id"]!=state.get("active_player_id"));sources=[(owner,permanent) for owner in ordered_owners for permanent in owner["battlefield"]]
     for card in entering:_queue_triggers(state,"enters",card,controller,dedupe,sources)
@@ -2923,7 +2957,8 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
         text = "\n".join([source.get("oracle_text") or "",*(source.get("temporary_backup_rules") or [])])
         raw_clauses = re.split(r"(?<=[.!])\s+|\n", text);clauses=[]
         for clause in raw_clauses:
-            if clauses and re.match(r"(?:then if|if you do),?\b",clause.strip(),re.IGNORECASE):clauses[-1]=f"{clauses[-1]} {clause.strip()}"
+            continuation=bool(clauses and (re.match(r"(?:then if|if you do|if you have the city's blessing),?\b",clause.strip(),re.IGNORECASE) or ("reveal the top card of your library and put that card into your hand" in clauses[-1].casefold() and re.match(r"each opponent loses x life\b",clause.strip(),re.IGNORECASE))))
+            if continuation:clauses[-1]=f"{clauses[-1]} {clause.strip()}"
             else:clauses.append(clause)
         for clause in clauses:
             lower = clause.casefold(); matches = False
@@ -3111,8 +3146,11 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 attacking_ids = set(state.get("combat", {}).get("attackers", []))
                 controlled_attackers = [card for card in owner["battlefield"] if card.get("instance_id") in attacking_ids]
                 source_attacked = source.get("instance_id") in attacking_ids
+                attached_attacked = source.get("attached_to") in attacking_ids
                 source_name = re.escape(source.get("name", "").casefold())
-                if source_attacked and "attacks and isn't blocked" not in lower and "attacks and is not blocked" not in lower and re.search(rf"whenever (?:~|this creature|{source_name}) attacks\b", lower):
+                if attached_attacked and "whenever equipped creature attacks" in lower:
+                    matches = True
+                elif source_attacked and "attacks and isn't blocked" not in lower and "attacks and is not blocked" not in lower and re.search(rf"whenever (?:~|this creature|{source_name}) attacks\b", lower):
                     matches = True
                 elif controlled_attackers and "whenever one or more creatures you control attack" in lower:
                     matches = True
@@ -3313,7 +3351,7 @@ def _state_based_actions(state: dict) -> None:
 def _begin_next_turn(state:dict)->None:
     previous_active=_player(state,state["active_player_id"]);previous_spells=previous_active.get("spells_cast_this_turn",0) if previous_active.get("cast_event_turn")==state["turn"] else 0
     state["pending_discard"]=None;state["turn"] += 1; state["phase"] = PHASES[0];state["beginning_draw_pending"]=True; state["active_player_id"] = opponent(state, state["active_player_id"])["id"]
-    active = _player(state, state["active_player_id"]); active["land_plays_remaining"] = 1
+    active = _player(state, state["active_player_id"]);active["lands_played_this_turn"]=0;_refresh_land_plays(state,active)
     echo_due=[card for card in active["battlefield"] if card.get("echo_due_controller_id")==active["id"]]
     if echo_due:
         state["pending_echo"]=[{"player_id":active["id"],"card_id":card["instance_id"],"card_name":card["name"]} for card in echo_due]
@@ -3329,6 +3367,7 @@ def _begin_next_turn(state:dict)->None:
         return_to=_player(state,permanent.pop("temporary_control_return_to"));current=next(owner for owner in state["players"] if permanent in owner["battlefield"])
         if current["id"]!=return_to["id"]:
             current["battlefield"].remove(permanent);return_to["battlefield"].append(permanent);permanent["controller_id"]=return_to["id"];permanent["summoning_sick"]=True
+            if "you may play an additional land on each of your turns" in (permanent.get("oracle_text") or "").casefold():_refresh_land_plays(state,current);_refresh_land_plays(state,return_to)
             _log(state,f"{permanent['name']} returned to {return_to['name']}'s control.")
     for owner in state["players"]:
         owner["firebending_mana"]=0;owner["bent_this_turn"]=[];owner["energy_paid_this_turn"]=0
@@ -3597,7 +3636,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
     elif action_type == "play_land":
         card = next((card for card in player["hand"] if card["instance_id"] == action.get("card_id") and "Land" in card.get("type_line", "")), None)
         if not card: raise RuleViolation("That land is not in your hand")
-        player["hand"].remove(card);card["summoning_sick"]=True;_enter_battlefield(state,player,[card],"hand",played=True);player["land_plays_remaining"]-=1;_log(state,f"{player['name']} played {card['name']}.")
+        player["hand"].remove(card);card["summoning_sick"]=True;_enter_battlefield(state,player,[card],"hand",played=True);player["lands_played_this_turn"]=player.get("lands_played_this_turn",0)+1;player["land_plays_remaining"]-=1;_log(state,f"{player['name']} played {card['name']}.")
     elif action_type=="channel":
         card=next((card for card in player["hand"] if card["instance_id"]==action.get("card_id")),None);abilities=_channel_abilities(card or {});ability_index=int(action.get("ability_index") or 0);ability=abilities[ability_index] if 0<=ability_index<len(abilities) else None;requested_target_count=len(action.get("target_ids") or []);available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="channel" and entry["card_id"]==action.get("card_id") and entry.get("ability_index")==ability_index and (entry.get("channel_target_count") is None or entry.get("channel_target_count")==requested_target_count)),None)
         if not card or not ability or not available:raise RuleViolation("That Channel ability cannot be activated now")
