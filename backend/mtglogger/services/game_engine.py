@@ -689,6 +689,11 @@ def _unearth_ability(card:dict)->dict|None:
     return {"mana_cost":match.group(1).upper(),"energy_cost":0} if match else None
 
 
+def _encore_cost(card:dict)->str|None:
+    match=re.search(r"(?:^|\n)Encore\s+((?:\{[^}]+\})+)",card.get("oracle_text") or "",re.IGNORECASE)
+    return match.group(1).upper() if match else None
+
+
 def _delirium_graveyard_return(card:dict)->dict|None:
     match=re.search(r"Delirium\s*[—-]\s*((?:\{[^}]+\})+)\s*:\s*Return this card from your graveyard to the battlefield with a finality counter on it",card.get("oracle_text") or "",re.IGNORECASE)
     return {"mana_cost":match.group(1).upper(),"effect":"Return this card from your graveyard to the battlefield with a finality counter on it."} if match else None
@@ -2487,6 +2492,8 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
                 cost_label=unearth["mana_cost"] or f"{unearth['energy_cost']} energy";actions.append({"type":"unearth","card_id":grave_card["instance_id"],"source":"graveyard","mana_cost":unearth["mana_cost"],"energy_cost":unearth["energy_cost"],"label":f"Unearth {grave_card['name']} · {cost_label}"})
             delirium_return=_delirium_graveyard_return(grave_card)
             if delirium_return and _graveyard_card_type_count(player)>=4 and _can_pay(player,{"mana_cost":delirium_return["mana_cost"]}):actions.append({"type":"activate_graveyard","card_id":grave_card["instance_id"],"source":"graveyard","mana_cost":delirium_return["mana_cost"],"label":f"Return {grave_card['name']} with finality · {delirium_return['mana_cost']}"})
+            encore_cost=_encore_cost(grave_card)
+            if encore_cost and _can_pay(player,{"mana_cost":encore_cost}):actions.append({"type":"encore","card_id":grave_card["instance_id"],"source":"graveyard","mana_cost":encore_cost,"label":f"Encore {grave_card['name']} · {encore_cost}"})
         plot_reduction=_plot_reduction(player)
         for hand_card in player["hand"]:
             plot_cost=_plot_cost(hand_card)
@@ -2827,6 +2834,16 @@ def _resolve_spell(state: dict) -> None:
         if permanent:
             owner=next(owner for owner in state["players"] if permanent in owner["battlefield"]);_leave_battlefield(state,owner,permanent,"graveyard");_log(state,f"{permanent['name']} was sacrificed after its temporary population.")
         return
+    if item.get("kind")=="encore_ability":
+        group=_id();created=[]
+        for defending in [owner for owner in state["players"] if owner["id"]!=caster["id"]]:
+            token=deepcopy(item["source_card"]);token["instance_id"]=_id();token["owner_id"]=caster["id"];token["controller_id"]=caster["id"];token["token"]=True;token["tapped"]=False;token["damage"]=0;token["counters"]={};token["summoning_sick"]=True;token["must_attack_next_combat"]=True;token["encore_defender_id"]=defending["id"];token["encore_sacrifice_group"]=group;token["temporary_keywords"]=sorted(set(token.get("temporary_keywords",[]))|{"Haste"});created.append(token)
+        _enter_battlefield(state,caster,created,"encore");_log(state,f"{caster['name']} created {len(created)} Encore token copy or copies of {item['source_card']['name']}; each must attack its assigned opponent this turn.");return
+    if item.get("kind")=="encore_sacrifice_trigger":
+        tokens=[permanent for owner in state["players"] for permanent in list(owner["battlefield"]) if permanent["instance_id"] in set(item.get("token_ids",[]))]
+        for token in tokens:
+            owner=next(owner for owner in state["players"] if token in owner["battlefield"]);_sacrifice_permanents(state,owner,[token])
+        _log(state,f"{len(tokens)} Encore token(s) were sacrificed at the beginning of the end step.");return
     if item.get("kind")=="tilonalli_exile_trigger":
         tokens=[permanent for owner in state["players"] for permanent in list(owner["battlefield"]) if permanent["instance_id"] in set(item.get("token_ids",[]))]
         if caster.get("city_blessing"):
@@ -4683,6 +4700,9 @@ def _advance_turn_phase(state: dict) -> None:
             delayed_groups={card.get("delayed_exile_group") for owner in state["players"] for card in owner["battlefield"] if card.get("delayed_exile_group")}
             for group in delayed_groups:
                 tokens=[card for owner in state["players"] for card in owner["battlefield"] if card.get("delayed_exile_group")==group];controller=_player(state,tokens[0]["owner_id"]);[token.pop("delayed_exile_group",None) for token in tokens];ability={"name":"Delayed token exile","type_line":"Ability","mana_cost":"","oracle_text":"Exile those tokens."};state["stack"].append({"id":_id(),"kind":"delayed_token_exile_trigger","card":ability,"controller_id":controller["id"],"token_ids":[token["instance_id"] for token in tokens]});_log(state,f"A delayed exile triggered for {len(tokens)} token(s).")
+            encore_groups={card.get("encore_sacrifice_group") for owner in state["players"] for card in owner["battlefield"] if card.get("encore_sacrifice_group")}
+            for group in encore_groups:
+                tokens=[card for owner in state["players"] for card in owner["battlefield"] if card.get("encore_sacrifice_group")==group];controller=_player(state,tokens[0]["owner_id"]);[token.pop("encore_sacrifice_group",None) for token in tokens];ability={"name":"Encore delayed sacrifice","type_line":"Ability","mana_cost":"","oracle_text":"Sacrifice those Encore tokens."};state["stack"].append({"id":_id(),"kind":"encore_sacrifice_trigger","card":ability,"controller_id":controller["id"],"token_ids":[token["instance_id"] for token in tokens]});_log(state,f"The delayed sacrifice of {len(tokens)} Encore token(s) triggered.")
             for permanent in [card for owner in state["players"] for card in owner["battlefield"] if card.get("dashed") and not card.get("dash_return_triggered")]:
                 permanent["dash_return_triggered"]=True;controller=_player(state,permanent["controller_id"]);ability_card={"name":f"{permanent['name']} — Dash return","type_line":"Ability","mana_cost":"","oracle_text":f"Return {permanent['name']} to its owner's hand."};state["stack"].append({"id":_id(),"kind":"dash_return_trigger","card":ability_card,"controller_id":controller["id"],"source_id":permanent["instance_id"]});_log(state,f"{permanent['name']}'s dash return trigger was put on the stack.")
             if state.get("monarch_id")==active["id"]:
@@ -5219,6 +5239,12 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         _pay_mana(state,player,{"mana_cost":ability["mana_cost"]});ability_card={**card,"name":f"{card['name']} graveyard ability","oracle_text":ability["effect"],"type_line":"Ability","mana_cost":""};state["stack"].append({"id":_id(),"kind":"ability","card":ability_card,"controller_id":player_id,"source_id":card["instance_id"]});state["consecutive_passes"]=0;state["pending_phase_advance"]=False
         if _multiplayer(state) or not allow_direct_resolution:state["priority_player_id"]=opponent(state,player_id)["id"]
         _log(state,f"{player['name']} activated {card['name']}'s Delirium graveyard ability.")
+    elif action_type=="encore":
+        card=next((card for card in player["graveyard"] if card["instance_id"]==action.get("card_id")),None);cost=_encore_cost(card or {});available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="encore" and entry["card_id"]==action.get("card_id")),None)
+        if not card or not cost or not available:raise RuleViolation("That card cannot be encored now")
+        _pay_mana(state,player,{"mana_cost":cost});_leave_graveyard(state,player,[card]);_put_into_exile(state,player,[card],"graveyard",player_id);ability={**card,"name":f"{card['name']} — Encore","type_line":"Ability","mana_cost":"","oracle_text":f"Create one token copy of {card['name']} for each opponent. Each copy must attack that opponent this turn if able. Sacrifice the copies at the beginning of the next end step."};state["stack"].append({"id":_id(),"kind":"encore_ability","card":ability,"source_card":deepcopy(card),"controller_id":player_id});state["consecutive_passes"]=0;state["pending_phase_advance"]=False
+        if _multiplayer(state) or not allow_direct_resolution:state["priority_player_id"]=opponent(state,player_id)["id"]
+        _log(state,f"{player['name']} paid {cost}, exiled {card['name']}, and put its Encore ability on the stack.")
     elif action_type == "foretell":
         card=next((card for card in player["hand"] if card["instance_id"]==action.get("card_id")),None);available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="foretell" and entry["card_id"]==action.get("card_id")),None)
         if not card or not _foretell_cost(card) or not available:raise RuleViolation("That card cannot be foretold now")
@@ -5379,6 +5405,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
             if "can't attack or block alone" in _effective_rules_text(state,lone):raise RuleViolation(f"{lone['name']} can't attack alone")
         attack_action=next(entry for entry in legal_actions(state,player_id) if entry["type"]=="declare_attackers");defender_ids={target["id"] for target in attack_action.get("defenders",[])};requested_targets=action.get("attack_targets") or {};default_target=opponent(state,player_id)["id"]
         if any(requested_targets.get(attacker_id,default_target) not in defender_ids for attacker_id in requested):raise RuleViolation("Choose a legal defender for every attacker")
+        if any((attacker:=next(card for card in player["battlefield"] if card["instance_id"]==attacker_id)).get("encore_defender_id") and requested_targets.get(attacker_id,default_target)!=attacker["encore_defender_id"] for attacker_id in requested):raise RuleViolation("Each Encore token must attack its assigned opponent")
         state["combat"]["attackers"] = list(requested);state["combat"]["attackers_declared"]=True
         state["combat"]["attack_targets"]={attacker_id:requested_targets.get(attacker_id,default_target) for attacker_id in requested}
         for card in player["battlefield"]:
