@@ -398,6 +398,8 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
         choice=min(by_type["cycle"],key=lambda action:(_card(state,"bot",action["card_id"]).get("mana_value") or 0))
         stranded=(_card(state,"bot",choice["card_id"]).get("mana_value") or 0)>lands_in_play+2
         if "cast" not in by_type or lands_in_hand<2 or (difficulty=="expert" and stranded):return choice
+    if "activate_speed_graveyard" in by_type:
+        return by_type["activate_speed_graveyard"][0]
     if "cast_face_down" in by_type and "cast" not in by_type:
         choices=by_type["cast_face_down"];return random.choice(choices) if difficulty=="beginner" else max(choices,key=lambda action:_threat_score(state,_card(state,"bot",action["card_id"])))
     if "unearth" in by_type:

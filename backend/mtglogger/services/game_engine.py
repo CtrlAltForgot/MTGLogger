@@ -2150,6 +2150,7 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
     castable.extend((card,"flashback") for card in player["graveyard"] if _flashback_ability(card))
     castable.extend((card,"escape") for card in player["graveyard"] if _escape_ability(card))
     castable.extend((card,"graveyard_permission") for card in player["graveyard"] if card.get("graveyard_cast_until_turn")==state["turn"])
+    castable.extend((card,"graveyard_permission") for card in player["graveyard"] if player.get("speed",0)>=4 and re.search(r"Max speed\s*[—-]\s*You may cast this card from your graveyard",card.get("oracle_text") or "",re.IGNORECASE))
     castable.extend((card,"exile_permission") for card in player["exile"] if card.get("exile_cast_until_turn")==state["turn"])
     castable.extend((card,"airbend") for card in player["exile"] if card.get("airbent"))
     castable.extend((card,"suspend") for card in player["exile"] if card.get("suspended_ready"))
@@ -2318,6 +2319,9 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
             actions.append(action)
         foretell_cost=_foretell_cost(card)
         if active and foretell_cost and _can_pay(player,{"mana_cost":"{2}"}):actions.append({"type":"foretell","card_id":card["instance_id"],"label":f"Foretell {card['name']} face down · {{2}} · cast on a later turn for {foretell_cost}","mana_cost":"{2}","foretell_cost":foretell_cost})
+    if player.get("speed",0)>=4:
+        for graveyard_card in player["graveyard"]:
+            if re.search(r"Max speed\s*[—-]\s*\{3\}, Exile this card from your graveyard: Draw a card",graveyard_card.get("oracle_text") or "",re.IGNORECASE) and _can_pay(player,{"mana_cost":"{3}"}):actions.append({"type":"activate_speed_graveyard","card_id":graveyard_card["instance_id"],"mana_cost":"{3}","label":f"Exile {graveyard_card['name']} from your graveyard · draw a card"})
     if active and state["phase"]=="combat" and state["combat"].get("damage_pending"):
         blocked=set(state["combat"].get("blocks",{}).values());battlefield={card["instance_id"]:card for card in player["battlefield"]}
         unblocked=[attacker_id for attacker_id in state["combat"].get("attackers",[]) if attacker_id not in blocked and attacker_id in battlefield]
@@ -2946,6 +2950,13 @@ def _resolve_spell(state: dict) -> None:
     elif "double the number of +1/+1 counters on that creature" in effect_text and target:_add_counters(state,target,"+1/+1",target.get("counters",{}).get("+1/+1",0),caster["id"],"effect")
     elif source_permanent and "double the number of +1/+1 counters on this creature" in effect_text:_add_counters(state,source_permanent,"+1/+1",source_permanent.get("counters",{}).get("+1/+1",0),caster["id"],"effect")
     mill_match = re.search(r"target player mills? (\d+|one|two|three|four|five|six|seven|eight|nine|ten) cards?", effect_text)
+    each_opponent_mill=re.search(r"each opponent mills? (\d+|one|two|three|four|five|six|seven|eight|nine|ten) cards?",effect_text)
+    if each_opponent_mill:
+        words={"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10};amount=words.get(each_opponent_mill.group(1),int(each_opponent_mill.group(1)) if each_opponent_mill.group(1).isdigit() else 0)
+        for milling_player in state["players"]:
+            if milling_player["id"]==caster["id"]:continue
+            for _ in range(min(amount,len(milling_player["library"]))):milling_player["graveyard"].append(milling_player["library"].pop())
+        _log(state,f"Each opponent milled {amount} card(s).")
     if mill_match and target_player:
         words={"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10}; amount=words.get(mill_match.group(1),int(mill_match.group(1)) if mill_match.group(1).isdigit() else 0)
         for _ in range(min(amount,len(target_player["library"]))): target_player["graveyard"].append(target_player["library"].pop())
@@ -4450,6 +4461,10 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         _queue_triggers(state,"cycling",card,player)
         if (_multiplayer(state) or not allow_direct_resolution) and not state.get("pending_trigger_targets"):state["priority_player_id"]=opponent(state,player_id)["id"]
         _log(state,f"{player['name']} discarded {card['name']} to activate {cycling['keyword']}.")
+    elif action_type=="activate_speed_graveyard":
+        card=next((candidate for candidate in player["graveyard"] if candidate["instance_id"]==action.get("card_id")),None);available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="activate_speed_graveyard" and entry["card_id"]==action.get("card_id")),None)
+        if not card or not available:raise RuleViolation("That max-speed graveyard ability cannot be activated")
+        _pay_mana(state,player,{"mana_cost":"{3}"});_leave_graveyard(state,player,[card]);_put_into_exile(state,player,[card],"graveyard",player_id);_draw(state,player);state["consecutive_passes"]=0;state["pending_phase_advance"]=False;_log(state,f"{player['name']} exiled {card['name']} from their graveyard and drew a card at max speed.")
     elif action_type == "equip":
         available=next((entry for entry in legal_actions(state,player_id) if entry["type"]=="equip" and entry["card_id"]==action.get("card_id")),None);target_id=action.get("target_id")
         if not available or target_id not in {target["id"] for target in available["targets"]}:raise RuleViolation("That Equipment cannot be attached to that creature now")
