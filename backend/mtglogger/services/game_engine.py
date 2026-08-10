@@ -1928,6 +1928,7 @@ def _target_kind(card: dict) -> str | None:
     if re.search(r"up to x target instant cards? from your graveyard",text):return "graveyard_card"
     if re.search(r"target creature or enchantment card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_creature_or_enchantment"
     if re.search(r"target creature card (?:from|in) (?:your|a|any|defending player's) graveyard",text):return "graveyard_creature"
+    if re.search(r"target instant or sorcery card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_card"
     if re.search(r"target permanent card(?: with mana value \d+ or less)? (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_permanent"
     if re.search(r"target (?:nonland permanent |nonland )?card (?:from|in) (?:your|a|any) graveyard",text):return "graveyard_card"
     if "target face-down permanent you control" in text:return "permanent"
@@ -2136,7 +2137,7 @@ def _pending_decision(state:dict)->bool:
     if state.get("pending_zone_choice"):return True
     if state.get("pending_counter_choice"):return True
     if state.get("pending_color_choice"):return True
-    return bool(state.get("pending_sticktwister") or state.get("pending_eumidian_choice") or state.get("pending_rad_choice") or state.get("pending_top_card_choice") or state.get("pending_revealed_discard") or state.get("pending_same_name_search") or state.get("pending_winter_exile") or state.get("pending_optional_discard") or state.get("pending_optional_payment") or state.get("pending_tilonalli") or state.get("pending_creature_type") or state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_populate") or state.get("pending_bolster") or state.get("pending_discovery") or state.get("pending_madness") or state.get("pending_rebound") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
+    return bool(state.get("pending_impulsivity") or state.get("pending_sticktwister") or state.get("pending_eumidian_choice") or state.get("pending_rad_choice") or state.get("pending_top_card_choice") or state.get("pending_revealed_discard") or state.get("pending_same_name_search") or state.get("pending_winter_exile") or state.get("pending_optional_discard") or state.get("pending_optional_payment") or state.get("pending_tilonalli") or state.get("pending_creature_type") or state.get("pending_discard") or state.get("pending_sacrifice") or state.get("pending_legendary") or state.get("pending_commander_zone") or state.get("pending_library_search") or state.get("pending_scry") or state.get("pending_damage_order") or state.get("pending_ward") or state.get("pending_blight") or state.get("pending_proliferate") or state.get("pending_amass") or state.get("pending_populate") or state.get("pending_bolster") or state.get("pending_discovery") or state.get("pending_madness") or state.get("pending_rebound") or state.get("pending_manifest") or state.get("pending_transform") or state.get("pending_dungeon") or state.get("pending_trigger_targets"))
 
 
 def _split_second_on_stack(state:dict)->bool:
@@ -2419,6 +2420,15 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
     if pending_connive:
         if pending_connive["player_id"]!=player_id:return []
         return [{"type":"discard_connive","card_ids":[card["instance_id"] for card in player["hand"]],"amount":pending_connive["amount"],"creature_name":pending_connive["creature_name"]},{"type":"concede"}]
+    pending_impulsivity=state.get("pending_impulsivity")
+    if pending_impulsivity:
+        if pending_impulsivity["player_id"]!=player_id:return []
+        owner=next((candidate for candidate in state["players"] if candidate["id"]==pending_impulsivity["owner_id"]),None);candidate=next((card for card in (owner or {}).get("graveyard",[]) if card["instance_id"]==pending_impulsivity["card_id"]),None)
+        common={"card_id":pending_impulsivity["card_id"],"card":candidate,"source_name":pending_impulsivity["source_name"]};actions=[{"type":"decline_impulsivity","label":f"Don't cast {candidate['name'] if candidate else 'the targeted card'}",**common},{"type":"concede"}]
+        if candidate:
+            targeting_card=_spell_targeting_card(candidate);targets=_targets(state,player_id,targeting_card);required=bool(_target_kind(targeting_card))
+            if not _modal_spec(candidate) and (not required or targets):actions.insert(0,{"type":"cast_impulsivity","label":f"Cast {candidate['name']} without paying its mana cost",**common,**({"targets":targets} if targets else {})})
+        return actions
     pending_zethi=state.get("pending_zethi_copies")
     if pending_zethi:
         if pending_zethi["player_id"]!=player_id:return []
@@ -2986,7 +2996,8 @@ def _resolve_spell(state: dict) -> None:
         if item.get("cast_source_zone")=="hand" and _has_keyword(card,"Rebound"):
             card["rebound_pending"]=True;card["rebound_after_turn"]=state["turn"];_put_into_exile(state,caster,[card],"rebound",caster["id"])
         elif item.get("buyback"):caster["hand"].append(card)
-        elif item.get("flashback"):_put_into_exile(state,caster,[card],"stack",caster["id"])
+        elif item.get("flashback"):
+            spell_owner=_player(state,card.get("owner_id",caster["id"]));card["controller_id"]=spell_owner["id"];_put_into_exile(state,spell_owner,[card],"stack",caster["id"])
         else:caster["graveyard"].append(card)
         _log(state,f"{card['name']} resolved with {len(item['mode_indices'])} modes.");return
     projected_card=_delirium_rules_card(_threshold_rules_card(card,len(caster["graveyard"])),caster)
@@ -3187,6 +3198,8 @@ def _resolve_spell(state: dict) -> None:
     optional_discard=re.search(r"you may discard a card\.\s*if you do,\s*(.+)",effect_text,re.DOTALL)
     if optional_discard:
         source_name=(source_permanent or card).get("name",card["name"]);state["pending_optional_discard"]={"player_id":caster["id"],"source_name":source_name,"source_id":item.get("source_id"),"continuation":optional_discard.group(1).strip()};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} may discard a card for {source_name}.");return
+    if graveyard_target and "you may cast target instant or sorcery card from a graveyard without paying its mana cost" in effect_text:
+        graveyard_owner=next(owner for owner in state["players"] if graveyard_target in owner["graveyard"]);source_name=(source_permanent or card).get("name",card["name"]);state["pending_impulsivity"]={"player_id":caster["id"],"source_name":source_name,"card_id":graveyard_target["instance_id"],"owner_id":graveyard_owner["id"]};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} may cast {graveyard_target['name']} from a graveyard without paying its mana cost.");return
     optional_sacrifice=re.search(r"you may sacrifice (a land or lander|another permanent)\.\s*if you do,\s*(.+)",effect_text,re.DOTALL)
     if optional_sacrifice:
         kind=optional_sacrifice.group(1).casefold();choices=[candidate["instance_id"] for candidate in caster["battlefield"] if (kind=="another permanent" and candidate["instance_id"]!=item.get("source_id")) or (kind=="a land or lander" and ("Land" in candidate.get("type_line","") or re.search(r"\bLander\b",candidate.get("type_line",""),re.IGNORECASE)))]
@@ -3512,6 +3525,8 @@ def _resolve_spell(state: dict) -> None:
         supported=("flying","first strike","double strike","deathtouch","haste","hexproof","indestructible","lifelink","menace","reach","trample","vigilance")
         gained=[keyword for keyword in supported if re.search(rf"\b{re.escape(keyword)}\b",keyword_match.group(1))]
         target["temporary_keywords"]=sorted(set(target.get("temporary_keywords",[]))|set(gained));_log(state,f"{target['name']} gained {', '.join(gained)} until end of turn.")
+        source_rules=((source_permanent or {}).get("oracle_text") or card.get("oracle_text") or "").casefold()
+        if "whenever this creature deals combat damage to a player, draw that many cards" in source_rules:target.setdefault("temporary_backup_rules",[]).append("Whenever this creature deals combat damage to a player, draw that many cards.")
     pronoun_keyword=re.search(r"(?:it|that creature) gains? ([^.]+?) until end of turn",effect_text)
     if target and pronoun_keyword:
         supported=("flying","first strike","double strike","deathtouch","haste","hexproof","indestructible","lifelink","menace","reach","trample","vigilance");gained={keyword for keyword in supported if re.search(rf"\b{re.escape(keyword)}\b",pronoun_keyword.group(1))};target["temporary_keywords"]=sorted(set(target.get("temporary_keywords",[]))|gained)
@@ -3806,7 +3821,8 @@ def _resolve_spell(state: dict) -> None:
         if rebound_from_hand:
             card["rebound_pending"]=True;card["rebound_after_turn"]=state["turn"];_put_into_exile(state,caster,[card],"rebound",caster["id"])
         elif item.get("buyback"):caster["hand"].append(card)
-        elif item.get("flashback"):_put_into_exile(state,caster,[card],"stack",caster["id"])
+        elif item.get("flashback"):
+            spell_owner=_player(state,card.get("owner_id",caster["id"]));card["controller_id"]=spell_owner["id"];_put_into_exile(state,spell_owner,[card],"stack",caster["id"])
         else:caster["graveyard"].append(card)
     _log(state, f"{card['name']} resolved.")
     if entered and "Saga" in card.get("type_line",""):_add_saga_lore(state,caster,card)
@@ -4472,6 +4488,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
                 effect=re.sub(r"\bthat amount of damage\b",f"{damage_amount} damage",effect,flags=re.IGNORECASE)
                 effect=re.sub(r"\bthat amount\b",damage_amount,effect,flags=re.IGNORECASE)
                 if event_card.get("damage_event_target_kind")=="player":effect=re.sub(r"\bthat player controls\b","an opponent controls",effect,flags=re.IGNORECASE)
+            if event=="combat_damage_player" and event_card:effect=re.sub(r"\bthat many\b",str(event_card.get("combat_damage_player_amount",0)),effect,flags=re.IGNORECASE)
             if event in {"upkeep","end_step"} and owner["id"]!=event_owner["id"]:effect=re.sub(r"\bthat player controls\b","an opponent controls",effect,flags=re.IGNORECASE)
             if event in {"earthbend","waterbend","firebend","airbend"} and "whenever you waterbend, earthbend, firebend, or airbend" in lower:effect=re.split(r"whenever you waterbend, earthbend, firebend, or airbend,",clause,flags=re.IGNORECASE)[1].strip()
             if event=="enters" and re.match(r"if it was kicked,",effect,re.IGNORECASE):effect=effect.split(",",1)[1].strip()
@@ -4553,7 +4570,9 @@ def _combat_damage(state: dict) -> None:
             if legacy_source in damage and source not in damage and not names:damage[source]=damage.pop(legacy_source)
             damage[source]=damage.get(source,0)+amount;names[source]=creature.get("rules_name") or creature["name"]
         if not planeswalker and amount > 0:
+            creature["combat_damage_player_amount"]=amount
             _queue_triggers(state,"combat_damage_player",creature,attacker,trigger_dedupe)
+            creature.pop("combat_damage_player_amount",None)
             if state.get("monarch_id")==defender["id"]:_take_monarch(state,attacker)
             if state.get("initiative_id")==defender["id"]:_take_initiative(state,attacker)
 
@@ -5026,6 +5045,17 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         pending=state.get("pending_rebound") or {};card=next((candidate for candidate in player["exile"] if candidate["instance_id"]==pending.get("card_id")),None)
         if pending.get("player_id")!=player_id or not card:raise RuleViolation("That Rebound choice is no longer available")
         state["pending_rebound"]=None;card.pop("rebound_triggered",None);card.pop("rebound_after_turn",None);state["priority_player_id"]=state["active_player_id"];_log(state,f"{player['name']} declined to cast {card['name']} from Rebound.")
+    elif action_type in {"cast_impulsivity","decline_impulsivity"}:
+        pending=state.get("pending_impulsivity") or {};owner=next((candidate for candidate in state["players"] if candidate["id"]==pending.get("owner_id")),None);candidate=next((card for card in (owner or {}).get("graveyard",[]) if card["instance_id"]==pending.get("card_id")),None)
+        if pending.get("player_id")!=player_id or not candidate:raise RuleViolation("That Impulsivity choice is no longer available")
+        state["pending_impulsivity"]=None
+        if action_type=="decline_impulsivity":state["priority_player_id"]=state["active_player_id"];_log(state,f"{player['name']} declined to cast {candidate['name']} with Impulsivity.")
+        else:
+            targeting_card=_spell_targeting_card(candidate);targets=_targets(state,player_id,targeting_card);target_id=action.get("target_id")
+            if _target_kind(targeting_card) and target_id not in {target["id"] for target in targets}:raise RuleViolation("Choose a legal target for the spell cast with Impulsivity")
+            _leave_graveyard(state,owner,[candidate]);stack_item={"id":_id(),"kind":"spell","card":candidate,"controller_id":player_id,"target_id":target_id,"target_ids":[],"mode_indices":[],"mode_targets":[],"x_value":0,"free_cast":True,"flashback":True,"cast_source_zone":"graveyard"};state["stack"].append(stack_item);_record_spell_cast(state,player);candidate["cast_source_zone"]="graveyard";_queue_triggers(state,"cast",candidate,player);_queue_cascade_triggers(state,player,candidate);_queue_storm_trigger(state,player,candidate,stack_item);candidate.pop("cast_source_zone",None);_queue_ward(state,player,target_id,stack_item);state["consecutive_passes"]=0;state["pending_phase_advance"]=False
+            if (_multiplayer(state) or not allow_direct_resolution) and not state.get("pending_ward") and not state.get("pending_trigger_targets"):state["priority_player_id"]=opponent(state,player_id)["id"]
+            _log(state,f"{player['name']} cast {candidate['name']} from a graveyard without paying its mana cost; it will be exiled instead of returning to a graveyard.")
     elif action_type in {"cast_madness","decline_madness"}:
         pending=state.get("pending_madness") or {};candidate=next((card for card in player["exile"] if card["instance_id"]==pending.get("card_id")),None);ability=_madness_ability(candidate or {})
         if pending.get("player_id")!=player_id or not candidate or not ability:raise RuleViolation("That madness choice is no longer available")

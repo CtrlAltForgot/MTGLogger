@@ -298,6 +298,12 @@ def choose_bot_action(state: dict, difficulty: str = "standard", use_priority_pr
             if cast.get("targets"):cast={**cast,"target_id":_choose_target(state,cast)}
             return cast
         return by_type.get("decline_zethi_copy",[None])[0]
+    if "cast_impulsivity" in by_type or "decline_impulsivity" in by_type:
+        cast=by_type.get("cast_impulsivity",[None])[0]
+        if cast and difficulty!="beginner":
+            if cast.get("targets"):cast={**cast,"target_id":_choose_target(state,cast)}
+            return cast
+        return by_type.get("decline_impulsivity",[None])[0]
     if "pay_counter_payment" in by_type or "decline_counter_payment" in by_type:
         return by_type.get("pay_counter_payment",by_type.get("decline_counter_payment",[None]))[0] if difficulty!="beginner" else by_type.get("decline_counter_payment",by_type.get("pay_counter_payment",[None]))[0]
     if "choose_manifest_dread" in by_type:
