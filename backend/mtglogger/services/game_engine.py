@@ -709,6 +709,11 @@ def _earthbend_value(card:dict,player:dict|None=None)->int|None:
     return None
 
 
+def _bestow_cost(card:dict)->str|None:
+    match=re.search(r"(?:^|\n)Bestow\s+((?:\{[^}]+\})+)",card.get("oracle_text") or "",re.IGNORECASE)
+    return match.group(1) if match else None
+
+
 def _waterbend_symbol(text:str)->str|None:
     match=re.search(r"\bwaterbend\s+\{(\d+|X)\}",text or "",re.IGNORECASE)
     return match.group(1).upper() if match else None
@@ -2031,6 +2036,11 @@ def legal_actions(state: dict, player_id: str, allow_direct_resolution:bool=True
         if mutate_targets and ((active and main and not state["stack"]) or instant_speed) and _can_pay(player,{**mutate_card,"mana_cost":mutate_cost},mutate_tax):
             for position in ("over","under"):
                 actions.append({"type":"cast","card_id":mutate_card["instance_id"],"source":mutate_source,"mutating":True,"mutate_position":position,"mana_cost":mutate_cost,"commander_tax":mutate_tax,"targets":mutate_targets,"label":f"Mutate {mutate_card['name']} {position} · {mutate_cost}{f' + commander tax {{{mutate_tax}}}' if mutate_tax else ''}"})
+    for bestow_card in player["hand"]:
+        bestow_cost=_bestow_cost(bestow_card);instant_speed=_has_keyword(bestow_card,"Flash")
+        if not bestow_cost or not ((active and main and not state["stack"]) or instant_speed) or not _can_pay(player,{**bestow_card,"mana_cost":bestow_cost}):continue
+        targets=_targets(state,player_id,{**bestow_card,"type_line":"Enchantment — Aura","oracle_text":"Enchant creature"})
+        if targets:actions.append({"type":"cast","card_id":bestow_card["instance_id"],"source":"bestow","bestowing":True,"mana_cost":bestow_cost,"targets":targets,"label":f"Bestow {bestow_card['name']} · {bestow_cost}"})
     for evoke_card in player["hand"]:
         evoke=_evoke_ability(evoke_card)
         if not evoke:continue
@@ -2498,6 +2508,12 @@ def _resolve_spell(state: dict) -> None:
             if re.search(r"\b(?:Elf|Elemental)\b",candidate.get("type_line",""),re.IGNORECASE):found=candidate;break
         if found:revealed.remove(found);caster["hand"].append(found)
         random.SystemRandom().shuffle(revealed);caster["library"][0:0]=revealed;result=f" and put {found['name']} into their hand" if found else "";_log(state,f"{caster['name']} revealed {len(revealed)+(1 if found else 0)} card(s){result}.");return
+    springheart="if this permanent is attached to a creature you control" in effect_text and "if you didn't create a token this way" in effect_text
+    if springheart:
+        enchanted=next((permanent for permanent in caster["battlefield"] if permanent.get("instance_id")==source_permanent.get("attached_to")),None) if source_permanent else None
+        if enchanted:
+            state["pending_optional_payment"]={"player_id":caster["id"],"source_name":source_permanent["name"],"source_id":source_permanent["instance_id"],"mana_cost":"{1}{G}","continuation":"Create a token that's a copy of enchanted creature.","decline_continuation":"Create a 1/1 green Insect creature token."};state["priority_player_id"]=caster["id"];_log(state,f"{caster['name']} may pay {{1}}{{G}} for {source_permanent['name']}.");return
+        effect_text="create a 1/1 green insect creature token."
     optional_payment=re.search(r"you may pay ((?:\{[^}]+\})+)\.\s*if you do,\s*(.+)",effect_text,re.DOTALL)
     if optional_payment and "{x}" not in optional_payment.group(1):
         mana_cost=optional_payment.group(1).upper();continuation=optional_payment.group(2).strip();source_name=(source_permanent or source_graveyard or card).get("name",card["name"])
@@ -2523,6 +2539,15 @@ def _resolve_spell(state: dict) -> None:
         token=deepcopy(source_permanent);token["instance_id"]=_id();token["owner_id"]=caster["id"];token["controller_id"]=caster["id"];token["token"]=True;token["damage"]=0;token["counters"]={};token["tapped"]=False;token["summoning_sick"]=True
         for key in ("attached_to","attachment_keywords","attachment_rules","temporary_power","temporary_toughness","temporary_keywords","temporary_backup_rules","deathtouch_damage","activated_ability_usage","entered_turn"):token.pop(key,None)
         _enter_battlefield(state,caster,[token],"token");_log(state,f"{caster['name']} created a token copy of {source_permanent['name']}.");return
+    if "create a token that's a copy of enchanted creature" in effect_text and source_permanent:
+        enchanted=next((permanent for permanent in caster["battlefield"] if permanent.get("instance_id")==source_permanent.get("attached_to")),None)
+        if enchanted:
+            token=deepcopy(enchanted);token["instance_id"]=_id();token["owner_id"]=caster["id"];token["controller_id"]=caster["id"];token["token"]=True;token["damage"]=0;token["counters"]={};token["tapped"]=False;token["summoning_sick"]=True
+            for key in ("attached_to","attachment_keywords","attachment_rules","temporary_power","temporary_toughness","temporary_keywords","temporary_backup_rules","continuous_keywords","deathtouch_damage","activated_ability_usage","entered_turn"):token.pop(key,None)
+            _enter_battlefield(state,caster,[token],"token");_log(state,f"{caster['name']} created a token copy of {enchanted['name']}.")
+        else:
+            fallback={"name":f"{source_permanent['name']} fallback","oracle_text":"Create a 1/1 green Insect creature token.","type_line":"Ability","mana_cost":""};state["stack"].append({"id":_id(),"kind":"trigger","card":fallback,"controller_id":caster["id"],"target_id":None,"source_id":source_permanent["instance_id"]});_resolve_spell(state)
+        return
     if source_graveyard and "you may cast it from your graveyard this turn" in effect_text:
         if state.get("active_player_id")==caster["id"]:source_graveyard["graveyard_cast_until_turn"]=state["turn"]
         return
@@ -2905,6 +2930,8 @@ def _resolve_spell(state: dict) -> None:
         if item.get("suspended_cast"):card["suspend_haste"]=True
         if item.get("dashed"):card["dashed"]=True;card.setdefault("temporary_keywords",[]).append("Haste")
         card["summoning_sick"] = True
+        if item.get("bestowing"):
+            card["bestow_original_type_line"]=card.get("type_line","");card["type_line"]="Enchantment — Aura";card["bestowed"]=True
         if re.search(r"\benters (?:the battlefield )?tapped\b",text):card["tapped"]=True
         enters_counters=re.search(r"enters(?: the battlefield)? with (a|one|two|three|four|five|six|seven|eight|nine|ten|twelve|\d+) ([+−-]\d+/[+−-]\d+|loyalty|charge|shield|stun) counters?",text)
         _enter_battlefield(state,caster,[card],item.get("cast_source_zone","stack"),item.get("kind","spell")=="spell")
@@ -2923,6 +2950,8 @@ def _resolve_spell(state: dict) -> None:
         if item.get("escaped") and item.get("escape_counter_choice"):
             state["pending_escape_counter"]={"player_id":caster["id"],"card_id":card["instance_id"],"card_name":card["name"]};state["priority_player_id"]=caster["id"]
         if "Aura" in card.get("type_line","") and (target or target_player):_attach(state,card,target or target_player)
+        elif item.get("bestowing"):
+            card["type_line"]=card.pop("bestow_original_type_line",card.get("type_line","").replace(" — Aura",""));card.pop("bestowed",None)
         entered = True
     elif item.get("kind", "spell") == "spell":
         if rebound_from_hand:
@@ -2951,11 +2980,14 @@ def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str, t
     for exile_owner,exiled in linked_exiled:
         exiled.pop("exiled_with_source_id",None);_leave_exile(state,exile_owner,[exiled]);exiled["controller_id"]=exile_owner["id"];exiled["summoning_sick"]=True;_enter_battlefield(state,exile_owner,[exiled],"exile")
     if linked_exiled:_log(state,f"{len(linked_exiled)} card(s) exiled with {card['name']} returned under their owners' control.")
+    was_bestowed=bool(card.get("bestowed"))
     if card.get("attached_to"):_detach(state,card)
     attachments=[(attachment_owner,attachment) for attachment_owner in state["players"] for attachment in list(attachment_owner["battlefield"]) if attachment.get("attached_to")==card.get("instance_id")]
     for attachment_owner,attachment in attachments:
         _detach(state,attachment,restore_control=False)
-        if "Aura" in attachment.get("type_line",""):_leave_battlefield(state,attachment_owner,attachment,"graveyard")
+        if attachment.get("bestowed"):
+            attachment["type_line"]=attachment.pop("bestow_original_type_line",attachment.get("type_line","").replace(" — Aura",""));attachment.pop("bestowed",None);attachment["summoning_sick"]=True;_log(state,f"{attachment['name']} stopped being an Aura and became a creature.")
+        elif "Aura" in attachment.get("type_line",""):_leave_battlefield(state,attachment_owner,attachment,"graveyard")
     revive_keyword=None;soulshift_values=_keyword_instances(state,card,"Soulshift") if destination=="graveyard" and "Creature" in card.get("type_line","") and not card.get("token") else []
     if destination=="graveyard" and "Creature" in card.get("type_line","") and not card.get("token"):
         if _has_keyword(card,"Persist") and card.get("counters",{}).get("-1/-1",0)<=0:revive_keyword="persist"
@@ -2968,6 +3000,8 @@ def _leave_battlefield(state: dict, owner: dict, card: dict, destination: str, t
     earthbend_controller=card.get("earthbend_controller") if destination in {"graveyard","exile"} else None
     _queue_triggers(state,"leaves",card,owner,trigger_dedupe,trigger_sources)
     if destination=="graveyard":_queue_triggers(state,"dies",card,owner,trigger_dedupe,trigger_sources)
+    if was_bestowed:
+        card["type_line"]=card.pop("bestow_original_type_line",card.get("type_line","").replace(" — Aura",""));card.pop("bestowed",None)
     mutate_pile=card.pop("mutate_pile",None)
     if mutate_pile:
         for component in mutate_pile:
@@ -3277,7 +3311,7 @@ def _queue_triggers(state: dict, event: str, event_card: dict | None, event_owne
         for clause in raw_clauses:
             modal_continuation=bool(clauses and (clause.strip().startswith(("•","-")) or clauses[-1].lstrip().startswith(("•","-")) or re.search(r"\n[•-]\s",clauses[-1]) and not re.match(r"(?:when(?:ever)?\b|at the beginning\b|[+−-]?\d+\s*:|\{[^}]+\}[^:]*:)",clause.strip(),re.IGNORECASE)))
             top_card_continuation=bool(clauses and "look at the top card of your library" in clauses[-1].casefold() and re.match(r"if (?:it(?:'s| is) a creature card|you don.t put the card into your hand)",clause.strip(),re.IGNORECASE))
-            continuation=bool(clauses and (modal_continuation or top_card_continuation or ("additional combat phase after this phase" in clauses[-1].casefold() and re.match(r"at the beginning of that combat",clause.strip(),re.IGNORECASE)) or ("target" in clauses[-1].casefold() and re.match(r"it gains? [^.]+ until end of turn",clause.strip(),re.IGNORECASE)) or re.match(r"(?:then if|if you do|if you have the city's blessing|otherwise),?\b",clause.strip(),re.IGNORECASE) or re.match(r"if you control (?:one|two|three|four|five|six|seven|eight|nine|ten|\d+) or more lands",clause.strip(),re.IGNORECASE) or re.match(r"if that land is (?:a |an )?[a-z]+,",clause.strip(),re.IGNORECASE) or re.match(r"if (?:this is|it(?:'s| is)) the (?:first|second|third|fourth) time(?: this ability has resolved)?(?: this turn)?,",clause.strip(),re.IGNORECASE) or ("create " in clauses[-1].casefold() and " creature token" in clauses[-1].casefold() and re.match(r"exile (?:that|those) tokens? at the beginning of the next end step",clause.strip(),re.IGNORECASE)) or ("exile cards from the top of your library until you exile a nonland card" in clauses[-1].casefold() and re.match(r"you may cast that card this turn",clause.strip(),re.IGNORECASE)) or ("create x 1/1 red elemental creature tokens" in clauses[-1].casefold() and re.match(r"at the beginning of the next end step, exile those tokens",clause.strip(),re.IGNORECASE)) or ("reveal the top card of your library and put that card into your hand" in clauses[-1].casefold() and re.match(r"each opponent loses x life\b",clause.strip(),re.IGNORECASE))))
+            continuation=bool(clauses and (modal_continuation or top_card_continuation or ("additional combat phase after this phase" in clauses[-1].casefold() and re.match(r"at the beginning of that combat",clause.strip(),re.IGNORECASE)) or ("target" in clauses[-1].casefold() and re.match(r"it gains? [^.]+ until end of turn",clause.strip(),re.IGNORECASE)) or re.match(r"(?:then if|if you do|if you didn't|if you did not|if you have the city's blessing|otherwise),?\b",clause.strip(),re.IGNORECASE) or re.match(r"if you control (?:one|two|three|four|five|six|seven|eight|nine|ten|\d+) or more lands",clause.strip(),re.IGNORECASE) or re.match(r"if that land is (?:a |an )?[a-z]+,",clause.strip(),re.IGNORECASE) or re.match(r"if (?:this is|it(?:'s| is)) the (?:first|second|third|fourth) time(?: this ability has resolved)?(?: this turn)?,",clause.strip(),re.IGNORECASE) or ("create " in clauses[-1].casefold() and " creature token" in clauses[-1].casefold() and re.match(r"exile (?:that|those) tokens? at the beginning of the next end step",clause.strip(),re.IGNORECASE)) or ("exile cards from the top of your library until you exile a nonland card" in clauses[-1].casefold() and re.match(r"you may cast that card this turn",clause.strip(),re.IGNORECASE)) or ("create x 1/1 red elemental creature tokens" in clauses[-1].casefold() and re.match(r"at the beginning of the next end step, exile those tokens",clause.strip(),re.IGNORECASE)) or ("reveal the top card of your library and put that card into your hand" in clauses[-1].casefold() and re.match(r"each opponent loses x life\b",clause.strip(),re.IGNORECASE))))
             if continuation:
                 separator="\n" if modal_continuation else " ";clauses[-1]=f"{clauses[-1]}{separator}{clause.strip()}"
             else:clauses.append(clause)
@@ -3829,7 +3863,11 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
             elif not _target_kind(ability_card):state["stack"].append(trigger);_resolve_spell(state)
             else:_log(state,f"{pending['source_name']}'s paid effect had no legal target.")
             _log(state,f"{player['name']} paid {pending['mana_cost']} for {pending['source_name']}.")
-        else:_log(state,f"{player['name']} declined to pay for {pending.get('source_name') or 'the optional effect'}.")
+        else:
+            continuation=pending.get("decline_continuation") or ""
+            if continuation:
+                ability_card={"name":f"{pending['source_name']} declined effect","oracle_text":continuation,"type_line":"Ability","mana_cost":""};state["stack"].append({"id":_id(),"kind":"trigger","card":ability_card,"controller_id":player_id,"target_id":None,"source_id":pending.get("source_id")});_resolve_spell(state)
+            _log(state,f"{player['name']} declined to pay for {pending.get('source_name') or 'the optional effect'}.")
         state["priority_player_id"]=(state.get("pending_trigger_targets") or [{"controller_id":state["active_player_id"]}])[0]["controller_id"]
     elif action_type=="choose_creature_type":
         pending_list=state.get("pending_creature_type") or [];pending=pending_list[0] if pending_list else None;choice=" ".join(str(action.get("creature_type") or "").strip().split())
@@ -4052,13 +4090,13 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if (_multiplayer(state) or not allow_direct_resolution) and not state.get("pending_ward"):state["priority_player_id"]=opponent(state,player_id)["id"]
         _log(state,f"{player['name']} channeled {card['name']}{f' with X={x_value}' if has_x else ''}.")
     elif action_type == "cast":
-        requested_source=action.get("source");zone_name="graveyard" if requested_source in {"flashback","escape","mutate_graveyard","graveyard_permission"} else "exile" if requested_source in {"airbend","suspend","foretell","plot","rebound","exile_permission"} else "hand" if requested_source in {"mutate_hand","evoke","dash_hand"} else "command" if requested_source in {"mutate_command","dash_command"} else requested_source if requested_source in {"hand","command"} else next((zone for zone in ("hand","command") if any(card["instance_id"]==action.get("card_id") for card in player.get(zone,[]))),None)
-        source=requested_source if requested_source in {"flashback","escape","mutate_graveyard","graveyard_permission","airbend","suspend","foretell","plot","rebound","exile_permission","mutate_hand","mutate_command","evoke","dash_hand","dash_command"} else zone_name;card=next((card for card in player.get(zone_name or "hand",[]) if card["instance_id"]==action.get("card_id")),None);flashback=_flashback_ability(card or {}) if source=="flashback" else None;escape=_escape_ability(card or {}) if source=="escape" else None
-        requested_kicked=bool(action.get("kicked"));requested_entwined=bool(action.get("entwined"));requested_buyback=bool(action.get("buyback"));requested_convoke=bool(action.get("convoke"));requested_waterbend=bool(action.get("waterbend"));requested_overloaded=bool(action.get("overloaded"));requested_evoked=requested_source=="evoke";requested_dashed=requested_source in {"dash_hand","dash_command"};requested_delve=bool(action.get("delve"));requested_mutating=bool(action.get("mutating") or requested_source in {"mutate_hand","mutate_graveyard","mutate_command"});requested_blight=bool(action.get("blighted") or (action.get("cost_card_ids") and _optional_blight_cost(card or {})));requested_blessing_top=bool(action.get("blessing_top"));available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="cast" and entry["card_id"]==action.get("card_id") and entry.get("source")==source and bool(entry.get("entwined"))==requested_entwined and bool(entry.get("overloaded"))==requested_overloaded and bool(entry.get("evoked"))==requested_evoked and bool(entry.get("dashed"))==requested_dashed and bool(entry.get("delve"))==requested_delve and (not requested_delve or entry.get("cost_amount")==len(action.get("cost_card_ids") or [])) and bool(entry.get("mutating"))==requested_mutating and entry.get("mutate_position")==action.get("mutate_position") and bool(entry.get("kicked"))==requested_kicked and bool(entry.get("buyback"))==requested_buyback and bool(entry.get("convoke"))==requested_convoke and bool(entry.get("waterbend"))==requested_waterbend and bool(entry.get("blighted"))==requested_blight and bool(entry.get("blessing_top"))==requested_blessing_top),None)
+        requested_source=action.get("source");zone_name="graveyard" if requested_source in {"flashback","escape","mutate_graveyard","graveyard_permission"} else "exile" if requested_source in {"airbend","suspend","foretell","plot","rebound","exile_permission"} else "hand" if requested_source in {"mutate_hand","evoke","dash_hand","bestow"} else "command" if requested_source in {"mutate_command","dash_command"} else requested_source if requested_source in {"hand","command"} else next((zone for zone in ("hand","command") if any(card["instance_id"]==action.get("card_id") for card in player.get(zone,[]))),None)
+        source=requested_source if requested_source in {"flashback","escape","mutate_graveyard","graveyard_permission","airbend","suspend","foretell","plot","rebound","exile_permission","mutate_hand","mutate_command","evoke","dash_hand","dash_command","bestow"} else zone_name;card=next((card for card in player.get(zone_name or "hand",[]) if card["instance_id"]==action.get("card_id")),None);flashback=_flashback_ability(card or {}) if source=="flashback" else None;escape=_escape_ability(card or {}) if source=="escape" else None
+        requested_kicked=bool(action.get("kicked"));requested_entwined=bool(action.get("entwined"));requested_buyback=bool(action.get("buyback"));requested_convoke=bool(action.get("convoke"));requested_waterbend=bool(action.get("waterbend"));requested_overloaded=bool(action.get("overloaded"));requested_evoked=requested_source=="evoke";requested_dashed=requested_source in {"dash_hand","dash_command"};requested_bestowing=bool(action.get("bestowing") or requested_source=="bestow");requested_delve=bool(action.get("delve"));requested_mutating=bool(action.get("mutating") or requested_source in {"mutate_hand","mutate_graveyard","mutate_command"});requested_blight=bool(action.get("blighted") or (action.get("cost_card_ids") and _optional_blight_cost(card or {})));requested_blessing_top=bool(action.get("blessing_top"));available=next((entry for entry in legal_actions(state,player_id,allow_direct_resolution) if entry["type"]=="cast" and entry["card_id"]==action.get("card_id") and entry.get("source")==source and bool(entry.get("bestowing"))==requested_bestowing and bool(entry.get("entwined"))==requested_entwined and bool(entry.get("overloaded"))==requested_overloaded and bool(entry.get("evoked"))==requested_evoked and bool(entry.get("dashed"))==requested_dashed and bool(entry.get("delve"))==requested_delve and (not requested_delve or entry.get("cost_amount")==len(action.get("cost_card_ids") or [])) and bool(entry.get("mutating"))==requested_mutating and entry.get("mutate_position")==action.get("mutate_position") and bool(entry.get("kicked"))==requested_kicked and bool(entry.get("buyback"))==requested_buyback and bool(entry.get("convoke"))==requested_convoke and bool(entry.get("waterbend"))==requested_waterbend and bool(entry.get("blighted"))==requested_blight and bool(entry.get("blessing_top"))==requested_blessing_top),None)
         tax = _commander_tax(player, card) if card and source in {"command","mutate_command","dash_command"} else 0;affinity_reduction=_affinity_reduction(player,card or {});buyback=_buyback_ability(card or {}) if requested_buyback else None;generic_adjustment=tax-affinity_reduction-(_dash_reduction(player) if requested_dashed else 0)-int(available.get("buyback_reduction",0) if available else 0)
         if not card:raise RuleViolation("That spell cannot be cast")
         if not available:raise RuleViolation("That spell cannot be cast from that zone")
-        cost_card={**card,"mana_cost":_overload_cost(card) or ""} if requested_overloaded else {**card,"mana_cost":_dash_cost(card)} if requested_dashed else {**card,"mana_cost":(_evoke_ability(card) or {}).get("mana_cost","")} if requested_evoked else {**card,"mana_cost":_mutate_cost(card)} if requested_mutating else {**card,"mana_cost":_foretell_cost(card) or ""} if source=="foretell" else {**card,"mana_cost":"{0}"} if source in {"suspend","plot","rebound"} else {**card,"mana_cost":"{2}"} if source=="airbend" else {**card,"mana_cost":flashback["mana_cost"]} if flashback else {**card,"mana_cost":escape["mana_cost"]} if escape else card
+        cost_card={**card,"mana_cost":_overload_cost(card) or ""} if requested_overloaded else {**card,"mana_cost":_dash_cost(card)} if requested_dashed else {**card,"mana_cost":_bestow_cost(card)} if requested_bestowing else {**card,"mana_cost":(_evoke_ability(card) or {}).get("mana_cost","")} if requested_evoked else {**card,"mana_cost":_mutate_cost(card)} if requested_mutating else {**card,"mana_cost":_foretell_cost(card) or ""} if source=="foretell" else {**card,"mana_cost":"{0}"} if source in {"suspend","plot","rebound"} else {**card,"mana_cost":"{2}"} if source=="airbend" else {**card,"mana_cost":flashback["mana_cost"]} if flashback else {**card,"mana_cost":escape["mana_cost"]} if escape else card
         if requested_kicked:cost_card={**cost_card,"mana_cost":f"{cost_card.get('mana_cost') or ''}{_kicker_cost(card) or ''}"}
         entwine=_entwine_ability(card) if requested_entwined else None
         if entwine:cost_card={**cost_card,"mana_cost":f"{cost_card.get('mana_cost') or ''}{entwine['mana_cost']}"}
@@ -4104,6 +4142,8 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if requested_mutating:
             target_id=action.get("target_id")
             if target_id not in {target["id"] for target in available.get("targets",[])}:raise RuleViolation("Choose a non-Human creature you own to mutate")
+        elif requested_bestowing:
+            if target_id not in {target["id"] for target in available.get("targets",[])}:raise RuleViolation("Choose a legal creature to bestow")
         elif requested_overloaded:
             if target_id is not None:raise RuleViolation("An overloaded spell does not target")
         elif not modal_spec and _target_kind(targeting_card) and target_id not in {target["id"] for target in targets}: raise RuleViolation("Choose a legal target")
@@ -4154,7 +4194,7 @@ def perform_action(state: dict, player_id: str, action: dict, allow_direct_resol
         if source=="rebound":state["pending_rebound"]=None
         card.pop("rebound_triggered",None);card.pop("rebound_after_turn",None);card.pop("airbent",None);card.pop("suspended_ready",None);card.pop("suspended",None);card.pop("foretold",None);card.pop("foretold_turn",None);card.pop("plotted",None);card.pop("plotted_turn",None);card.pop("exile_cast_until_turn",None)
         if card.get("commander"): player["commander_casts"] = player.get("commander_casts", 0) + 1
-        effective_target=target_id or (mode_targets[0] if len(mode_targets)==1 else None);stack_item={"id": _id(), "card": card, "controller_id": player_id, "target_id": effective_target,"target_ids":target_ids,"mode_indices":chosen_modes,"mode_targets":mode_targets,"x_value":x_value,"flashback":bool(flashback),"buyback":requested_buyback,"rebound_cast":source=="rebound","escaped":bool(escape),"escape_counters":escape["counters"] if escape else 0,"escape_counter_choice":escape["counter_choice"] if escape else False,"suspended_cast":source=="suspend","kicked":requested_kicked,"entwined":requested_entwined,"overloaded":requested_overloaded,"blighted":requested_blight,"blessing_top":requested_blessing_top,"evoked":requested_evoked,"dashed":requested_dashed,"delved_cards":delved_cards if requested_delve else [],"mutating":requested_mutating,"mutate_position":action.get("mutate_position"),"cast_source_zone":"graveyard" if source in {"flashback","escape","mutate_graveyard","graveyard_permission"} else "exile" if source in {"airbend","suspend","foretell","plot","rebound","exile_permission"} else "hand" if source in {"mutate_hand","evoke","dash_hand"} else "command" if source in {"mutate_command","dash_command"} else source};state["stack"].append(stack_item);state["stack"].extend(cost_triggers); state["consecutive_passes"] = 0; state["pending_phase_advance"] = False
+        effective_target=target_id or (mode_targets[0] if len(mode_targets)==1 else None);stack_item={"id": _id(), "card": card, "controller_id": player_id, "target_id": effective_target,"target_ids":target_ids,"mode_indices":chosen_modes,"mode_targets":mode_targets,"x_value":x_value,"flashback":bool(flashback),"buyback":requested_buyback,"rebound_cast":source=="rebound","escaped":bool(escape),"escape_counters":escape["counters"] if escape else 0,"escape_counter_choice":escape["counter_choice"] if escape else False,"suspended_cast":source=="suspend","kicked":requested_kicked,"entwined":requested_entwined,"overloaded":requested_overloaded,"blighted":requested_blight,"blessing_top":requested_blessing_top,"evoked":requested_evoked,"dashed":requested_dashed,"bestowing":requested_bestowing,"delved_cards":delved_cards if requested_delve else [],"mutating":requested_mutating,"mutate_position":action.get("mutate_position"),"cast_source_zone":"graveyard" if source in {"flashback","escape","mutate_graveyard","graveyard_permission"} else "exile" if source in {"airbend","suspend","foretell","plot","rebound","exile_permission"} else "hand" if source in {"mutate_hand","evoke","dash_hand","bestow"} else "command" if source in {"mutate_command","dash_command"} else source};state["stack"].append(stack_item);state["stack"].extend(cost_triggers); state["consecutive_passes"] = 0; state["pending_phase_advance"] = False
         if requested_waterbend:_queue_triggers(state,"waterbend",card,player)
         _record_spell_cast(state,player);card["cast_source_zone"]="graveyard" if source in {"flashback","escape","mutate_graveyard","graveyard_permission"} else "exile" if source in {"airbend","suspend","foretell","plot","exile_permission"} else "hand" if source=="mutate_hand" else "command" if source=="mutate_command" else source
         _queue_triggers(state,"cast",card,player);_queue_cascade_triggers(state,player,card);_queue_storm_trigger(state,player,card,stack_item);card.pop("cast_source_zone",None)
