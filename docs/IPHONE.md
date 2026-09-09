@@ -42,7 +42,9 @@ Official references: [SideStore app sources](https://docs.sidestore.io/docs/adva
 - Automatic capture rearms only after the card has been absent for at least
   0.9 seconds. A brief missed detection or camera shake does not rearm it.
 - Still images retain their orientation and are limited to a 3840-pixel longest
-  side, encoded at 96% JPEG quality. The app does not use the PC as a camera bridge.
+  side, encoded at 96% JPEG quality. Unusually large imports reduce JPEG quality
+  if necessary to stay below the server's 15 MB limit. The app does not use the
+  PC as a camera bridge.
 - Native uploads explicitly identify a full photo so the server locates the
   physical card, while preserving the website's already-cropped card frames.
 - Every capture is saved in the iPhone Application Support directory before

@@ -340,9 +340,15 @@ final class CardCamera: NSObject, ObservableObject, AVCaptureVideoDataOutputSamp
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1
         format.opaque = true
-        return UIGraphicsImageRenderer(size: size, format: format).image { _ in
+        let normalized = UIGraphicsImageRenderer(size: size, format: format).image { _ in
             image.draw(in: CGRect(origin: .zero, size: size))
-        }.jpegData(compressionQuality: 0.96)
+        }
+        // Large photo-library images can contain much more noise than a camera
+        // scan. Do not save an outbox request the server's 15 MB limit rejects.
+        for quality in [0.96, 0.90, 0.80, 0.70] {
+            if let data = normalized.jpegData(compressionQuality: quality), data.count < 15_000_000 { return data }
+        }
+        return nil
     }
 }
 
