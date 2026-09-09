@@ -5,8 +5,9 @@ from pathlib import Path
 import cv2
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from ..config import get_settings
 from ..database import get_db
@@ -20,6 +21,7 @@ from ..schemas import (
     ReviewResolve,
     ScanDefaults,
 )
+from ..services.card_search import browse_catalog, search_printings
 from ..services.decks import assign_to_deck
 from ..services.evaluation import preserve_confirmed_scan
 from ..services.inventory import upsert_inventory
@@ -84,56 +86,7 @@ def list_reviews(status: ReviewStatus = ReviewStatus.pending, db: Session = Depe
 
 def local_card_search(db: Session, query: str, language: str) -> list[Candidate]:
     """Search downloaded printings without involving the network."""
-    normalized = query.strip().casefold()
-    rows = db.scalars(
-        select(CardReference)
-        .where(
-            or_(
-                func.lower(CardReference.name).contains(normalized, autoescape=True),
-                func.lower(CardReference.printed_name).contains(normalized, autoescape=True),
-                func.lower(CardReference.flavor_name).contains(normalized, autoescape=True),
-            ),
-            CardReference.language == language,
-        )
-        .order_by(
-            case(
-                (
-                    or_(
-                        func.lower(CardReference.name) == normalized,
-                        func.lower(CardReference.printed_name) == normalized,
-                        func.lower(CardReference.flavor_name) == normalized,
-                    ),
-                    0,
-                ),
-                else_=1,
-            ),
-            func.length(CardReference.name),
-            CardReference.name,
-            CardReference.released_at.desc(),
-            CardReference.set_code,
-            CardReference.collector_number,
-        )
-        .limit(LOCAL_SEARCH_LIMIT)
-    ).all()
-    return [
-        Candidate(
-            scryfall_id=card.scryfall_id,
-            name=card.flavor_name or card.printed_name or card.name,
-            set_code=card.set_code,
-            set_name=card.set_name,
-            collector_number=card.collector_number,
-            image_url=card.image_url,
-            market_price=card.market_price,
-            finishes=json.loads(card.finishes) if card.finishes else [],
-            language=card.language,
-            confidence=0,
-            oracle_id=card.oracle_id,
-            color_identity=card.color_identity,
-            rarity=card.rarity,
-            type_line=card.type_line,
-        )
-        for card in rows
-    ]
+    return search_printings(db, query, language, LOCAL_SEARCH_LIMIT)
 
 
 @router.get("/search", response_model=list[Candidate])
@@ -142,7 +95,7 @@ async def search_cards(
     lang: str = Query("en", pattern=r"^[a-z]{2,3}$"),
     db: Session = Depends(get_db),
 ):
-    local = local_card_search(db, q, lang)
+    local = await run_in_threadpool(local_card_search, db, q, lang)
     if local:
         return local
     local_count = int(db.scalar(select(func.count()).select_from(CardReference)) or 0)
@@ -173,6 +126,34 @@ async def search_cards(
         )
         for card in cards
     ]
+
+
+@router.get("/browse")
+async def browse_cards(
+    q: str = Query("", max_length=200),
+    lang: str = Query("en", pattern=r"^[a-z]{2,3}$"),
+    name: str = Query("", max_length=255),
+    set_code: str = Query("", max_length=16),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(24, ge=1, le=60),
+    db: Session = Depends(get_db),
+):
+    result = await run_in_threadpool(
+        browse_catalog, db, q, lang, name=name, set_code=set_code, page=page, page_size=page_size,
+    )
+    if (
+        not result["total"] and len(q.strip()) >= 2 and not name and not set_code
+        and result["catalog_count"] < LOCAL_CATALOG_READY_MINIMUM
+    ):
+        # Preserve online lookup while a fresh installation downloads its catalog.
+        cards = await search_cards(q=q, lang=lang, db=db)
+        start = (page - 1) * page_size
+        result.update(
+            items=[{**card.model_dump(), "oracle_name": card.name, "printing_count": 1}
+                   for card in cards[start:start + page_size]],
+            total=len(cards), mode="printings", online=True,
+        )
+    return result
 
 
 @router.get("/training/status")

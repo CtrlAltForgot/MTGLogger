@@ -95,6 +95,14 @@ For the best results, fill a useful portion of the frame, avoid glare, keep the 
 
 Artwork alone cannot always prove an exact printing because multiple sets can reuse the same art. MTGLogger also looks for collector numbers, set/footer details, card frames, language, and other visible evidence. This is especially important for basic lands.
 
+### Finding cards when glare prevents scanning
+
+Open **Collection → Add**, **Review → Find this card**, or **Scanner → Find a card instead**. Results appear as you type. Use part of a name, words in any order, or a name mixed with a set and collector number: `bolt lightning`, `plains sld`, and `sld 1735` all work. Search also tolerates common misspellings and recognizes printed alternate names such as `sponge bob`.
+
+Choose the card first, then match its artwork in the printing gallery. Filter by set or number if useful; all matching printings are paginated, including older versions. The five basic land shortcuts help with full-art cards. These same Add and Review screens are available in the iPhone app.
+
+Reflections that hide the card's details still limit automatic identification. Manual lookup lets you add a card without taking another photo.
+
 ### Avoiding duplicate scans
 
 After identifying a card, MTGLogger compares the live view with the previous card. It will not log another copy until it sees that the physical card changed or left the view. Two identical cards can still be scanned back-to-back as separate physical copies.

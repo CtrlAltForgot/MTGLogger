@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { CameraAlt, CropFree, ExpandMore, PhotoCamera, RestartAlt, Rotate90DegreesCw, VideocamOff } from '@mui/icons-material'
+import { CameraAlt, CropFree, ExpandMore, PhotoCamera, RestartAlt, Rotate90DegreesCw, Search, VideocamOff } from '@mui/icons-material'
 import {
   Accordion, AccordionDetails, AccordionSummary, Alert, Box, Button, Card, CardContent, Chip, FormControlLabel, Grid,
   IconButton, LinearProgress, MenuItem, Select, Slider, Snackbar, Stack, Switch, TextField, Tooltip, Typography,
@@ -7,6 +7,7 @@ import {
 import { request, submitScan } from '../api'
 import FoilArtwork from '../components/FoilArtwork'
 import { CardName } from '../components/CardDetails'
+import ManualAddDialog from '../components/ManualAddDialog'
 import { cardsPerMinute, initialSessionStats, recordSuccessfulAddition, reviewPercentage } from '../scanner/sessionStats'
 import { defaultTuning, useAutoScanner, type ScanArea, type ScannerTuning } from '../scanner/useAutoScanner'
 import type { Deck, Defaults, Inventory, ScanResult } from '../types'
@@ -32,6 +33,7 @@ export default function Scanner(){
   const [draftArea,setDraftArea]=useState<ScanArea|null>(null)
   const [cameraRatio,setCameraRatio]=useState(16/9)
   const [photoBusy,setPhotoBusy]=useState(false)
+  const [manualOpen,setManualOpen]=useState(false)
 
   const capture=useCallback(async(blob:Blob)=>{
     const started=performance.now()
@@ -104,6 +106,7 @@ export default function Scanner(){
             setPhotoBusy(true);void capture(file).catch(error=>scan.setError(error instanceof Error?error.message:'Photo scan failed')).finally(()=>setPhotoBusy(false))
           }}/>
         </Button>
+        <Button startIcon={<Search/>} onClick={()=>{scan.stop();setManualOpen(true)}}>Find a card instead</Button>
       </Stack>
       <Typography variant="body2" color="text.secondary" mt={1}>{scannerInstruction}</Typography>
       {scan.cameras.length>1&&<Select size="small" inputProps={{'aria-label':'Camera'}} value={scan.selectedCamera} onChange={event=>void scan.switchCamera(event.target.value)} sx={{mt:1.5,maxWidth:'100%',minWidth:240}}>{scan.cameras.map((camera,index)=><MenuItem value={camera.deviceId} key={camera.deviceId}>{camera.label||`Camera ${index+1}`}</MenuItem>)}</Select>}
@@ -170,6 +173,7 @@ export default function Scanner(){
         </Grid>
       </AccordionDetails></Accordion>
     </Grid>
+    <ManualAddDialog open={manualOpen} onClose={()=>setManualOpen(false)} onAdded={item=>{if(item)setSuccess(item)}}/>
     <Snackbar key={success?`${success.id}-${success.quantity}`:'empty'} open={!!success} autoHideDuration={1800} onClose={()=>setSuccess(null)} anchorOrigin={{vertical:'bottom',horizontal:'center'}}>
       <Card elevation={12} sx={{display:'flex',alignItems:'center',minWidth:{xs:320,sm:460},border:'2px solid',borderColor:'success.main',overflow:'hidden'}}>
         {success?.image_url&&<FoilArtwork src={success.image_url} alt={success.card_name} foil={success.foil} sx={{width:82,height:114}} imageSx={{objectFit:'cover',objectPosition:'top'}}/>}
