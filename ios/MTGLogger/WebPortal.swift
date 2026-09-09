@@ -62,7 +62,7 @@ struct WebSurface: UIViewRepresentable {
         if context.coordinator.key != key {
             context.coordinator.key = key
             var url = URLComponents(url: server, resolvingAgainstBaseURL: false)!
-            url.queryItems = [URLQueryItem(name: "page", value: page)]
+            url.queryItems = [URLQueryItem(name: "page", value: page), URLQueryItem(name: "native", value: "1")]
             web.load(URLRequest(url: url.url!))
         }
     }
