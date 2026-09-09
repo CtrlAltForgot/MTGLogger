@@ -1,5 +1,8 @@
 # MTGLogger Production Handoff
 
+> Historical Play handoff below. For the recognition/iPhone release verification,
+> see [the 2026-09-09 release note](docs/RELEASE_2026-09-09.md).
+
 Last updated: 2026-08-09
 
 ## Stop point
@@ -125,4 +128,3 @@ For backend changes, rebuild and restart the API service from the Compose direct
 - Deploy only committed revisions.
 - Never add an SSH password or private key contents to this repository.
 - The SSH key does not normally expire; if access fails, first verify file permissions, server authorization, and host reachability.
-
