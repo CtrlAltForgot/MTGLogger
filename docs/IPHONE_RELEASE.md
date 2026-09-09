@@ -21,3 +21,10 @@ The release workflow requires simulator tests and an ARM64 build before packagin
 Those checks cannot establish physical camera quality. Autofocus, lens switching,
 and the preview detail heuristic still need verification on the user's phone;
 the detail score does not guarantee readable text or correct identification.
+
+Verified release package:
+
+- Source commit: `4002ed52d8c2f6c1a71a2f059e02bedf76f307dd`.
+- [Ten simulator tests and the ARM64 build passed](https://github.com/CtrlAltForgot/MTGLogger/actions/runs/34415928374).
+- IPA: version 1.0.1, build 2, 2,032,187 bytes; archive and bundle metadata checked.
+- SHA-256: `5099420d9ca57552bf10d06a01cdda7adee2aae8b39c6759189eb66b7d1d37a2`.
