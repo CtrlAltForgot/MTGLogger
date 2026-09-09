@@ -42,6 +42,16 @@ class ReviewStatus(str, enum.Enum):
     ignored = "ignored"
 
 
+class ScanReceipt(Base):
+    """A client capture's result, committed with its inventory/review mutation."""
+
+    __tablename__ = "scan_receipts"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    payload_hash: Mapped[str] = mapped_column(String(64))
+    response_json: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
 class InventoryItem(Base):
     __tablename__ = "inventory_items"
     __table_args__ = (

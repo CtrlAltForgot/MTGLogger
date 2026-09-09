@@ -11,6 +11,7 @@ MTGLogger is a fast, camera-powered catalog for **Magic: The Gathering** cards. 
 ## What you get
 
 - Automatic webcam capture when a card is present and steady
+- An iPhone companion with native camera scanning, saved upload retries, and the same collection
 - Exact-printing recognition using card text, artwork, frame, set, and collector-number evidence
 - Protection against counting the same physical card twice
 - Collection browsing, search, sorting, editing, and deletion
@@ -113,6 +114,16 @@ Scryfall prices refresh in the background, normally once per hour. Price request
 ### Installing it like a desktop app
 
 When MTGLogger is served from `localhost` or a trusted HTTPS address, Chrome and Edge can install it from the browser's install menu. The installed window still uses the same server, collection, and local camera—there is no second database to synchronize.
+
+### Scanning directly from iPhone
+
+Open **Get the iPhone app** in the website, or download the IPA from the
+[iPhone release](https://github.com/CtrlAltForgot/MTGLogger/releases/tag/ios-v1.0.0).
+Install it with SideStore and connect to your MTGLogger server in Settings.
+Requires iOS 17+. The native camera works directly over your home Wi-Fi, including
+with a local HTTP server. Collection, Review, and Library open the full website
+inside the app. Interrupted uploads stay saved on the phone and retry without
+adding the same capture twice. See [installation and device checks](docs/IPHONE.md).
 
 ## Run it on Unraid
 
@@ -252,7 +263,7 @@ Useful references:
 
 MTGLogger prioritizes scanning speed, exact-printing reliability, and a pleasant collection workflow over feature count. Pokémon, Yu-Gi-Oh!, Lorcana, sports cards, marketplace synchronization, automated condition grading, and automatic deck building are intentionally outside the current MVP.
 
-See the **[project roadmap](docs/ROADMAP.md)** for the deliberately separated future mobile companion work.
+See the **[project roadmap](docs/ROADMAP.md)** for recognition validation and mobile companion follow-up work.
 
 ## Scryfall
 

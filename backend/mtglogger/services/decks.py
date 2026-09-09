@@ -5,7 +5,8 @@ from ..models import Deck, DeckEntry, InventoryItem
 
 
 def assign_to_deck(
-    db: Session, deck_id: str, inventory: InventoryItem, quantity: int = 1
+    db: Session, deck_id: str, inventory: InventoryItem, quantity: int = 1,
+    *, commit: bool = True,
 ) -> DeckEntry:
     deck = db.get(Deck, deck_id)
     if not deck:
@@ -27,6 +28,6 @@ def assign_to_deck(
     else:
         entry = DeckEntry(deck_id=deck_id, inventory_id=inventory.id, quantity=quantity)
         db.add(entry)
-    db.commit()
+    db.commit() if commit else db.flush()
     db.refresh(entry)
     return entry

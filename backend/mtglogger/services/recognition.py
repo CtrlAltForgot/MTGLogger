@@ -188,6 +188,9 @@ class CardRecognizer:
 
     @staticmethod
     def rectify(image: np.ndarray) -> np.ndarray:
+        height, width = image.shape[:2]
+        portrait_crop = 0.66 <= width / max(1, height) <= 0.78
+        image_area = height * width
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         edges = cv2.Canny(cv2.GaussianBlur(gray, (5, 5), 0), 50, 140)
         contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
@@ -246,7 +249,18 @@ class CardRecognizer:
             # Rules boxes and basic-land mana panels can look card-shaped. The
             # physical card/sleeve encloses them and is the largest structured
             # silhouette, so never accept the first internal rectangle found.
-            return max(candidates, key=lambda item: item[0])[1]
+            area, warped = max(candidates, key=lambda item: item[0])
+            # The browser already submits a close portrait crop. On dark or
+            # borderless cards, the only closed contour can be the rules box.
+            # Enlarging that internal box discards the actual title/footer and
+            # turns keywords such as "Flash" into false card identities.
+            if not portrait_crop or area >= image_area * 0.72:
+                return warped
+        if portrait_crop:
+            # Preserve ALL available title and footer pixels. The widescreen
+            # webcam fallback below used to remove 48% of a portrait capture's
+            # width (Hog-Monkey -> -Monkey), even when the image was readable.
+            return cv2.resize(image, (600, 840), interpolation=cv2.INTER_AREA)
         # If no plausible card boundary exists, retain the old centered fallback
         # for very low-contrast sleeves.
         height, width = image.shape[:2]
@@ -662,7 +676,7 @@ class CardRecognizer:
             if set_code:
                 break
             match = re.match(
-                rf"^\s*([A-Z2][A-Z0-9]{{1,5}}?)[\s·•.+\-:]+(?:{languages})(?=\s|$|[A-Z])",
+                rf"^\s*([A-Z2][A-Z0-9]{{1,5}}?)[\s·•.*+\-:]+(?:{languages})(?=\s|$|[A-Z])",
                 line,
             )
             if match:
@@ -810,6 +824,12 @@ class CardRecognizer:
         # A bare digit is weak evidence and is only trustworthy in the footer.
         # Looking across the whole card lets mana costs such as "3B" become a
         # bogus collector number when OCR separates the symbols.
+        if not number and set_code:
+            # Modern zero-padded collectors are more specific than trailing
+            # OCR debris (00046 above TLA EN must not become a later bare 22).
+            padded = [line for line in lines[-8:] if re.fullmatch(r"0\d{2,4}[a-z]?", line)]
+            if padded:
+                number = padded[0]
         for line in reversed(lines[-5:]):
             if number:
                 break
@@ -1073,7 +1093,7 @@ class CardRecognizer:
         observed_codes = {
             match[-3:].casefold()
             for match in re.findall(
-                r"[A-Za-z0-9]{3,5}(?=[\-·•.]?EN(?:[A-Z]|\b))",
+                r"[A-Za-z0-9]{3,5}(?=[\s\-·•.*]*EN(?:[A-Z]|\b))",
                 observed_text,
                 re.I,
             )
@@ -1126,7 +1146,7 @@ class CardRecognizer:
             if str(card.get("set") or "").casefold() != "plst"
             and re.search(
                 rf"{re.escape(str(card.get('set') or '').upper())}"
-                rf"[\s·•.+\-:]+(?:{languages})(?=\s|$|[A-Z])",
+                rf"[\s·•.*+\-:]*(?:{languages})(?=\s|$|[A-Z])",
                 compact,
             )
         }
@@ -2057,6 +2077,46 @@ class CardRecognizer:
             logger.exception("Could not seed physical pack-insert reference")
 
     @classmethod
+    def recover_joined_title(cls, text: str, title: str | None) -> str | None:
+        """Join adjacent OCR title fragments only when the local catalog agrees.
+
+        A single exact word can itself be a different card (Waterbending,
+        Earth). Do this before locking candidate lookup to that short identity.
+        No fuzzy matching or rules-based invention is involved.
+        """
+        if not title:
+            return None
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        start = next((i for i, line in enumerate(lines[:5]) if line == title), None)
+        if start is None:
+            return None
+        joined = []
+        for length in (3, 2):
+            fragments = lines[start:start + length]
+            if len(fragments) != length or any(
+                re.search(r"\d", part) or sum(c.isalpha() for c in part) < 3
+                for part in fragments
+            ):
+                continue
+            compact = "".join(fragments).replace(" ", "").casefold()
+            if len(compact) <= 60:
+                joined.append(compact)
+        if not joined:
+            return None
+        try:
+            with SessionLocal() as db:
+                names = list(db.scalars(
+                    select(CardReference.name).where(
+                        func.lower(func.replace(CardReference.name, " ", "")).in_(joined)
+                    ).distinct()
+                ))
+        except SQLAlchemyError:
+            return None
+        # Two different full catalog names are still ambiguous. Preserve the
+        # original observation for normal visual/printing verification.
+        return names[0] if len(names) == 1 else None
+
+    @classmethod
     def _lookup_local_cards(
         cls, title: str, number: str | None, preferred_set: str | None
     ) -> list[dict]:
@@ -2415,6 +2475,9 @@ class CardRecognizer:
                     self.extract_identification_text, analysis_image
                 )
                 title, number, printed_set_code, copyright_year = self.hints(text)
+                joined_title = await asyncio.to_thread(self.recover_joined_title, text, title)
+                if joined_title:
+                    title = joined_title
                 promo_type = self.promo_type_hint(text)
                 cards = await self._lookup_cards(
                     title,
@@ -2900,18 +2963,27 @@ class CardRecognizer:
                     )
                 )
                 if not current_set_is_plausible:
+                    # An artist name can contain EN (DAREN -> DAR + EN), and
+                    # OCR often renders the foil star separator as '*'. Reuse
+                    # all observed footer lines against the complete identity
+                    # family before attempting a fuzzy set-code repair.
+                    literal_family_set = self.exact_family_set_code_from_footer_text(
+                        text, cards
+                    )
                     # Broad recovery OCR can replace a useful damaged set
                     # suffix (``FOORI``) with adjacent collector digits
                     # (``267722``), or a later merge can discard it entirely.
                     # Reparse the already-collected OCR text so family repair
                     # sees every retained camera token without another OCR pass.
                     combined_observed_set_code = self.hints(text)[2]
-                    repaired_set_code = None
+                    repaired_set_code = literal_family_set
                     for observed_set_code in (
                         printed_set_code,
                         raw_observed_set_code,
                         combined_observed_set_code,
                     ):
+                        if repaired_set_code:
+                            break
                         repaired_set_code = self.repair_family_set_code(
                             observed_set_code, number, cards
                         )
@@ -3998,6 +4070,10 @@ class CardRecognizer:
                     safe_candidate_ids.add(card["id"])
                 else:
                     confidence = min(confidence, 98.4)
+                    # Earlier generic title/number checks are insufficient for
+                    # basic lands. Clear their safety flag as well as the
+                    # score, or final score reconciliation silently re-adds it.
+                    safe_candidate_ids.discard(card["id"])
             elif exact_printed_identity:
                 # The footer pair identifies one physical printing globally.
                 # This branch was already declared safe, but a partial title
@@ -4770,7 +4846,7 @@ class CardRecognizer:
         observed_title: str | None,
         candidate_name: str,
     ) -> bool:
-        """Trust a long exact title fragment when the card has one printing."""
+        """Trust a long title fragment only when punctuation does not prove clipping."""
         observed = cls.normalized_name(observed_title or "")
         candidate = cls.normalized_name(candidate_name)
         return bool(
@@ -4779,6 +4855,9 @@ class CardRecognizer:
             and family_complete
             and len(observed) >= 6
             and observed in candidate
+            # Punctuation removal makes "-Monkey" equal "Monkey-", but the
+            # leading hyphen is visible evidence of a clipped compound name.
+            and not (observed_title or "").strip().startswith(("-", "—", "–"))
         )
 
     @classmethod

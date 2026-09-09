@@ -2,6 +2,8 @@ import json
 import logging
 import re
 from datetime import UTC, datetime
+from typing import Annotated
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
@@ -14,6 +16,7 @@ from ..services.decks import assign_to_deck
 from ..services.evaluation import preserve_auto_added_scan, preserve_review_scan
 from ..services.inventory import upsert_inventory
 from ..services.recognition import CardRecognizer, save_scan
+from ..services.scan_receipts import cached_result, finish_result, payload_hash, reserve_result
 
 router = APIRouter(prefix="/scanner", tags=["scanner"])
 logger = logging.getLogger(__name__)
@@ -34,7 +37,7 @@ async def read_bounded_upload(upload: UploadFile) -> bytes:
 
 @router.get("/capabilities")
 def capabilities():
-    return {"ocr": recognizer.ocr_available, "artwork_matching": True}
+    return {"ocr": recognizer.ocr_available, "artwork_matching": True, "capture_id": True}
 
 
 @router.post("/upload-check")
@@ -46,7 +49,8 @@ async def upload_check(image: UploadFile = File(...)):
 
 @router.post("/recognize", response_model=ScanResult)
 async def recognize_card(
-    image: UploadFile = File(...), defaults_json: str = Form("{}"), db: Session = Depends(get_db)
+    image: UploadFile = File(...), defaults_json: str = Form("{}"),
+    capture_id: Annotated[UUID | None, Form()] = None, db: Session = Depends(get_db),
 ):
     if image.content_type not in {"image/jpeg", "image/png", "image/webp"}:
         raise HTTPException(415, "Upload a JPEG, PNG, or WebP image")
@@ -54,13 +58,24 @@ async def recognize_card(
         defaults = ScanDefaults.model_validate_json(defaults_json)
     except ValueError as exc:
         raise HTTPException(422, f"Invalid scan defaults: {exc}") from exc
+    raw = await read_bounded_upload(image)
+    fingerprint = payload_hash(raw, defaults)
+    if capture_id:
+        cached = cached_result(db, str(capture_id), fingerprint)
+        if cached is not None:
+            return cached
     if defaults.deck_id and not db.get(Deck, defaults.deck_id):
         raise HTTPException(422, "Selected deck no longer exists")
-    raw = await read_bounded_upload(image)
     try:
         result = await recognizer.recognize(raw, defaults.box_set_code, defaults.language)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+
+    receipt = None
+    if capture_id:
+        receipt, cached = reserve_result(db, str(capture_id), fingerprint)
+        if cached is not None:
+            return cached
 
     # Wood/cloth boundaries can themselves resemble a card contour, and the
     # empty table occasionally produces one or two garbage OCR glyphs. A frame
@@ -72,13 +87,13 @@ async def recognize_card(
         not result.candidates
         and sum(map(len, meaningful_ocr)) < 4
     ):
-        return ScanResult(
+        return finish_result(db, receipt, ScanResult(
             disposition="empty",
             confidence=0,
             candidates=[],
             message="No card detected",
             processing_ms=result.processing_ms,
-        )
+        ))
 
     # Automatic inventory writes require near-certain agreement. Scores below
     # this remain one-key confirmations, even when automatic mode is enabled.
@@ -113,9 +128,10 @@ async def recognize_card(
                 type_line=top.type_line,
                 status=defaults.status,
             ),
+            commit=False,
         )
         if defaults.deck_id:
-            assign_to_deck(db, defaults.deck_id, item)
+            assign_to_deck(db, defaults.deck_id, item, commit=False)
         # A wrong automatic printing used to leave no camera evidence at all,
         # making the rare false add impossible to reproduce or correct safely.
         # Archive the prediction separately from confirmed training examples.
@@ -137,14 +153,14 @@ async def recognize_card(
             )
         except (OSError, ValueError, json.JSONDecodeError):
             logger.exception("Could not archive automatic scan %s", timestamp)
-        return ScanResult(
+        return finish_result(db, receipt, ScanResult(
             disposition="added",
             confidence=result.confidence,
             inventory=InventoryRead.model_validate(item),
             candidates=result.candidates,
             message=f"Added {top.name}{' · foil' if foil else ''}",
             processing_ms=result.processing_ms,
-        )
+        ))
 
     timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S-%f")
     path = get_settings().image_dir / f"{timestamp}.jpg"
@@ -163,7 +179,7 @@ async def recognize_card(
         ),
     )
     db.add(review)
-    db.commit()
+    db.flush()
     db.refresh(review)
     try:
         preserve_review_scan(path, review.id)
@@ -174,7 +190,7 @@ async def recognize_card(
         if result.confidence > 95
         else ("suggestions" if result.confidence >= 70 else "queued")
     )
-    return ScanResult(
+    return finish_result(db, receipt, ScanResult(
         disposition=disposition,
         confidence=result.confidence,
         candidates=result.candidates,
@@ -185,4 +201,4 @@ async def recognize_card(
             else ("Choose a match" if disposition == "suggestions" else "Saved to review queue")
         ),
         processing_ms=result.processing_ms,
-    )
+    ))

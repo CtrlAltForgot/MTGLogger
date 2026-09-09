@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
-import { CameraAlt, CropFree, RestartAlt, Rotate90DegreesCw, VideocamOff } from '@mui/icons-material'
+import { CameraAlt, CropFree, ExpandMore, PhotoCamera, RestartAlt, Rotate90DegreesCw, VideocamOff } from '@mui/icons-material'
 import {
-  Alert, Box, Button, Card, CardContent, Chip, FormControlLabel, Grid,
+  Accordion, AccordionDetails, AccordionSummary, Alert, Box, Button, Card, CardContent, Chip, FormControlLabel, Grid,
   IconButton, LinearProgress, MenuItem, Select, Slider, Snackbar, Stack, Switch, TextField, Tooltip, Typography,
 } from '@mui/material'
 import { request, submitScan } from '../api'
@@ -30,6 +30,8 @@ export default function Scanner(){
   const [settingScanArea,setSettingScanArea]=useState(false)
   const [cropStart,setCropStart]=useState<{x:number;y:number}|null>(null)
   const [draftArea,setDraftArea]=useState<ScanArea|null>(null)
+  const [cameraRatio,setCameraRatio]=useState(16/9)
+  const [photoBusy,setPhotoBusy]=useState(false)
 
   const capture=useCallback(async(blob:Blob)=>{
     const started=performance.now()
@@ -73,10 +75,12 @@ export default function Scanner(){
   const moveScanArea=(event:React.PointerEvent<HTMLElement>)=>{if(!settingScanArea||!cropStart)return;const point=areaPoint(event);setDraftArea({left:Math.min(cropStart.x,point.x),top:Math.min(cropStart.y,point.y),width:Math.abs(point.x-cropStart.x),height:Math.abs(point.y-cropStart.y)})}
   const finishScanArea=()=>{if(draftArea&&draftArea.width>=5&&draftArea.height>=5){scan.setScanArea(draftArea);scan.calibrate()}setCropStart(null);setDraftArea(null);setSettingScanArea(false)}
 
-  return <Grid container spacing={3}>
+  const displayRatio=scan.rotation%180?1/cameraRatio:cameraRatio
+  const portrait=displayRatio<1
+  return <Grid container spacing={{xs:2,md:2.5}}>
     <Grid size={{xs:12,lg:8}}>
-      <Box onPointerDown={beginScanArea} onPointerMove={moveScanArea} onPointerUp={finishScanArea} sx={{overflow:'hidden',position:'relative',bgcolor:'#050807',borderRadius:3,aspectRatio:scan.rotation%180?'9/16':'16/9',width:scan.rotation%180?{xs:'100%',sm:'min(100%, 520px)'}:'100%',mx:scan.rotation%180?'auto':0,minHeight:scan.rotation%180?undefined:320,cursor:settingScanArea?'crosshair':'default',touchAction:settingScanArea?'none':'auto'}}>
-        <Box component="video" ref={scan.video} muted playsInline disablePictureInPicture controlsList="nodownload noplaybackrate noremoteplayback" sx={scan.rotation%180?{position:'absolute',width:'177.7778%',height:'56.25%',left:'-38.8889%',top:'21.875%',display:'block',objectFit:'fill',transform:`rotate(${scan.rotation}deg)`,transformOrigin:'center'}:{position:'absolute',inset:0,width:'100%',height:'100%',display:'block',objectFit:'fill',transform:`rotate(${scan.rotation}deg)`,transformOrigin:'center'}}/>
+      <Box onPointerDown={beginScanArea} onPointerMove={moveScanArea} onPointerUp={finishScanArea} sx={{overflow:'hidden',position:'relative',bgcolor:'#050807',borderRadius:3,aspectRatio:displayRatio,width:portrait?{xs:'min(100%, 380px)',md:'min(100%, 470px)'}:'100%',mx:portrait?'auto':0,cursor:settingScanArea?'crosshair':'default',touchAction:settingScanArea?'none':'auto'}}>
+        <Box component="video" ref={scan.video} onLoadedMetadata={event=>{const video=event.currentTarget;if(video.videoHeight)setCameraRatio(video.videoWidth/video.videoHeight)}} muted playsInline disablePictureInPicture controlsList="nodownload noplaybackrate noremoteplayback" sx={scan.rotation%180?{position:'absolute',width:`${cameraRatio*100}%`,height:`${100/cameraRatio}%`,left:`${(1-cameraRatio)*50}%`,top:`${(1-1/cameraRatio)*50}%`,display:'block',objectFit:'contain',transform:`rotate(${scan.rotation}deg)`,transformOrigin:'center'}:{position:'absolute',inset:0,width:'100%',height:'100%',display:'block',objectFit:'contain',transform:`rotate(${scan.rotation}deg)`,transformOrigin:'center'}}/>
         <canvas ref={scan.canvas} hidden/>
         {(settingScanArea||(scan.scanArea.left>0||scan.scanArea.top>0||scan.scanArea.width<100||scan.scanArea.height<100))&&<><Box sx={{position:'absolute',left:0,right:0,top:0,height:`${visibleScanArea.top}%`,bgcolor:'rgba(0,0,0,.56)',pointerEvents:'none'}}/><Box sx={{position:'absolute',left:0,right:0,top:`${visibleScanArea.top+visibleScanArea.height}%`,bottom:0,bgcolor:'rgba(0,0,0,.56)',pointerEvents:'none'}}/><Box sx={{position:'absolute',left:0,top:`${visibleScanArea.top}%`,width:`${visibleScanArea.left}%`,height:`${visibleScanArea.height}%`,bgcolor:'rgba(0,0,0,.56)',pointerEvents:'none'}}/><Box sx={{position:'absolute',left:`${visibleScanArea.left+visibleScanArea.width}%`,right:0,top:`${visibleScanArea.top}%`,height:`${visibleScanArea.height}%`,bgcolor:'rgba(0,0,0,.56)',pointerEvents:'none'}}/><Box sx={{position:'absolute',left:`${visibleScanArea.left}%`,top:`${visibleScanArea.top}%`,width:`${visibleScanArea.width}%`,height:`${visibleScanArea.height}%`,outline:'2px dashed rgba(255,255,255,.9)',pointerEvents:'none'}}>{settingScanArea&&<Typography sx={{position:'absolute',top:8,left:10,color:'common.white',textShadow:'0 1px 4px #000',fontWeight:800}}>Drag around the area to scan</Typography>}</Box></>}
         {scan.metrics.bounds&&scan.state!=='calibrating'&&<Box sx={{position:'absolute',left:`${scan.metrics.bounds.left}%`,top:`${scan.metrics.bounds.top}%`,width:`${scan.metrics.bounds.width}%`,height:`${scan.metrics.bounds.height}%`,border:'3px solid',borderColor:'success.main',borderRadius:2,boxShadow:'0 0 0 1px rgba(0,0,0,.4), 0 0 24px rgba(100,217,151,.28)',transition:'all 120ms linear',pointerEvents:'none'}}/>}
@@ -89,13 +93,20 @@ export default function Scanner(){
         {scan.state!=='idle'&&<Tooltip title="Turn camera off"><IconButton aria-label="Turn camera off" onClick={scan.stop} sx={{position:'absolute',right:16,top:16,color:'common.white',bgcolor:'rgba(10,7,8,.55)',backdropFilter:'blur(12px)','&:hover':{bgcolor:'rgba(10,7,8,.78)'}}}><VideocamOff/></IconButton></Tooltip>}
         {scan.state==='processing'&&<LinearProgress sx={{position:'absolute',bottom:0,left:0,right:0}}/>}
       </Box>
-      <Stack direction="row" spacing={2} mt={2} alignItems="center">
+      <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" mt={1.25} alignItems="center">
         {scan.state==='idle'
           ?<Button variant="contained" startIcon={<CameraAlt/>} onClick={()=>void scan.start()}>Turn camera on</Button>
           :<><Button startIcon={<RestartAlt/>} onClick={scan.calibrate}>Recalibrate empty table</Button><Button startIcon={<Rotate90DegreesCw/>} onClick={scan.rotateCamera}>Rotate camera</Button><Button startIcon={<CropFree/>} color={settingScanArea?'primary':'inherit'} onClick={()=>{setCropStart(null);setDraftArea(scan.scanArea);setSettingScanArea(current=>!current)}}>Set scan area</Button>{(scan.scanArea.left>0||scan.scanArea.top>0||scan.scanArea.width<100||scan.scanArea.height<100)&&<Button onClick={()=>{scan.setScanArea({left:0,top:0,width:100,height:100});scan.calibrate()}}>Use full feed</Button>}</>}
-        <Typography color="text.secondary">{scannerInstruction}</Typography>
+        <Button component="label" startIcon={<PhotoCamera/>} disabled={photoBusy}>
+          {photoBusy?'Identifying photo…':'Scan photo'}
+          <input type="file" hidden accept="image/jpeg,image/png,image/webp" capture="environment" onChange={event=>{
+            const file=event.target.files?.[0];event.target.value='';if(!file)return
+            setPhotoBusy(true);void capture(file).catch(error=>scan.setError(error instanceof Error?error.message:'Photo scan failed')).finally(()=>setPhotoBusy(false))
+          }}/>
+        </Button>
       </Stack>
-      {scan.cameras.length>1&&<Select size="small" value={scan.selectedCamera} onChange={event=>void scan.switchCamera(event.target.value)} sx={{mt:1.5,minWidth:280}}>{scan.cameras.map((camera,index)=><MenuItem value={camera.deviceId} key={camera.deviceId}>{camera.label||`Camera ${index+1}`}</MenuItem>)}</Select>}
+      <Typography variant="body2" color="text.secondary" mt={1}>{scannerInstruction}</Typography>
+      {scan.cameras.length>1&&<Select size="small" inputProps={{'aria-label':'Camera'}} value={scan.selectedCamera} onChange={event=>void scan.switchCamera(event.target.value)} sx={{mt:1.5,maxWidth:'100%',minWidth:240}}>{scan.cameras.map((camera,index)=><MenuItem value={camera.deviceId} key={camera.deviceId}>{camera.label||`Camera ${index+1}`}</MenuItem>)}</Select>}
       <Grid container spacing={1.5} mt={.75}>
         <Grid size={{xs:12,sm:6}}><ScannerGauge label="Scanning pace" value={sessionCardsPerMinute} max={30} display={sessionCardsPerMinute===null?'Measuring':sessionCardsPerMinute.toFixed(1)} unit="cards/min" tone="primary" helper={stats.paceIntervals?`${stats.paceIntervals} recent interval${stats.paceIntervals===1?'':'s'} measured`:'Scan two cards within 30 seconds'}/></Grid>
         <Grid size={{xs:12,sm:6}}><ScannerGauge label="Review rate" value={sessionReviewPercentage} max={100} display={`${sessionReviewPercentage.toFixed(1)}%`} unit={`${stats.review} of ${stats.scans}`} tone={sessionReviewPercentage>25?'warning':'success'} helper={stats.scans?'Lower is better':'Waiting for the first scan'}/></Grid>
@@ -114,10 +125,10 @@ export default function Scanner(){
     </Grid>
 
     <Grid size={{xs:12,lg:4}}>
-      <Card sx={{height:'100%',minHeight:420,overflow:'hidden'}}>
+      <Card sx={{height:{lg:'100%'},minHeight:{lg:420},overflow:'hidden'}}>
         <CardContent sx={{height:'100%',display:'flex',flexDirection:'column'}}>
           <Typography variant="overline" color="text.secondary" letterSpacing=".1em">Last identified</Typography>
-          {lastIdentified?<LastIdentified inventory={lastIdentified.inventory} confidence={lastIdentified.confidence}/>:<Box sx={{flex:1,minHeight:340,display:'grid',placeItems:'center',textAlign:'center',px:3}}>
+          {lastIdentified?<LastIdentified inventory={lastIdentified.inventory} confidence={lastIdentified.confidence}/>:<Box sx={{flex:1,minHeight:{xs:90,lg:340},display:'grid',placeItems:'center',textAlign:'center',px:2}}>
             <Box><CameraAlt sx={{fontSize:48,color:'text.disabled',mb:1}}/><Typography variant="h6">Waiting for the first card</Typography><Typography color="text.secondary">The last successful match will stay here so you can verify its artwork while continuing to scan.</Typography></Box>
           </Box>}
         </CardContent>
@@ -125,8 +136,9 @@ export default function Scanner(){
     </Grid>
 
     <Grid size={12}>
-      <Card><CardContent>
-        <Typography variant="h6" mb={2}>Scanner settings</Typography>
+      <Accordion disableGutters sx={{border:'1px solid',borderColor:'divider',borderRadius:2,'&:before':{display:'none'}}}>
+        <AccordionSummary expandIcon={<ExpandMore/>}><Box><Typography variant="h6">Scanner settings</Typography><Typography variant="caption" color="text.secondary">Batch defaults · {defaults.foil?'Foil':'Nonfoil'} · {defaults.language.toUpperCase()} · {defaults.storage_location}{defaults.box_set_code?` · ${defaults.box_set_code.toUpperCase()} box`:''}</Typography></Box></AccordionSummary>
+        <AccordionDetails>
         <Grid container spacing={4}>
           <Grid size={{xs:12,md:7}}><Typography variant="subtitle1" mb={1.5}>Batch defaults</Typography><Grid container spacing={2}>
         <Grid size={{xs:12,sm:6,md:4}}><Select fullWidth value={defaults.condition} onChange={event=>setDefaults({...defaults,condition:event.target.value})}>
@@ -156,7 +168,7 @@ export default function Scanner(){
             <Slider min={3} max={12} value={tuning.stableFrames} onChange={(_,value)=>setTuning({...tuning,stableFrames:value as number})}/>
           </Grid>
         </Grid>
-      </CardContent></Card>
+      </AccordionDetails></Accordion>
     </Grid>
     <Snackbar key={success?`${success.id}-${success.quantity}`:'empty'} open={!!success} autoHideDuration={1800} onClose={()=>setSuccess(null)} anchorOrigin={{vertical:'bottom',horizontal:'center'}}>
       <Card elevation={12} sx={{display:'flex',alignItems:'center',minWidth:{xs:320,sm:460},border:'2px solid',borderColor:'success.main',overflow:'hidden'}}>
@@ -172,8 +184,8 @@ export default function Scanner(){
 
 function LastIdentified({inventory,confidence}:{inventory:Inventory;confidence:number}){
   const price=Number(inventory.market_price||0)
-  return <Stack sx={{flex:1,minHeight:0}} spacing={1.5}>
-    <Box sx={{flex:1,minHeight:260,display:'grid',placeItems:'center',py:1.5}}>
+  return <Stack direction={{xs:'row',lg:'column'}} sx={{flex:1,minHeight:0}} spacing={1.5}>
+    <Box sx={{flex:{xs:'0 0 92px',lg:1},minHeight:{xs:128,lg:260},display:'grid',placeItems:'center',py:{xs:.5,lg:1.5}}}>
       {inventory.image_url
         ?<FoilArtwork
           src={inventory.image_url}
@@ -184,7 +196,7 @@ function LastIdentified({inventory,confidence}:{inventory:Inventory;confidence:n
         />
         :<Box sx={{width:'70%',aspectRatio:'488 / 680',border:'1px dashed',borderColor:'divider',borderRadius:3,display:'grid',placeItems:'center'}}><Typography color="text.secondary">Artwork unavailable</Typography></Box>}
     </Box>
-    <Box sx={{borderTop:'1px solid',borderColor:'divider',pt:1.75}}>
+    <Box sx={{minWidth:0,borderTop:{lg:'1px solid'},borderColor:'divider',pt:{xs:.5,lg:1.75}}}>
       <Stack direction="row" spacing={1} mb={1} alignItems="center" flexWrap="wrap" useFlexGap>
         <Chip size="small" color={confidence>=98.5?'success':'warning'} label={`${confidence.toFixed(1)}% confidence`}/>
         {inventory.foil&&<Chip size="small" color="warning" label="Foil"/>}
@@ -199,7 +211,7 @@ function LastIdentified({inventory,confidence}:{inventory:Inventory;confidence:n
 
 function ScannerGauge({label,value,max,display,unit,tone,helper}:{label:string,value:number|null,max:number,display:string,unit:string,tone:'primary'|'success'|'warning',helper:string}){
   const progress=Math.max(0,Math.min(1,(value||0)/max))
-  return <Box sx={{position:'relative',height:128,borderTop:'1px solid',borderBottom:'1px solid',borderColor:'divider',display:'flex',alignItems:'center',px:2,gap:2,overflow:'hidden'}}>
+  return <Box sx={{position:'relative',height:104,borderTop:'1px solid',borderBottom:'1px solid',borderColor:'divider',display:'flex',alignItems:'center',px:1,gap:1.5,overflow:'hidden'}}>
     <Box sx={{width:118,height:74,position:'relative',flexShrink:0}}>
       <Box component="svg" viewBox="0 0 120 72" aria-hidden sx={{width:120,height:72,overflow:'visible'}}>
         <Box component="path" d="M 12 62 A 48 48 0 0 1 108 62" fill="none" stroke="currentColor" sx={{color:'action.hover'}} strokeWidth="10" strokeLinecap="round"/>

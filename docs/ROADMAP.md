@@ -10,13 +10,18 @@ This roadmap separates current product work from future ideas so the active scan
 - Preserve strict duplicate protection while allowing immediate card-to-card swaps.
 - Finish the collection, deck, pricing, backup, and responsive UI workflows needed for daily use.
 
-## After the web app is dependable
+## iPhone companion
 
-### Mobile companion scanner
+The native iOS companion now has rear-camera still capture, steady-card detection,
+photo import, batch defaults, a durable upload outbox, and the full website in
+embedded collection/review/library tabs. Its SideStore distribution workflow
+builds an ARM64 IPA and source feed. See [iPhone details](IPHONE.md).
 
-Build a phone-first companion that connects to the same server-side collection and recognition database. It should make camera setup easier, use the phone's higher-quality camera, retain the same exact-printing safeguards, and avoid creating a separate collection that needs synchronization.
+Physical-phone installation, camera quality, backgrounding, and interrupted Wi-Fi
+acceptance remain to be verified on the user's device. Fresh phone scans should
+be kept separate from the historical camera cohort when measuring recognition.
 
-This is a long-term project item, not part of the active recognition milestone.
+## Optional future distribution
 
 ### Optional reference-data snapshot
 

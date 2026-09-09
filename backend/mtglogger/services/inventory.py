@@ -5,7 +5,9 @@ from ..models import InventoryItem, utc_now
 from ..schemas import InventoryCreate
 
 
-def upsert_inventory(db: Session, data: InventoryCreate) -> InventoryItem:
+def upsert_inventory(
+    db: Session, data: InventoryCreate, *, commit: bool = True
+) -> InventoryItem:
     match = db.scalar(
         select(InventoryItem).where(
             and_(
@@ -27,11 +29,11 @@ def upsert_inventory(db: Session, data: InventoryCreate) -> InventoryItem:
         match.updated_at = utc_now()
         if data.market_price is not None:
             match.market_price = data.market_price
-        db.commit()
+        db.commit() if commit else db.flush()
         db.refresh(match)
         return match
     item = InventoryItem(**data.model_dump())
     db.add(item)
-    db.commit()
+    db.commit() if commit else db.flush()
     db.refresh(item)
     return item

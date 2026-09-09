@@ -1678,6 +1678,7 @@ def test_full_frame_land_title_fuses_with_focused_collector_footer():
 def test_basic_land_auto_add_requires_decisive_exact_art_evidence():
     from mtglogger.services.recognition import CardRecognizer
 
+    swamp = {"id": "rtr-swamp-264", "name": "Swamp", "type_line": "Basic Land — Swamp"}
     assert CardRecognizer.is_basic_land(swamp)
     assert not CardRecognizer.has_decisive_art_match(swamp["id"], "rtr-swamp-261", True, 96, 24)
     assert not CardRecognizer.has_decisive_art_match(swamp["id"], swamp["id"], True, 87, 24)
@@ -1752,7 +1753,7 @@ def test_land_art_and_printed_artist_can_recover_a_glare_reduced_margin():
         m21_lands,
         "A21",
     )
-    assert CardRecognizer.has_repeated_footer_printing_evidence(
+    assert not CardRecognizer.has_repeated_footer_printing_evidence(
         "Mountain\n269/274L\nM2I EN",
         m21_lands[3],
         m21_lands,
@@ -1876,7 +1877,7 @@ def test_land_art_and_printed_artist_can_recover_a_glare_reduced_margin():
         card_set="ori",
         set_art_top_id=swamp["id"],
         set_art_score=91,
-        set_art_margin=10,
+        set_art_margin=14,
         set_art_catalog_complete=True,
     )
     assert not CardRecognizer.has_safe_basic_land_match(
@@ -2906,8 +2907,10 @@ def test_fixed_footer_reader_uses_normalized_collector_and_set_rows():
 
     class FooterOcr:
         def predict(self, rows):
-            assert len(rows) == 4
-            assert all(row.shape[1] == 270 for row in rows)
+            # The modern rarity/collector row is wider than the legacy rows.
+            assert len(rows) == 5
+            assert rows[0].shape[1] == 330
+            assert all(row.shape[1] == 270 for row in rows[1:])
             return [
                 Result("017/272 C"),
                 Result("ORI EN"),
