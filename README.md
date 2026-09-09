@@ -255,6 +255,7 @@ Without `DATABASE_URL`, the backend uses `backend/mtglogger.db`. Install `.[ocr]
 Useful references:
 
 - [Architecture and recognition flow](docs/ARCHITECTURE.md)
+- [Measured recognition improvements and limits](docs/RECOGNITION_VALIDATION.md)
 - [Unraid deployment, updates, and backup](docs/UNRAID.md)
 - [Project roadmap](docs/ROADMAP.md)
 - API documentation while running: [http://localhost:8000/docs](http://localhost:8000/docs)
