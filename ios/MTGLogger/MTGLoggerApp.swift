@@ -70,7 +70,7 @@ struct ConnectionView: View {
                 }
             }
             Section {
-                Text("MTGLogger 1.0 · Camera scans go to your own server. Library opens the full website, including decks, value, database, play, and exports.")
+                Text("MTGLogger \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "") · Camera scans go to your own server. Library opens the full website, including decks, value, database, play, and exports.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
         }
@@ -93,14 +93,32 @@ struct ScannerView: View {
         ScrollView {
             VStack(spacing: 14) {
                 ZStack(alignment: .bottom) {
-                    CameraPreview(session: camera.session).background(.black)
+                    CameraPreview(session: camera.session, onFocus: camera.focus).background(.black)
                     RoundedRectangle(cornerRadius: 14).strokeBorder(.white.opacity(0.65), style: StrokeStyle(lineWidth: 2, dash: [18, 10]))
                         .aspectRatio(63.0 / 88, contentMode: .fit).padding(22).padding(.bottom, 44)
+                        .allowsHitTesting(false)
                     Text(camera.message).font(.subheadline.weight(.semibold)).multilineTextAlignment(.center)
                         .padding(12).frame(maxWidth: .infinity).background(.ultraThinMaterial)
+                        .allowsHitTesting(false)
                 }
                 .frame(height: min(UIScreen.main.bounds.height * 0.47, 460)).clipShape(RoundedRectangle(cornerRadius: 20))
                 .accessibilityLabel("Rear camera card preview")
+                HStack(spacing: 12) {
+                    if camera.lenses.count > 1 {
+                        Picker("Camera lens", selection: Binding(get: { camera.lens }, set: camera.selectLens)) {
+                            ForEach(camera.lenses) { lens in Text(lens.rawValue).tag(lens) }
+                        }.pickerStyle(.menu).fixedSize()
+                    } else { Image(systemName: "plus.magnifyingglass").foregroundStyle(.secondary) }
+                    Slider(value: Binding(get: { camera.zoom }, set: camera.setZoom),
+                           in: 1...max(1.01, camera.maximumZoom), step: 0.1)
+                        .accessibilityLabel("Camera zoom")
+                        .disabled(!camera.running || camera.maximumZoom <= 1)
+                    Text(String(format: "%.1f×", camera.zoom)).font(.subheadline.monospacedDigit()).frame(width: 44)
+                    Button { camera.resetZoom() } label: { Image(systemName: "arrow.counterclockwise") }
+                        .accessibilityLabel("Use suggested camera zoom")
+                }
+                Text(camera.cameraHint).font(.caption).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 HStack {
                     PhotosPicker(selection: $photo, matching: .images) { Image(systemName: "photo").font(.title2).frame(width: 54, height: 54) }
                         .disabled(!model.canCapture).accessibilityLabel("Scan a saved card photo")
@@ -114,7 +132,7 @@ struct ScannerView: View {
                         Image(systemName: camera.torch ? "flashlight.on.fill" : "flashlight.off.fill").font(.title2).frame(width: 54, height: 54)
                     }.accessibilityLabel("Toggle camera light")
                 }
-                Toggle("Capture automatically when steady", isOn: $automatic)
+                Toggle("Capture automatically when clear and steady", isOn: $automatic)
                     .onChange(of: automatic) { _, value in camera.setAutomatic(value) }
                 HStack {
                     Label("\(model.added) added", systemImage: "checkmark.circle.fill").foregroundStyle(.green)

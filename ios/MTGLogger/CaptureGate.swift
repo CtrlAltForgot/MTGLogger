@@ -9,7 +9,7 @@ struct CaptureGate {
     private var emptySince: TimeInterval?
     private var anchor: CGRect?
 
-    mutating func observe(_ bounds: CGRect?, now: TimeInterval) -> Bool {
+    mutating func observe(_ bounds: CGRect?, now: TimeInterval, eligible: Bool = true) -> Bool {
         guard let bounds else {
             stableSince = nil
             anchor = nil
@@ -18,6 +18,13 @@ struct CaptureGate {
             return false
         }
         emptySince = nil
+        // A focus hunt, blurred frame, or busy uploader interrupts the entire
+        // steady interval. Time spent waiting must never arm the shutter.
+        guard eligible else {
+            stableSince = nil
+            anchor = nil
+            return false
+        }
         guard !latched else { return false }
         if let anchor,
            abs(anchor.midX - bounds.midX) < 0.018,

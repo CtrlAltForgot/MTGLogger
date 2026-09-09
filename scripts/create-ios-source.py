@@ -35,7 +35,7 @@ source = {
         "versions": [{
             "version": info["CFBundleShortVersionString"],
             "date": datetime.now(UTC).isoformat(),
-            "localizedDescription": "Native camera scanner and full collection companion. Requires the updated MTGLogger server with capture retry support.",
+            "localizedDescription": "Camera focus update: tap-to-focus, supported close-up lenses, suggested working-distance zoom, a clearer-view automatic shutter, and larger still photos. Requires the updated MTGLogger server with capture retry support.",
             "downloadURL": f"{base}/MTGLogger.ipa",
             "size": args.ipa.stat().st_size,
             "minOSVersion": info.get("MinimumOSVersion", "17.0"),
