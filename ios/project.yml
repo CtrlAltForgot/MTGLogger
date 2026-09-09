@@ -1,0 +1,33 @@
+name: MTGLogger
+options:
+  bundleIdPrefix: dev.ctrlaltforgot
+  deploymentTarget:
+    iOS: '17.0'
+settings:
+  base:
+    SWIFT_VERSION: '5.0'
+    MARKETING_VERSION: '1.0.0'
+    CURRENT_PROJECT_VERSION: '1'
+    TARGETED_DEVICE_FAMILY: '1,2'
+    CODE_SIGNING_ALLOWED: NO
+targets:
+  MTGLogger:
+    type: application
+    platform: iOS
+    sources: [MTGLogger]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.ctrlaltforgot.MTGLogger
+        INFOPLIST_FILE: MTGLogger/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    scheme:
+      testTargets: [MTGLoggerTests]
+  MTGLoggerTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [MTGLoggerTests]
+    dependencies:
+      - target: MTGLogger
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES

@@ -11,3 +11,7 @@ frontend/dist/
 *.tsbuildinfo
 .idea/
 .vscode/
+ios/*.xcodeproj/
+ios/MTGLogger/Assets.xcassets/
+ios/DerivedData/
+release/

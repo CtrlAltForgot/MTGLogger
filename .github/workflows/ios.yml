@@ -1,0 +1,60 @@
+name: iPhone app
+on:
+  push:
+    branches: [main, codex/recognition-and-iphone]
+    tags: ['ios-v*']
+    paths: ['ios/**', '.github/workflows/ios.yml', 'scripts/create-ios-source.py']
+  pull_request:
+    paths: ['ios/**', '.github/workflows/ios.yml', 'scripts/create-ios-source.py']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 35
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare project and existing theme assets
+        run: |
+          brew install xcodegen
+          swift ios/scripts/prepare-assets.swift
+          cd ios
+          xcodegen generate
+      - name: Test iPhone capture and saved upload behavior
+        run: |
+          DEVICE=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; print(next(d["udid"] for ds in json.load(sys.stdin)["devices"].values() for d in ds if "iPhone" in d["name"]))')
+          xcodebuild test -project ios/MTGLogger.xcodeproj -scheme MTGLogger -destination "platform=iOS Simulator,id=$DEVICE" -derivedDataPath /tmp/MTGLoggerSimulator CODE_SIGNING_ALLOWED=NO
+      - name: Build ARM64 iPhone application
+        run: |
+          xcodebuild build -project ios/MTGLogger.xcodeproj -scheme MTGLogger -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath /tmp/MTGLoggerDevice CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
+          mkdir -p release/Payload
+          cp -R /tmp/MTGLoggerDevice/Build/Products/Release-iphoneos/MTGLogger.app release/Payload/
+          cd release
+          zip -qr MTGLogger.ipa Payload
+      - name: Generate SideStore source and checksum
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          python3 scripts/create-ios-source.py release/MTGLogger.ipa --base-url "https://github.com/$REPOSITORY/releases/download/$REF_NAME" --output release/source.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MTGLogger-iPhone
+          path: |
+            release/MTGLogger.ipa
+            release/MTGLogger.ipa.sha256
+            release/source.json
+      - name: Publish versioned SideStore download
+        if: startsWith(github.ref, 'refs/tags/ios-v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF_NAME: ${{ github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          gh release create "$REF_NAME" release/MTGLogger.ipa release/MTGLogger.ipa.sha256 release/source.json --repo "$REPOSITORY" --title "MTGLogger for iPhone $REF_NAME" --notes 'Native rear-camera scanning, saved upload retries, and the full MTGLogger collection. Download the IPA in Safari and open it in SideStore, or add the attached source.json URL in SideStore Sources. Requires iOS 17+ and your updated MTGLogger server. This package is built for ARM64; physical-device camera and installation checks are still pending.'
