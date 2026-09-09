@@ -10,9 +10,11 @@ from ..models import ScanReceipt
 from ..schemas import ScanDefaults, ScanResult
 
 
-def payload_hash(raw: bytes, defaults: ScanDefaults) -> str:
+def payload_hash(raw: bytes, defaults: ScanDefaults, *, full_photo: bool = False) -> str:
     digest = hashlib.sha256(raw)
     digest.update(defaults.model_dump_json().encode())
+    if full_photo:
+        digest.update(b"\x00full_photo")
     return digest.hexdigest()
 
 

@@ -31,6 +31,8 @@ Official references: [SideStore app sources](https://docs.sidestore.io/docs/adva
   0.9 seconds. A brief missed detection or camera shake does not rearm it.
 - Still images retain their orientation and are limited to a 2560-pixel longest
   side, encoded at 94% JPEG quality. The app does not use the PC as a camera bridge.
+- Native uploads explicitly identify a full photo so the server locates the
+  physical card, while preserving the website's already-cropped card frames.
 - Every capture is saved in the iPhone Application Support directory before
   upload. It retains its UUID, original server, and original batch defaults.
 - Retry sends the same bytes and UUID. The server atomically commits a receipt

@@ -25,6 +25,17 @@ def test_rules_box_cannot_replace_a_close_portrait_card(monkeypatch):
     assert result[25:55, 50:400, 2].mean() > 200
 
 
+def test_full_iphone_photo_still_localizes_the_outer_card(monkeypatch):
+    image = np.zeros((1200, 900, 3), np.uint8)
+    cv2.rectangle(image, (150, 200), (750, 1040), (240, 240, 240), -1)
+    image[260:340, 210:690] = (0, 80, 250)
+    monkeypatch.setattr(CardRecognizer, "has_card_structure", lambda _: True)
+    result = CardRecognizer.rectify(image, full_photo=True)
+    # A full-frame resize leaves this bottom corner black. The physical card,
+    # although smaller than 72% of the photo, must fill the recognition image.
+    assert result[760:800, 500:540].mean() > 200
+
+
 def test_clipped_hyphenated_title_is_not_singleton_printing_proof():
     assert not CardRecognizer.has_safe_single_printing_identity(
         is_basic_land=False, identity_is_constrained=True, family_complete=True,

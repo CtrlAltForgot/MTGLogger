@@ -37,7 +37,10 @@ async def read_bounded_upload(upload: UploadFile) -> bytes:
 
 @router.get("/capabilities")
 def capabilities():
-    return {"ocr": recognizer.ocr_available, "artwork_matching": True, "capture_id": True}
+    return {
+        "ocr": recognizer.ocr_available, "artwork_matching": True,
+        "capture_id": True, "full_photo": True,
+    }
 
 
 @router.post("/upload-check")
@@ -51,6 +54,7 @@ async def upload_check(image: UploadFile = File(...)):
 async def recognize_card(
     image: UploadFile = File(...), defaults_json: str = Form("{}"),
     capture_id: Annotated[UUID | None, Form()] = None, db: Session = Depends(get_db),
+    full_photo: Annotated[bool, Form()] = False,
 ):
     if image.content_type not in {"image/jpeg", "image/png", "image/webp"}:
         raise HTTPException(415, "Upload a JPEG, PNG, or WebP image")
@@ -59,7 +63,7 @@ async def recognize_card(
     except ValueError as exc:
         raise HTTPException(422, f"Invalid scan defaults: {exc}") from exc
     raw = await read_bounded_upload(image)
-    fingerprint = payload_hash(raw, defaults)
+    fingerprint = payload_hash(raw, defaults, full_photo=full_photo)
     if capture_id:
         cached = cached_result(db, str(capture_id), fingerprint)
         if cached is not None:
@@ -67,7 +71,10 @@ async def recognize_card(
     if defaults.deck_id and not db.get(Deck, defaults.deck_id):
         raise HTTPException(422, "Selected deck no longer exists")
     try:
-        result = await recognizer.recognize(raw, defaults.box_set_code, defaults.language)
+        options = {"full_photo": True} if full_photo else {}
+        result = await recognizer.recognize(
+            raw, defaults.box_set_code, defaults.language, **options
+        )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 

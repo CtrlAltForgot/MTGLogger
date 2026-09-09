@@ -30,8 +30,8 @@ def scan_db(tmp_path, monkeypatch):
                               auto_add_safe=True)
     calls = []
 
-    async def recognize(*args):
-        calls.append(args)
+    async def recognize(*args, **kwargs):
+        calls.append((args, kwargs))
         return recognition
 
     monkeypatch.setattr(scanner.recognizer, "recognize", recognize)
@@ -42,11 +42,11 @@ def scan_db(tmp_path, monkeypatch):
     engine.dispose()
 
 
-def submit(engine, capture_id, defaults="{}", raw=b"same physical capture"):
+def submit(engine, capture_id, defaults="{}", raw=b"same physical capture", full_photo=False):
     upload = UploadFile(io.BytesIO(raw), filename="capture.jpg",
                         headers=Headers({"content-type": "image/jpeg"}))
     with Session(engine, expire_on_commit=False) as db:
-        return asyncio.run(scanner.recognize_card(upload, defaults, capture_id, db))
+        return asyncio.run(scanner.recognize_card(upload, defaults, capture_id, db, full_photo))
 
 
 def count(engine, model):
@@ -88,6 +88,45 @@ def test_review_retry_creates_one_saved_review(scan_db):
     assert submit(engine, capture_id).review_id == first.review_id
     assert count(engine, ReviewItem) == 1
     assert count(engine, InventoryItem) == 0
+
+
+def test_native_photo_geometry_is_forwarded_and_part_of_capture_identity(scan_db):
+    engine, _, calls = scan_db
+    capture_id = uuid4()
+    result = submit(engine, capture_id, full_photo=True)
+    assert calls[-1][1] == {"full_photo": True}
+    assert submit(engine, capture_id, full_photo=True).model_dump() == result.model_dump()
+    with pytest.raises(HTTPException) as error:
+        submit(engine, capture_id, full_photo=False)
+    assert error.value.status_code == 409
+
+
+def test_iphone_multipart_contract_and_retry_through_http(scan_db, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from mtglogger.database import get_db
+    from mtglogger.main import app
+
+    engine, _, calls = scan_db
+
+    def database():
+        with Session(engine, expire_on_commit=False) as db:
+            yield db
+
+    monkeypatch.setitem(app.dependency_overrides, get_db, database)
+    client = TestClient(app)
+    try:
+        fields = {"capture_id": str(uuid4()), "full_photo": "true", "defaults_json": "{}"}
+        files = {"image": ("capture.jpg", b"saved camera bytes", "image/jpeg")}
+        first = client.post("/api/scanner/recognize", data=fields, files=files)
+        second = client.post("/api/scanner/recognize", data=fields, files=files)
+        assert first.status_code == second.status_code == 200
+        assert first.json() == second.json()
+        assert first.json()["inventory"]["quantity"] == 1
+        assert calls == [((b"saved camera bytes", None, "en"), {"full_photo": True})]
+        assert client.get("/api/scanner/capabilities").json()["full_photo"] is True
+    finally:
+        client.close()
 
 
 def test_inventory_and_receipt_roll_back_together_on_failure(scan_db, monkeypatch):

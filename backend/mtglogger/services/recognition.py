@@ -187,9 +187,13 @@ class CardRecognizer:
         return expanded.astype("float32")
 
     @staticmethod
-    def rectify(image: np.ndarray) -> np.ndarray:
+    def rectify(image: np.ndarray, *, full_photo: bool = False) -> np.ndarray:
         height, width = image.shape[:2]
-        portrait_crop = 0.66 <= width / max(1, height) <= 0.78
+        image_ratio = width / max(1, height)
+        # The native client explicitly identifies a full still photo. Its 3:4
+        # ratio overlaps slightly stretched website crops, so ratio alone
+        # cannot tell whether to preserve a crop or locate a smaller card.
+        portrait_crop = not full_photo and 0.66 <= image_ratio <= 0.78
         image_area = height * width
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         edges = cv2.Canny(cv2.GaussianBlur(gray, (5, 5), 0), 50, 140)
@@ -256,7 +260,7 @@ class CardRecognizer:
             # turns keywords such as "Flash" into false card identities.
             if not portrait_crop or area >= image_area * 0.72:
                 return warped
-        if portrait_crop:
+        if portrait_crop or (full_photo and 0.5 <= image_ratio < 1):
             # Preserve ALL available title and footer pixels. The widescreen
             # webcam fallback below used to remove 48% of a portrait capture's
             # width (Hog-Monkey -> -Monkey), even when the image was readable.
@@ -2262,6 +2266,7 @@ class CardRecognizer:
         ignored_visual_hashes: set[str] | None = None,
         ignored_example_review_ids: set[str] | None = None,
         already_rectified: bool = False,
+        full_photo: bool = False,
     ) -> Recognition:
         async with self._recognition_lock:
             started = time.perf_counter()
@@ -2277,7 +2282,9 @@ class CardRecognizer:
             corrected = (
                 decoded
                 if already_rectified
-                else await asyncio.to_thread(lambda: self.rectify(decoded))
+                else await asyncio.to_thread(lambda: (
+                    self.rectify(decoded, full_photo=True) if full_photo else self.rectify(decoded)
+                ))
             )
             analysis_image, low_light_normalized = await asyncio.to_thread(
                 self.normalize_low_light, corrected

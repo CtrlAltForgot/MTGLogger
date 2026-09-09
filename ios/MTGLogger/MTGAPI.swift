@@ -4,10 +4,10 @@ struct MTGAPI {
     let server: URL
 
     func checkConnection() async throws {
-        struct Capabilities: Decodable { let capture_id: Bool? }
+        struct Capabilities: Decodable { let capture_id: Bool?; let full_photo: Bool? }
         let capabilities: Capabilities = try await get("scanner/capabilities")
-        guard capabilities.capture_id == true else {
-            throw APIError("Update your MTGLogger server before scanning. This app requires safe capture retries.")
+        guard capabilities.capture_id == true, capabilities.full_photo == true else {
+            throw APIError("Update your MTGLogger server before scanning. This app requires safe capture retries and full-photo recognition.")
         }
     }
 
@@ -26,6 +26,7 @@ struct MTGAPI {
         var body = Data()
         func append(_ text: String) { body.append(Data(text.utf8)) }
         append("--\(boundary)\r\nContent-Disposition: form-data; name=\"capture_id\"\r\n\r\n\(scan.id.uuidString)\r\n")
+        append("--\(boundary)\r\nContent-Disposition: form-data; name=\"full_photo\"\r\n\r\ntrue\r\n")
         append("--\(boundary)\r\nContent-Disposition: form-data; name=\"defaults_json\"\r\n\r\n")
         body.append(try JSONEncoder().encode(scan.defaults))
         append("\r\n--\(boundary)\r\nContent-Disposition: form-data; name=\"image\"; filename=\"capture.jpg\"\r\nContent-Type: image/jpeg\r\n\r\n")
