@@ -150,10 +150,15 @@ struct ScannerView: View {
         .onChange(of: shouldRun) { _, run in if run { camera.start() } else { camera.stop() } }
         .onChange(of: model.canCapture) { _, ready in camera.setReady(ready) }
         .onChange(of: photo) { _, item in
+            guard let item else { return }
             Task {
-                if let data = try? await item?.loadTransferable(type: Data.self), let image = UIImage(data: data), let jpeg = CardCamera.jpeg(image) {
+                do {
+                    guard let data = try await item.loadTransferable(type: Data.self),
+                          let image = UIImage(data: data), let jpeg = CardCamera.jpeg(image) else {
+                        throw APIError("This photo could not be opened. Choose another image or use the camera.")
+                    }
                     await model.capture(jpeg)
-                }
+                } catch { model.error = error.localizedDescription }
                 photo = nil
             }
         }

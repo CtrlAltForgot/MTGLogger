@@ -35,6 +35,21 @@ final class MTGLoggerTests: XCTestCase {
         }
     }
 
+    func testCameraSuspensionCannotRearmTheSameCardOrAccumulateSteadyTime() {
+        var gate = CaptureGate()
+        let card = CGRect(x: 0.2, y: 0.1, width: 0.6, height: 0.8)
+        XCTAssertFalse(gate.observe(card, now: 0))
+        gate.suspend()
+        XCTAssertFalse(gate.observe(card, now: 100))
+        XCTAssertTrue(gate.observe(card, now: 101))
+        XCTAssertFalse(gate.observe(nil, now: 102))
+        gate.suspend()
+        XCTAssertFalse(gate.observe(nil, now: 200))
+        XCTAssertTrue(gate.latched)
+        XCTAssertFalse(gate.observe(card, now: 201))
+        XCTAssertFalse(gate.observe(card, now: 202))
+    }
+
     func testOutboxSurvivesRestartAndPreservesRequestIdentity() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }

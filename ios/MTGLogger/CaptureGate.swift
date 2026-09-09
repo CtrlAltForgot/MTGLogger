@@ -36,5 +36,10 @@ struct CaptureGate {
     }
 
     mutating func markCaptured() { latched = true }
+    mutating func suspend() {
+        stableSince = nil
+        emptySince = nil
+        anchor = nil
+    }
     mutating func reset() { self = CaptureGate() }
 }

@@ -16,6 +16,7 @@ final class CardCamera: NSObject, ObservableObject, AVCaptureVideoDataOutputSamp
     private var device: AVCaptureDevice?
     private var configured = false
     private var active = false
+    private var activation = 0
     private var gate = CaptureGate()
     private var lastFrame: TimeInterval = 0
     private var capturing = false
@@ -23,20 +24,37 @@ final class CardCamera: NSObject, ObservableObject, AVCaptureVideoDataOutputSamp
     private var ready = true
 
     func start() {
-        AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
+        queue.async { [weak self] in
             guard let self else { return }
-            guard granted else {
-                DispatchQueue.main.async { self.error = "Camera access is off. Enable it in iPhone Settings → MTGLogger." }
-                return
-            }
-            self.queue.async {
-                self.active = true
-                do {
-                    if !self.configured { try self.configure() }
-                    self.gate.reset()
-                    if !self.session.isRunning { self.session.startRunning() }
-                    DispatchQueue.main.async { self.running = true; self.message = "Fill the guide with one card" }
-                } catch { DispatchQueue.main.async { self.error = error.localizedDescription } }
+            guard !self.active else { return }
+            self.active = true
+            self.activation += 1
+            let requestedActivation = self.activation
+            AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
+                guard let self else { return }
+                self.queue.async {
+                    // A permission answer can arrive after leaving Scan or
+                    // backgrounding the app. A stopped request cannot restart it.
+                    guard self.active, self.activation == requestedActivation else { return }
+                    guard granted else {
+                        self.active = false
+                        DispatchQueue.main.async { self.error = "Camera access is off. Enable it in iPhone Settings → MTGLogger." }
+                        return
+                    }
+                    do {
+                        if !self.configured { try self.configure() }
+                        self.gate.suspend()
+                        if !self.session.isRunning { self.session.startRunning() }
+                        DispatchQueue.main.async {
+                            self.error = nil
+                            self.running = true
+                            self.message = "Fill the guide with one card"
+                        }
+                    } catch {
+                        self.active = false
+                        DispatchQueue.main.async { self.error = error.localizedDescription }
+                    }
+                }
             }
         }
     }
@@ -44,9 +62,10 @@ final class CardCamera: NSObject, ObservableObject, AVCaptureVideoDataOutputSamp
     func stop() {
         queue.async {
             self.active = false
+            self.activation += 1
             if self.session.isRunning { self.session.stopRunning() }
             self.setTorchOnQueue(false)
-            self.gate.reset()
+            self.gate.suspend()
             DispatchQueue.main.async { self.running = false; self.bounds = nil }
         }
     }
