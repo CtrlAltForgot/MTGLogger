@@ -80,6 +80,30 @@ async def test_image_download_size_is_bounded(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["connection", "503"])
+async def test_artwork_recovers_from_a_temporary_upstream_failure(monkeypatch, failure):
+    calls = []
+
+    def upstream(request):
+        calls.append(request)
+        if len(calls) == 1:
+            if failure == "connection":
+                raise httpx.ConnectError("Temporary connection failure", request=request)
+            return httpx.Response(503)
+        return httpx.Response(200, content=JPEG)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as images:
+        monkeypatch.setattr(artwork, "image_client", lambda: images)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app()), base_url="http://test"
+        ) as client:
+            response = await client.get(PATH)
+    assert response.status_code == 200
+    assert response.content == JPEG
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("path", [
     f"/api/artwork/other/front/{CARD_ID}.jpg",
     f"/api/artwork/normal/other/{CARD_ID}.jpg",

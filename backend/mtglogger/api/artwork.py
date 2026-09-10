@@ -1,6 +1,7 @@
 """Serve public card artwork without requiring a browser connection to the CDN."""
 
 import asyncio
+import logging
 import time
 from collections import OrderedDict
 from typing import Literal
@@ -12,6 +13,7 @@ from fastapi import APIRouter, HTTPException, Response
 from ..config import get_settings
 
 router = APIRouter(prefix="/artwork", tags=["card artwork"])
+logger = logging.getLogger(__name__)
 MAX_CACHE_BYTES = 64 * 1024 * 1024
 MAX_IMAGE_BYTES = 2 * 1024 * 1024
 CACHE_SECONDS = 86_400
@@ -68,6 +70,29 @@ def store_image(key: str, data: bytes) -> None:
         _cache_bytes += len(data)
 
 
+async def download_image(url: str) -> bytes:
+    for attempt in range(2):
+        try:
+            async with _downloads, image_client().stream("GET", url) as upstream:
+                if upstream.status_code == 404:
+                    raise HTTPException(404, "Artwork not available for this printing")
+                upstream.raise_for_status()
+                content = bytearray()
+                async for chunk in upstream.aiter_bytes():
+                    content.extend(chunk)
+                    if len(content) > MAX_IMAGE_BYTES:
+                        raise ValueError("Artwork exceeds image size limit")
+                data = bytes(content)
+                if not data.startswith(b"\xff\xd8\xff"):
+                    raise ValueError("Artwork provider did not return a JPEG")
+                return data
+        except (httpx.TransportError, httpx.HTTPStatusError):
+            if attempt:
+                raise
+            await asyncio.sleep(0.25)
+    raise RuntimeError("Artwork download exhausted retries")
+
+
 @router.get("/{size}/{face}/{scryfall_id}.jpg")
 async def card_artwork(
     size: Literal["small", "normal", "large"],
@@ -87,20 +112,10 @@ async def card_artwork(
                         f"https://cards.scryfall.io/{size}/{face}/"
                         f"{card_id[0]}/{card_id[1]}/{card_id}.jpg"
                     )
-                    async with _downloads, image_client().stream("GET", url) as upstream:
-                        if upstream.status_code == 404:
-                            raise HTTPException(404, "Artwork not available for this printing")
-                        upstream.raise_for_status()
-                        content = bytearray()
-                        async for chunk in upstream.aiter_bytes():
-                            content.extend(chunk)
-                            if len(content) > MAX_IMAGE_BYTES:
-                                raise ValueError("Artwork exceeds image size limit")
-                        data = bytes(content)
-                        if not data.startswith(b"\xff\xd8\xff"):
-                            raise ValueError("Artwork provider did not return a JPEG")
+                    data = await download_image(url)
                     store_image(key, data)
         except (httpx.HTTPError, TimeoutError, ValueError) as exc:
+            logger.warning("Artwork unavailable for %s: %s: %s", key, type(exc).__name__, exc)
             raise HTTPException(503, "Artwork is temporarily unavailable. Try again.") from exc
     return Response(
         content=data,
