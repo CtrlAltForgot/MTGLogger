@@ -1,10 +1,13 @@
+import asyncio
 import csv
 import io
 import json
+from datetime import UTC
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response
 from sqlalchemy import func, or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from ..database import get_db
@@ -19,6 +22,7 @@ from ..schemas import (
     Page,
 )
 from ..services.inventory import upsert_inventory
+from ..services.inventory_prices import cached_finish_price, schedule_price_refresh
 from ..services.prices import apply_price, record_collection_value
 
 router = APIRouter(prefix="/inventory", tags=["inventory"])
@@ -27,10 +31,38 @@ prices = ScryfallProvider()
 
 async def finish_price(scryfall_id: str, foil: bool):
     try:
-        card = await prices.get_card(scryfall_id)
+        async with asyncio.timeout(1.5):
+            card = await prices.get_card(scryfall_id)
         return prices.market_price(card, foil=foil)
-    except httpx.HTTPError as exc:
+    except (httpx.HTTPError, TimeoutError, RuntimeError) as exc:
         raise HTTPException(503, "Could not refresh the current card price") from exc
+
+
+def editable_item(db: Session, item_id: str, expected_updated_at=None) -> InventoryItem:
+    item = db.scalar(select(InventoryItem).where(InventoryItem.id == item_id).with_for_update())
+    if item is None:
+        raise HTTPException(404, "This entry was moved or removed. Refresh the collection.")
+    if expected_updated_at is not None:
+        actual = item.updated_at
+        if actual.tzinfo is None:
+            actual = actual.replace(tzinfo=UTC)
+        expected = expected_updated_at
+        if expected.tzinfo is None:
+            expected = expected.replace(tzinfo=UTC)
+        if actual != expected:
+            raise HTTPException(409,
+                "This card changed while the editor was open. Reopen it and try again.")
+    return item
+
+
+def commit_edit(db: Session) -> None:
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            409, "This printing changed in another request. Refresh and try again."
+        ) from exc
 
 
 def delete_item_preserving_reviews(db: Session, item: InventoryItem) -> None:
@@ -136,8 +168,13 @@ def inventory_facets(db: Session = Depends(get_db)):
 
 
 @router.post("", response_model=InventoryRead, status_code=201)
-def create_inventory(data: InventoryCreate, db: Session = Depends(get_db)):
-    return upsert_inventory(db, data)
+def create_inventory(
+    data: InventoryCreate, background_tasks: BackgroundTasks, db: Session = Depends(get_db),
+):
+    item = upsert_inventory(db, data)
+    if item.market_price is None:
+        schedule_price_refresh(background_tasks, item)
+    return item
 
 
 @router.get("/{item_id}/price")
@@ -151,13 +188,12 @@ async def inventory_finish_price(
 
 
 @router.post("/{item_id}/move-finish", response_model=InventoryRead)
-async def move_inventory_finish(
-    item_id: str, data: InventoryFinishMove, db: Session = Depends(get_db)
+def move_inventory_finish(
+    item_id: str, data: InventoryFinishMove, db: Session = Depends(get_db),
+    background_tasks: BackgroundTasks = None,
 ):
     """Move unassigned copies into a distinct foil/nonfoil inventory variant."""
-    item = db.get(InventoryItem, item_id)
-    if not item:
-        raise HTTPException(404, "Inventory item not found")
+    item = editable_item(db, item_id, data.expected_updated_at)
     if data.foil == item.foil:
         raise HTTPException(422, "Copies already use that finish")
     assigned = db.scalar(
@@ -181,9 +217,9 @@ async def move_inventory_finish(
             InventoryItem.collection_name == item.collection_name,
             InventoryItem.storage_location == item.storage_location,
             InventoryItem.status == item.status,
-        )
+        ).with_for_update()
     )
-    price = await finish_price(item.scryfall_id, data.foil)
+    price = cached_finish_price(db, item.scryfall_id, data.foil)
     activity_time = utc_now()
     if target:
         target.quantity += data.quantity
@@ -225,19 +261,19 @@ async def move_inventory_finish(
         )
         db.delete(item)
     record_collection_value(db)
-    db.commit()
+    commit_edit(db)
     db.refresh(target)
+    schedule_price_refresh(background_tasks, target)
     return target
 
 
 @router.post("/{item_id}/move-copies", response_model=InventoryRead)
-async def move_inventory_copies(
-    item_id: str, data: InventoryCopyMove, db: Session = Depends(get_db)
+def move_inventory_copies(
+    item_id: str, data: InventoryCopyMove, db: Session = Depends(get_db),
+    background_tasks: BackgroundTasks = None,
 ):
     """Move selected unassigned physical copies into a finish/condition variant."""
-    item = db.get(InventoryItem, item_id)
-    if not item:
-        raise HTTPException(404, "Inventory item not found")
+    item = editable_item(db, item_id, data.expected_updated_at)
     if data.foil == item.foil and data.condition == item.condition:
         raise HTTPException(422, "Selected copies already use those properties")
     assigned = db.scalar(
@@ -258,10 +294,10 @@ async def move_inventory_copies(
             InventoryItem.collection_name == item.collection_name,
             InventoryItem.storage_location == item.storage_location,
             InventoryItem.status == item.status,
-        )
+        ).with_for_update()
     )
     price = (
-        await finish_price(item.scryfall_id, data.foil)
+        cached_finish_price(db, item.scryfall_id, data.foil)
         if data.foil != item.foil
         else item.market_price
     )
@@ -306,19 +342,24 @@ async def move_inventory_copies(
         )
         db.delete(item)
     record_collection_value(db)
-    db.commit()
+    commit_edit(db)
     db.refresh(target)
+    if data.foil != item.foil:
+        schedule_price_refresh(background_tasks, target)
     return target
 
 
 @router.patch("/{item_id}", response_model=InventoryRead)
-async def update_inventory(item_id: str, data: InventoryUpdate, db: Session = Depends(get_db)):
-    item = db.get(InventoryItem, item_id)
-    if not item:
-        raise HTTPException(404, "Inventory item not found")
+def update_inventory(
+    item_id: str, data: InventoryUpdate, db: Session = Depends(get_db),
+    background_tasks: BackgroundTasks = None,
+):
+    item = editable_item(db, item_id, data.expected_updated_at)
     changes = data.model_dump(exclude_unset=True)
-    if "foil" in changes and changes["foil"] != item.foil:
-        changes["market_price"] = await finish_price(item.scryfall_id, changes["foil"])
+    changes.pop("expected_updated_at", None)
+    finish_changed = "foil" in changes and changes["foil"] != item.foil
+    if finish_changed:
+        changes["market_price"] = cached_finish_price(db, item.scryfall_id, changes["foil"])
     if "quantity" in changes:
         assigned = db.scalar(
             select(func.coalesce(func.sum(DeckEntry.quantity), 0)).where(
@@ -336,13 +377,18 @@ async def update_inventory(item_id: str, data: InventoryUpdate, db: Session = De
     for key, value in changes.items():
         setattr(item, key, value)
     price_changed = apply_price(db, item, market_price)
+    if finish_changed:
+        item.market_price = market_price
+        price_changed = True
     if item.quantity == 0:
         delete_item_preserving_reviews(db, item)
         raise HTTPException(204)
     if price_changed or "quantity" in changes:
         record_collection_value(db)
-    db.commit()
+    commit_edit(db)
     db.refresh(item)
+    if finish_changed:
+        schedule_price_refresh(background_tasks, item)
     return item
 
 

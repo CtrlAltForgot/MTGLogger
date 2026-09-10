@@ -30,6 +30,7 @@ class InventoryCreate(BaseModel):
 
 
 class InventoryUpdate(BaseModel):
+    expected_updated_at: datetime | None = None
     quantity: int | None = Field(None, ge=0)
     foil: bool | None = None
     language: str | None = Field(None, pattern=r"^[a-z]{2,3}$")
@@ -43,11 +44,13 @@ class InventoryUpdate(BaseModel):
 
 
 class InventoryFinishMove(BaseModel):
+    expected_updated_at: datetime | None = None
     quantity: int = Field(1, ge=1)
     foil: bool
 
 
 class InventoryCopyMove(BaseModel):
+    expected_updated_at: datetime | None = None
     quantity: int = Field(1, ge=1)
     foil: bool
     condition: str

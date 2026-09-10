@@ -137,7 +137,6 @@ def test_duplicate_printing_becomes_most_recent_collection_activity(client):
 
 
 def test_inventory_finish_move_splits_foil_and_nonfoil_quantities(monkeypatch):
-    import asyncio
     from decimal import Decimal
 
     from mtglogger.api import inventory
@@ -145,18 +144,18 @@ def test_inventory_finish_move_splits_foil_and_nonfoil_quantities(monkeypatch):
     from mtglogger.models import InventoryItem
     from mtglogger.schemas import InventoryFinishMove
 
-    async def foil_price(_scryfall_id: str, foil: bool):
+    def foil_price(_db, _scryfall_id: str, foil: bool):
         return Decimal("2.75" if foil else "0.42")
 
-    monkeypatch.setattr(inventory, "finish_price", foil_price)
+    monkeypatch.setattr(inventory, "cached_finish_price", foil_price)
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
     with SessionLocal() as db:
         item = InventoryItem(**CARD, quantity=3)
         db.add(item)
         db.commit()
-        target = asyncio.run(
-            inventory.move_inventory_finish(item.id, InventoryFinishMove(foil=True, quantity=1), db)
+        target = inventory.move_inventory_finish(
+            item.id, InventoryFinishMove(foil=True, quantity=1), db
         )
         variants = list(db.query(InventoryItem).all())
 
@@ -170,7 +169,6 @@ def test_inventory_finish_move_splits_foil_and_nonfoil_quantities(monkeypatch):
 
 
 def test_inventory_copy_move_splits_selected_finish_and_condition(monkeypatch):
-    import asyncio
     from decimal import Decimal
 
     from mtglogger.api import inventory
@@ -178,22 +176,20 @@ def test_inventory_copy_move_splits_selected_finish_and_condition(monkeypatch):
     from mtglogger.models import InventoryItem
     from mtglogger.schemas import InventoryCopyMove
 
-    async def foil_price(_scryfall_id: str, foil: bool):
+    def foil_price(_db, _scryfall_id: str, foil: bool):
         return Decimal("2.75" if foil else "0.42")
 
-    monkeypatch.setattr(inventory, "finish_price", foil_price)
+    monkeypatch.setattr(inventory, "cached_finish_price", foil_price)
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
     with SessionLocal() as db:
         item = InventoryItem(**CARD, quantity=3)
         db.add(item)
         db.commit()
-        target = asyncio.run(
-            inventory.move_inventory_copies(
-                item.id,
-                InventoryCopyMove(quantity=2, foil=True, condition="lightly_played"),
-                db,
-            )
+        target = inventory.move_inventory_copies(
+            item.id,
+            InventoryCopyMove(quantity=2, foil=True, condition="lightly_played"),
+            db,
         )
         variants = list(db.query(InventoryItem).all())
 

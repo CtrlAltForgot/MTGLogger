@@ -1,3 +1,4 @@
+import {artworkUrl} from '../artwork'
 import { useEffect, useState } from 'react'
 import { Backspace, KeyboardArrowLeft, KeyboardArrowRight, KeyboardReturn, Search } from '@mui/icons-material'
 import { Alert, Box, Button, Chip, Dialog, DialogActions, DialogContent, IconButton, InputAdornment, Stack, TextField, Typography } from '@mui/material'
@@ -59,7 +60,7 @@ export default function ScanConfirmation({reviewId,candidates,confidence,foil,la
             <Typography color="text.secondary">Keep this physical card aside until resolved.</Typography>
           </Stack>
           {!manual&&candidate&&<Stack direction={{xs:'column',sm:'row'}} spacing={2} alignItems="center">
-            <FoilArtwork src={candidate.image_url||''} alt={candidate.name} foil={effectiveFoil} sx={{width:170,borderRadius:2,flexShrink:0}}/>
+            <FoilArtwork src={artworkUrl(candidate.image_url||'')} alt={candidate.name} foil={effectiveFoil} sx={{width:170,borderRadius:2,flexShrink:0}}/>
             <Box flex={1}>
               <Typography className="card-title" variant="h4"><CardName scryfallId={candidate.scryfall_id}>{candidate.name}</CardName></Typography>
               <Typography className="card-printing" variant="h6" color="text.secondary">{candidate.set_name} #{candidate.collector_number} · {candidate.language.toUpperCase()}</Typography>

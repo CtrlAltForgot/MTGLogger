@@ -21,27 +21,29 @@ _set_metadata_lock = asyncio.Lock()
 
 
 async def scryfall_api_get(url: str, **kwargs) -> httpx.Response:
-    """Pace and retry API traffic so background indexing cannot starve scans."""
+    """Pace request starts without locking other callers behind a slow response."""
     global _api_last_request_at
     method = kwargs.pop("method", "GET")
-    async with _api_request_lock:
-        delay = 0.1 - (time.monotonic() - _api_last_request_at)
-        if delay > 0:
-            await asyncio.sleep(delay)
-        for attempt in range(6):
-            try:
-                response = await scryfall_client().request(method, url, **kwargs)
-                _api_last_request_at = time.monotonic()
-                if response.status_code != 429:
-                    return response
-                retry_after = float(response.headers.get("Retry-After", attempt + 1))
-                await asyncio.sleep(min(30, max(0.1, retry_after)))
-            except (httpx.TimeoutException, httpx.TransportError):
-                _api_last_request_at = time.monotonic()
-                if attempt == 5:
-                    raise
-                await asyncio.sleep(min(10, 1.5**attempt))
-        raise RuntimeError("Scryfall API remained rate limited after retries")
+    for attempt in range(6):
+        async with _api_request_lock:
+            while (delay := 0.1 - (time.monotonic() - _api_last_request_at)) > 0:
+                await asyncio.sleep(delay)
+            _api_last_request_at = time.monotonic()
+        try:
+            response = await scryfall_client().request(method, url, **kwargs)
+            if response.status_code != 429:
+                return response
+            retry_after = float(response.headers.get("Retry-After", attempt + 1))
+            # A real rate-limit response delays all subsequent request starts.
+            _api_last_request_at = max(
+                _api_last_request_at,
+                time.monotonic() + min(30, max(0.1, retry_after)) - 0.1,
+            )
+        except (httpx.TimeoutException, httpx.TransportError):
+            if attempt == 5:
+                raise
+            await asyncio.sleep(min(10, 1.5**attempt))
+    raise RuntimeError("Scryfall API remained rate limited after retries")
 
 
 def scryfall_client() -> httpx.AsyncClient:

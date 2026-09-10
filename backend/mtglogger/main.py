@@ -6,7 +6,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from . import __version__
-from .api import dashboard, decks, inventory, play, prices, references, reviews, scanner, sealed
+from .api import (
+    artwork,
+    dashboard,
+    decks,
+    inventory,
+    play,
+    prices,
+    references,
+    reviews,
+    scanner,
+    sealed,
+)
 from .config import get_settings
 from .database import Base, SessionLocal, engine, migrate_schema
 from .providers import close_scryfall_client
@@ -64,6 +75,7 @@ async def lifespan(_: FastAPI):
             with suppress(asyncio.CancelledError):
                 await neural_task
         await close_scryfall_client()
+        await artwork.close_image_client()
 
 
 app = FastAPI(title="MTGLogger API", version=__version__, lifespan=lifespan)
@@ -75,6 +87,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(inventory.router, prefix="/api")
+app.include_router(artwork.router, prefix="/api")
 app.include_router(scanner.router, prefix="/api")
 app.include_router(reviews.router, prefix="/api")
 app.include_router(sealed.router, prefix="/api")

@@ -1,3 +1,4 @@
+import {artworkUrl} from '../artwork'
 import {useEffect,useState} from 'react'
 import {ArrowBack,Search} from '@mui/icons-material'
 import {Alert,Box,Button,Chip,InputAdornment,LinearProgress,MenuItem,Pagination,Stack,TextField,Typography} from '@mui/material'
@@ -86,7 +87,7 @@ export default function CardSearch({onChoose,language='en',disabled=false}:{onCh
         {data.items.map(hit=><Box component="button" type="button" key={hit.scryfall_id} disabled={disabled} onClick={()=>choose(hit)}
           aria-label={`${data.mode==='cards'&&hit.printing_count>1?'See printings for':'Choose'} ${hit.name}${data.mode==='printings'?` ${hit.set_code.toUpperCase()} ${hit.collector_number}`:''}`}
           sx={{appearance:'none',font:'inherit',textAlign:'left',p:1,border:'1px solid',borderColor:'divider',borderRadius:2,bgcolor:'background.default',color:'text.primary',cursor:'pointer',minWidth:0,'&:hover,&:focus-visible':{borderColor:'primary.main'},'&:disabled':{opacity:.5,cursor:'wait'}}}>
-          <Box component="img" src={hit.image_url||''} alt="" loading="lazy" sx={{display:'block',width:'100%',aspectRatio:'63 / 88',objectFit:'contain',borderRadius:1}}/>
+          <Box component="img" src={artworkUrl(hit.image_url||'')} alt="" loading="lazy" sx={{display:'block',width:'100%',aspectRatio:'63 / 88',objectFit:'contain',borderRadius:1}}/>
           <Typography className="card-title" fontWeight={800} mt={1} sx={{overflowWrap:'anywhere'}}>{hit.name}</Typography>
           {hit.oracle_name!==hit.name&&<Typography variant="caption" color="text.secondary" display="block">{hit.oracle_name}</Typography>}
           <Typography variant="caption" color="text.secondary" display="block" mt={.5}>

@@ -1,3 +1,4 @@
+import {artworkUrl} from '../artwork'
 import { useEffect, useMemo, useState } from "react";
 import { Add, ArrowBack, AutoAwesome, CloudUpload, Delete, Edit, Remove, Search } from "@mui/icons-material";
 import {
@@ -365,7 +366,7 @@ export default function Decks() {
                 >
                   <Box
                     component="img"
-                    src={entry.inventory.image_url || ""}
+                    src={artworkUrl(entry.inventory.image_url)}
                     sx={{
                       width: 42,
                       height: 58,
@@ -483,7 +484,7 @@ export default function Decks() {
                   />
                   <Box
                     component="img"
-                    src={card.inventory.image_url || ""}
+                    src={artworkUrl(card.inventory.image_url)}
                     sx={{
                       width: 42,
                       height: 58,
@@ -621,7 +622,7 @@ function DeckArtwork({deck}:{deck:Deck}){
   if(signature)cards.splice(Math.floor(cards.length/2),0,signature)
   if(cards.length>spreadCount)cards.pop()
   const custom=deck.image_url?.startsWith('/api/')?`${API}${deck.image_url}`:deck.image_url
-  return <Box sx={{height:140,position:'relative',overflow:'hidden',background:'transparent'}}>{custom?<Box component="img" src={custom} alt="" sx={{width:'100%',height:'100%',objectFit:'cover'}}/>:<Box sx={{position:'absolute',inset:0,display:'flex',justifyContent:'center',alignItems:'center'}}>{cards.map((entry,index)=>{const midpoint=(cards.length-1)/2;const offset=index-midpoint;const isSignature=entry.id===signature?.id;return <Box key={entry.id} component="img" src={entry.inventory.image_url!} alt="" sx={{position:'absolute',width:isSignature?88:82,borderRadius:1,boxShadow:isSignature?'0 11px 28px rgba(0,0,0,.78)':'0 8px 22px rgba(0,0,0,.6)',transform:`translate(${offset*42}px, ${Math.abs(offset)*4-(isSignature?15:5)}px) rotate(${isSignature?0:offset*5.5}deg)`,transformOrigin:'50% 85%',zIndex:isSignature?20:index}}/>})}</Box>}{custom&&<Box sx={{position:'absolute',inset:0,background:'linear-gradient(0deg,rgba(10,6,7,.6),transparent 72%)'}}/>}</Box>
+  return <Box sx={{height:140,position:'relative',overflow:'hidden',background:'transparent'}}>{custom?<Box component="img" src={custom} alt="" sx={{width:'100%',height:'100%',objectFit:'cover'}}/>:<Box sx={{position:'absolute',inset:0,display:'flex',justifyContent:'center',alignItems:'center'}}>{cards.map((entry,index)=>{const midpoint=(cards.length-1)/2;const offset=index-midpoint;const isSignature=entry.id===signature?.id;return <Box key={entry.id} component="img" src={artworkUrl(entry.inventory.image_url!)} alt="" sx={{position:'absolute',width:isSignature?88:82,borderRadius:1,boxShadow:isSignature?'0 11px 28px rgba(0,0,0,.78)':'0 8px 22px rgba(0,0,0,.6)',transform:`translate(${offset*42}px, ${Math.abs(offset)*4-(isSignature?15:5)}px) rotate(${isSignature?0:offset*5.5}deg)`,transformOrigin:'50% 85%',zIndex:isSignature?20:index}}/>})}</Box>}{custom&&<Box sx={{position:'absolute',inset:0,background:'linear-gradient(0deg,rgba(10,6,7,.6),transparent 72%)'}}/>}</Box>
 }
 
 function CreateDialog({
@@ -721,7 +722,7 @@ function AutoBuildDialog({open,form,setForm,proposal,error,busy,close,preview,ap
         <Card variant="outlined" sx={{maxHeight:390,overflowY:'auto'}}>
           <CardContent>
             {proposal.cards.map(card=><Stack key={card.inventory_id} direction="row" spacing={1.25} alignItems="center" py={.75}>
-              <Box component="img" src={card.image_url||''} alt="" sx={{width:38,height:53,objectFit:'cover',objectPosition:'top',borderRadius:.75,flexShrink:0}}/>
+              <Box component="img" src={artworkUrl(card.image_url||'')} alt="" sx={{width:38,height:53,objectFit:'cover',objectPosition:'top',borderRadius:.75,flexShrink:0}}/>
               <Typography fontWeight={900} minWidth={28}>×{card.quantity}</Typography>
               <Box flex={1} minWidth={0}>
                 <Typography fontWeight={800} noWrap><CardName scryfallId={card.scryfall_id}>{card.name}</CardName></Typography>

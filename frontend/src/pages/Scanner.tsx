@@ -1,3 +1,4 @@
+import {artworkUrl} from '../artwork'
 import { useCallback, useEffect, useState } from 'react'
 import { CameraAlt, CropFree, ExpandMore, PhotoCamera, RestartAlt, Rotate90DegreesCw, Search, VideocamOff } from '@mui/icons-material'
 import {
@@ -176,7 +177,7 @@ export default function Scanner(){
     <ManualAddDialog open={manualOpen} onClose={()=>setManualOpen(false)} onAdded={item=>{if(item)setSuccess(item)}}/>
     <Snackbar key={success?`${success.id}-${success.quantity}`:'empty'} open={!!success} autoHideDuration={1800} onClose={()=>setSuccess(null)} anchorOrigin={{vertical:'bottom',horizontal:'center'}}>
       <Card elevation={12} sx={{display:'flex',alignItems:'center',minWidth:{xs:320,sm:460},border:'2px solid',borderColor:'success.main',overflow:'hidden'}}>
-        {success?.image_url&&<FoilArtwork src={success.image_url} alt={success.card_name} foil={success.foil} sx={{width:82,height:114}} imageSx={{objectFit:'cover',objectPosition:'top'}}/>}
+        {success?.image_url&&<FoilArtwork src={artworkUrl(success.image_url)} alt={success.card_name} foil={success.foil} sx={{width:82,height:114}} imageSx={{objectFit:'cover',objectPosition:'top'}}/>}
         <Box px={2} py={1}><Typography color="success.main" fontWeight={900}>ADDED · {success?.quantity} OWNED</Typography><Typography className="card-title" variant="h6" fontWeight={900}>{success&&<CardName scryfallId={success.scryfall_id}>{success.card_name}</CardName>}</Typography><Typography className="card-printing" color="text.secondary">{success?.set_name} #{success?.collector_number} · ${Number(success?.market_price||0).toFixed(2)}</Typography></Box>
       </Card>
     </Snackbar>
@@ -192,7 +193,7 @@ function LastIdentified({inventory,confidence}:{inventory:Inventory;confidence:n
     <Box sx={{flex:{xs:'0 0 92px',lg:1},minHeight:{xs:128,lg:260},display:'grid',placeItems:'center',py:{xs:.5,lg:1.5}}}>
       {inventory.image_url
         ?<FoilArtwork
-          src={inventory.image_url}
+          src={artworkUrl(inventory.image_url)}
           alt={inventory.card_name}
           foil={inventory.foil}
           sx={{height:'100%',maxHeight:430,maxWidth:'100%',aspectRatio:'488 / 680',borderRadius:'4.75% / 3.5%',boxShadow:'0 22px 54px rgba(0,0,0,.38)'}}
